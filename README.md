@@ -53,6 +53,44 @@ curl(mesh) @ grad(mesh)   # == 0  (topological, exact)
 div(mesh)  @ curl(mesh)   # == 0
 ```
 
+## Mimetic inner products (Laplace & elasticity)
+
+All geometric/material information enters through the inner-product (mass)
+matrices, built with the **consistency + stability** construction shared by the
+mimetic finite-difference family (Brezzi–Lipnikov–Simoncini) and its elasticity
+extension (Beirão da Veiga, ESAIM M2AN 2010). Per element:
+
+```
+M_E = M1 + M2
+M1 = N (NᵀN)⁻¹ (|E| K̄) (NᵀN)⁻¹ Nᵀ     # consistency: exact on the reconstruction space
+M2 = s · C Cᵀ,  C = orthonormal basis of ker(Nᵀ)   # stability
+```
+
+* `N` (D×m) — DOFs of each reconstruction mode; `K̄` — Gram matrix of the modes
+  in the continuous inner product (both by quadrature).
+* **Consistency**: for any reconstructed field `g = N c`, `gᵀM1g = |E| cᵀK̄c`
+  (verified to machine precision in the tests).
+* **Stabilization vanishes on simplices**: `M2 = 0 ⟺ dim ker(Nᵀ) = 0 ⟺ D = m`.
+
+| Problem | DOFs (`D`) | Reconstruction space (`m`) | Tetrahedron | Hexahedron |
+|---|---|---|---|---|
+| **Laplace** `∫K⁻¹F·G` ([`DiffusionInnerProduct`](src/mimetika/operators/diffusion.py)) | 1/facet | constants (`m=3`) | stab dim 1 | stab dim 3 |
+| **Laplace**, RT₀ enriched | 1/facet | `{a+bx}` (`m=4`) | **stab dim 0** | stab dim 2 |
+| **Elasticity / AFW** `∫C⁻¹σ:τ` ([`ElasticityInnerProduct`](src/mimetika/operators/elasticity.py)) | 9/facet | `[P₁(E)]³ˣ³` (`m=36`) | **stab dim 0** | stab dim 18 |
+
+The elasticity space is designed (Beirão's Remark 4.1 direction) so that on a
+tetrahedron `D = 9·4 = 36 = m`: the DOFs are unisolvent for linear tensors, the
+stabilization vanishes, and the scheme reduces to the AFW (BDM₁-based) mixed
+element. On genuine polytopes the stabilization is active.
+
+```python
+from mimetika.mesh import single_tetrahedron, structured_box
+from mimetika.operators import ElasticityInnerProduct
+
+ElasticityInnerProduct(single_tetrahedron()).stabilization_dim(0)   # -> 0
+ElasticityInnerProduct(structured_box(1,1,1)).stabilization_dim(0)  # -> 18
+```
+
 ## Quick start
 
 ```python
@@ -89,11 +127,14 @@ The suite (34 tests) runs without PETSc — the solver layer falls back to scipy
 The scaffolding is complete and tested; these are the numerics upgrades that slot
 in without touching callers:
 
+- **Saddle-point assembly** — wire the stress inner product into the full
+  weakly-symmetric HR system (`div_h`, `as_h`, `tr_h` operators, eqs (2.27)) to
+  solve the elasticity problem, and the flux inner product into the mixed
+  Laplace system.
 - **`CircumcentricHodge`** — the geometrically-consistent diagonal DEC star
   `*ₖ = diag(|dualₖ| / |primalₖ|)`. The current `DiagonalHodge` is a lumped
-  (measure-diagonal) inner product: SPD and enough to drive the full pipeline.
-- **`PolytopalHodge`** — a per-cell consistency + stability inner product
-  (`M = M_c + M_s`), the genuinely *mimetic-on-polytopes* mass matrix.
+  (measure-diagonal) inner product; the polytopal consistency+stability inner
+  products now live in [`operators/inner_product.py`](src/mimetika/operators/inner_product.py).
 - **Higher-order form spaces** — `DofHandler.n_dofs_per_cell` and the
   local-to-global map are the only hooks that change.
 - **Mesh readers** — `Mesh.from_cells` already accepts arbitrary polyhedra;

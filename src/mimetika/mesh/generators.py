@@ -63,3 +63,44 @@ def structured_box(
                 cells.append([[corners[n] for n in face] for face in _HEX_FACES])
 
     return Mesh.from_cells(points, cells)
+
+
+# Outward-oriented triangular faces of a tetrahedron with corners 0,1,2,3.
+_TET_FACES = (
+    (0, 2, 1),  # opposite vertex 3
+    (0, 1, 3),  # opposite vertex 2
+    (0, 3, 2),  # opposite vertex 1
+    (1, 2, 3),  # opposite vertex 0
+)
+
+
+def single_tetrahedron(
+    points: np.ndarray | None = None,
+) -> Mesh:
+    """A single tetrahedron. Defaults to the unit reference tet.
+
+    ``points`` is a ``(4, 3)`` array of the four vertices, ordered so that the
+    signed volume of (p1-p0, p2-p0, p3-p0) is positive.
+    """
+    if points is None:
+        points = np.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        )
+    points = np.asarray(points, dtype=float)
+    if points.shape != (4, 3):
+        raise ValueError("a tetrahedron needs exactly 4 vertices in 3D")
+    cell = [[int(points_idx) for points_idx in face] for face in _TET_FACES]
+    return Mesh.from_cells(points, [cell])
+
+
+def single_hexahedron(points: np.ndarray) -> Mesh:
+    """A single (possibly distorted) hexahedron from 8 corner points.
+
+    Corners follow the VTK ordering used by :func:`structured_box`:
+    bottom face 0-3 counter-clockwise, top face 4-7 directly above.
+    """
+    points = np.asarray(points, dtype=float)
+    if points.shape != (8, 3):
+        raise ValueError("a hexahedron needs exactly 8 vertices in 3D")
+    cell = [[int(n) for n in face] for face in _HEX_FACES]
+    return Mesh.from_cells(points, [cell])

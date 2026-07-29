@@ -166,6 +166,20 @@ class CellComplex:
             raise ValueError(f"boundary defined for 1..{self.dim}, got k={k}")
         return self.boundary[k]
 
+    def cell_vertices(self, cell_id: int) -> set[int]:
+        """Set of vertex ids of a 3-cell (union over its facets)."""
+        verts: set[int] = set()
+        for fid, _ in self.cell_facets[cell_id]:
+            verts.update(self.facet_vertices[fid])
+        return verts
+
+    def is_simplex(self, cell_id: int) -> bool:
+        """True if the 3-cell is a tetrahedron (4 triangular facets, 4 vertices)."""
+        entry = self.cell_facets[cell_id]
+        if len(entry) != 4 or len(self.cell_vertices(cell_id)) != 4:
+            return False
+        return all(len(self.facet_vertices[fid]) == 3 for fid, _ in entry)
+
     def verify_complex(self, atol: float = 1e-12) -> bool:
         """Check ``boundary[k] @ boundary[k+1] == 0`` for all k (dd = 0)."""
         for k in range(1, self.dim):

@@ -127,6 +127,80 @@ class Geometry:
         self._centroids[2] = c
         return c
 
+    # -- quadrature ----------------------------------------------------------
+
+    # Degree-2 symmetric rule on the reference tetrahedron (4 points), exact for
+    # quadratic integrands. Barycentric coords; weights sum to 1.
+    _TET_RULE_A = 0.585410196624968515
+    _TET_RULE_B = 0.138196601125010515
+
+    def cell_quadrature(self, cell_id: int) -> tuple[np.ndarray, np.ndarray]:
+        """Quadrature points/weights integrating quadratics exactly over a cell.
+
+        The polyhedron is subdivided into tetrahedra (cell centroid -> face
+        centroid -> face edge), each carrying a degree-2 rule.  Returns
+        ``(points (Nq,3), weights (Nq,))`` with ``sum(weights) == |E|``.
+        """
+        a, b = self._TET_RULE_A, self._TET_RULE_B
+        bary = np.array([[a, b, b, b], [b, a, b, b], [b, b, a, b], [b, b, b, a]])
+        xc = self.centroids(3)[cell_id]
+
+        pts, wts = [], []
+        for fid, _ in self.complex.cell_facets[cell_id]:
+            loop = self.complex.facet_vertices[fid]
+            fp = self.points[list(loop)]
+            fc = fp.mean(0)
+            m = len(loop)
+            for i in range(m):
+                tet = np.array([xc, fc, fp[i], fp[(i + 1) % m]])
+                vol = abs(np.dot(tet[1] - tet[0],
+                                 np.cross(tet[2] - tet[0], tet[3] - tet[0]))) / 6.0
+                if vol == 0.0:
+                    continue
+                pts.append(bary @ tet)  # (4,3)
+                wts.append(np.full(4, vol / 4.0))
+        return np.vstack(pts), np.concatenate(wts)
+
+    def facet_quadrature(self, fid: int) -> tuple[np.ndarray, np.ndarray]:
+        """Quadrature over one (planar) facet, exact for quadratics.
+
+        Fan-triangulates the polygon from its centroid and applies the degree-2
+        3-midpoint triangle rule.  Returns ``(points (Nq,3), weights (Nq,))``
+        with ``sum(weights) == area(facet)``.
+        """
+        loop = self.complex.facet_vertices[fid]
+        fp = self.points[list(loop)]
+        fc = fp.mean(0)
+        m = len(loop)
+        pts, wts = [], []
+        for i in range(m):
+            a, b = fp[i], fp[(i + 1) % m]
+            area = 0.5 * np.linalg.norm(np.cross(a - fc, b - fc))
+            if area == 0.0:
+                continue
+            tri = np.array([fc, a, b])
+            mids = np.array([(tri[0] + tri[1]) / 2,
+                             (tri[1] + tri[2]) / 2,
+                             (tri[2] + tri[0]) / 2])
+            pts.append(mids)
+            wts.append(np.full(3, area / 3.0))
+        return np.vstack(pts), np.concatenate(wts)
+
+    def facet_tangents(self, fid: int) -> tuple[np.ndarray, np.ndarray]:
+        """A deterministic orthonormal in-plane tangent frame ``(t1, t2)``.
+
+        Depends only on the canonical facet normal, hence identical for the two
+        cells sharing the facet -- so face-based DOFs are globally consistent.
+        """
+        n = self.facet_normals()[fid]
+        axis = int(np.argmin(np.abs(n)))
+        e = np.zeros(3)
+        e[axis] = 1.0
+        t1 = e - np.dot(e, n) * n
+        t1 /= np.linalg.norm(t1)
+        t2 = np.cross(n, t1)
+        return t1, t2
+
     def facet_normals(self) -> np.ndarray:
         """Unit normals of facets, per the canonical facet loop orientation."""
         if self._facet_normals is None:
