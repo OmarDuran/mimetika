@@ -8,10 +8,12 @@ polytopal meshes load without any conversion.  The standard linear cell types
 (tetrahedron, hexahedron, wedge, pyramid) are also supported by expanding them
 into their face loops.
 
-Face orientation is normalised on load: VTK does not guarantee that a cell's
-face loops are oriented outward, so each cell's signed volume is computed and
-its loops reversed when necessary.  Consistent orientation is what makes the
-signed incidence -- and therefore ``dd = 0`` -- come out right.
+Face orientation is normalised on load, **per face**: VTK does not require a
+polyhedron's face loops to be oriented outward, and in practice writers emit
+them in arbitrary directions.  Each loop is therefore reversed individually
+when its area vector points into the cell.  Consistent outward orientation is
+what makes the signed incidence -- and therefore ``dd = 0`` -- come out right;
+without it, interior facets fail to cancel between their two cells.
 """
 
 from __future__ import annotations
@@ -135,7 +137,42 @@ def _signed_volume(points: np.ndarray, cell: list[list[int]]) -> float:
 
 
 def _orient_outward(points: np.ndarray, cell: list[list[int]]) -> list[list[int]]:
-    """Reverse every face loop of a cell whose signed volume is negative."""
-    if _signed_volume(points, cell) < 0.0:
-        return [list(reversed(loop)) for loop in cell]
-    return cell
+    """Orient each face loop of a cell outward, individually.
+
+    A loop points outward when its area vector agrees with the direction from an
+    interior reference point (the mean of the face centroids) to the face.  This
+    is the star-shapedness rule already used elsewhere in the library, and it
+    fixes cells whose loops arrive in mixed directions -- reversing whole cells
+    cannot.
+    """
+    centre = np.mean([points[loop].mean(0) for loop in cell], axis=0)
+    oriented = []
+    for loop in cell:
+        a = _loop_area_vector(points, loop)
+        outward = np.dot(a, points[loop].mean(0) - centre) >= 0.0
+        oriented.append(list(loop) if outward else list(reversed(loop)))
+    return oriented
+
+
+def check_orientation(mesh: Mesh, atol: float = 1e-9) -> None:
+    """Raise if any cell's oriented faces fail to form a closed surface.
+
+    ``sum_f |f| n_f = 0`` over a cell is the discrete divergence theorem applied
+    to a constant field; it fails exactly when a face loop is mis-oriented.
+    """
+    g = mesh.geometry
+    normals, areas = g.facet_normals(), g.measure(2)
+    worst, worst_cell = 0.0, -1
+    for c in range(mesh.num_cells(3)):
+        total = sum(
+            s * areas[f] * normals[f] for f, s in mesh.complex.facets_of(3, c)
+        )
+        scale = sum(areas[f] for f, _ in mesh.complex.facets_of(3, c))
+        rel = float(np.linalg.norm(total) / scale)
+        if rel > worst:
+            worst, worst_cell = rel, c
+    if worst > atol:
+        raise ValueError(
+            f"cell {worst_cell} is not closed under its oriented faces "
+            f"(relative residual {worst:.3e}); the mesh may be non-star-shaped"
+        )
