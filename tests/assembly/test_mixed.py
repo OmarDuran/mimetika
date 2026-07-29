@@ -115,14 +115,30 @@ def test_global_poisson_constant_solution(mesh):
 
 
 def test_poisson_system_is_a_symmetric_saddle_point():
+    """[[M, -B^T], [-B, 0]] is symmetric indefinite, as MINRES/fieldsplit need."""
     problem = MixedPoisson(structured_box(2, 2, 2))
     A, rhs = problem.assemble(dirichlet=potential)
     n = problem.n_flux + problem.n_pressure
     assert A.shape == (n, n) and rhs.shape == (n,)
-    # [[M, -B^T], [B, 0]] is symmetric after flipping the sign of the second block
-    S = sp.diags(np.concatenate([np.ones(problem.n_flux), -np.ones(problem.n_pressure)]))
-    sym = S @ A
-    assert (abs(sym - sym.T) > 1e-12).nnz == 0
+    assert (abs(A - A.T) > 1e-12).nnz == 0
+    ev = np.linalg.eigvalsh(A.toarray())
+    assert ev.min() < 0 < ev.max()  # genuinely indefinite
+
+
+def test_elasticity_system_is_symmetric():
+    problem = MixedElasticity(structured_box(1, 1, 1))
+    S, _ = problem.assemble(dirichlet=displacement)
+    assert (abs(S - S.T) > 1e-9).nnz == 0
+
+
+@pytest.mark.parametrize("method", ["direct", "minres"])
+def test_poisson_solver_methods_agree(method):
+    """MINRES with the block preconditioner reproduces the direct solve."""
+    problem = MixedPoisson(structured_box(2, 2, 2), K=K_ANISO)
+    sol = problem.solve(dirichlet=potential, backend="scipy", method=method)
+    assert np.allclose(
+        sol["pressure"], problem.interpolate_pressure(potential), atol=1e-8
+    )
 
 
 # -- global patch test: mixed elasticity --------------------------------------

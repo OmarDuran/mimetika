@@ -6,7 +6,7 @@ solves them.  Two elliptic problems are provided, sharing one algebraic shape:
 **Mixed Poisson** -- unknowns: normal flux per facet, pressure per cell::
 
     [  M   -B^T ] [ F ]   [ -g_D ]
-    [  B    0   ] [ p ] = [  b   ]
+    [ -B    0   ] [ p ] = [  -b  ]
 
 with ``div F = f``, ``F = -K grad p`` and Dirichlet data ``p = p_D`` on the
 boundary.  ``B`` is the *purely topological* discrete divergence: the transpose
@@ -38,12 +38,12 @@ from dataclasses import dataclass
 
 import numpy as np
 import scipy.sparse as sp
-import scipy.sparse.linalg as spla
 
 from mimetika.assembly.local import skew_generators
 from mimetika.mesh.mesh import Mesh
 from mimetika.operators.diffusion import DiffusionInnerProduct
 from mimetika.operators.elasticity import ElasticityInnerProduct
+from mimetika.solver.saddle import solve_saddle
 
 
 # -- shared helpers -----------------------------------------------------------
@@ -78,10 +78,6 @@ def discrete_divergence(mesh: Mesh) -> sp.csr_matrix:
     return (inc.T @ sp.diags(mesh.geometry.measure(d - 1))).tocsr()
 
 
-def _solve_saddle(A: sp.csr_matrix, rhs: np.ndarray) -> np.ndarray:
-    return spla.spsolve(A.tocsc(), rhs)
-
-
 @dataclass
 class MixedSolution:
     """Solution of a global mixed problem, split into its blocks."""
@@ -106,6 +102,13 @@ class MixedPoisson:
     ) -> None:
         self.mesh = mesh
         self.inner = DiffusionInnerProduct(mesh, K=K, basis=basis)
+        self._M: sp.csr_matrix | None = None
+
+    def inner_product(self) -> sp.csr_matrix:
+        """The assembled flux inner product (cached -- it is the costly part)."""
+        if self._M is None:
+            self._M = self.inner.assemble()
+        return self._M
 
     @property
     def n_flux(self) -> int:
@@ -138,18 +141,24 @@ class MixedPoisson:
         return g
 
     def assemble(self, source=None, dirichlet=None):
-        """Return ``(A, rhs)`` of the global saddle-point system."""
-        M = self.inner.assemble()
+        """Return ``(A, rhs)`` of the global saddle-point system.
+
+        The second block row is negated so that ``A`` is genuinely **symmetric
+        indefinite** -- which is what MINRES and PETSc's ``fieldsplit`` expect.
+        The solution is unchanged.
+        """
+        M = self.inner_product()
         B = discrete_divergence(self.mesh)
-        A = sp.bmat([[M, -B.T], [B, None]], format="csr")
+        A = sp.bmat([[M, -B.T], [-B, None]], format="csr")
         rhs = np.concatenate(
-            [-self.dirichlet_vector(dirichlet), self.source_vector(source)]
+            [-self.dirichlet_vector(dirichlet), -self.source_vector(source)]
         )
         return A, rhs
 
-    def solve(self, source=None, dirichlet=None) -> MixedSolution:
+    def solve(self, source=None, dirichlet=None, **kwargs) -> MixedSolution:
+        """Assemble and solve; ``kwargs`` go to :func:`solve_saddle`."""
         A, rhs = self.assemble(source, dirichlet)
-        x = _solve_saddle(A, rhs)
+        x = solve_saddle(A, rhs, (self.n_flux, self.n_pressure), **kwargs)
         return MixedSolution(
             {"flux": x[: self.n_flux], "pressure": x[self.n_flux :]}
         )
@@ -206,6 +215,7 @@ class MixedElasticity:
         self.d = mesh.dim
         self.ndf = self.inner.dofs_per_facet(self.d)
         self.n_skew = len(skew_generators(self.d))
+        self._ops = None
 
     @property
     def n_stress(self) -> int:
@@ -219,7 +229,12 @@ class MixedElasticity:
         return self.ndf * fid + np.arange(self.ndf)
 
     def assemble_operators(self):
-        """Assemble ``(M, D, A)``: inner product, discrete div and asymmetry."""
+        """Assemble ``(M, D, A)``: inner product, discrete div and asymmetry.
+
+        Cached -- this is by far the costly part of a solve.
+        """
+        if self._ops is not None:
+            return self._ops
         from mimetika.assembly.local import elasticity_local_operators
 
         d, ndf = self.d, self.ndf
@@ -252,7 +267,8 @@ class MixedElasticity:
             (vals_a, (rows_a, cols_a)),
             shape=(self.n_skew * self.n_cells, self.n_stress),
         )
-        return M, D, A
+        self._ops = (M, D, A)
+        return self._ops
 
     def dirichlet_vector(self, displacement) -> np.ndarray:
         """Boundary displacement data, expanded in the facet ``P_1`` basis."""
@@ -304,9 +320,11 @@ class MixedElasticity:
         )
         return S, rhs
 
-    def solve(self, body_force=None, dirichlet=None) -> MixedSolution:
+    def solve(self, body_force=None, dirichlet=None, **kwargs) -> MixedSolution:
+        """Assemble and solve; ``kwargs`` go to :func:`solve_saddle`."""
         S, rhs = self.assemble(body_force, dirichlet)
-        x = _solve_saddle(S, rhs)
+        blocks = (self.n_stress, (self.d + self.n_skew) * self.n_cells)
+        x = solve_saddle(S, rhs, blocks, **kwargs)
         n1 = self.n_stress
         n2 = n1 + self.d * self.n_cells
         return MixedSolution(

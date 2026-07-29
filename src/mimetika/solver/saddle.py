@@ -1,0 +1,163 @@
+r"""Solvers for the global mixed (saddle-point) systems.
+
+The mixed systems are **symmetric indefinite**::
+
+    [ M   B^T ] [ x ]   [ f ]
+    [ B    0  ] [ y ] = [ g ]
+
+so the usual SPD machinery (CG, plain AMG) does not apply.  Two strategies are
+provided:
+
+* ``method="direct"`` -- a sparse LU factorisation.  Reliable, and the right
+  choice up to a few hundred thousand unknowns.
+* ``method="minres"`` -- MINRES with a block preconditioner.  With PETSc this
+  is a ``fieldsplit``/Schur preconditioner (the Schur complement approximated by
+  ``B diag(M)^{-1} B^T``, PETSc's ``selfp``); with scipy it is the equivalent
+  block-diagonal preconditioner built explicitly.  This is what scales to the
+  large stress systems, where a direct factorisation is out of reach.
+
+PETSc is used when ``petsc4py`` is importable; otherwise everything falls back
+to scipy transparently.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import scipy.sparse as sp
+import scipy.sparse.linalg as spla
+
+from mimetika.assembly.backend import petsc_available
+
+
+def solve_saddle(
+    A: sp.spmatrix,
+    rhs: np.ndarray,
+    block_sizes: tuple[int, ...],
+    backend: str = "auto",
+    method: str = "direct",
+    rtol: float = 1e-10,
+    max_it: int = 5000,
+    verbose: bool = False,
+) -> np.ndarray:
+    """Solve a symmetric indefinite saddle-point system.
+
+    Parameters
+    ----------
+    A, rhs
+        The assembled system.
+    block_sizes
+        Sizes of the field blocks, e.g. ``(n_flux, n_pressure)``.  The first
+        block is treated as the "velocity-like" field, the rest as multipliers.
+    backend
+        ``"petsc"``, ``"scipy"`` or ``"auto"``.
+    method
+        ``"direct"`` or ``"minres"``.
+    """
+    if backend == "auto":
+        backend = "petsc" if petsc_available() else "scipy"
+    if backend == "petsc":
+        return _solve_petsc(A, rhs, block_sizes, method, rtol, max_it, verbose)
+    return _solve_scipy(A, rhs, block_sizes, method, rtol, max_it, verbose)
+
+
+# -- scipy --------------------------------------------------------------------
+
+
+def _block_preconditioner(A: sp.csr_matrix, block_sizes) -> spla.LinearOperator:
+    """Block-diagonal ``diag(M)`` / Schur preconditioner for MINRES."""
+    n0 = block_sizes[0]
+    A = A.tocsr()
+    M = A[:n0, :n0]
+    B = A[n0:, :n0]
+
+    dM = M.diagonal()
+    dM = np.where(np.abs(dM) < 1e-300, 1.0, dM)
+    # approximate Schur complement  S ~ B diag(M)^{-1} B^T   (SPD)
+    S = (B @ sp.diags(1.0 / dM) @ B.T).tocsc()
+    S = S + sp.eye(S.shape[0], format="csc") * (1e-12 * abs(S.diagonal()).max())
+    S_solve = spla.factorized(S)
+
+    def apply(v):
+        out = np.empty_like(v)
+        out[:n0] = v[:n0] / dM
+        out[n0:] = S_solve(v[n0:])
+        return out
+
+    return spla.LinearOperator(A.shape, matvec=apply, dtype=float)
+
+
+def _solve_scipy(A, rhs, block_sizes, method, rtol, max_it, verbose):
+    if method == "direct":
+        return spla.spsolve(A.tocsc(), rhs)
+
+    P = _block_preconditioner(A, block_sizes)
+    it = {"n": 0}
+
+    def cb(_):
+        it["n"] += 1
+
+    x, info = spla.minres(
+        A.tocsr(), rhs, M=P, rtol=rtol, maxiter=max_it, callback=cb
+    )
+    if verbose:
+        print(f"    scipy MINRES: {it['n']} iterations, info={info}")
+    if info != 0:
+        raise RuntimeError(f"MINRES did not converge (info={info})")
+    return x
+
+
+# -- PETSc --------------------------------------------------------------------
+
+
+def _solve_petsc(A, rhs, block_sizes, method, rtol, max_it, verbose):
+    from petsc4py import PETSc
+
+    from mimetika.assembly.backend import to_petsc_mat, to_petsc_vec
+
+    mat = to_petsc_mat(A)
+    b = to_petsc_vec(rhs)
+    x = b.duplicate()
+
+    ksp = PETSc.KSP().create()
+    ksp.setOperators(mat)
+
+    if method == "direct":
+        ksp.setType("preonly")
+        pc = ksp.getPC()
+        pc.setType("lu")
+        # PETSc's built-in serial LU struggles on large indefinite systems;
+        # prefer MUMPS when the installation provides it.
+        for pkg in ("mumps", "superlu"):
+            if PETSc.Sys.hasExternalPackage(pkg):
+                pc.setFactorSolverType(pkg)
+                if verbose:
+                    print(f"    PETSc direct solver: {pkg}")
+                break
+    else:
+        n0 = block_sizes[0]
+        total = sum(block_sizes)
+        is0 = PETSc.IS().createGeneral(np.arange(n0, dtype=PETSc.IntType))
+        is1 = PETSc.IS().createGeneral(np.arange(n0, total, dtype=PETSc.IntType))
+
+        ksp.setType("minres")
+        pc = ksp.getPC()
+        pc.setType("fieldsplit")
+        pc.setFieldSplitIS(("0", is0), ("1", is1))
+        pc.setFieldSplitType(PETSc.PC.CompositeType.SCHUR)
+        pc.setFieldSplitSchurFactType(PETSc.PC.SchurFactType.DIAG)
+        # approximate the Schur complement by B diag(M)^{-1} B^T
+        pc.setFieldSplitSchurPreType(PETSc.PC.SchurPreType.SELFP)
+        ksp.setTolerances(rtol=rtol, max_it=max_it)
+
+    ksp.setFromOptions()  # let -ksp_* / -pc_* command-line options win
+    ksp.solve(b, x)
+
+    reason = ksp.getConvergedReason()
+    if verbose:
+        print(
+            f"    PETSc {ksp.getType()}/{ksp.getPC().getType()}: "
+            f"{ksp.getIterationNumber()} iterations, reason={reason}"
+        )
+    if reason < 0:
+        raise RuntimeError(f"PETSc KSP diverged (reason={reason})")
+    return x.getArray().copy()

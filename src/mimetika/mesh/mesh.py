@@ -61,3 +61,38 @@ class Mesh:
 
     def num_cells(self, k: int) -> int:
         return self.complex.num_cells(k)
+
+    # -- extraction ----------------------------------------------------------
+
+    def subset(self, cell_ids) -> "Mesh":
+        """A new mesh containing only the given top-dimensional cells.
+
+        Vertices are renumbered to those actually used, and each cell's face
+        loops are emitted with outward orientation, so the result is a valid
+        standalone mesh (its former interior facets become boundary facets).
+        """
+        if self.dim != 3:
+            raise NotImplementedError("subset is implemented for 3D meshes")
+        cell_ids = np.asarray(cell_ids, dtype=np.int64)
+
+        loops_per_cell = []
+        used: dict[int, int] = {}
+        for c in cell_ids:
+            cell = []
+            for fid, sign in self.complex.facets_of(3, int(c)):
+                loop = self.complex.polygon_loops[fid]
+                if sign < 0:  # orient outward for this cell
+                    loop = tuple(reversed(loop))
+                cell.append([used.setdefault(v, len(used)) for v in loop])
+            loops_per_cell.append(cell)
+
+        points = np.empty((len(used), 3))
+        for old, new in used.items():
+            points[new] = self.geometry.points[old]
+        return Mesh.from_cells(points, loops_per_cell)
+
+    def cells_in_box(self, lower, upper) -> np.ndarray:
+        """Indices of the cells whose centroid lies in the given box."""
+        c = self.geometry.centroids(self.dim)
+        inside = np.all((c >= np.asarray(lower)) & (c <= np.asarray(upper)), axis=1)
+        return np.where(inside)[0]

@@ -20,11 +20,32 @@ def petsc_available() -> bool:
         return False
 
 
-def to_petsc_mat(A: sp.spmatrix):
+def with_explicit_diagonal(A: sp.spmatrix) -> sp.csr_matrix:
+    """Ensure every diagonal entry is *structurally* present (possibly zero).
+
+    Saddle-point systems have an identically-zero trailing block, so those
+    diagonal entries are absent from the sparsity pattern -- and PETSc's
+    factorisations reject a matrix "missing diagonal entries".  Adding explicit
+    zeros changes nothing numerically.
+    """
+    A = A.tocoo()
+    n = min(A.shape)
+    idx = np.arange(n)
+    out = sp.csr_matrix(
+        (
+            np.concatenate([A.data, np.zeros(n)]),
+            (np.concatenate([A.row, idx]), np.concatenate([A.col, idx])),
+        ),
+        shape=A.shape,
+    )
+    return out
+
+
+def to_petsc_mat(A: sp.spmatrix, ensure_diagonal: bool = True):
     """Convert a scipy sparse matrix to a PETSc AIJ ``Mat``."""
     from petsc4py import PETSc
 
-    A = A.tocsr()
+    A = with_explicit_diagonal(A) if ensure_diagonal else A.tocsr()
     mat = PETSc.Mat().createAIJ(
         size=A.shape, csr=(A.indptr, A.indices, A.data)
     )
