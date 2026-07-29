@@ -7,6 +7,9 @@ from mimetika.mesh.reference import reference_cells
 
 ALL = reference_cells()
 POSITIVE_DIM = [c for c in ALL if c.dim >= 1]
+# dd = 0 needs two consecutive boundary operators, so it only has content
+# for complexes of dimension >= 2 (a 1D complex only has boundary[1]).
+GRADED = [c for c in ALL if c.dim >= 2]
 
 
 def ids(cells):
@@ -46,14 +49,20 @@ def test_facets_belong_to_the_single_cell_once(rc):
     assert len({f for f, _ in facets}) == len(facets)  # no repeats
 
 
-@pytest.mark.parametrize("rc", POSITIVE_DIM, ids=ids(POSITIVE_DIM))
+@pytest.mark.parametrize("rc", GRADED, ids=ids(GRADED))
 def test_boundary_of_boundary_columns_vanish(rc):
     """The signed facets of a cell form a closed boundary."""
     m = rc.mesh
-    if rc.dim < 2:
-        pytest.skip("no second boundary operator in 1D")
     prod = m.complex.boundary_matrix(rc.dim - 1) @ m.complex.boundary_matrix(rc.dim)
     assert prod.nnz == 0 or np.abs(prod.data).max() < 1e-13
+
+
+@pytest.mark.parametrize("rc", [c for c in ALL if c.dim == 1], ids=ids([c for c in ALL if c.dim == 1]))
+def test_1d_boundary_is_the_signed_endpoint_pair(rc):
+    """In 1D there is no dd=0 to check; instead ``d_1`` must be (-1, +1)."""
+    b1 = rc.mesh.complex.boundary_matrix(1)
+    assert b1.shape == (2, 1)
+    assert sorted(b1.toarray().ravel()) == [-1.0, 1.0]
 
 
 def test_simplex_detection():
