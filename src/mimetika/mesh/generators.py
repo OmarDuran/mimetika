@@ -104,3 +104,57 @@ def single_hexahedron(points: np.ndarray) -> Mesh:
         raise ValueError("a hexahedron needs exactly 8 vertices in 3D")
     cell = [[int(n) for n in face] for face in _HEX_FACES]
     return Mesh.from_cells(points, [cell])
+
+
+# Kuhn/Freudenthal split of a hexahedron into 6 tetrahedra (corner indices
+# follow the VTK ordering used above).  The split is conforming across cells.
+_HEX_TO_TETS = (
+    (0, 1, 2, 6), (0, 2, 3, 6), (0, 3, 7, 6),
+    (0, 7, 4, 6), (0, 4, 5, 6), (0, 5, 1, 6),
+)
+
+
+def structured_tets(
+    nx: int,
+    ny: int,
+    nz: int,
+    lengths: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> Mesh:
+    """A conforming tetrahedral mesh of a box (each hex split into 6 tets).
+
+    Simplicial meshes are the case where the mimetic stabilization vanishes, so
+    this is the mesh family on which the schemes coincide with RT0 / AFW.
+    """
+    hexes = structured_box(nx, ny, nz, lengths, origin)
+    pts = hexes.geometry.points
+
+    cells = []
+    for cid in range(hexes.num_cells(3)):
+        corners = _hex_corner_order(hexes, cid)
+        for tet in _HEX_TO_TETS:
+            v = [corners[i] for i in tet]
+            cells.append(_oriented_tet_faces(pts, v))
+    return Mesh.from_cells(pts, cells)
+
+
+def _hex_corner_order(mesh: Mesh, cid: int) -> list[int]:
+    """Recover the VTK corner ordering of a structured-box hexahedron."""
+    verts = np.array(sorted(mesh.complex.cell_vertices(cid)))
+    p = mesh.geometry.points[verts]
+    # bit-encode each corner by which side of the cell it sits on
+    mid = p.mean(0)
+    key = ((p > mid) * np.array([1, 2, 4])).sum(1)
+    order = [0, 1, 3, 2, 4, 5, 7, 6]  # bit code -> VTK corner slot
+    corners = [None] * 8
+    for v, k in zip(verts, key):
+        corners[order[k]] = int(v)
+    return corners
+
+
+def _oriented_tet_faces(points: np.ndarray, v: list[int]) -> list[list[int]]:
+    """Faces of a tetrahedron, each oriented with an outward normal."""
+    p = points[v]
+    if np.linalg.det(p[1:] - p[0]) < 0:  # make the corner ordering positive
+        v = [v[0], v[2], v[1], v[3]]
+    return [[v[a] for a in f] for f in _TET_FACES]

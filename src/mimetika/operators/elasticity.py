@@ -45,7 +45,7 @@ from __future__ import annotations
 import numpy as np
 import scipy.sparse as sp
 
-from mimetika.geometry.local_cell import LocalCell
+from mimetika.geometry.local_cell import LocalCell, mesh_frame
 from mimetika.mesh.mesh import Mesh
 from mimetika.operators.inner_product import (
     assemble_local_inner_product,
@@ -77,6 +77,7 @@ class ElasticityInnerProduct:
         self.mesh = mesh
         self.mu = float(mu)
         self.lam = float(lam)
+        self.frame = mesh_frame(mesh.geometry)
 
     # -- sizes ----------------------------------------------------------------
 
@@ -112,7 +113,7 @@ class ElasticityInnerProduct:
 
     def local_matrices(self, cell_id: int):
         """Return ``(N, R, Kbar, volume, lc)`` for one cell, in the local frame."""
-        lc = LocalCell.build(self.mesh.geometry, cell_id)
+        lc = LocalCell.build(self.mesh.geometry, cell_id, self.frame)
         d, vol = lc.dim, lc.volume
         nb = d  # scalar basis functions per facet
         ndf = self.dofs_per_facet(d)

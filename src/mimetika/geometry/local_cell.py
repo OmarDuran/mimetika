@@ -53,14 +53,22 @@ class LocalCell:
     # -- construction --------------------------------------------------------
 
     @classmethod
-    def build(cls, geometry: Geometry, cell_id: int) -> "LocalCell":
+    def build(
+        cls, geometry: Geometry, cell_id: int, frame: np.ndarray | None = None
+    ) -> "LocalCell":
+        """Build the local view of a cell.
+
+        ``frame`` may be supplied to force a common basis across cells, which
+        global assembly needs so that neighbouring cells agree on the meaning of
+        the vector components of a shared facet's DOFs.
+        """
         cx = geometry.complex
         d = cx.dim
         if d == 0:
             raise ValueError("0-dimensional cells carry no differential structure")
 
         origin = geometry.centroids(d)[cell_id]
-        frame = _affine_frame(geometry, cell_id, d)
+        frame = _affine_frame(geometry, cell_id, d) if frame is None else frame
 
         def to_local(x: np.ndarray) -> np.ndarray:
             return (np.atleast_2d(x) - origin) @ frame
@@ -149,6 +157,20 @@ class LocalCell:
         rhs = np.einsum("q,qa,q...->a...", qw, B, values)
         flat = np.linalg.solve(gram, rhs.reshape(len(gram), -1))
         return flat.reshape((len(gram),) + values.shape[1:])
+
+
+def mesh_frame(geometry: Geometry) -> np.ndarray:
+    """A single orthonormal ``(3, d)`` frame for the whole mesh.
+
+    Global assembly must express every cell's DOF components in one common
+    basis; for a full-dimensional (``d == 3``) mesh this is just the identity.
+    """
+    d = geometry.complex.dim
+    if d == 3:
+        return np.eye(3)
+    p = geometry.points
+    _, _, vt = np.linalg.svd(p - p.mean(0))
+    return vt[:d].T
 
 
 def _affine_frame(geometry: Geometry, cell_id: int, d: int) -> np.ndarray:

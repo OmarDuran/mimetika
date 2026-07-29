@@ -30,7 +30,7 @@ from __future__ import annotations
 import numpy as np
 import scipy.sparse as sp
 
-from mimetika.geometry.local_cell import LocalCell
+from mimetika.geometry.local_cell import LocalCell, mesh_frame
 from mimetika.mesh.mesh import Mesh
 from mimetika.operators.inner_product import (
     assemble_local_inner_product,
@@ -49,6 +49,9 @@ class DiffusionInnerProduct:
         if basis not in ("const", "rt0"):
             raise ValueError("basis must be 'const' or 'rt0'")
         self.basis = basis
+        # one common frame for the whole mesh, so neighbouring cells agree on
+        # the meaning of a shared facet's DOFs
+        self.frame = mesh_frame(mesh.geometry)
 
     # -- reconstruction modes -------------------------------------------------
 
@@ -79,7 +82,7 @@ class DiffusionInnerProduct:
 
     def local_matrices(self, cell_id: int):
         """Return ``(N, R, Kbar, volume, lc)`` for one cell, in the local frame."""
-        lc = LocalCell.build(self.mesh.geometry, cell_id)
+        lc = LocalCell.build(self.mesh.geometry, cell_id, self.frame)
         d, vol = lc.dim, lc.volume
         Kloc = lc.project_tensor(self.K)
         Kinv = np.linalg.inv(Kloc)
