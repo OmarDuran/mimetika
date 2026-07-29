@@ -13,11 +13,18 @@ if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 
-def observed_rates(h: list[float], err: list[float]) -> list[float | None]:
-    """Rates ``log(e_i/e_{i-1}) / log(h_i/h_{i-1})``; ``None`` for the first entry."""
+def observed_rates(
+    h: list[float], err: list[float], floor: float = 1e-12
+) -> list[float | None]:
+    """Rates ``log(e_i/e_{i-1}) / log(h_i/h_{i-1})``; ``None`` for the first entry.
+
+    A rate measured against an error at round-off level carries no information
+    (the exact solution happened to be reproduced), so those are reported as
+    ``None`` rather than as a spurious large number.
+    """
     rates: list[float | None] = [None]
     for i in range(1, len(h)):
-        if err[i] <= 0 or err[i - 1] <= 0:
+        if min(err[i], err[i - 1]) <= floor:
             rates.append(None)
         else:
             rates.append(np.log(err[i] / err[i - 1]) / np.log(h[i] / h[i - 1]))

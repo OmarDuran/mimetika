@@ -327,6 +327,27 @@ class MixedElasticity:
             out[c * self.d : (c + 1) * self.d] = (qw @ u) / qw.sum()
         return out
 
+    def interpolate_rotation(self, grad_displacement) -> np.ndarray:
+        """Element means of the rotation multiplier ``s = skw(grad u)``.
+
+        ``grad_displacement`` maps ambient points ``(N,3)`` to ``(N,3,3)`` with
+        ``[q,i,j] = du_i/dx_j``.  The multiplier is the skew part of the
+        displacement gradient, expressed in the basis of :func:`skew_generators`.
+        """
+        from mimetika.geometry.local_cell import LocalCell
+
+        gens = skew_generators(self.d)
+        out = np.zeros(self.n_skew * self.n_cells)
+        for c in range(self.n_cells):
+            lc = LocalCell.build(self.mesh.geometry, c, self.inner.frame)
+            qp, qw = self.mesh.geometry.quadrature(self.d, c)
+            G = np.asarray(grad_displacement(qp), dtype=float)
+            G = np.einsum("ai,qab,bj->qij", lc.frame, G, lc.frame)
+            skew = 0.5 * (G - np.swapaxes(G, 1, 2))
+            vals = 0.5 * np.einsum("pij,qij->qp", gens, skew)
+            out[c * self.n_skew : (c + 1) * self.n_skew] = (qw @ vals) / qw.sum()
+        return out
+
     def interpolate_stress(self, stress) -> np.ndarray:
         """Traction moments of the exact stress on every facet."""
         from mimetika.geometry.local_cell import LocalCell
