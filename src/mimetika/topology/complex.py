@@ -1,7 +1,7 @@
 """Combinatorial cell complex and signed incidence (boundary) operators.
 
 This layer is *purely combinatorial*: it knows nothing about coordinates,
-lengths, areas or volumes.  It stores, for a graded complex of dimension ``d``,
+lengths, areas or volumes.  For a graded complex of dimension ``d`` it stores
 the signed boundary operators
 
     ``d_k : C_k -> C_{k-1}``   (``boundary[k]``, shape ``(n_{k-1}, n_k)``)
@@ -10,15 +10,20 @@ for ``k = 1 .. d``.  The discrete exterior derivative on k-forms is the
 transpose (coboundary) ``D_k = boundary[k+1].T`` and is provided by the
 :mod:`mimetika.operators` layer.
 
-The whole complex is built from a *polytopal* description: a list of cells,
-each given as a list of faces, each face an ordered loop of vertex ids with a
-globally consistent orientation (e.g. outward-normal / counter-clockwise seen
-from outside the cell).  Edges and facets are deduced automatically with
+Complexes of every dimension are supported:
+
+    ``dim 0``  a set of points          (no differential operators)
+    ``dim 1``  segments                 facets = vertices
+    ``dim 2``  polygons                 facets = edges
+    ``dim 3``  polyhedra                facets = polygons
+
+Top-dimensional cells are always described by their boundary with a globally
+consistent orientation, and the lower-dimensional cells are deduced with
 consistent signs, so the fundamental mimetic identity
 
     ``boundary[k] @ boundary[k+1] == 0``
 
-holds *exactly*, by construction, for any (well-formed) polyhedral mesh.
+holds *exactly*, by construction, for any well-formed mesh.
 """
 
 from __future__ import annotations
@@ -40,7 +45,7 @@ class CellComplex:
     Attributes
     ----------
     dim
-        Topological dimension ``d`` (3 for a volumetric mesh).
+        Topological dimension ``d``.
     n_cells
         ``n_cells[k]`` = number of k-cells, for ``k = 0 .. dim``.
     boundary
@@ -49,21 +54,79 @@ class CellComplex:
         ``boundary[0]`` is ``None``.
     edge_vertices
         ``(n_edges, 2)`` array; each row ``(u, w)`` with ``u < w`` is an edge
-        oriented from ``u`` to ``w``.
-    facet_vertices
-        List of canonical vertex loops, one per facet ((dim-1)-cell).
-    cell_facets
-        List, per cell, of ``(facet_id, sign)`` pairs.
+        oriented from ``u`` to ``w``.  Empty when ``dim == 0``.
+    polygon_loops
+        Canonical ordered vertex loops of the 2-cells (the facets of a 3D
+        complex, or the top cells of a 2D complex).  Empty when ``dim < 2``.
     """
 
     dim: int
     n_cells: list[int]
     boundary: list[sp.csr_matrix | None]
-    edge_vertices: np.ndarray
-    facet_vertices: list[tuple[int, ...]] = field(default_factory=list)
-    cell_facets: list[list[tuple[int, int]]] = field(default_factory=list)
+    edge_vertices: np.ndarray = field(
+        default_factory=lambda: np.zeros((0, 2), dtype=np.int64)
+    )
+    polygon_loops: list[tuple[int, ...]] = field(default_factory=list)
 
     # -- construction --------------------------------------------------------
+
+    @classmethod
+    def from_vertices(cls, n_vertices: int) -> "CellComplex":
+        """A 0-dimensional complex: isolated points, no differential operators."""
+        return cls(dim=0, n_cells=[n_vertices], boundary=[None])
+
+    @classmethod
+    def from_segments(
+        cls, n_vertices: int, segments: list[tuple[int, int]]
+    ) -> "CellComplex":
+        """A 1D complex of segments; the facets of a segment are its endpoints."""
+        rows, cols, vals = [], [], []
+        ev = []
+        for sid, (a, b) in enumerate(segments):
+            ev.append((a, b))
+            rows += [b, a]
+            cols += [sid, sid]
+            vals += [1.0, -1.0]
+        b1 = sp.csr_matrix(
+            (vals, (rows, cols)), shape=(n_vertices, len(segments))
+        )
+        return cls(
+            dim=1,
+            n_cells=[n_vertices, len(segments)],
+            boundary=[None, b1],
+            edge_vertices=np.array(ev, dtype=np.int64).reshape(-1, 2),
+        )
+
+    @classmethod
+    def from_polygons(
+        cls, n_vertices: int, polygons: list[list[int]]
+    ) -> "CellComplex":
+        """A 2D complex of polygons given as ordered vertex loops."""
+        edges = _EdgeTable()
+        for loop in polygons:
+            for a, b in _loop_pairs(loop):
+                edges.get(a, b)
+
+        b1 = edges.vertex_incidence(n_vertices)
+
+        rows, cols, vals = [], [], []
+        for pid, loop in enumerate(polygons):
+            for a, b in _loop_pairs(loop):
+                eid, sgn = edges.get(a, b)
+                rows.append(eid)
+                cols.append(pid)
+                vals.append(float(sgn))
+        b2 = sp.csr_matrix(
+            (vals, (rows, cols)), shape=(edges.count, len(polygons))
+        )
+
+        return cls(
+            dim=2,
+            n_cells=[n_vertices, edges.count, len(polygons)],
+            boundary=[None, b1, b2],
+            edge_vertices=edges.as_array(),
+            polygon_loops=[tuple(loop) for loop in polygons],
+        )
 
     @classmethod
     def from_polyhedra(
@@ -96,63 +159,44 @@ class CellComplex:
                     sign = _loop_orientation_sign(facet_loops[facet_id[key]], loop)
                 entry.append((facet_id[key], sign))
             cell_facets.append(entry)
-        n_facets = len(facet_loops)
 
-        # 2) Edges: from consecutive vertices of every canonical facet loop.
-        edge_id: dict[tuple[int, int], int] = {}
-        edge_list: list[tuple[int, int]] = []
-
-        def get_edge(a: int, b: int) -> tuple[int, int]:
-            """Return (edge_id, sign) for directed edge a->b (canonical low->high)."""
-            key = (a, b) if a < b else (b, a)
-            eid = edge_id.get(key)
-            if eid is None:
-                eid = len(edge_list)
-                edge_id[key] = eid
-                edge_list.append(key)
-            return eid, (1 if a < b else -1)
-
+        # 2) Edges from the canonical facet loops.
+        edges = _EdgeTable()
         for loop in facet_loops:
-            m = len(loop)
-            for i in range(m):
-                get_edge(loop[i], loop[(i + 1) % m])
-        n_edges = len(edge_list)
+            for a, b in _loop_pairs(loop):
+                edges.get(a, b)
 
-        # 3) boundary[1] : edges -> vertices   (w - u for edge u->w)
-        rows, cols, vals = [], [], []
-        for eid, (u, w) in enumerate(edge_list):
-            rows += [w, u]
-            cols += [eid, eid]
-            vals += [1.0, -1.0]
-        b1 = sp.csr_matrix((vals, (rows, cols)), shape=(n_vertices, n_edges))
+        b1 = edges.vertex_incidence(n_vertices)
 
-        # 4) boundary[2] : facets -> edges  (oriented edges around each loop)
+        # 3) boundary[2] : facets -> edges
         rows, cols, vals = [], [], []
         for fid, loop in enumerate(facet_loops):
-            m = len(loop)
-            for i in range(m):
-                eid, sgn = get_edge(loop[i], loop[(i + 1) % m])
+            for a, b in _loop_pairs(loop):
+                eid, sgn = edges.get(a, b)
                 rows.append(eid)
                 cols.append(fid)
                 vals.append(float(sgn))
-        b2 = sp.csr_matrix((vals, (rows, cols)), shape=(n_edges, n_facets))
+        b2 = sp.csr_matrix(
+            (vals, (rows, cols)), shape=(edges.count, len(facet_loops))
+        )
 
-        # 5) boundary[3] : cells -> facets
+        # 4) boundary[3] : cells -> facets
         rows, cols, vals = [], [], []
         for cid, entry in enumerate(cell_facets):
             for fid, sgn in entry:
                 rows.append(fid)
                 cols.append(cid)
                 vals.append(float(sgn))
-        b3 = sp.csr_matrix((vals, (rows, cols)), shape=(n_facets, len(cells)))
+        b3 = sp.csr_matrix(
+            (vals, (rows, cols)), shape=(len(facet_loops), len(cells))
+        )
 
         return cls(
             dim=3,
-            n_cells=[n_vertices, n_edges, n_facets, len(cells)],
+            n_cells=[n_vertices, edges.count, len(facet_loops), len(cells)],
             boundary=[None, b1, b2, b3],
-            edge_vertices=np.array(edge_list, dtype=np.int64).reshape(-1, 2),
-            facet_vertices=facet_loops,
-            cell_facets=cell_facets,
+            edge_vertices=edges.as_array(),
+            polygon_loops=facet_loops,
         )
 
     # -- accessors -----------------------------------------------------------
@@ -166,19 +210,43 @@ class CellComplex:
             raise ValueError(f"boundary defined for 1..{self.dim}, got k={k}")
         return self.boundary[k]
 
-    def cell_vertices(self, cell_id: int) -> set[int]:
-        """Set of vertex ids of a 3-cell (union over its facets)."""
+    def facets_of(self, k: int, cell_id: int) -> list[tuple[int, int]]:
+        """``(facet_id, sign)`` pairs of the ``(k-1)``-facets of a k-cell."""
+        col = self.boundary_matrix(k).tocsc()[:, cell_id].tocoo()
+        return [(int(r), int(np.sign(v))) for r, v in zip(col.row, col.data)]
+
+    @property
+    def cell_facets(self) -> list[list[tuple[int, int]]]:
+        """Facets of every top-dimensional cell."""
+        return [self.facets_of(self.dim, c) for c in range(self.n_cells[self.dim])]
+
+    @property
+    def facet_vertices(self) -> list[tuple[int, ...]]:
+        """Vertex loops of the facets of the top-dimensional cells (3D only)."""
+        return self.polygon_loops
+
+    def cell_vertices(self, cell_id: int, k: int | None = None) -> set[int]:
+        """Set of vertex ids of a k-cell (default: top dimension)."""
+        k = self.dim if k is None else k
+        if k == 0:
+            return {cell_id}
+        if k == 1:
+            return set(int(v) for v in self.edge_vertices[cell_id])
+        if k == 2:
+            return set(self.polygon_loops[cell_id])
         verts: set[int] = set()
-        for fid, _ in self.cell_facets[cell_id]:
-            verts.update(self.facet_vertices[fid])
+        for fid, _ in self.facets_of(k, cell_id):
+            verts |= self.cell_vertices(fid, k - 1)
         return verts
 
-    def is_simplex(self, cell_id: int) -> bool:
-        """True if the 3-cell is a tetrahedron (4 triangular facets, 4 vertices)."""
-        entry = self.cell_facets[cell_id]
-        if len(entry) != 4 or len(self.cell_vertices(cell_id)) != 4:
+    def is_simplex(self, cell_id: int, k: int | None = None) -> bool:
+        """True if the k-cell is a simplex (``k+1`` vertices and ``k+1`` facets)."""
+        k = self.dim if k is None else k
+        if k == 0:
+            return True
+        if len(self.cell_vertices(cell_id, k)) != k + 1:
             return False
-        return all(len(self.facet_vertices[fid]) == 3 for fid, _ in entry)
+        return len(self.facets_of(k, cell_id)) == k + 1
 
     def verify_complex(self, atol: float = 1e-12) -> bool:
         """Check ``boundary[k] @ boundary[k+1] == 0`` for all k (dd = 0)."""
@@ -187,6 +255,46 @@ class CellComplex:
             if prod.nnz and np.abs(prod.data).max() > atol:
                 return False
         return True
+
+
+class _EdgeTable:
+    """Deduplicating table of undirected edges, canonically oriented low->high."""
+
+    def __init__(self) -> None:
+        self._ids: dict[tuple[int, int], int] = {}
+        self._list: list[tuple[int, int]] = []
+
+    def get(self, a: int, b: int) -> tuple[int, int]:
+        """Return ``(edge_id, sign)`` for the directed edge ``a -> b``."""
+        key = (a, b) if a < b else (b, a)
+        eid = self._ids.get(key)
+        if eid is None:
+            eid = len(self._list)
+            self._ids[key] = eid
+            self._list.append(key)
+        return eid, (1 if a < b else -1)
+
+    @property
+    def count(self) -> int:
+        return len(self._list)
+
+    def as_array(self) -> np.ndarray:
+        return np.array(self._list, dtype=np.int64).reshape(-1, 2)
+
+    def vertex_incidence(self, n_vertices: int) -> sp.csr_matrix:
+        """``boundary[1]``: edges -> vertices (``+1`` head, ``-1`` tail)."""
+        rows, cols, vals = [], [], []
+        for eid, (u, w) in enumerate(self._list):
+            rows += [w, u]
+            cols += [eid, eid]
+            vals += [1.0, -1.0]
+        return sp.csr_matrix((vals, (rows, cols)), shape=(n_vertices, self.count))
+
+
+def _loop_pairs(loop):
+    """Consecutive (a, b) vertex pairs around a closed loop."""
+    m = len(loop)
+    return [(loop[i], loop[(i + 1) % m]) for i in range(m)]
 
 
 def _loop_orientation_sign(canon: tuple[int, ...], cand: list[int]) -> int:

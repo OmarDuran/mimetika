@@ -17,9 +17,9 @@ Each layer has a single responsibility and depends only on the layers above it.
 
 | Layer | Package | Responsibility |
 |-------|---------|----------------|
-| **Topology** | `mimetika.topology` | Combinatorial cell complex (vertex/edge/facet/cell) and signed incidence `∂ₖ`. Metric-free. Gives exact `∂ₖ∂ₖ₊₁ = 0`. |
-| **Geometry** | `mimetika.geometry` | Coordinates and metric: k-cell measures (length/area/volume), centroids, facet normals. |
-| **Mesh** | `mimetika.mesh` | Container tying topology + geometry; generators (structured hex) and readers. Cells are described as face-loops, so arbitrary polyhedra flow through unchanged. |
+| **Topology** | `mimetika.topology` | Combinatorial cell complex (vertex/edge/facet/cell) and signed incidence `∂ₖ`. Metric-free. Gives exact `∂ₖ∂ₖ₊₁ = 0`. Complexes of dimension 0–3. |
+| **Geometry** | `mimetika.geometry` | Coordinates and metric: k-cell measures, **true** centroids, facet normals, quadrature, and the per-cell affine frame (`LocalCell`). |
+| **Mesh** | `mimetika.mesh` | Container tying topology + geometry; generators, readers, and a [reference cell catalogue](src/mimetika/mesh/reference.py) with analytic measures. Cells are described by their boundary, so arbitrary polytopes flow through unchanged. |
 | **DOF** | `mimetika.dof` | Numbering of differential-form degrees of freedom; single-space and mixed/blocked systems. |
 | **Operators** | `mimetika.operators` | Exterior derivative `grad/curl/div` (from incidence) and the Hodge/mass interface (from geometry). |
 | **Assembly** | `mimetika.assembly` | Global operators (e.g. Hodge Laplacian `Dᵀ M D`), boundary conditions, and scipy⇄PETSc backend conversion. |
@@ -62,34 +62,63 @@ extension (Beirão da Veiga, ESAIM M2AN 2010). Per element:
 
 ```
 M_E = M1 + M2
-M1 = N (NᵀN)⁻¹ (|E| K̄) (NᵀN)⁻¹ Nᵀ     # consistency: exact on the reconstruction space
+M1 = (1/|E|) R K̄⁻¹ Rᵀ                              # consistency
 M2 = s · C Cᵀ,  C = orthonormal basis of ker(Nᵀ)   # stability
 ```
 
-* `N` (D×m) — DOFs of each reconstruction mode; `K̄` — Gram matrix of the modes
-  in the continuous inner product (both by quadrature).
-* **Consistency**: for any reconstructed field `g = N c`, `gᵀM1g = |E| cᵀK̄c`
-  (verified to machine precision in the tests).
+* `N` (D×m) — DOFs of each reconstruction mode; `R` (D×m) — the moment matrix;
+  `K̄` — Gram matrix of the modes. They satisfy `NᵀR = |E|K̄`.
+* **Strong consistency**: `M_E N = R` exactly. This is what makes a *local mixed
+  solve* reproduce exact polynomial fields — strictly stronger than the energy
+  identity `NᵀMN = |E|K̄`, which alone does **not** give exact local solves on
+  general polytopes.
 * **Stabilization vanishes on simplices**: `M2 = 0 ⟺ dim ker(Nᵀ) = 0 ⟺ D = m`.
 
-| Problem | DOFs (`D`) | Reconstruction space (`m`) | Tetrahedron | Hexahedron |
-|---|---|---|---|---|
-| **Laplace** `∫K⁻¹F·G` ([`DiffusionInnerProduct`](src/mimetika/operators/diffusion.py)) | 1/facet | constants (`m=3`) | stab dim 1 | stab dim 3 |
-| **Laplace**, RT₀ enriched | 1/facet | `{a+bx}` (`m=4`) | **stab dim 0** | stab dim 2 |
-| **Elasticity / AFW** `∫C⁻¹σ:τ` ([`ElasticityInnerProduct`](src/mimetika/operators/elasticity.py)) | 9/facet | `[P₁(E)]³ˣ³` (`m=36`) | **stab dim 0** | stab dim 18 |
+Columns of `R` are *canonical* when the mode admits a potential (`K⁻¹w = ∇ψ`),
+giving `R_e = |e|(ψ̄_e − ψ̄_E)` by integration by parts; modes without a potential
+are completed by the minimum-norm solution of `NᵀR = |E|K̄`. (Completing *every*
+column that way reproduces the projection form `M1 = |E|N(NᵀN)⁻¹K̄(NᵀN)⁻¹Nᵀ`,
+which is exactly why that form fails strong consistency.)
 
-The elasticity space is designed (Beirão's Remark 4.1 direction) so that on a
-tetrahedron `D = 9·4 = 36 = m`: the DOFs are unisolvent for linear tensors, the
-stabilization vanishes, and the scheme reduces to the AFW (BDM₁-based) mixed
-element. On genuine polytopes the stabilization is active.
+Everything is **dimension-generic**: a `d`-cell's DOFs live on its `(d−1)`-facets
+and all work happens in the cell's own affine frame ([`LocalCell`](src/mimetika/geometry/local_cell.py)).
+
+| Problem | DOFs (`D`) | Reconstruction (`m`) | Simplex | Cube |
+|---|---|---|---|---|
+| **Laplace** `∫K⁻¹F·G` ([`DiffusionInnerProduct`](src/mimetika/operators/diffusion.py)) | 1/facet | constants (`m=d`) | stab 1 | stab 3 |
+| **Laplace**, RT₀ | 1/facet | `{a+bξ}` (`m=d+1`) | **stab 0** | stab 2 |
+| **Elasticity / AFW** `∫C⁻¹σ:τ` ([`ElasticityInnerProduct`](src/mimetika/operators/elasticity.py)) | `d²`/facet | `[P₁(E)]^{d×d}` (`m=d²(d+1)`) | **stab 0** | stab 18 |
+
+On a simplex (`d+1` facets) the elasticity DOF count is `D = d²(d+1) = m`: the
+DOFs are unisolvent for linear tensors, the stabilization vanishes, and the
+scheme reduces to the AFW (BDM₁-based) mixed element. This holds in **every**
+dimension — segment `2=2`, triangle `12=12`, tetrahedron `36=36`.
 
 ```python
-from mimetika.mesh import single_tetrahedron, structured_box
+from mimetika.mesh.reference import reference_cells
 from mimetika.operators import ElasticityInnerProduct
 
-ElasticityInnerProduct(single_tetrahedron()).stabilization_dim(0)   # -> 0
-ElasticityInnerProduct(structured_box(1,1,1)).stabilization_dim(0)  # -> 18
+cells = {c.name: c for c in reference_cells()}
+ElasticityInnerProduct(cells["tet-reference"].mesh).stabilization_dim(0)  # -> 0
+ElasticityInnerProduct(cells["cube-unit"].mesh).stabilization_dim(0)      # -> 18
 ```
+
+## Patch tests (local saddle-point exactness)
+
+The sharpest check of an inner product: form the **local mixed problem** on one
+cell, impose an exact linear field as data, **solve**, and require the discrete
+solution to be exact. See [`assembly/local.py`](src/mimetika/assembly/local.py).
+
+* **Scalar** — linear potential `p = a + b·x` ⟹ constant flux `F = −K∇p`.
+  Recovers the flux DOFs and the element pressure to ~1e-15.
+* **Vector** — linear displacement `u = a + Bx` ⟹ constant stress `σ = Cε(u)`.
+  Recovers the stress DOFs, the mean displacement `u_E` and the weak-symmetry
+  multiplier `s = skw(∇u)` to ~1e-14. Rigid-body motions produce zero stress.
+
+Both run over the whole [reference cell collection](src/mimetika/mesh/reference.py)
+— segments, polygons (incl. non-convex L-shapes and tilted planes), and
+polyhedra (tet, cube, sheared hex, prism, pyramid, dented non-convex cube) —
+and stay exact in the incompressible limit `λ → 10⁷`.
 
 ## Quick start
 
@@ -120,7 +149,7 @@ pip install -e ".[dev]"        # add ".[petsc]" for petsc4py + mpi4py
 pytest
 ```
 
-The suite (34 tests) runs without PETSc — the solver layer falls back to scipy.
+The suite (678 tests) runs without PETSc — the solver layer falls back to scipy.
 
 ## Deliberate extension points
 

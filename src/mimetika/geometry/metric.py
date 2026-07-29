@@ -2,10 +2,15 @@
 
 Given vertex coordinates and a :class:`~mimetika.topology.complex.CellComplex`,
 this computes the *metric* data the mimetic operators need: k-cell measures
-(edge lengths, facet areas, cell volumes), centroids and facet normals.
+(lengths, areas, volumes), **true** centroids, facet normals and quadrature.
 
-Measures are computed for general (planar) polygonal facets and general
-polyhedral cells, so the same code serves hexes and arbitrary polytopes.
+Everything works for cells of any dimension (segment, polygon, polyhedron)
+embedded in ``R^3``, with the standing assumption -- shared with the mimetic
+convergence theory -- that facets are **planar** and cells are **star-shaped**.
+
+Centroids are true (measure-weighted) centroids, not vertex averages: the
+mimetic consistency identities are exact only when the element reference point
+is the actual centroid, so this matters for the patch tests.
 """
 
 from __future__ import annotations
@@ -16,6 +21,21 @@ import numpy as np
 
 from mimetika.topology.complex import CellComplex
 
+# Degree-2 symmetric rule on the reference tetrahedron (4 points, barycentric).
+_TET_A = 0.585410196624968515
+_TET_B = 0.138196601125010515
+_TET_BARY = np.array(
+    [
+        [_TET_A, _TET_B, _TET_B, _TET_B],
+        [_TET_B, _TET_A, _TET_B, _TET_B],
+        [_TET_B, _TET_B, _TET_A, _TET_B],
+        [_TET_B, _TET_B, _TET_B, _TET_A],
+    ]
+)
+
+# 2-point Gauss on [0, 1] (exact for cubics).
+_GAUSS2 = 0.5 + np.array([-1.0, 1.0]) / (2.0 * np.sqrt(3.0))
+
 
 @dataclass
 class Geometry:
@@ -24,14 +44,13 @@ class Geometry:
     complex: CellComplex
     points: np.ndarray  # (n_vertices, 3)
 
-    # cached measures / centroids, filled lazily
     _measures: dict[int, np.ndarray] | None = None
     _centroids: dict[int, np.ndarray] | None = None
     _facet_normals: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         self.points = np.asarray(self.points, dtype=float)
-        if self.points.shape[1] != 3:
+        if self.points.ndim != 2 or self.points.shape[1] != 3:
             raise ValueError("points must be (n_vertices, 3)")
         self._measures = {}
         self._centroids = {}
@@ -39,7 +58,7 @@ class Geometry:
     # -- measures ------------------------------------------------------------
 
     def measure(self, k: int) -> np.ndarray:
-        """Return the array of k-cell measures (length/area/volume)."""
+        """Array of k-cell measures (count/length/area/volume)."""
         if k in self._measures:
             return self._measures[k]
         if k == 0:
@@ -47,7 +66,7 @@ class Geometry:
         elif k == 1:
             m = self._edge_lengths()
         elif k == 2:
-            m = self._facet_areas()
+            m = self._polygon_areas()
         elif k == 3:
             m = self._cell_volumes()
         else:
@@ -57,134 +76,162 @@ class Geometry:
 
     def _edge_lengths(self) -> np.ndarray:
         ev = self.complex.edge_vertices
-        d = self.points[ev[:, 1]] - self.points[ev[:, 0]]
-        return np.linalg.norm(d, axis=1)
+        return np.linalg.norm(self.points[ev[:, 1]] - self.points[ev[:, 0]], axis=1)
 
-    def _facet_areas(self) -> np.ndarray:
-        areas = np.empty(self.complex.num_cells(2))
-        for fid, loop in enumerate(self.complex.facet_vertices):
-            areas[fid] = np.linalg.norm(self._polygon_area_vector(loop))
-        return areas
+    def _polygon_areas(self) -> np.ndarray:
+        return np.array(
+            [
+                np.linalg.norm(self._area_vector(loop))
+                for loop in self.complex.polygon_loops
+            ]
+        )
 
     def _cell_volumes(self) -> np.ndarray:
-        """Signed-then-absolute volume via the divergence theorem over facets.
-
-        V = (1/3) * sum_facets  (x_f . n_f) * A_f, using oriented facet normals
-        pointing out of the cell.
-        """
+        """Volume by the divergence theorem: ``V = (1/3) sum_e s_e (x_e . A_e)``."""
+        fc = self.centroids(2)
         vols = np.zeros(self.complex.num_cells(3))
-        fc = self.facet_centroids()
-        for cid, entry in enumerate(self.complex.cell_facets):
+        for cid in range(self.complex.num_cells(3)):
             acc = 0.0
-            for fid, sgn in entry:
-                area_vec = self._polygon_area_vector(self.complex.facet_vertices[fid])
+            for fid, sgn in self.complex.facets_of(3, cid):
+                area_vec = self._area_vector(self.complex.polygon_loops[fid])
                 acc += sgn * float(np.dot(fc[fid], area_vec))
             vols[cid] = abs(acc) / 3.0
         return vols
 
-    def _polygon_area_vector(self, loop: tuple[int, ...]) -> np.ndarray:
-        """Vector area of a planar polygon (Newell's method); |.| is the area,
-        direction is the loop normal by the right-hand rule."""
+    def _area_vector(self, loop: tuple[int, ...]) -> np.ndarray:
+        """Vector area of a planar polygon (Newell); direction by right-hand rule."""
         p = self.points[list(loop)]
-        return 0.5 * np.cross(p - p.mean(0), np.roll(p, -1, axis=0) - p.mean(0)).sum(0)
+        c = p.mean(0)
+        return 0.5 * np.cross(p - c, np.roll(p, -1, axis=0) - c).sum(0)
 
     # -- centroids -----------------------------------------------------------
 
     def centroids(self, k: int) -> np.ndarray:
-        """Centroids of k-cells (vertex-mean approximation for k>=1)."""
+        """True (measure-weighted) centroids of the k-cells."""
         if k in self._centroids:
             return self._centroids[k]
         if k == 0:
             c = self.points
         elif k == 1:
             c = self.points[self.complex.edge_vertices].mean(axis=1)
-        elif k == 2:
-            c = self.facet_centroids()
-        elif k == 3:
+        else:
             c = np.array(
                 [
-                    np.mean(
-                        [
-                            self.points[list(self.complex.facet_vertices[fid])].mean(0)
-                            for fid, _ in entry
-                        ],
-                        axis=0,
-                    )
-                    for entry in self.complex.cell_facets
+                    self._quadrature_centroid(k, cid)
+                    for cid in range(self.complex.num_cells(k))
                 ]
-            )
-        else:
-            raise ValueError(f"centroid not defined for k={k}")
+            ).reshape(-1, 3)
         self._centroids[k] = c
         return c
 
+    def _quadrature_centroid(self, k: int, cell_id: int) -> np.ndarray:
+        pts, wts = self.quadrature(k, cell_id)
+        return (wts[:, None] * pts).sum(0) / wts.sum()
+
     def facet_centroids(self) -> np.ndarray:
-        if 2 in self._centroids:
-            return self._centroids[2]
-        c = np.array(
-            [self.points[list(loop)].mean(0) for loop in self.complex.facet_vertices]
-        )
-        self._centroids[2] = c
-        return c
+        """Centroids of the 2-cells (the facets of a 3D complex)."""
+        return self.centroids(2)
+
+    def facet_normals(self) -> np.ndarray:
+        """Unit normals of the 2-cells, per their canonical loop orientation."""
+        if self._facet_normals is None:
+            n = np.array(
+                [self._area_vector(loop) for loop in self.complex.polygon_loops]
+            ).reshape(-1, 3)
+            norms = np.linalg.norm(n, axis=1, keepdims=True)
+            self._facet_normals = n / np.where(norms == 0, 1.0, norms)
+        return self._facet_normals
 
     # -- quadrature ----------------------------------------------------------
 
-    # Degree-2 symmetric rule on the reference tetrahedron (4 points), exact for
-    # quadratic integrands. Barycentric coords; weights sum to 1.
-    _TET_RULE_A = 0.585410196624968515
-    _TET_RULE_B = 0.138196601125010515
+    def quadrature(self, k: int, cell_id: int) -> tuple[np.ndarray, np.ndarray]:
+        """Quadrature on a k-cell, exact at least for quadratics.
 
-    def cell_quadrature(self, cell_id: int) -> tuple[np.ndarray, np.ndarray]:
-        """Quadrature points/weights integrating quadratics exactly over a cell.
-
-        The polyhedron is subdivided into tetrahedra (cell centroid -> face
-        centroid -> face edge), each carrying a degree-2 rule.  Returns
-        ``(points (Nq,3), weights (Nq,))`` with ``sum(weights) == |E|``.
+        Returns ``(points (Nq,3), weights (Nq,))`` with ``sum(weights)`` equal to
+        the k-cell measure.
         """
-        a, b = self._TET_RULE_A, self._TET_RULE_B
-        bary = np.array([[a, b, b, b], [b, a, b, b], [b, b, a, b], [b, b, b, a]])
-        xc = self.centroids(3)[cell_id]
+        if k == 0:
+            return self.points[cell_id][None, :], np.ones(1)
+        if k == 1:
+            return self._segment_quadrature(cell_id)
+        if k == 2:
+            return self._polygon_quadrature(cell_id)
+        if k == 3:
+            return self._polyhedron_quadrature(cell_id)
+        raise ValueError(f"quadrature not defined for k={k}")
 
-        pts, wts = [], []
-        for fid, _ in self.complex.cell_facets[cell_id]:
-            loop = self.complex.facet_vertices[fid]
-            fp = self.points[list(loop)]
-            fc = fp.mean(0)
-            m = len(loop)
-            for i in range(m):
-                tet = np.array([xc, fc, fp[i], fp[(i + 1) % m]])
-                vol = abs(np.dot(tet[1] - tet[0],
-                                 np.cross(tet[2] - tet[0], tet[3] - tet[0]))) / 6.0
-                if vol == 0.0:
-                    continue
-                pts.append(bary @ tet)  # (4,3)
-                wts.append(np.full(4, vol / 4.0))
-        return np.vstack(pts), np.concatenate(wts)
+    def _segment_quadrature(self, eid: int) -> tuple[np.ndarray, np.ndarray]:
+        a, b = self.points[self.complex.edge_vertices[eid]]
+        length = np.linalg.norm(b - a)
+        pts = a + _GAUSS2[:, None] * (b - a)
+        return pts, np.full(2, length / 2.0)
 
-    def facet_quadrature(self, fid: int) -> tuple[np.ndarray, np.ndarray]:
-        """Quadrature over one (planar) facet, exact for quadratics.
+    def _polygon_quadrature(self, fid: int) -> tuple[np.ndarray, np.ndarray]:
+        """Fan-triangulate from the vertex mean with **signed** areas.
 
-        Fan-triangulates the polygon from its centroid and applies the degree-2
-        3-midpoint triangle rule.  Returns ``(points (Nq,3), weights (Nq,))``
-        with ``sum(weights) == area(facet)``.
+        Signed weights make the decomposition an exact algebraic identity for
+        any apex, so non-convex (star-shaped) polygons integrate correctly even
+        when the apex falls outside the polygon.
         """
-        loop = self.complex.facet_vertices[fid]
+        loop = self.complex.polygon_loops[fid]
         fp = self.points[list(loop)]
-        fc = fp.mean(0)
-        m = len(loop)
+        apex = fp.mean(0)
+        normal = self._area_vector(loop)
+        normal = normal / np.linalg.norm(normal)
+
         pts, wts = [], []
-        for i in range(m):
-            a, b = fp[i], fp[(i + 1) % m]
-            area = 0.5 * np.linalg.norm(np.cross(a - fc, b - fc))
+        for i in range(len(loop)):
+            a, b = fp[i], fp[(i + 1) % len(loop)]
+            area = 0.5 * float(np.dot(np.cross(a - apex, b - apex), normal))
             if area == 0.0:
                 continue
-            tri = np.array([fc, a, b])
-            mids = np.array([(tri[0] + tri[1]) / 2,
-                             (tri[1] + tri[2]) / 2,
-                             (tri[2] + tri[0]) / 2])
+            tri = np.array([apex, a, b])
+            mids = 0.5 * (tri + np.roll(tri, -1, axis=0))
             pts.append(mids)
             wts.append(np.full(3, area / 3.0))
         return np.vstack(pts), np.concatenate(wts)
+
+    def _polyhedron_quadrature(self, cid: int) -> tuple[np.ndarray, np.ndarray]:
+        """Subdivide into tets (cell apex -> facet centroid -> facet edge).
+
+        Uses **signed** tet volumes over the outward-oriented boundary, so the
+        decomposition is exact for any apex and any simple polyhedron.
+        """
+        facets = self.complex.facets_of(3, cid)
+        apex = np.mean(
+            [
+                self.points[list(self.complex.polygon_loops[f])].mean(0)
+                for f, _ in facets
+            ],
+            axis=0,
+        )
+        pts, wts = [], []
+        for fid, sgn in facets:
+            loop = self.complex.polygon_loops[fid]
+            if sgn < 0:  # orient the loop outward for this cell
+                loop = tuple(reversed(loop))
+            fp = self.points[list(loop)]
+            fc = fp.mean(0)
+            for i in range(len(loop)):
+                a, b = fp[i], fp[(i + 1) % len(loop)]
+                vol = float(
+                    np.dot(fc - apex, np.cross(a - apex, b - apex))
+                ) / 6.0
+                if vol == 0.0:
+                    continue
+                pts.append(_TET_BARY @ np.array([apex, fc, a, b]))
+                wts.append(np.full(4, vol / 4.0))
+        return np.vstack(pts), np.concatenate(wts)
+
+    # -- legacy aliases (3D naming) -----------------------------------------
+
+    def cell_quadrature(self, cell_id: int) -> tuple[np.ndarray, np.ndarray]:
+        """Quadrature over a top-dimensional cell."""
+        return self.quadrature(self.complex.dim, cell_id)
+
+    def facet_quadrature(self, fid: int) -> tuple[np.ndarray, np.ndarray]:
+        """Quadrature over a facet of a top-dimensional cell."""
+        return self.quadrature(self.complex.dim - 1, fid)
 
     def facet_tangents(self, fid: int) -> tuple[np.ndarray, np.ndarray]:
         """A deterministic orthonormal in-plane tangent frame ``(t1, t2)``.
@@ -193,23 +240,8 @@ class Geometry:
         cells sharing the facet -- so face-based DOFs are globally consistent.
         """
         n = self.facet_normals()[fid]
-        axis = int(np.argmin(np.abs(n)))
         e = np.zeros(3)
-        e[axis] = 1.0
+        e[int(np.argmin(np.abs(n)))] = 1.0
         t1 = e - np.dot(e, n) * n
         t1 /= np.linalg.norm(t1)
-        t2 = np.cross(n, t1)
-        return t1, t2
-
-    def facet_normals(self) -> np.ndarray:
-        """Unit normals of facets, per the canonical facet loop orientation."""
-        if self._facet_normals is None:
-            n = np.array(
-                [
-                    self._polygon_area_vector(loop)
-                    for loop in self.complex.facet_vertices
-                ]
-            )
-            norms = np.linalg.norm(n, axis=1, keepdims=True)
-            self._facet_normals = n / np.where(norms == 0, 1.0, norms)
-        return self._facet_normals
+        return t1, np.cross(n, t1)

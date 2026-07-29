@@ -1,24 +1,28 @@
 r"""Mimetic inner product for the Laplace / diffusion operator.
 
 Discretises the flux inner product ``(F, G)_X = \int_E K^{-1} F . G`` on the
-facet (flux, 2-form) degrees of freedom -- one normal flux per facet.  This is
-the matrix that turns the metric-free ``div`` into the weak Laplacian
-``div M^{-1} grad`` in the mixed formulation.
+facet (flux) degrees of freedom -- one average normal flux per facet.  This is
+the matrix that turns the metric-free ``div`` into the weak Laplacian in the
+mixed formulation.
+
+Works for cells of any dimension: the DOFs of a ``d``-cell live on its
+``(d-1)``-facets (endpoints of a segment, edges of a polygon, faces of a
+polyhedron), and everything is computed in the cell's own affine frame (see
+:class:`~mimetika.geometry.local_cell.LocalCell`).
 
 Reconstruction space
 --------------------
-* ``basis="const"`` (default): the three constant flux fields.  ``m = 3``.
-  This is the classic lowest-order mimetic diffusion inner product; it carries a
-  nontrivial stabilization on *every* polytope with more than 3 facets,
-  including tetrahedra.
-* ``basis="rt0"``: the lowest-order Raviart--Thomas space ``{a + b x}``,
-  ``m = 4``.  On a tetrahedron (4 facets) this is unisolvent, ``D = m = 4``, so
-  the stabilization vanishes and the method coincides with RT0 mixed FE; on
-  hexahedra (6 facets) a 2-dimensional stabilization remains.
+* ``basis="const"`` (default): the ``d`` constant flux fields.  The classic
+  lowest-order mimetic diffusion inner product.
+* ``basis="rt0"``: lowest-order Raviart--Thomas ``{a + b xi}``, ``m = d + 1``.
+  On a simplex (``d+1`` facets) this is unisolvent, so ``D = m`` and the
+  stabilization vanishes -- the scheme coincides with RT0 mixed FE.
 
-Orientation is automatic: building ``N`` with the canonical facet normals yields
-``M_E`` directly in the global (canonical-normal) DOF convention, because the
-consistency term is covariant under per-facet sign flips.
+Both mode families admit a potential, so **every** column of the moment matrix
+``R`` is canonical here (``R_e = |e| (psi_e - psi_E)`` with ``grad psi = K^{-1} w``):
+the constants give the classical closed form ``R_e = |e| K^{-1}(x_e - x_E)`` and
+the radial mode a quadratic potential.  Hence ``M N = R`` holds exactly and
+local mixed solves reproduce linear potentials exactly.
 """
 
 from __future__ import annotations
@@ -26,87 +30,101 @@ from __future__ import annotations
 import numpy as np
 import scipy.sparse as sp
 
+from mimetika.geometry.local_cell import LocalCell
 from mimetika.mesh.mesh import Mesh
 from mimetika.operators.inner_product import (
     assemble_local_inner_product,
-    consistency_matrix,
     stabilization_dim,
 )
 
 
 class DiffusionInnerProduct:
-    """Global flux inner product for the diffusion operator on facet DOFs."""
+    """Flux inner product for the diffusion operator on facet DOFs."""
 
     def __init__(
         self, mesh: Mesh, K: np.ndarray | None = None, basis: str = "const"
     ) -> None:
         self.mesh = mesh
         self.K = np.eye(3) if K is None else np.asarray(K, dtype=float)
-        self.Kinv = np.linalg.inv(self.K)
         if basis not in ("const", "rt0"):
             raise ValueError("basis must be 'const' or 'rt0'")
         self.basis = basis
 
-    # -- reconstruction modes -----------------------------------------------
+    # -- reconstruction modes -------------------------------------------------
 
-    def _modes(self, x: np.ndarray, xE: np.ndarray) -> np.ndarray:
-        """Evaluate the flux reconstruction modes at points ``x`` (shape (Nq,3)).
+    def n_modes(self, d: int) -> int:
+        return d + 1 if self.basis == "rt0" else d
 
-        Returns ``(Nq, m, 3)`` -- for each point, ``m`` vector-valued modes.
-        """
-        nq = len(x)
-        const = np.broadcast_to(np.eye(3), (nq, 3, 3))  # (Nq, 3 modes, 3 comp)
+    def _modes(self, xi: np.ndarray, d: int) -> np.ndarray:
+        """``(nq, m, d)``: the flux modes evaluated at local points ``xi``."""
+        nq = len(xi)
+        const = np.broadcast_to(np.eye(d), (nq, d, d))
         if self.basis == "const":
             return const
-        radial = (x - xE)[:, None, :]  # (Nq, 1, 3)
-        return np.concatenate([const, radial], axis=1)  # (Nq, 4, 3)
+        return np.concatenate([const, xi[:, None, :]], axis=1)
 
-    # -- local matrix -------------------------------------------------------
+    def _potentials(self, xi: np.ndarray, Kinv: np.ndarray) -> np.ndarray:
+        """``(nq, m)``: potentials ``psi_j`` with ``grad psi_j = K^{-1} w_j``.
+
+        Constant mode ``e_j`` -> ``psi = (K^{-1} e_j) . xi`` (linear);
+        radial mode ``xi``    -> ``psi = 0.5 xi^T K^{-1} xi`` (quadratic).
+        """
+        lin = xi @ Kinv  # (nq, d) -- column j is (K^{-1} e_j) . xi
+        if self.basis == "const":
+            return lin
+        quad = 0.5 * np.einsum("qi,ij,qj->q", xi, Kinv, xi)
+        return np.column_stack([lin, quad])
+
+    # -- local matrices -------------------------------------------------------
+
+    def local_matrices(self, cell_id: int):
+        """Return ``(N, R, Kbar, volume, lc)`` for one cell, in the local frame."""
+        lc = LocalCell.build(self.mesh.geometry, cell_id)
+        d, vol = lc.dim, lc.volume
+        Kloc = lc.project_tensor(self.K)
+        Kinv = np.linalg.inv(Kloc)
+
+        # N: average normal flux of each mode on each facet (planar facets, so
+        # the normal trace of every mode is constant and the centroid suffices).
+        modes_f = self._modes(lc.facet_centroids, d)  # (nf, m, d)
+        N = np.einsum("imc,ic->im", modes_f, lc.facet_normals)
+
+        # Kbar: Gram matrix of the modes in the continuous inner product.
+        modes_q = self._modes(lc.quad_points, d)  # (nq, m, d)
+        Kw = np.einsum("cd,qmd->qmc", Kinv, modes_q)
+        Kbar = np.einsum("q,qjc,qlc->jl", lc.quad_weights, modes_q, Kw) / vol
+
+        # R: canonical moments  R_e = |e| (mean_e psi - mean_E psi).
+        psi_E = (lc.quad_weights @ self._potentials(lc.quad_points, Kinv)) / vol
+        R = np.empty_like(N)
+        for i in range(lc.n_facets):
+            qp, qw = lc.facet_quadrature[i]
+            psi_e = (qw @ self._potentials(qp, Kinv)) / lc.facet_measures[i]
+            R[i] = lc.facet_measures[i] * (psi_e - psi_E)
+
+        return N, R, Kbar, vol, lc
 
     def local(self, cell_id: int) -> tuple[np.ndarray, list[int]]:
-        """Return ``(M_E, facet_ids)`` for one cell."""
-        g = self.mesh.geometry
-        cx = self.mesh.complex
-        entry = cx.cell_facets[cell_id]
-        facet_ids = [fid for fid, _ in entry]
-
-        normals = g.facet_normals()
-        fcent = g.facet_centroids()
-        xE = g.centroids(3)[cell_id]
-        vol = g.measure(3)[cell_id]
-
-        # N[i, j] = mode_j(x_{e_i}) . n_{e_i}   (canonical normals)
-        modes_at_faces = self._modes(fcent[facet_ids], xE)  # (D, m, 3)
-        N = np.einsum("imc,ic->im", modes_at_faces, normals[facet_ids])
-
-        # Kbar[j, l] = (1/|E|) \int_E K^{-1} w_j . w_l
-        qp, qw = g.cell_quadrature(cell_id)
-        modes_q = self._modes(qp, xE)  # (Nq, m, 3)
-        Kw = np.einsum("cd,imd->imc", self.Kinv, modes_q)  # K^{-1} w_l at qp
-        Kbar = np.einsum("q,qjc,qlc->jl", qw, modes_q, Kw) / vol
-
-        M1 = consistency_matrix(N, Kbar, vol)
-        scale = float(np.mean(np.diag(M1)))
-        M = assemble_local_inner_product(N, Kbar, vol, scale)
-        return M, facet_ids
+        """``(M_E, facet_ids)`` in the *global* (canonical-orientation) DOF basis."""
+        N, R, Kbar, vol, lc = self.local_matrices(cell_id)
+        M = assemble_local_inner_product(N, R, Kbar, vol)
+        # local frame uses outward normals; convert to canonical facet normals
+        S = lc.signs
+        return M * S[:, None] * S[None, :], lc.facet_ids
 
     def stabilization_dim(self, cell_id: int) -> int:
-        """Dimension of the stabilization space on one cell (0 = no stab.)."""
-        g = self.mesh.geometry
-        entry = self.mesh.complex.cell_facets[cell_id]
-        facet_ids = [fid for fid, _ in entry]
-        xE = g.centroids(3)[cell_id]
-        modes = self._modes(g.facet_centroids()[facet_ids], xE)
-        N = np.einsum("imc,ic->im", modes, g.facet_normals()[facet_ids])
+        """Dimension of the stabilization space on one cell (0 on simplices)."""
+        N, _, _, _, _ = self.local_matrices(cell_id)
         return stabilization_dim(N)
 
-    # -- global assembly ----------------------------------------------------
+    # -- global assembly ------------------------------------------------------
 
     def assemble(self) -> sp.csr_matrix:
         """Assemble the global flux inner product over all facet DOFs."""
-        n = self.mesh.num_cells(2)
+        d = self.mesh.dim
+        n = self.mesh.num_cells(d - 1)
         rows, cols, vals = [], [], []
-        for cid in range(self.mesh.num_cells(3)):
+        for cid in range(self.mesh.num_cells(d)):
             M, fids = self.local(cid)
             for a, fa in enumerate(fids):
                 for b, fb in enumerate(fids):
