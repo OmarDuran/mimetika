@@ -67,6 +67,9 @@ class CellComplex:
         default_factory=lambda: np.zeros((0, 2), dtype=np.int64)
     )
     polygon_loops: list[tuple[int, ...]] = field(default_factory=list)
+    _csc_cache: dict[int, sp.csc_matrix] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     # -- construction --------------------------------------------------------
 
@@ -210,10 +213,22 @@ class CellComplex:
             raise ValueError(f"boundary defined for 1..{self.dim}, got k={k}")
         return self.boundary[k]
 
+    def _boundary_csc(self, k: int) -> sp.csc_matrix:
+        """Column-oriented boundary matrix, cached (facet lookup is per-cell)."""
+        if self._csc_cache is None:
+            self._csc_cache = {}
+        if k not in self._csc_cache:
+            self._csc_cache[k] = self.boundary_matrix(k).tocsc()
+        return self._csc_cache[k]
+
     def facets_of(self, k: int, cell_id: int) -> list[tuple[int, int]]:
         """``(facet_id, sign)`` pairs of the ``(k-1)``-facets of a k-cell."""
-        col = self.boundary_matrix(k).tocsc()[:, cell_id].tocoo()
-        return [(int(r), int(np.sign(v))) for r, v in zip(col.row, col.data)]
+        m = self._boundary_csc(k)
+        lo, hi = m.indptr[cell_id], m.indptr[cell_id + 1]
+        return [
+            (int(r), 1 if v > 0 else -1)
+            for r, v in zip(m.indices[lo:hi], m.data[lo:hi])
+        ]
 
     @property
     def cell_facets(self) -> list[list[tuple[int, int]]]:
