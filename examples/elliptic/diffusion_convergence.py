@@ -1,23 +1,26 @@
 r"""Convergence of the mimetic mixed Poisson solver.
 
-Solves, on the unit cube with Dirichlet data,
+Solves on the unit cube, with Dirichlet data,
 
     div F = f ,    F = -K grad p ,    p = p_D  on the boundary,
 
-for the manufactured solution
-
-    p(x, y, z) = sin(pi x) sin(pi y) sin(pi z) ,   f = -div(K grad p).
+for the manufactured solution ``p = sin(pi x) sin(pi y) sin(pi z)``.
 
 Errors are measured against the *interpolant* of the exact solution (the
-natural mimetic error): the element means for the pressure, and the average
-normal fluxes for the flux, in the mesh-dependent ``M``-norm.
+natural mimetic error): element means for the pressure, average normal fluxes
+for the flux, in the mesh-dependent ``M``-norm.
 
-Two mesh families are compared:
+Four cases are run:
 
-* **hexahedra** -- a genuine polytopal case, where the inner product carries an
-  active stabilization;
-* **tetrahedra** -- the simplicial case, where the stabilization vanishes and
-  the ``rt0`` scheme coincides with RT0 mixed FE.
+* **hex / isotropic** -- a grid-aligned, isotropic problem.  The symmetry makes
+  the leading error terms cancel and the flux *superconverges* far past the
+  guaranteed rate; this is a property of the special configuration, not of the
+  method, which is why the anisotropic case is shown next to it.
+* **hex / anisotropic** -- full tensor ``K`` with off-diagonal coupling breaks
+  that symmetry and exposes the genuine rate.
+* **tet / anisotropic**, with the ``const`` and ``rt0`` reconstruction spaces.
+  On simplices ``rt0`` is stabilization-free (``stab dim = 0``) and coincides
+  with RT0 mixed FE.
 
 Run with::
 
@@ -38,36 +41,55 @@ from common import (  # noqa: E402  (path bootstrap lives in common)
 from mimetika.assembly.mixed import MixedPoisson  # noqa: E402
 from mimetika.mesh import structured_box, structured_tets  # noqa: E402
 
-K = np.diag([1.0, 1.0, 1.0])
 PI = np.pi
+K_ISO = np.eye(3)
+K_ANISO = np.array([[2.0, 0.6, 0.2], [0.6, 1.5, 0.3], [0.2, 0.3, 1.0]])
 
 
 def pressure(x: np.ndarray) -> np.ndarray:
-    x = np.atleast_2d(x)
-    return np.prod(np.sin(PI * x), axis=1)
+    return np.prod(np.sin(PI * np.atleast_2d(x)), axis=1)
 
 
-def flux(x: np.ndarray) -> np.ndarray:
-    """``F = -K grad p``."""
+def _grad(x: np.ndarray) -> np.ndarray:
     x = np.atleast_2d(x)
     s, c = np.sin(PI * x), np.cos(PI * x)
-    grad = PI * np.column_stack(
+    return PI * np.column_stack(
         [
             c[:, 0] * s[:, 1] * s[:, 2],
             s[:, 0] * c[:, 1] * s[:, 2],
             s[:, 0] * s[:, 1] * c[:, 2],
         ]
     )
-    return -grad @ K.T
 
 
-def source(x: np.ndarray) -> np.ndarray:
-    """``f = div F = -div(K grad p)``; for ``K = I`` this is ``3 pi^2 p``."""
-    return 3.0 * PI**2 * np.trace(K) / 3.0 * pressure(x)
+def _hessian(x: np.ndarray) -> np.ndarray:
+    x = np.atleast_2d(x)
+    s, c = np.sin(PI * x), np.cos(PI * x)
+    p = s[:, 0] * s[:, 1] * s[:, 2]
+    H = np.zeros((len(x), 3, 3))
+    for i in range(3):
+        H[:, i, i] = -(PI**2) * p
+    H[:, 0, 1] = H[:, 1, 0] = PI**2 * c[:, 0] * c[:, 1] * s[:, 2]
+    H[:, 0, 2] = H[:, 2, 0] = PI**2 * c[:, 0] * s[:, 1] * c[:, 2]
+    H[:, 1, 2] = H[:, 2, 1] = PI**2 * s[:, 0] * c[:, 1] * c[:, 2]
+    return H
 
 
-def run(family: str, resolutions, basis: str):
+def make_data(K: np.ndarray):
+    """Return ``(flux, source)`` consistent with the manufactured pressure."""
+
+    def flux(x):
+        return -_grad(x) @ K.T
+
+    def source(x):  # f = div F = -div(K grad p) = -K : Hess(p)
+        return -np.einsum("ij,qij->q", K, _hessian(x))
+
+    return flux, source
+
+
+def run(family: str, resolutions, basis: str, K: np.ndarray):
     make = structured_box if family == "hex" else structured_tets
+    flux, source = make_data(K)
     rows = []
     for n in resolutions:
         mesh = make(n, n, n)
@@ -106,19 +128,29 @@ COLUMNS = [
     ("err_F_rate", "rate"),
 ]
 
+CASES = [
+    ("hex", (2, 4, 8, 16), "const", K_ISO, "isotropic K (grid-aligned)"),
+    ("hex", (2, 4, 8, 16), "const", K_ANISO, "anisotropic K"),
+    ("tet", (2, 4, 8), "const", K_ANISO, "anisotropic K"),
+    ("tet", (2, 4, 8), "rt0", K_ANISO, "anisotropic K"),
+]
+
 
 def main() -> None:
     print(__doc__.split("Run with")[0].strip())
-    for family, resolutions in (("hex", (2, 4, 8, 16)), ("tet", (2, 4, 8))):
-        for basis in ("const", "rt0"):
-            rows = run(family, resolutions, basis)
-            print_table(
-                f"mixed Poisson  |  {family} mesh  |  basis = {basis}", rows, COLUMNS
-            )
+    for family, resolutions, basis, K, label in CASES:
+        rows = run(family, resolutions, basis, K)
+        print_table(
+            f"mixed Poisson  |  {family} mesh  |  basis = {basis}  |  {label}",
+            rows,
+            COLUMNS,
+        )
     print(
-        "\nExpected: first-order convergence in both variables for the lowest-order"
-        "\nscheme; the pressure often superconverges. 'stab dim' is the dimension of"
-        "\nthe local stabilization space (0 => the scheme is stabilization-free)."
+        "\nThe lowest-order scheme guarantees first order; the cell pressure"
+        "\nsuperconverges to second order.  The isotropic grid-aligned flux rate is"
+        "\nan artifact of that configuration's symmetry -- compare the anisotropic"
+        "\nrow, which shows the genuine behaviour.  'stab dim' is the dimension of"
+        "\nthe local stabilization space (0 => stabilization-free)."
     )
 
 
