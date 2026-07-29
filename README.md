@@ -120,6 +120,53 @@ Both run over the whole [reference cell collection](src/mimetika/mesh/reference.
 polyhedra (tet, cube, sheared hex, prism, pyramid, dented non-convex cube) —
 and stay exact in the incompressible limit `λ → 10⁷`.
 
+## Global mixed problems
+
+[`assembly/mixed.py`](src/mimetika/assembly/mixed.py) assembles the element
+operators into global saddle-point systems and solves them.
+
+**Mixed Poisson** — normal flux per facet, pressure per cell:
+
+```
+[  M   -Bᵀ ] [ F ]   [ -g_D ]
+[  B    0  ] [ p ] = [   b  ]
+```
+
+`B` is the *purely topological* discrete divergence — signed incidence scaled by
+facet measures, so `(B F)_E = ∫_E div F` exactly.
+
+**Mixed elasticity (Mimetic-AFW)** — Hellinger–Reissner with weakly imposed
+symmetry, solving for **three** fields:
+
+```
+[  M    Dᵀ   Aᵀ ] [ σ ]   [ g_D ]     σ : traction moments per facet
+[  D     0    0 ] [ u ] = [  f  ]     u : displacement per cell
+[  A     0    0 ] [ s ]   [  0  ]     s : rotation multiplier per cell
+```
+
+The third block equation is `as_h(σ) = 0`: stress symmetry is enforced weakly,
+with `s = skw(∇u)` its Lagrange multiplier.
+
+```python
+from mimetika.assembly.mixed import MixedElasticity
+from mimetika.mesh import structured_tets
+
+problem = MixedElasticity(structured_tets(4, 4, 4), mu=1.0, lam=1.0)
+sol = problem.solve(body_force=f, dirichlet=u_exact)
+sol["stress"], sol["displacement"], sol["rotation"]
+```
+
+Because the local inner products satisfy `M N = R`, these **global** solves are
+exact for linear potentials / displacements on any mesh — verified in
+[`tests/assembly/test_mixed.py`](tests/assembly/test_mixed.py).
+
+Convergence studies live in [`examples/elliptic/`](examples/elliptic/):
+
+```bash
+python examples/elliptic/diffusion_convergence.py
+python examples/elliptic/elasticity_convergence.py
+```
+
 ## Quick start
 
 ```python
@@ -149,17 +196,13 @@ pip install -e ".[dev]"        # add ".[petsc]" for petsc4py + mpi4py
 pytest
 ```
 
-The suite (678 tests) runs without PETSc — the solver layer falls back to scipy.
+The suite (725 tests) runs without PETSc — the solver layer falls back to scipy.
 
 ## Deliberate extension points
 
 The scaffolding is complete and tested; these are the numerics upgrades that slot
 in without touching callers:
 
-- **Saddle-point assembly** — wire the stress inner product into the full
-  weakly-symmetric HR system (`div_h`, `as_h`, `tr_h` operators, eqs (2.27)) to
-  solve the elasticity problem, and the flux inner product into the mixed
-  Laplace system.
 - **`CircumcentricHodge`** — the geometrically-consistent diagonal DEC star
   `*ₖ = diag(|dualₖ| / |primalₖ|)`. The current `DiagonalHodge` is a lumped
   (measure-diagonal) inner product; the polytopal consistency+stability inner

@@ -14,14 +14,17 @@ if _SRC.is_dir() and str(_SRC) not in sys.path:
 
 
 def observed_rates(
-    h: list[float], err: list[float], floor: float = 1e-12
+    h: list[float], err: list[float], rel_floor: float = 1e-8
 ) -> list[float | None]:
     """Rates ``log(e_i/e_{i-1}) / log(h_i/h_{i-1})``; ``None`` for the first entry.
 
     A rate measured against an error at round-off level carries no information
-    (the exact solution happened to be reproduced), so those are reported as
-    ``None`` rather than as a spurious large number.
+    (the exact solution happened to be reproduced there), so it is reported as
+    ``None`` rather than as a spurious large number.  "Round-off level" is
+    judged *relative to the series*, since the absolute scale of an error
+    depends on the problem -- stresses grow with ``lambda``, for instance.
     """
+    floor = max(err, default=0.0) * rel_floor
     rates: list[float | None] = [None]
     for i in range(1, len(h)):
         if min(err[i], err[i - 1]) <= floor:
