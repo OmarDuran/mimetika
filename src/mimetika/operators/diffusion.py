@@ -129,9 +129,11 @@ class DiffusionInnerProduct:
         rows, cols, vals = [], [], []
         for cid in range(self.mesh.num_cells(d)):
             M, fids = self.local(cid)
-            for a, fa in enumerate(fids):
-                for b, fb in enumerate(fids):
-                    rows.append(fa)
-                    cols.append(fb)
-                    vals.append(M[a, b])
-        return sp.csr_matrix((vals, (rows, cols)), shape=(n, n))
+            f = np.asarray(fids)
+            rows.append(np.repeat(f, len(f)))
+            cols.append(np.tile(f, len(f)))
+            vals.append(M.ravel())
+        return sp.csr_matrix(
+            (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+            shape=(n, n),
+        )

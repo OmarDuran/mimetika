@@ -173,10 +173,11 @@ class ElasticityInnerProduct:
         rows, cols, vals = [], [], []
         for cid in range(self.mesh.num_cells(d)):
             M, fids = self.local(cid)
-            gdofs = np.concatenate([ndf * f + np.arange(ndf) for f in fids])
-            for a in range(len(gdofs)):
-                for b in range(len(gdofs)):
-                    rows.append(gdofs[a])
-                    cols.append(gdofs[b])
-                    vals.append(M[a, b])
-        return sp.csr_matrix((vals, (rows, cols)), shape=(n, n))
+            g = (ndf * np.asarray(fids)[:, None] + np.arange(ndf)).ravel()
+            rows.append(np.repeat(g, len(g)))
+            cols.append(np.tile(g, len(g)))
+            vals.append(M.ravel())
+        return sp.csr_matrix(
+            (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+            shape=(n, n),
+        )
