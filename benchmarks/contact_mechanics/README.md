@@ -27,7 +27,7 @@ numbers are regression-checked rather than merely printed.
 | # | Section | What it covers | State |
 |---|---------|----------------|-------|
 | 0 | 2.4 | In-situ state and depletion response, no fault | **done** |
-| 1 | 3.1 | Vertical displaced fault, frictionless | to do |
+| 1 | 3 | Vertical displaced fault, frictionless | **done** |
 | 2 | 3.2 | Inclined 70° fault, constant friction `mu = 0.52` | to do |
 | 3 | 3.3 | Slip weakening and nucleation | to do |
 
@@ -90,3 +90,52 @@ shear traction is *essential* and must be pinned, which is what
 `MixedElasticity.roller_dofs` returns. Restricted to axis-aligned facets; a
 general normal would need a rotated facet basis, and the code raises rather than
 silently applying the wrong constraint.
+
+
+## Benchmark 1
+
+A reservoir offset across a vertical fault (`a = 75` m, `b = 150` m, throw
+`b - a = 75` m) is depleted by `-25` MPa. The throw puts reservoir against seal,
+loading the fault in shear; frictionless, it slips until it carries none.
+
+| constant | computed | paper |
+|---|---|---|
+| `C = (1-2nu) alpha p / (2 pi (1-nu))` | `-2.9490e6` | `-2.95e6` |
+| `A = G / (2 pi (1-nu))` | `1.2171e9` | `1.2171e9` |
+| `C/A` | `-0.002423` | `-0.0024` |
+| peak slip `(C/A)(a-b)` | `0.18173 m` | Fig. 6 plateau |
+
+Refinement of the peak slip (`W = H = 4500` m):
+
+| `ny` | `dy` [m] | peak slip [m] | rel. err | L2 (profile) |
+|---|---|---|---|---|
+| 30 | 150.0 | 0.2006 | 10.4% | 0.255 |
+| 60 | 75.0 | 0.1909 | 5.1% | 0.141 |
+| 120 | 37.5 | 0.1885 | 3.7% | 0.120 |
+| 180 | 25.0 | 0.1862 | 2.5% | 0.102 |
+
+The residual gap is expected: the analytic solution assumes an **unbounded**
+medium and the simulation uses the paper's finite domain. The shear traction on
+the fault, by contrast, is zero to round-off on every mesh — that is the
+frictionless condition itself, and it is required exactly.
+
+### Two things this benchmark forced
+
+**The contact law is `FrictionlessBilateral`, not `SignoriniCoulomb(friction=0)`.**
+This is an *incremental* problem, and the incremental normal traction reaches
+`+8.4` MPa in tension over part of the fault. The in-situ normal stress there is
+about `-57` MPa, so the fault is still shut by a wide margin — but a unilateral
+law applied to the increment reads that as opening and clips it. Measured: the
+associative law at `mu = 0` drives the peak normal traction from `+8.44e6` to
+`~0`, i.e. it opens the fault. (At `mu = 0` the Mohr–Coulomb cone degenerates to
+a ray, so the associative and partial return mappings are bit-identical there;
+the distinction needs a cone.)
+
+**Picard cannot solve it; Newton solves it in 3 iterations.** A fault cutting the
+whole domain is compliant over 4500 m of rock, not over its two adjacent cells,
+so the geometric augmentation estimate is ~8x too stiff and the iteration
+diverges. Rescaling `r` from the condensed compliance is not enough either:
+`Ghat` is *dense* — every fault facet feels every other — so no scalar `r` makes
+`I + r Ghat` a contraction. Semismooth Newton on `F(x) = CD(x) - x`, using the
+condensed `Ghat` and the law's projection tangent, converges in 3 iterations
+independently of the mesh.

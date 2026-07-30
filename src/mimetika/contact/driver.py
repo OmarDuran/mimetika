@@ -56,7 +56,7 @@ import scipy.sparse as sp
 
 from mimetika.assembly.contact import FractureContact
 from mimetika.contact.laws import ContactLaw
-from mimetika.contact.map import ContactMap, fixed_point
+from mimetika.contact.map import ContactMap, fixed_point, newton
 from mimetika.solver.saddle import solve_saddle
 
 
@@ -321,7 +321,8 @@ class ContactDriver:
 
     def solve_step(
         self, mechanics, state: ContactState | None = None,
-        dt: float | None = None, **kwargs,
+        dt: float | None = None, condense: bool = False,
+        solver: str = "picard", **kwargs,
     ) -> ContactState:
         """Advance one load/time step by solving ``x = CD(x)``.
 
@@ -351,17 +352,34 @@ class ContactDriver:
 
         problem, A, rhs = mechanics(None)
         cd = self.contact_map(problem, A, rhs, **kwargs)
-        result = fixed_point(
-            cd,
+        # condensing eliminates the mechanics once, after which each iteration is
+        # a small dense matvec instead of a global solve -- worth it whenever the
+        # iteration count exceeds the number of contact unknowns
+        driven = cd
+        if condense or solver == "newton":
+            driven = cd.condense()
+            if self.augmentation is None and solver != "newton":
+                # the condensed operator is the exact fracture compliance, so it
+                # beats the geometric estimate -- decisively so for a fault that
+                # cuts the domain, where the local guess is far too stiff
+                driven = driven.rescaled()
+        common = dict(
             x0=self.values_of(state.multiplier),
-            relaxation=self.relaxation,
             tolerance=self.tolerance,
             max_iterations=self.max_iterations,
             internal=state.internal,
             g_prev=state.jump,
             dt=dt,
         )
+        if solver == "newton":
+            result = newton(driven, **common)
+        elif solver == "picard":
+            result = fixed_point(driven, relaxation=self.relaxation, **common)
+        else:
+            raise ValueError(f"unknown solver {solver!r}")
         evaluation = result.evaluation
+        if evaluation.solution is None:  # condensed: recover the field once
+            evaluation = cd(result.x, internal=state.internal, g_prev=state.jump, dt=dt)
         internal = self.law.advance(
             evaluation.value, evaluation.gap, evaluation.internal, dt, state.jump
         )

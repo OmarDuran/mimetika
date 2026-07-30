@@ -63,7 +63,7 @@ is the linear map ``to_moments``; the gap comes back through the linear map
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import scipy.sparse as sp
@@ -332,6 +332,29 @@ class CondensedContactMap:
     def initial_guess(self) -> np.ndarray:
         return np.zeros(self.shape)
 
+    def jacobi_augmentation(self, safety: float = 1.0) -> np.ndarray:
+        """Per-point ``r`` read off the condensed compliance ``Ghat``.
+
+        The augmentation must match the stiffness the fracture actually sees, and
+        ``Ghat`` *is* that stiffness -- exactly, including the whole domain's
+        response, not a local estimate.  Taking ``r_p = 1 / max_j |Ghat_(pj,pj)|``
+        is the Jacobi choice, which makes the diagonal of ``I + r Ghat`` vanish.
+
+        This matters most where a local guess is worst.  A geometric estimate
+        based on the two cells adjacent to the facet assumes the fracture is
+        loaded through its immediate neighbours; for a fault cutting the entire
+        domain the compliance is that of the whole block, and the estimate can be
+        an order of magnitude too stiff -- enough to make the iteration diverge.
+        """
+        n_points, dim = self.shape
+        diagonal = np.abs(np.diag(self.gap_matrix)).reshape(n_points, dim)
+        largest = diagonal.max(axis=1)
+        return safety / np.where(largest > 0, largest, 1.0)
+
+    def rescaled(self, safety: float = 1.0) -> "CondensedContactMap":
+        """A copy whose augmentation comes from :meth:`jacobi_augmentation`."""
+        return replace(self, augmentation=self.jacobi_augmentation(safety))
+
     def gap(self, x) -> np.ndarray:
         x = np.asarray(x, dtype=float).reshape(self.shape)
         return self.gap_offset + (self.gap_matrix @ x.ravel()).reshape(self.shape)
@@ -353,3 +376,95 @@ class CondensedContactMap:
     def residual(self, x, **kwargs) -> np.ndarray:
         x = np.asarray(x, dtype=float).reshape(self.shape)
         return self(x, **kwargs).value - x
+
+
+def projection_tangent(law, trial, internal=None, g=None, g_prev=None, dt=None,
+                       step: float = 1e-7) -> np.ndarray:
+    """``dP/dt`` at ``trial``: ``(n_points, dim, dim)`` blocks.
+
+    Uses the law's analytic ``tangent`` when it has one, and central differences
+    otherwise.  The projection acts pointwise, so its Jacobian is block diagonal
+    and the finite-difference cost is ``2 * dim`` evaluations of the whole array
+    -- negligible next to a single global solve.
+    """
+    trial = np.atleast_2d(np.asarray(trial, dtype=float))
+    if hasattr(law, "tangent"):
+        return law.tangent(trial)
+
+    n, dim = trial.shape
+    if internal is None:
+        internal = law.initial_state(n)
+    out = np.zeros((n, dim, dim))
+    scale = max(np.abs(trial).max(), 1.0)
+    for j in range(dim):
+        shift = np.zeros(dim)
+        shift[j] = step * scale
+        plus, _ = law.project(trial + shift, internal, g, g_prev, dt)
+        minus, _ = law.project(trial - shift, internal, g, g_prev, dt)
+        out[:, :, j] = (np.asarray(plus) - np.asarray(minus)) / (2 * step * scale)
+    return out
+
+
+def newton(
+    condensed,
+    x0=None,
+    tolerance: float = 1e-10,
+    max_iterations: int = 50,
+    internal=None,
+    g_prev=None,
+    dt=None,
+    damping: float = 1.0,
+) -> FixedPointResult:
+    r"""Semismooth Newton on ``F(x) = CD(x) - x = 0``, for a condensed map.
+
+    Picard is only a good solver when ``CD`` is a contraction, which needs the
+    augmentation to match the fracture compliance *and* that compliance to be
+    close to diagonal.  Neither holds for a fault that cuts the domain: the
+    condensed operator ``Ghat`` is dense, every facet feels every other, and no
+    scalar ``r`` makes ``I + r Ghat`` a contraction.  Rescaling ``r`` cannot fix
+    a spectral radius problem caused by off-diagonal coupling.
+
+    Newton does not care.  With
+
+        ``F(x) = P(x + r (g_0 + Ghat x)) - x`` ,
+        ``J    = T (I + r Ghat) - I`` ,   ``T = dP/dt`` ,
+
+    the step is a dense solve of size ``n_points * dim`` -- small, since that is
+    the whole point of condensing.  For an affine law (a frictionless fault) the
+    residual is linear and this converges in a **single** iteration.
+
+    Requires the condensed form: ``Ghat`` has to be available explicitly.
+    """
+    if not hasattr(condensed, "gap_matrix"):
+        raise TypeError("newton needs a condensed map; call ContactMap.condense()")
+
+    n_points, dim = condensed.shape
+    size = n_points * dim
+    augmented = np.repeat(condensed.augmentation, dim)[:, None] * condensed.gap_matrix
+    trial_jacobian = np.eye(size) + augmented  # d(trial)/dx
+
+    x = np.zeros(condensed.shape) if x0 is None else np.array(x0, dtype=float)
+    change, evaluation = np.inf, None
+    for iteration in range(1, max_iterations + 1):
+        evaluation = condensed(x, internal=internal, g_prev=g_prev, dt=dt)
+        internal = evaluation.internal
+        residual = (evaluation.value - x).ravel()
+        change = np.abs(residual).max()
+        if change <= tolerance * max(np.abs(x).max(), 1.0):
+            break
+
+        trial = x + condensed.augmentation[:, None] * evaluation.gap
+        blocks = projection_tangent(
+            condensed.law, trial, internal, evaluation.gap, g_prev, dt
+        )
+        jacobian = sp.block_diag(blocks, format="csr") @ trial_jacobian - np.eye(size)
+        step = np.linalg.solve(np.asarray(jacobian), -residual)
+        x = x + damping * step.reshape(condensed.shape)
+
+    converged = bool(
+        np.all(np.isfinite(x)) and change <= tolerance * max(np.abs(x).max(), 1.0)
+    )
+    return FixedPointResult(
+        x=x, evaluation=evaluation, iterations=iteration,
+        converged=converged, change=change,
+    )
