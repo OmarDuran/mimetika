@@ -76,7 +76,13 @@ def test_system_is_symmetric():
     assert (abs(A - A.T) > 1e-12).nnz == 0
 
 
-def test_interface_stiffness_is_area_over_kappa():
+def test_interface_stiffness_is_the_robin_resistance():
+    """``S = 1 / (kappa |f|)`` against the **integrated** flux DOF.
+
+    The physical Robin resistance is ``|f| / kappa`` against the facet-average
+    flux; with ``F = |f| F_avg`` the flux-flux pairing picks up ``1/|f|`` on each
+    side, which inverts the area factor.
+    """
     mesh, tags, pb = build((2, 2, 2))
     S = pb.interface_stiffness().diagonal()
     area = mesh.geometry.measure(2)
@@ -84,7 +90,9 @@ def test_interface_stiffness_is_area_over_kappa():
     for f in tags:
         for cell, _ in pb.dofmap.sides(int(f)):
             dof = pb.dofmap.dofs(cell, int(f))[0]
-            assert np.isclose(S[dof], area[f] / pb.fracture.kappa)
+            assert np.isclose(S[dof], 1.0 / (pb.fracture.kappa * area[f]))
+            # the physical resistance is recovered by undoing the DOF scaling
+            assert np.isclose(S[dof] * area[f] ** 2, area[f] / pb.fracture.kappa)
 
 
 def test_coupling_is_the_adjoint_of_the_pressure_pairing():
@@ -92,11 +100,13 @@ def test_coupling_is_the_adjoint_of_the_pressure_pairing():
     mesh, tags, pb = build((2, 2, 2))
     C = pb.coupling()
     assert C.shape == (pb.n_p2, pb.n_flux3)
-    area = mesh.geometry.measure(2)
     for fc, f in enumerate(pb.facet_of_cell):
         row = C[fc].toarray().ravel()
         assert np.count_nonzero(row) == 2  # two independent sides
-        assert np.isclose(np.abs(row).sum(), 2 * area[f])
+        # the DOF already *is* the mass crossing the facet, so the entries are
+        # bare signs -- no area factor, exactly as in the discrete divergence
+        assert np.isclose(np.abs(row).sum(), 2.0)
+        assert set(np.unique(row[row != 0])) == {-1.0, 1.0}
         assert np.isclose(row.sum(), 0.0)  # equal and opposite signs
 
 

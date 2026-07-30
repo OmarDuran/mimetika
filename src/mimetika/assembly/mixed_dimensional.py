@@ -294,10 +294,19 @@ class MixedDimensionalDarcy:
         return self.coupling() @ solution["flux"]
 
     def side_fluxes(self, solution, facet: int) -> tuple[float, float]:
-        """The two outward normal fluxes on one fracture facet."""
+        """The two outward normal fluxes on one fracture facet, per unit area.
+
+        The DOFs hold the *integrated* flux ``int_f q.n`` -- the convention that
+        keeps the discrete divergence purely topological -- so they are divided
+        by the facet measure here.  This accessor reports a physical flux
+        density, which is what a Darcy velocity should be compared against.
+        """
         u = solution["flux"]
+        area = self.mesh.geometry.measure(2)[int(facet)]
         return tuple(
-            self._signs[(cell, int(facet))] * u[self.dofmap.dofs(cell, int(facet))[0]]
+            self._signs[(cell, int(facet))]
+            * u[self.dofmap.dofs(cell, int(facet))[0]]
+            / area
             for cell, _ in self.dofmap.sides(int(facet))
         )
 
