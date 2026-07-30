@@ -24,9 +24,10 @@ compaction toward the top surface, so the response is fully three-dimensional:
              A_s (z/Z) sin(pi x) / 2,
             -A_c (1 - z/Z)          ).
 
-**Size.**  The full mesh gives ~690 000 stress unknowns and ~89 M nonzeros,
-which is beyond a direct factorisation; the example therefore runs on a
-subregion by default.  Use ``--full`` (with ``--method minres``) for the whole
+**Size.**  The full mesh gives 822 825 unknowns and ~83 M nonzeros.  That is too
+large for a direct factorisation, but the default CPR-preconditioned MINRES
+handles it comfortably (~20 s assembly, ~22 s solve).  The example still runs on
+a subregion by default so a first run is quick; pass ``--full`` for the whole
 mesh.
 
 Run with::
@@ -121,7 +122,10 @@ def main() -> None:
     print(__doc__.split("Run with")[0].strip())
     print("\n== mesh ==")
     if box is None:
-        print("  using the FULL mesh -- a direct solve will not fit; use --method minres")
+        print(
+            "  using the FULL mesh (822k unknowns) -- iterative solve;"
+            " --method direct will not fit"
+        )
     else:
         print(f"  subregion: centroids in {list(box[0])} .. {list(box[1])}")
     mesh = load_mesh(box=box)

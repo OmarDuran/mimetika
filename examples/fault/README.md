@@ -54,7 +54,9 @@ default**. `--box XLO YLO ZLO XHI YHI ZHI` picks another region;
 | flag | meaning |
 |---|---|
 | `--backend auto\|petsc\|scipy` | `auto` uses PETSc when `petsc4py` imports |
-| `--method direct\|minres` | MUMPS LU, or MINRES + Schur `fieldsplit` |
+| `--method minres\|direct` | **default** CPR-preconditioned MINRES, or MUMPS LU |
+| `--pc cpr\|schur` | `cpr` (default): AMG on the Schur block + cheap leading block, each applied once. `schur`: PETSc's defaults (inner GMRES per block) |
+| `--petsc-opts="..."` | options straight to PETSc, e.g. `--petsc-opts="-ksp_view"`. Use the `=` form — argparse rejects a bare value starting with `-` |
 | `--rtol` | iterative tolerance |
 | `--vtu [PATH]` | write the post-processed solution (polyhedra preserved). Bare flag uses `darcy_fault.vtu` / `elasticity_fault.vtu` |
 
@@ -120,14 +122,56 @@ so `as_h(σ) = 0` holds exactly on the DOFs (the scripts report ~1e-16) but the
 scripts print that asymmetry — it is a useful error indicator. `von_mises` and
 `principal_stresses` use the symmetric part.
 
-## Measured on the full mesh (PETSc 3.25.3, MUMPS)
+## Preconditioning: a CPR analogue
 
-| stage | time |
-|---|---|
-| read + validate mesh | ~44 s |
-| assemble flux inner product | ~50 s |
-| direct solve (98 777 unknowns) | **2.2 s** |
-| MINRES + fieldsplit | 6 iterations, ~7 s |
+CPR (Constrained Pressure Residual) solves the elliptic pressure subsystem with
+AMG and follows it with a cheap global smoother. In a **mixed** formulation the
+elliptic operator does not need an IMPES-style decoupling to extract — it *is*
+the Schur complement `S = B diag(M)⁻¹ Bᵀ`, the cell-centred pressure Laplacian,
+which PETSc's `selfp` already assembles. So the CPR recipe maps directly onto
+`fieldsplit`/Schur: **AMG (hypre) on the Schur block, a cheap incomplete
+factorisation on the leading block, each applied once** (`preonly`).
+
+PETSc's *default* sub-block solvers are an inner GMRES to `rtol 1e-5` with ILU
+on **each** block, re-run every outer iteration — which is why the earlier runs
+took minutes despite converging in 6 outer iterations. Measured:
+
+| problem | PETSc default | CPR (default here) |
+|---|---|---|
+| Darcy, 98 777 unknowns | 6 its, 5.7 s | 57 its, **0.5 s** |
+| Elasticity subregion, 36 735 | 6 its, 2.4 s | 66 its, **0.28 s** |
+
+CPR is also the *more correct* choice: MINRES requires a **fixed, SPD**
+preconditioner, and a nested GMRES solve makes it variable, formally
+invalidating the recurrence. `preonly` + ICC/AMG keeps it fixed and symmetric.
+
+One negative result worth recording: `gamg` on the elasticity Schur block
+produced an **indefinite** preconditioner (PETSc reason −8, answer wrong by
+1.6e-1). `hypre` is used when available, ICC otherwise.
+
+## Verifying which solver actually ran
+
+Do not take the script's word for it — ask PETSc:
+
+```bash
+python examples/fault/darcy_fault.py --petsc-opts="-ksp_view -ksp_monitor"
+```
+
+`-ksp_view` prints PETSc's own dump of the whole solver stack (KSP type, PC
+type, both sub-block solvers, the Schur approximation). The one-line summary the
+scripts print is queried from the live `KSP`/`PC` objects, not hard-coded.
+
+## Measured on the full mesh (PETSc 3.25.3)
+
+| stage | Darcy (98 777 dof) | Elasticity `--full` (822 825 dof) |
+|---|---|---|
+| read + geometry + validate | ~41 s | ~41 s |
+| assemble | 5 s | 20 s |
+| solve (CPR-MINRES) | **0.5 s**, 72 its | **22 s**, 102 its |
+
+Assembly was 212 s for the full elasticity problem before the local matrices
+were rebuilt around the tensor-product structure of the reconstruction space
+(and the duplicated pass over cells removed) — a 13.7x reduction.
 
 ## What the scripts verify
 
