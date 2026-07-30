@@ -30,6 +30,7 @@ from mimetika.assembly.mixed import boundary_facets
 from mimetika.assembly.poromechanics import PoroMechanics
 from mimetika.materials import Material
 from mimetika.mesh import structured_quads
+from mimetika.assembly.mixed import boundary_facets as _bf
 
 from benchmarks.contact_mechanics.common import Parameters, linear_fit
 
@@ -86,6 +87,96 @@ def depletion_response(parameters: Parameters, n: int = 8):
             stress[:, 0, 0].mean() + parameters.biot * parameters.depletion
         ),
         "sigma_yy_total": float(np.abs(stress[:, 1, 1]).max()),
+    }
+
+
+# -- Fig. 4: combined stresses across a finite reservoir --------------------------------
+
+
+def finite_reservoir(parameters: Parameters, nx: int = 20, ny: int = 120):
+    """Deplete a reservoir of finite thickness inside the full domain.
+
+    Different from :func:`depletion_response`, and harder.  That one depletes the
+    **whole** domain, which is why it reproduces the uniaxial closed form to
+    round-off -- there is nothing for the rock to arch over.  Fig. 4 needs a
+    ``h = 225`` m reservoir inside a ``4500`` m domain, so the surrounding rock
+    carries part of the load and the stress steps sharply at the reservoir top
+    and bottom.  The uniaxial formulae survive only in the interior.
+    """
+    width, height = parameters.width, parameters.height
+    mesh = structured_quads(
+        nx, ny, lengths=(width, height), origin=(-width / 2, -height / 2)
+    )
+    material = Material(
+        shear_modulus=parameters.shear_modulus,
+        poisson=parameters.poisson,
+        biot=parameters.biot,
+    )
+    problem = PoroMechanics(mesh, material)
+
+    half = 0.5 * parameters.reservoir_height
+    centroids = mesh.geometry.centroids(2)
+    pressure = np.where(np.abs(centroids[:, 1]) < half, parameters.depletion, 0.0)
+
+    facets = mesh.geometry.centroids(1)
+    boundary = boundary_facets(mesh)
+    top = [f for f in boundary if abs(facets[f][1] - height / 2) < 1e-9]
+    solution = problem.solve(
+        dt=None,
+        dirichlet=lambda x: np.zeros((len(np.atleast_2d(x)), 3)),
+        pressure=pressure,
+        traction=lambda x: np.zeros((len(np.atleast_2d(x)), 3, 3)),
+        traction_facets=top,
+        roller_facets=[f for f in boundary if f not in set(top)],
+    )
+    return mesh, problem.mechanics.cell_stress(solution["stress"]), pressure
+
+
+def combined_stress_profile(
+    parameters: Parameters, nx: int = 20, ny: int = 120,
+    dip: float = 70.0, extent: float = 250.0,
+):
+    """Fig. 4: combined stresses resolved on a ``dip``-degree plane.
+
+    Sampled along a line at ``dip`` to the horizontal through the reservoir
+    centre -- the line the fault would occupy -- and resolved onto that plane.
+    "Combined" means in-situ **plus** the depletion increment, which is what the
+    figure plots.
+    """
+    mesh, stress, _ = finite_reservoir(parameters, nx=nx, ny=ny)
+    normal, tangent = parameters.fault_basis(dip)
+    centroids = mesh.geometry.centroids(2)
+
+    theta = np.radians(dip)
+    y = np.linspace(-extent, extent, 2 * int(extent) + 1)
+    x = y * np.cos(theta) / np.sin(theta)  # the line at `dip` through the origin
+
+    perpendicular, parallel = [], []
+    for xi, yi in zip(x, y):
+        cell = int(np.argmin((centroids[:, 0] - xi) ** 2 + (centroids[:, 1] - yi) ** 2))
+        total = stress[cell] + parameters.stress_tensor(yi)[0]  # increment + in-situ
+        perpendicular.append(normal @ total @ normal)
+        parallel.append(tangent @ total @ normal)
+    return {
+        "y": y,
+        "normal": np.array(perpendicular),
+        "shear": np.array(parallel),
+    }
+
+
+def combined_closed_form(parameters: Parameters, dip: float = 70.0):
+    """``(outside, inside)`` resolved stresses expected far from the reservoir edges.
+
+    Outside is simply the in-situ state.  Inside, the uniaxial increment adds
+    ``Delta sigma_xx`` with ``Delta sigma_yy = 0``, resolved on the same plane.
+    """
+    normal, tangent = parameters.fault_basis(dip)
+    insitu = parameters.stress_tensor(0.0)[0]
+    increment = np.diag([parameters.horizontal_total_increment, 0.0])
+    combined = insitu + increment
+    return {
+        "outside": (normal @ insitu @ normal, tangent @ insitu @ normal),
+        "inside": (normal @ combined @ normal, tangent @ combined @ normal),
     }
 
 

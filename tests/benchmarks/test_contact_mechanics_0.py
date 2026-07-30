@@ -236,3 +236,91 @@ def test_roller_dofs_reject_a_non_axis_aligned_facet():
     # ... while the axis-aligned boundary edges are accepted
     axis_aligned = [f for f in boundary_facets(mesh)]
     assert len(problem.roller_dofs(axis_aligned)) > 0
+
+
+# -- Fig. 4: combined stresses across the finite reservoir ------------------------------
+#
+# A different computation from the uniform-depletion check above: the reservoir
+# is 225 m thick inside a 4500 m domain.  Because it spans the **full width** and
+# the sides are rollers, the problem is one-dimensional -- so the increment is
+# exactly uniaxial inside the reservoir and exactly zero outside it, which is the
+# two-plateau step the figure shows.  Both plateaus are therefore checked exactly.
+
+
+@pytest.fixture(scope="module")
+def profile():
+    return bench_profile()
+
+
+def bench_profile():
+    from benchmarks.contact_mechanics.benchmark_0 import combined_stress_profile
+
+    return combined_stress_profile(Parameters(), nx=8, ny=120)
+
+
+def test_the_published_plateau_values():
+    """``Sigma_perp``, ``Sigma_par`` inside and outside -- Fig. 4's two levels."""
+    from benchmarks.contact_mechanics.benchmark_0 import combined_closed_form
+
+    closed = combined_closed_form(Parameters())
+    assert closed["outside"][0] / 1e6 == pytest.approx(-60.04, rel=5e-3)
+    assert abs(closed["outside"][1]) / 1e6 == pytest.approx(8.21, rel=5e-3)
+    assert closed["inside"][0] / 1e6 == pytest.approx(-43.7, rel=1e-2)
+    assert abs(closed["inside"][1]) / 1e6 == pytest.approx(14.2, rel=1e-2)
+
+
+def test_the_reservoir_interior_matches_the_uniaxial_closed_form(profile):
+    """Inside, the increment is exactly ``Delta sigma_xx`` with ``Delta sigma_yy = 0``."""
+    from benchmarks.contact_mechanics.benchmark_0 import combined_closed_form
+
+    closed = combined_closed_form(Parameters())
+    centre = np.argmin(np.abs(profile["y"]))
+    assert profile["normal"][centre] == pytest.approx(closed["inside"][0], rel=1e-6)
+    assert profile["shear"][centre] == pytest.approx(closed["inside"][1], rel=1e-6)
+
+
+def test_outside_the_reservoir_the_increment_vanishes(profile):
+    """A full-width reservoir with roller sides leaves the seal unstressed.
+
+    Not an approximation: with ``eps_xx = 0`` and ``sigma_yy = 0`` the problem is
+    one-dimensional, so outside the depleted band the stress increment is
+    identically zero and the combined stress is the in-situ state.
+    """
+    parameters = Parameters()
+    half = 0.5 * parameters.reservoir_height
+    outside = np.abs(profile["y"]) > half + 20.0
+    y = profile["y"][outside]
+    expected_normal, expected_shear = parameters.resolved(y, dip=70.0)
+    assert np.allclose(profile["normal"][outside], expected_normal, rtol=1e-6)
+    assert np.allclose(profile["shear"][outside], expected_shear, rtol=1e-6)
+
+
+def test_the_profile_steps_at_the_reservoir_boundary(profile):
+    """The jump is the signature of Fig. 4, and it sits at ``+-h/2``."""
+    parameters = Parameters()
+    half = 0.5 * parameters.reservoir_height
+    y, normal = profile["y"], profile["normal"]
+    jumps = np.abs(np.diff(normal))
+    location = np.abs(y[1:][np.argsort(jumps)[-2:]])
+    assert np.allclose(location, half, atol=1.5 * parameters.height / 120)
+    assert jumps.max() > 10e6  # a real step, over 10 MPa
+
+
+def test_the_reservoir_is_less_compressive_than_the_seal(profile):
+    """Depletion unloads the horizontal stress, so the interior moves toward zero."""
+    parameters = Parameters()
+    half = 0.5 * parameters.reservoir_height
+    inside = profile["normal"][np.abs(profile["y"]) < half - 20.0]
+    outside = profile["normal"][np.abs(profile["y"]) > half + 20.0]
+    assert inside.max() < 0.0 and outside.max() < 0.0  # both compressive
+    assert inside.mean() > outside.mean() + 10e6  # by more than 10 MPa
+
+
+def test_the_shear_grows_inside_the_reservoir(profile):
+    """``|Sigma_par|`` rises from ~8 to ~14 MPa -- what drives fault reactivation."""
+    parameters = Parameters()
+    half = 0.5 * parameters.reservoir_height
+    inside = np.abs(profile["shear"][np.abs(profile["y"]) < half - 20.0])
+    outside = np.abs(profile["shear"][np.abs(profile["y"]) > half + 20.0])
+    assert inside.min() > outside.max()
+    assert inside.mean() / 1e6 == pytest.approx(14.2, rel=2e-2)
