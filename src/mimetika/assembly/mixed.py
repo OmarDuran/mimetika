@@ -220,6 +220,18 @@ BOUNDARY_ARGUMENTS = (
 )
 
 
+def constraint_scales(A: sp.spmatrix, dofs) -> np.ndarray:
+    """The diagonal each pinned row is scaled by in :func:`_constrain`.
+
+    Exposed so the condensed form can reproduce the elimination exactly rather
+    than re-deriving it and drifting out of step with it.
+    """
+    diagonal = np.abs(A.diagonal())
+    reference = diagonal[diagonal > 0].mean() if np.any(diagonal > 0) else 1.0
+    dofs = np.asarray(dofs)
+    return np.where(diagonal[dofs] > 0, diagonal[dofs], reference)
+
+
 def _constrain(A: sp.csr_matrix, rhs: np.ndarray, dofs, values):
     """Symmetric row/column elimination imposing ``x[dofs] = values``.
 
@@ -231,12 +243,10 @@ def _constrain(A: sp.csr_matrix, rhs: np.ndarray, dofs, values):
     (SuperLU's internal scaling hides this; MUMPS does not, and fails with
     ``KSP_DIVERGED_PC_FAILED``.)  Scaling leaves the solution untouched.
     """
+    scales = constraint_scales(A, dofs)
     A = A.tolil(copy=True)
     rhs = rhs - np.asarray(A[:, dofs] @ values).ravel()
-    diagonal = np.abs(A.diagonal())
-    reference = diagonal[diagonal > 0].mean() if np.any(diagonal > 0) else 1.0
-    for d, v in zip(dofs, values):
-        scale = diagonal[d] if diagonal[d] > 0 else reference
+    for (d, v), scale in zip(zip(dofs, values), scales):
         A[d, :] = 0.0
         A[:, d] = 0.0
         A[d, d] = scale

@@ -60,6 +60,11 @@ def stub_map(law=None, r=0.5):
         augmentation=np.array([r]),
         law=Identity() if law is None else law,
         block_sizes=(1, 1),
+        # these tests exercise CD, not the linear solver, so the backend is
+        # pinned: PETSc pays KSP setup and a MUMPS factorisation per solve, which
+        # on a stub this small is pure overhead and makes the suite's runtime
+        # depend on which environment it runs in
+        solver={"method": "direct", "backend": "scipy"},
     )
 
 
@@ -143,7 +148,8 @@ def test_the_contraction_condition_is_the_expected_one():
     for r, contracts in ((0.5, True), (3.9, True), (4.1, False), (8.0, False)):
         multiplier = abs(1.0 - r * C_12 / D_22)
         assert (multiplier < 1.0) is contracts
-        result = fixed_point(stub_map(r=r), relaxation=1.0, max_iterations=5000)
+        budget = 5000 if contracts else 400  # divergence shows up fast
+        result = fixed_point(stub_map(r=r), relaxation=1.0, max_iterations=budget)
         assert result.converged is contracts
 
 

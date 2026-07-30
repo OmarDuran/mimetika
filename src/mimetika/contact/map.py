@@ -67,6 +67,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import scipy.sparse as sp
+import scipy.sparse.linalg as spla
 
 from mimetika.solver.saddle import solve_saddle
 
@@ -161,6 +162,53 @@ class ContactMap:
             solution=z,
         )
 
+    # -- condensation ------------------------------------------------------------
+
+    def condense(self) -> "CondensedContactMap":
+        """Reduce to the contact unknowns alone -- no linear solve per evaluation.
+
+        The nonlinear system is *small*: it has ``n_points * dim`` unknowns, a
+        handful per fracture facet.  Evaluating it through a global solve is
+        backwards, and two facts remove the need to.
+
+        The constrained matrix does **not** depend on ``x``.  Pinning zeroes the
+        same rows and columns whatever the pinned values are; only the
+        right-hand side moves.  And that dependence is *affine*::
+
+            ``b(x) = b_0 + B W x`` ,   ``z(x) = A^{-1} b(x)`` ,
+            ``g(x) = g_0 + Ghat x`` ,  ``Ghat = J A^{-1} B W`` .
+
+        So one factorisation and ``n_points * dim + 1`` back-substitutions give a
+        small dense ``Ghat``, after which ``CD`` is a matvec and a projection.
+        The Uzawa iteration then touches the global system not at all.
+
+        Worth it whenever the iteration count exceeds the contact DOF count,
+        which is the usual case for friction; for a very large fracture and a
+        near-linear law the uncondensed form can still win, so this is offered
+        rather than imposed.
+        """
+        from mimetika.assembly.mixed import _constrain, constraint_scales
+
+        n = self.n_points * self.dim
+        scales = constraint_scales(self.matrix, self.dofs)
+        A0, b0 = _constrain(self.matrix, self.rhs, self.dofs, np.zeros(len(self.dofs)))
+
+        # b(v) - b_0 = -A[:, dofs] v, with the pinned rows overwritten by scale * v
+        columns = -self.matrix[:, self.dofs].tolil()
+        columns[self.dofs, :] = sp.diags(scales)
+        load = (columns.tocsr() @ self.to_moments).toarray()  # (N, n)
+
+        factor = spla.splu(sp.csc_matrix(A0))
+        base = factor.solve(b0)
+        response = factor.solve(load)
+        return CondensedContactMap(
+            gap_offset=(self.jump @ base).reshape(self.shape),
+            gap_matrix=np.asarray(self.jump @ response),
+            augmentation=self.augmentation,
+            law=self.law,
+            shape=self.shape,
+        )
+
     def residual(self, x, **kwargs) -> np.ndarray:
         """``CD(x) - x`` -- zero exactly at the contact solution."""
         x = np.asarray(x, dtype=float).reshape(self.shape)
@@ -230,3 +278,54 @@ def fixed_point(
         converged=converged,
         change=change,
     )
+
+
+@dataclass
+class CondensedContactMap:
+    """``CD`` with the mechanics eliminated: ``g(x) = g_0 + Ghat x``.
+
+    Same interface as :class:`ContactMap` -- :func:`fixed_point` cannot tell them
+    apart -- but every evaluation is a small dense matvec instead of a global
+    solve.  The solution vector is no longer available, which is the one thing
+    given up: recover it with a single final :class:`ContactMap` evaluation at
+    the converged ``x``.
+    """
+
+    gap_offset: np.ndarray  # g_0, (n_points, dim)
+    gap_matrix: np.ndarray  # Ghat, (n_points * dim, n_points * dim)
+    augmentation: np.ndarray
+    law: object
+    shape: tuple
+
+    @property
+    def n_points(self) -> int:
+        return self.shape[0]
+
+    @property
+    def dim(self) -> int:
+        return self.shape[1]
+
+    def initial_guess(self) -> np.ndarray:
+        return np.zeros(self.shape)
+
+    def gap(self, x) -> np.ndarray:
+        x = np.asarray(x, dtype=float).reshape(self.shape)
+        return self.gap_offset + (self.gap_matrix @ x.ravel()).reshape(self.shape)
+
+    def __call__(self, x, internal=None, g_prev=None, dt=None) -> MapEvaluation:
+        x = np.asarray(x, dtype=float).reshape(self.shape)
+        gap = self.gap(x)
+        trial = x + self.augmentation[:, None] * gap
+        if internal is None:
+            internal = self.law.initial_state(self.n_points)
+        y, internal = self.law.project(trial, internal, gap, g_prev, dt)
+        return MapEvaluation(
+            value=np.asarray(y).reshape(self.shape),
+            gap=gap,
+            internal=internal,
+            solution=None,
+        )
+
+    def residual(self, x, **kwargs) -> np.ndarray:
+        x = np.asarray(x, dtype=float).reshape(self.shape)
+        return self(x, **kwargs).value - x

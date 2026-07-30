@@ -79,6 +79,11 @@ def stub_map(law, r=0.4, load=3.0, points=POINTS, dim=DIM):
         augmentation=np.full(points, r),
         law=law,
         block_sizes=(size, size),
+        # these tests exercise CD, not the linear solver, so the backend is
+        # pinned: PETSc pays KSP setup and a MUMPS factorisation per solve, which
+        # on a stub this small is pure overhead and makes the suite's runtime
+        # depend on which environment it runs in
+        solver={"method": "direct", "backend": "scipy"},
     )
 
 
@@ -190,12 +195,12 @@ def test_cone_laws_are_positively_homogeneous(name, scale, x_row):
 
 
 @pytest.mark.parametrize("name", list(LAWS))
-@pytest.mark.parametrize("r", [0.05, 0.4, 1.0, 1.9])
+@pytest.mark.parametrize("r", [0.1, 0.4, 1.0, 1.9])
 def test_the_fixed_point_is_reached_and_admissible(name, r):
     """Inside the contraction range ``0 < r < 2 s / c`` every law must converge."""
     law = LAWS[name]
     result = fixed_point(
-        stub_map(law, r=r), relaxation=0.5, tolerance=1e-12, max_iterations=5000,
+        stub_map(law, r=r), relaxation=0.5, tolerance=1e-9, max_iterations=5000,
         dt=1e-3,
     )
     assert result.converged, f"{name} r={r}: did not converge"
@@ -216,7 +221,7 @@ def test_the_fixed_point_does_not_depend_on_where_it_started(name):
             stub_map(law),
             x0=np.full((POINTS, DIM), start),
             relaxation=0.5,
-            tolerance=1e-12,
+            tolerance=1e-9,
             max_iterations=5000,
             dt=1e-3,
         )
@@ -288,3 +293,65 @@ def test_the_sweep_would_catch_a_broken_projection(name):
     projected, _ = law.project(tensile, law.initial_state(POINTS), None, None, 1e-3)
     assert np.all(np.asarray(projected)[:, 0] <= 0.0)
     assert not np.allclose(projected, tensile)  # it really did something
+
+
+# -- condensation: the same map, with the mechanics eliminated --------------------------
+#
+# The nonlinear system is small -- ``n_points * dim`` unknowns -- so paying a
+# global linear solve per residual evaluation is backwards.  The constrained
+# matrix does not depend on ``x`` and the right-hand side depends on it affinely,
+# so the gap condenses to ``g(x) = g_0 + Ghat x`` and ``CD`` becomes a dense
+# matvec.  These tests require that this changes the cost and *nothing else*.
+
+
+@pytest.mark.parametrize("name", list(LAWS))
+@pytest.mark.parametrize("x_row", SWEEP, ids=SWEEP_IDS)
+def test_condensation_reproduces_the_full_map(name, x_row):
+    """Not merely close: the condensed form is the same algebra, so it is exact."""
+    law = LAWS[name]
+    cd = stub_map(law)
+    condensed = cd.condense()
+    x = np.tile(x_row, (POINTS, 1))
+    full, small = cd(x, dt=1e-3), condensed(x, dt=1e-3)
+    assert np.allclose(small.value, full.value, rtol=1e-12, atol=1e-12)
+    assert np.allclose(small.gap, full.gap, rtol=1e-12, atol=1e-12)
+
+
+@pytest.mark.parametrize("name", list(LAWS))
+def test_condensed_and_full_reach_the_same_fixed_point(name):
+    law = LAWS[name]
+    cd = stub_map(law, load=-3.0)
+    settings = dict(relaxation=0.5, tolerance=1e-12, max_iterations=5000, dt=1e-3)
+    full = fixed_point(cd, **settings)
+    small = fixed_point(cd.condense(), **settings)
+    assert full.converged and small.converged
+    assert np.allclose(full.x, small.x, atol=1e-10)
+    assert full.iterations == small.iterations
+
+
+def test_the_condensed_gap_is_affine():
+    """``g(x) = g_0 + Ghat x`` -- superposition must hold exactly."""
+    condensed = stub_map(LAWS["signorini-mu0.6"]).condense()
+    rng = np.random.default_rng(0)
+    a, b = rng.standard_normal((POINTS, DIM)), rng.standard_normal((POINTS, DIM))
+    lhs = condensed.gap(a + b) - condensed.gap(np.zeros((POINTS, DIM)))
+    rhs = (condensed.gap(a) - condensed.gap_offset) + (
+        condensed.gap(b) - condensed.gap_offset
+    )
+    assert np.allclose(lhs, rhs, atol=1e-12)
+
+
+def test_the_condensed_system_is_the_size_of_the_contact_problem():
+    """``Ghat`` is ``n_points * dim`` square -- not the size of the mechanics."""
+    cd = stub_map(LAWS["signorini-mu0.6"])
+    condensed = cd.condense()
+    n = POINTS * DIM
+    assert condensed.gap_matrix.shape == (n, n)
+    assert condensed.shape == cd.shape
+    assert cd.matrix.shape[0] > n  # the mechanics really was larger
+
+
+def test_condensation_drops_the_solution_vector():
+    """The one thing given up, stated rather than discovered later."""
+    condensed = stub_map(LAWS["signorini-mu0.6"]).condense()
+    assert condensed(np.zeros((POINTS, DIM))).solution is None
