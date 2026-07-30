@@ -44,7 +44,8 @@ class Parameters:
     width: float = 4500.0  # W
     height: float = 4500.0  # H
     depth: float = 3500.0  # D0, to the reservoir reference level
-    reservoir_height: float = 224.5  # h; see `compaction` below
+    fault_a: float = 75.0  # a: reservoir edge on the shallow side of the throw
+    fault_b: float = 150.0  # b: reservoir edge on the deep side
 
     shear_modulus: float = 6500e6  # G
     poisson: float = 0.15  # nu
@@ -63,6 +64,23 @@ class Parameters:
     fault_permeability: float = 0.0  # kappa
 
     # -- derived material constants ------------------------------------------
+
+    @property
+    def reservoir_height(self) -> float:
+        """``h = a + b`` -- the reservoir thickness, 225 m.
+
+        Table 2 gives the domain size but not the reservoir's own thickness.  It
+        is fixed by the displaced-fault geometry of benchmark 1, where the
+        reservoir spans ``[-b, a]`` on one side of the fault and ``[-a, b]`` on
+        the other: ``h = a + b``.  That reproduces the reported compaction
+        ``Delta h = -0.32`` m, which is the independent confirmation.
+        """
+        return self.fault_a + self.fault_b
+
+    @property
+    def throw(self) -> float:
+        """Vertical offset of the reservoir across the fault, ``b - a = 75`` m."""
+        return self.fault_b - self.fault_a
 
     @property
     def bulk_density(self) -> float:
@@ -141,6 +159,23 @@ class Parameters:
             np.einsum("i,qij,j->q", tangent, stress, normal),
         )
 
+    # -- the frictionless displaced fault (paper section 3, eqs 18-21) ---------
+
+    @property
+    def slip_stress_scale(self) -> float:
+        """``C = (1-2nu) alpha p / (2 pi (1-nu))`` -- eq. (19), ``-2.95e6`` Pa."""
+        return (
+            (1.0 - 2.0 * self.poisson)
+            * self.biot
+            * self.depletion
+            / (2.0 * np.pi * (1.0 - self.poisson))
+        )
+
+    @property
+    def slip_stiffness(self) -> float:
+        """``A = G / (2 pi (1 - nu))`` -- eq. (21), ``1.2171e9`` Pa."""
+        return self.shear_modulus / (2.0 * np.pi * (1.0 - self.poisson))
+
     # -- the depletion response (paper section 2.4) ----------------------------
 
     @property
@@ -152,9 +187,8 @@ class Parameters:
     def compaction(self) -> float:
         """``Delta h = h eps_yy``.
 
-        The paper reports ``-0.32`` m, which fixes the reservoir thickness at
-        ``h = 224.5`` m -- the value :attr:`reservoir_height` defaults to, since
-        Table 2 lists the domain size but not the reservoir's own thickness.
+        With ``h = a + b = 225`` m this gives ``-0.3207`` m, the paper's
+        ``-0.32``.
         """
         return self.reservoir_height * self.vertical_strain
 

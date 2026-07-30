@@ -52,10 +52,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+import scipy.sparse as sp
 
 from mimetika.assembly.contact import FractureContact
-from mimetika.assembly.mixed import MixedElasticity
 from mimetika.contact.laws import ContactLaw
+from mimetika.contact.map import ContactMap, fixed_point
+from mimetika.solver.saddle import solve_saddle
 
 
 @dataclass
@@ -215,12 +217,98 @@ class ContactDriver:
             out.append((self._frame(int(f)).T @ (coeffs @ B.T)).T)
         return np.vstack(out)
 
-    # -- the solve ----------------------------------------------------------------
+    # -- the linear operators the map is made of -------------------------------
 
-    def _problem(self, compliance) -> MixedElasticity:
-        """Mixed elasticity carrying a given facet-frame compliance on the fracture."""
-        geom = FractureContact(self.mesh, self.facets, facet_compliance=compliance)
-        return MixedElasticity(self.mesh, mu=self.mu, lam=self.lam, contact=geom)
+    def moment_operator(self) -> sp.csr_matrix:
+        """``W``: facet-frame values at the enforcement points -> traction moments.
+
+        The matrix form of :meth:`to_moments`, assembled once.  Columns are
+        indexed ``(point, component)`` and rows ``(facet, component, basis)``.
+        """
+        rows, cols, vals = [], [], []
+        for i, f in enumerate(self.facets):
+            frame = self._frame(int(f))  # (d, d): facet frame -> mesh components
+            B, w = self._basis(int(f))
+            # W[(k, b), (p, j)] = w[p] B[p, b] frame[k, j]
+            block = np.einsum("p,pb,kj->kbpj", w, B, frame)
+            base_row = self.ndf * i
+            base_col = self.dim * self._slice(i).start
+            idx = np.indices(block.shape)
+            rows.append(base_row + idx[0].ravel() * self.dim + idx[1].ravel())
+            cols.append(base_col + idx[2].ravel() * self.dim + idx[3].ravel())
+            vals.append(block.ravel())
+        return sp.csr_matrix(
+            (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+            shape=(self.ndf * len(self.facets), self.dim * self.n_points),
+        )
+
+    def jump_operator(self, problem) -> sp.csr_matrix:
+        """``J``: solution vector -> facet-frame gap at the enforcement points.
+
+        The gap is a **linear** functional of the solution -- the assembled
+        traction row of the *unfractured* system,
+
+            ``g_f = -( M sigma + D^T u + A^T s )_f`` ,
+
+        rotated into the facet frame and evaluated at the enforcement points.
+        Because it is linear it can be applied even though that row was replaced
+        by the contact constraint, and because it is a matrix the contact map
+        never needs the mesh.
+        """
+        M, D, A = problem.assemble_operators()
+        traction_rows = sp.hstack([M, D.T, A.T], format="csr")
+
+        blocks, rows, cols, vals = [], [], [], []
+        for i, f in enumerate(self.facets):
+            frame = self._frame(int(f))
+            B, _ = self._basis(int(f))
+            # values[(p, j)] = -sum_{k,b} frame[k, j] B[p, b] moments[(k, b)]
+            block = -np.einsum("kj,pb->pjkb", frame, B)
+            idx = np.indices(block.shape)
+            base_row = self.dim * self._slice(i).start
+            base_col = self.ndf * int(f)
+            rows.append(base_row + idx[0].ravel() * self.dim + idx[1].ravel())
+            cols.append(base_col + idx[2].ravel() * self.dim + idx[3].ravel())
+            vals.append(block.ravel())
+        gather = sp.csr_matrix(
+            (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+            shape=(self.dim * self.n_points, traction_rows.shape[0]),
+        )
+        return (gather @ traction_rows).tocsr()
+
+    def contact_dofs(self) -> np.ndarray:
+        """Indices of the fracture traction unknowns, in ``moment_operator`` order."""
+        return np.concatenate(
+            [self.ndf * int(f) + np.arange(self.ndf) for f in self.facets]
+        )
+
+    def contact_geometry(self, compliance=None) -> FractureContact:
+        """The fracture geometry, optionally carrying a linear compliance block.
+
+        Constitutive and geometric data -- the driver's own business.  Handed to
+        whoever builds the mechanics so the fracture is embedded in ``A``.
+        """
+        return FractureContact(self.mesh, self.facets, facet_compliance=compliance)
+
+    def contact_map(self, problem, matrix, rhs, **solver) -> ContactMap:
+        """Assemble the nonlinear algebraic map ``y = CD(x)`` for a given system.
+
+        ``(matrix, rhs)`` is the caller's mechanics, boundary conditions already
+        applied.  Everything mesh-dependent is baked into matrices here, so the
+        returned map is pure algebra.
+        """
+        solver = solver or {"method": "direct"}
+        return ContactMap(
+            matrix=matrix,
+            rhs=rhs,
+            dofs=self.contact_dofs(),
+            to_moments=self.moment_operator(),
+            jump=self.jump_operator(problem),
+            augmentation=self._r,
+            law=self.law,
+            block_sizes=problem.block_sizes,
+            solver=solver,
+        )
 
     def initial_state(self) -> ContactState:
         return ContactState(
@@ -229,18 +317,29 @@ class ContactDriver:
             jump=np.zeros((self.n_points, self.dim)),
         )
 
+    # -- convenience: build the map and drive it to its fixed point ---------------
+
     def solve_step(
-        self, dirichlet=None, body_force=None, state: ContactState | None = None,
+        self, mechanics, state: ContactState | None = None,
         dt: float | None = None, **kwargs,
     ) -> ContactState:
-        """Advance one load/time step. The caller owns the loop."""
+        """Advance one load/time step by solving ``x = CD(x)``.
+
+        ``mechanics(contact) -> (problem, A, rhs)`` is supplied by the caller and
+        is the *only* route by which boundary conditions, materials or a
+        pore-pressure right-hand side reach the contact problem.  The driver
+        never names one.
+
+        A law with an exact linear compliance needs no iteration at all: the
+        compliance goes straight into ``A`` and one solve finishes it.
+        """
         state = self.initial_state() if state is None else state
         kwargs.setdefault("method", "direct")
 
         exact = self.law.linear_compliance(self.dim)
-        if exact is not None:  # linear law: one solve, no outer iteration
-            problem = self._problem(exact)
-            sol = problem.solve(body_force=body_force, dirichlet=dirichlet, **kwargs)
+        if exact is not None:
+            problem, A, rhs = mechanics(self.contact_geometry(exact))
+            sol = problem.split(solve_saddle(A, rhs, problem.block_sizes, **kwargs))
             traction = self.tractions(sol["stress"])
             return ContactState(
                 multiplier=np.zeros_like(state.multiplier),
@@ -250,68 +349,55 @@ class ContactDriver:
                 iterations=1,
             )
 
-        # Uzawa: constrain the traction to lambda, recover the gap, project
-        problem = MixedElasticity(self.mesh, mu=self.mu, lam=self.lam)
-        lam, g_prev, internal = state.multiplier.copy(), state.jump, state.internal
-        dofs = np.concatenate(
-            [self.ndf * int(f) + np.arange(self.ndf) for f in self.facets]
+        problem, A, rhs = mechanics(None)
+        cd = self.contact_map(problem, A, rhs, **kwargs)
+        result = fixed_point(
+            cd,
+            x0=self.values_of(state.multiplier),
+            relaxation=self.relaxation,
+            tolerance=self.tolerance,
+            max_iterations=self.max_iterations,
+            internal=state.internal,
+            g_prev=state.jump,
+            dt=dt,
         )
-
-        change, scale, g, projected = np.inf, 1.0, state.jump, None
-        for it in range(1, self.max_iterations + 1):
-            sol = self._solve_with_traction(
-                problem, dofs, lam.ravel(), dirichlet, body_force, **kwargs
-            )
-            g = self.gap(problem, sol)
-            trial = (
-                np.vstack(
-                    [self.to_values(lam[i], int(f)) for i, f in enumerate(self.facets)]
-                )
-                + self._r[:, None] * g
-            )
-            projected, internal = self.law.project(trial, internal, g, g_prev, dt)
-
-            target = np.vstack(
-                [
-                    self.to_moments(projected[self._slice(i)], int(f))
-                    for i, f in enumerate(self.facets)
-                ]
-            )
-            # Under-relax: in the *sliding* regime the tangential update is not a
-            # contraction, and the plain fixed point settles into a limit cycle.
-            lam_new = lam + self.relaxation * (target - lam)
-            change = np.abs(lam_new - lam).max()
-            scale = max(np.abs(lam_new).max(), 1.0)
-            lam = lam_new
-            if change <= self.tolerance * scale:
-                break
-
-        internal = self.law.advance(projected, g, internal, dt, g_prev)
+        evaluation = result.evaluation
+        internal = self.law.advance(
+            evaluation.value, evaluation.gap, evaluation.internal, dt, state.jump
+        )
         return ContactState(
-            multiplier=lam, internal=internal, jump=g, solution=sol,
-            iterations=it, converged=change <= self.tolerance * scale,
+            multiplier=(cd.to_moments @ result.x.ravel()).reshape(
+                len(self.facets), self.ndf
+            ),
+            internal=internal,
+            jump=evaluation.gap,
+            solution=problem.split(evaluation.solution),
+            iterations=result.iterations,
+            converged=result.converged,
         )
 
-    def _solve_with_traction(
-        self, problem, dofs, values, dirichlet, body_force, **kwargs
-    ):
-        """Solve with the fracture traction constrained to ``values``."""
-        from mimetika.solver.saddle import solve_saddle
+    def values_of(self, multiplier: np.ndarray) -> np.ndarray:
+        """Traction moments per facet -> facet-frame values, the space ``CD`` uses."""
+        multiplier = np.atleast_2d(multiplier)
+        return np.vstack(
+            [self.to_values(multiplier[i], int(f)) for i, f in enumerate(self.facets)]
+        )[:, : self.dim]
 
-        S, rhs = problem.assemble(body_force=body_force, dirichlet=dirichlet)
-        S = S.tolil(copy=True)
-        rhs = rhs - S[:, dofs] @ values
-        for d, v in zip(dofs, values):
-            S[d, :] = 0.0
-            S[:, d] = 0.0
-            S[d, d] = 1.0
-            rhs[d] = v
-        blocks = (problem.n_stress, (problem.d + problem.n_skew) * problem.n_cells)
-        x = solve_saddle(S.tocsr(), rhs, blocks, **kwargs)
-        n1 = problem.n_stress
-        n2 = n1 + problem.d * problem.n_cells
-        from mimetika.assembly.mixed import MixedSolution
 
-        return MixedSolution(
-            {"stress": x[:n1], "displacement": x[n1:n2], "rotation": x[n2:]}
-        )
+def elastic_mechanics(mesh, mu: float = 1.0, lam: float = 1.0, **boundary):
+    """A ``mechanics`` factory for homogeneous mixed elasticity.
+
+    Belongs to the **caller** side of the seam: it is what closes over the
+    boundary data so the driver never sees any.  For a different problem --
+    per-cell materials, poromechanics, a pressure-driven right-hand side -- write
+    another factory with the same three-value signature; nothing downstream can
+    tell the difference.
+    """
+    from mimetika.assembly.mixed import MixedElasticity
+
+    def build(contact=None):
+        problem = MixedElasticity(mesh, mu=mu, lam=lam, contact=contact)
+        matrix, rhs = problem.assemble_constrained(**boundary)
+        return problem, matrix, rhs
+
+    return build

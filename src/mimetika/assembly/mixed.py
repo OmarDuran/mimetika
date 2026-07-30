@@ -206,15 +206,41 @@ class MixedPoisson:
         return out
 
 
+#: names :meth:`MixedElasticity.assemble_constrained` accepts.  Callers that
+#: forward boundary data opaquely -- the contact driver -- key off this instead
+#: of listing conditions themselves, so adding one here is the only change a new
+#: boundary condition needs.
+BOUNDARY_ARGUMENTS = (
+    "body_force",
+    "dirichlet",
+    "extra_rhs",
+    "traction",
+    "traction_facets",
+    "roller_facets",
+)
+
+
 def _constrain(A: sp.csr_matrix, rhs: np.ndarray, dofs, values):
-    """Symmetric row/column elimination imposing ``x[dofs] = values``."""
+    """Symmetric row/column elimination imposing ``x[dofs] = values``.
+
+    The pinned equation is scaled by the diagonal entry it replaces rather than
+    written as a bare ``1``.  With a stiff material the stress block carries
+    entries of order ``1/G`` -- around ``1e-10`` for rock -- so a unit diagonal
+    would be ten orders of magnitude larger than everything around it, and a
+    direct factorisation reports a zero pivot on the *rest* of the matrix.
+    (SuperLU's internal scaling hides this; MUMPS does not, and fails with
+    ``KSP_DIVERGED_PC_FAILED``.)  Scaling leaves the solution untouched.
+    """
     A = A.tolil(copy=True)
     rhs = rhs - np.asarray(A[:, dofs] @ values).ravel()
+    diagonal = np.abs(A.diagonal())
+    reference = diagonal[diagonal > 0].mean() if np.any(diagonal > 0) else 1.0
     for d, v in zip(dofs, values):
+        scale = diagonal[d] if diagonal[d] > 0 else reference
         A[d, :] = 0.0
         A[:, d] = 0.0
-        A[d, d] = 1.0
-        rhs[d] = v
+        A[d, d] = scale
+        rhs[d] = v * scale
     return A.tocsr(), rhs
 
 
@@ -493,7 +519,7 @@ class MixedElasticity:
             )
         return np.concatenate(out) if out else np.zeros(0, dtype=int)
 
-    def solve(
+    def assemble_constrained(
         self,
         body_force=None,
         dirichlet=None,
@@ -501,9 +527,15 @@ class MixedElasticity:
         traction=None,
         traction_facets=(),
         roller_facets=(),
-        **kwargs,
-    ) -> MixedSolution:
-        """Assemble and solve; ``kwargs`` go to :func:`solve_saddle`."""
+    ):
+        """``(A, rhs)`` with **every** boundary condition applied.
+
+        The single place that knows the full set of conditions.  Callers that
+        need to add their own constraints on top -- the contact driver pins the
+        fracture traction to the current multiplier -- start from here rather
+        than reimplementing the boundary handling, which is what lets them stay
+        ignorant of what conditions exist.
+        """
         S, rhs = self.assemble(body_force, dirichlet, extra_rhs)
         if len(traction_facets):
             dofs, values = self.traction_moments(traction_facets, traction)
@@ -511,13 +543,29 @@ class MixedElasticity:
         if len(roller_facets):
             dofs = self.roller_dofs(roller_facets)
             S, rhs = _constrain(S, rhs, dofs, np.zeros(len(dofs)))
-        blocks = (self.n_stress, (self.d + self.n_skew) * self.n_cells)
-        x = solve_saddle(S, rhs, blocks, **kwargs)
+        return S, rhs
+
+    @property
+    def block_sizes(self) -> tuple[int, int]:
+        return (self.n_stress, (self.d + self.n_skew) * self.n_cells)
+
+    def split(self, x: np.ndarray) -> MixedSolution:
+        """Unpack a raw solution vector into its fields."""
         n1 = self.n_stress
         n2 = n1 + self.d * self.n_cells
         return MixedSolution(
             {"stress": x[:n1], "displacement": x[n1:n2], "rotation": x[n2:]}
         )
+
+    def solve(self, **kwargs) -> MixedSolution:
+        """Assemble and solve.
+
+        Boundary arguments go to :meth:`assemble_constrained`; anything else is
+        forwarded to :func:`~mimetika.solver.saddle.solve_saddle`.
+        """
+        boundary = {k: kwargs.pop(k) for k in BOUNDARY_ARGUMENTS if k in kwargs}
+        S, rhs = self.assemble_constrained(**boundary)
+        return self.split(solve_saddle(S, rhs, self.block_sizes, **kwargs))
 
     # -- interpolants (for error measurement) --------------------------------
 

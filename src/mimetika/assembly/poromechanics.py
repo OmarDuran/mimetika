@@ -274,7 +274,11 @@ class PoroMechanics:
     # -- solve ------------------------------------------------------------------------
 
     def solve(self, dt: float | None = None, **kwargs) -> MixedSolution:
-        solver = {k: kwargs.pop(k) for k in ("backend", "method", "rtol") if k in kwargs}
+        solver = {
+            k: kwargs.pop(k)
+            for k in ("backend", "method", "rtol", "options", "preconditioner", "verbose")
+            if k in kwargs
+        }
         solver.setdefault("method", "direct")
         A, rhs, given_p = self.assemble(dt=dt, **kwargs)
 

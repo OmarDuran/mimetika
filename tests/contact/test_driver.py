@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from mimetika.contact import (
+    elastic_mechanics,
     ContactDriver,
     LinearContact,
     RateAndStateFriction,
@@ -75,8 +76,8 @@ def test_explicit_augmentation_is_respected():
 
 def test_too_large_an_augmentation_fails_to_converge():
     """Documents why r is derived rather than guessed."""
-    _, _, d = setup(augmentation=200.0, max_iterations=60)
-    state = d.solve_step(dirichlet=load(normal=-0.01))
+    mesh, _, d = setup(augmentation=200.0, max_iterations=60)
+    state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-0.01)))
     assert not state.converged
 
 
@@ -123,7 +124,7 @@ def test_linear_law_solves_in_one_pass_and_matches_the_contact_law():
         out[:, 0] = 0.01 * x[:, 0] + delta * side
         return out
 
-    state = d.solve_step(dirichlet=u)
+    state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=u))
     assert state.iterations == 1  # exactly linear: no outer loop
     assert np.allclose(state.jump[:, 0], delta, atol=1e-9)
 
@@ -133,7 +134,7 @@ def test_linear_law_solves_in_one_pass_and_matches_the_contact_law():
 
 def test_tension_opens_the_fracture_with_zero_traction():
     mesh, tags, d = setup()
-    state = d.solve_step(dirichlet=load(normal=+0.01))
+    state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=+0.01)))
     t = d.tractions(state.solution["stress"])
     assert state.converged
     assert np.allclose(t[:, 0], 0.0, atol=1e-12)  # traction free
@@ -143,7 +144,7 @@ def test_tension_opens_the_fracture_with_zero_traction():
 
 def test_compression_closes_without_interpenetration():
     mesh, tags, d = setup()
-    state = d.solve_step(dirichlet=load(normal=-0.01))
+    state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-0.01)))
     t = d.tractions(state.solution["stress"])
     assert state.converged
     assert np.allclose(state.jump[:, 0], 0.0, atol=1e-8)  # no interpenetration
@@ -155,7 +156,7 @@ def test_complementarity_holds():
     """g_n >= 0, t_n <= 0 and g_n t_n = 0 at every enforcement point."""
     mesh, tags, d = setup()
     for normal in (+0.01, -0.01, 0.0):
-        state = d.solve_step(dirichlet=load(normal=normal))
+        state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=normal)))
         t = d.tractions(state.solution["stress"])
         g = state.jump
         assert (g[:, 0] > -1e-8).all()
@@ -168,7 +169,7 @@ def test_complementarity_holds():
 
 def test_stick_below_the_cone():
     mesh, tags, d = setup()
-    state = d.solve_step(dirichlet=load(normal=-0.01, shear=0.002))
+    state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-0.01, shear=0.002)))
     t = d.tractions(state.solution["stress"])
     bound = -d.law.friction * t[:, 0]
     assert (np.linalg.norm(t[:, 1:], axis=1) < bound).all()
@@ -178,7 +179,7 @@ def test_stick_below_the_cone():
 
 def test_slip_saturates_exactly_on_the_cone():
     mesh, tags, d = setup()
-    state = d.solve_step(dirichlet=load(normal=-0.01, shear=0.05))
+    state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-0.01, shear=0.05)))
     t = d.tractions(state.solution["stress"])
     bound = -d.law.friction * t[:, 0]
     assert np.allclose(np.linalg.norm(t[:, 1:], axis=1), bound, rtol=1e-6)
@@ -190,7 +191,7 @@ def test_shear_traction_is_capped_however_hard_we_push():
     mesh, tags, d = setup()
     magnitudes = []
     for shear in (0.05, 0.2, 1.0):
-        state = d.solve_step(dirichlet=load(normal=-0.01, shear=shear))
+        state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-0.01, shear=shear)))
         t = d.tractions(state.solution["stress"])
         magnitudes.append(np.linalg.norm(t[0, 1:]))
     assert np.allclose(magnitudes, magnitudes[0], rtol=1e-6)
@@ -199,7 +200,7 @@ def test_shear_traction_is_capped_however_hard_we_push():
 @pytest.mark.parametrize("friction", [0.2, 0.6, 1.0])
 def test_the_cap_scales_with_the_friction_coefficient(friction):
     mesh, tags, d = setup(law=SignoriniCoulomb(friction=friction))
-    state = d.solve_step(dirichlet=load(normal=-0.01, shear=0.5))
+    state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-0.01, shear=0.5)))
     t = d.tractions(state.solution["stress"])
     assert np.allclose(
         np.linalg.norm(t[:, 1:], axis=1), friction * OEDOMETER * 0.01, rtol=1e-5
@@ -213,7 +214,7 @@ def test_caller_drives_the_loop_and_slip_accumulates():
     mesh, tags, d = setup()
     state, history = None, []
     for shear in (0.05, 0.10, 0.15):
-        state = d.solve_step(dirichlet=load(normal=-0.01, shear=shear), state=state)
+        state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-0.01, shear=shear)), state=state)
         assert state.converged
         history.append(state.internal[0, 0])
     assert history[0] < history[1] < history[2]  # monotone accumulation
@@ -235,7 +236,7 @@ def test_rate_dependence_changes_the_friction_reached():
     mesh, tags, d = setup(law=law)
     ratios = []
     for dt in (1e-2, 1e-4):
-        state = d.solve_step(dirichlet=load(normal=-0.01, shear=0.05), dt=dt)
+        state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-0.01, shear=0.05)), dt=dt)
         t = d.tractions(state.solution["stress"])
         ratios.append(np.linalg.norm(t[0, 1:]) / -t[0, 0])
     assert not np.isclose(ratios[0], ratios[1], rtol=1e-3)  # rate matters
@@ -245,7 +246,7 @@ def test_rate_dependence_changes_the_friction_reached():
 def test_state_variable_evolves_across_steps():
     law = RateAndStateFriction(Dc=1e-4)
     mesh, tags, d = setup(law=law)
-    state = d.solve_step(dirichlet=load(normal=-0.01, shear=0.05), dt=1e-3)
+    state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-0.01, shear=0.05)), dt=1e-3)
     assert not np.isclose(state.internal[0, 1], law.theta0)
 
 
@@ -257,7 +258,7 @@ def test_both_enforcement_modes_agree_on_a_uniform_problem():
     results = {}
     for mode in ("averaged", "pointwise"):
         mesh, tags, d = setup(enforcement=mode)
-        state = d.solve_step(dirichlet=load(normal=-0.01, shear=0.05))
+        state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-0.01, shear=0.05)))
         assert state.converged
         results[mode] = d.tractions(state.solution["stress"])[0]
     # the two modes are different discretisations of the projection, so they
@@ -272,7 +273,7 @@ def test_both_enforcement_modes_agree_on_a_uniform_problem():
 
 def test_contact_on_a_tetrahedral_mesh():
     mesh, tags, d = setup(tets=True)
-    state = d.solve_step(dirichlet=load(normal=-0.01, shear=0.05))
+    state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-0.01, shear=0.05)))
     t = d.tractions(state.solution["stress"])
     assert state.converged
     assert (t[:, 0] < 0).all()
@@ -289,11 +290,11 @@ def test_relaxation_is_required_in_the_sliding_regime():
     amplitude on meshes where fracture facets couple strongly.
     """
     mesh, tags, plain = setup(tets=True, relaxation=1.0, max_iterations=120)
-    stuck = plain.solve_step(dirichlet=load(normal=-0.01, shear=0.05))
+    stuck = plain.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-0.01, shear=0.05)))
     assert not stuck.converged
 
     mesh, tags, damped = setup(tets=True)  # default relaxation
-    ok = damped.solve_step(dirichlet=load(normal=-0.01, shear=0.05))
+    ok = damped.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-0.01, shear=0.05)))
     assert ok.converged
     t = damped.tractions(ok.solution["stress"])
     assert np.allclose(

@@ -61,6 +61,7 @@ def solve_saddle(
     verbose: bool = False,
     options: str | None = None,
     preconditioner: str = "cpr",
+    scale_blocks: bool = True,
 ) -> np.ndarray:
     """Solve a symmetric indefinite saddle-point system.
 
@@ -75,17 +76,65 @@ def solve_saddle(
         ``"petsc"``, ``"scipy"`` or ``"auto"``.
     method
         ``"direct"`` or ``"minres"``.
+    scale_blocks
+        Nondimensionalise the two blocks against each other before solving (see
+        :func:`block_scaling`).  On by default; it is a similarity transform, so
+        the solution is unchanged.
     """
     if backend == "auto":
         backend = "petsc" if petsc_available() else "scipy"
+
+    scaling = block_scaling(A, block_sizes) if scale_blocks else None
+    if scaling is not None:
+        D = sp.diags(scaling)
+        A, rhs = (D @ A @ D).tocsr(), scaling * rhs
+
     if backend == "petsc":
-        return _solve_petsc(
+        x = _solve_petsc(
             A, rhs, block_sizes, method, rtol, max_it, verbose, options,
             preconditioner,
         )
-    if options:
+    elif options:
         raise ValueError("PETSc options were given but the scipy backend is in use")
-    return _solve_scipy(A, rhs, block_sizes, method, rtol, max_it, verbose)
+    else:
+        x = _solve_scipy(A, rhs, block_sizes, method, rtol, max_it, verbose)
+    return scaling * x if scaling is not None else x
+
+
+def block_scaling(A: sp.spmatrix, block_sizes) -> np.ndarray | None:
+    """Diagonal ``D`` making the two blocks of ``D A D`` commensurate.
+
+    In physical units the leading block is a compliance, of order ``1/G``, while
+    the constraint block is a discrete divergence of order one.  For rock
+    (``G ~ 1e10``) that is an eleven-order-of-magnitude spread, and the resulting
+    condition number is *intrinsic* to the choice of units, not an artefact --
+    which is why row-equilibration cannot touch it: row one already mixes both
+    scales, so its maximum is dominated by the constraint entries.
+
+    Scaling the two fields against each other does fix it.  With
+    ``sigma = s tilde-sigma`` and ``u = tilde-u / s``, the transformed blocks are
+    ``s^2 M`` and ``B``, so ``s = sqrt(|B|/|M|)`` brings both to order one --
+    exactly nondimensionalising stress by the modulus.  In practice this takes
+    the fault-benchmark systems from ``cond ~ 2e11`` to ``~1e3``, which is the
+    difference between MUMPS reporting a zero pivot and factorising cleanly.
+
+    Returns ``None`` when the scaling would be a no-op or cannot be formed.
+    """
+    n0 = int(block_sizes[0])
+    total = A.shape[0]
+    if not 0 < n0 < total:
+        return None
+    leading = abs(A[:n0, :n0]).max()
+    constraint = abs(A[n0:, :n0]).max()
+    if not (leading > 0 and constraint > 0):
+        return None
+    s = float(np.sqrt(constraint / leading))
+    if not np.isfinite(s) or 0.1 < s < 10.0:  # already commensurate
+        return None
+    scaling = np.empty(total)
+    scaling[:n0] = s
+    scaling[n0:] = 1.0 / s
+    return scaling
 
 
 # -- scipy --------------------------------------------------------------------

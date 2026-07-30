@@ -24,7 +24,7 @@ import numpy as np
 import pytest
 
 from mimetika.assembly.mixed import MixedElasticity
-from mimetika.contact import ContactDriver, LinearContact, SignoriniCoulomb
+from mimetika.contact import ContactDriver, elastic_mechanics, LinearContact, SignoriniCoulomb
 from mimetika.mesh import structured_quads, structured_triangles
 from mimetika.mesh.fracture import facets_on_plane
 
@@ -128,7 +128,7 @@ def test_facet_frame_is_orthonormal_in_2d():
 @pytest.mark.parametrize("tris", [False, True], ids=["quads", "triangles"])
 def test_tension_opens_the_fracture(tris):
     mesh, tags, d = setup(tris=tris)
-    state = d.solve_step(dirichlet=load(normal=+STRAIN))
+    state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=+STRAIN)))
     t = d.tractions(state.solution["stress"])
     assert state.converged
     assert np.allclose(t[:, 0], 0.0, atol=1e-12)
@@ -138,7 +138,7 @@ def test_tension_opens_the_fracture(tris):
 @pytest.mark.parametrize("tris", [False, True], ids=["quads", "triangles"])
 def test_compression_closes_without_interpenetration(tris):
     mesh, tags, d = setup(tris=tris)
-    state = d.solve_step(dirichlet=load(normal=-STRAIN))
+    state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-STRAIN)))
     t = d.tractions(state.solution["stress"])
     assert state.converged
     assert np.allclose(state.jump[:, 0], 0.0, atol=1e-8)
@@ -148,7 +148,7 @@ def test_compression_closes_without_interpenetration(tris):
 def test_complementarity_holds_in_2d():
     mesh, tags, d = setup()
     for normal in (+STRAIN, -STRAIN, 0.0):
-        state = d.solve_step(dirichlet=load(normal=normal))
+        state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=normal)))
         t = d.tractions(state.solution["stress"])
         assert (state.jump[:, 0] > -1e-8).all()
         assert (t[:, 0] < 1e-10).all()
@@ -159,12 +159,12 @@ def test_stick_and_slip_in_2d():
     """In 2D the friction set is an interval, not a disk."""
     mesh, tags, d = setup()
 
-    stuck = d.solve_step(dirichlet=load(normal=-STRAIN, shear=0.002))
+    stuck = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-STRAIN, shear=0.002)))
     t = d.tractions(stuck.solution["stress"])
     assert (np.abs(t[:, 1]) < -d.law.friction * t[:, 0]).all()
     assert list(np.unique(d.law.status(t))) == [1]
 
-    sliding = d.solve_step(dirichlet=load(normal=-STRAIN, shear=0.05))
+    sliding = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-STRAIN, shear=0.05)))
     t = d.tractions(sliding.solution["stress"])
     assert np.allclose(np.abs(t[:, 1]), -d.law.friction * t[:, 0], rtol=1e-6)
     assert list(np.unique(d.law.status(t))) == [2]
@@ -173,7 +173,7 @@ def test_stick_and_slip_in_2d():
 @pytest.mark.parametrize("friction", [0.2, 0.6, 1.0])
 def test_the_2d_cap_scales_with_friction(friction):
     mesh, tags, d = setup(law=SignoriniCoulomb(friction=friction))
-    state = d.solve_step(dirichlet=load(normal=-STRAIN, shear=0.5))
+    state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-STRAIN, shear=0.5)))
     t = d.tractions(state.solution["stress"])
     assert np.allclose(np.abs(t[:, 1]), friction * OEDOMETER * STRAIN, rtol=1e-5)
 
@@ -182,7 +182,7 @@ def test_shear_traction_is_capped_in_2d():
     mesh, tags, d = setup()
     caps = []
     for shear in (0.05, 0.2, 1.0):
-        state = d.solve_step(dirichlet=load(normal=-STRAIN, shear=shear))
+        state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-STRAIN, shear=shear)))
         caps.append(abs(d.tractions(state.solution["stress"])[0, 1]))
     assert np.allclose(caps, caps[0], rtol=1e-6)
 
@@ -233,7 +233,7 @@ def test_linear_law_in_2d_solves_in_one_pass():
         out[:, 0] = STRAIN * x[:, 0] + delta * side
         return out
 
-    state = d.solve_step(dirichlet=u)
+    state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=u))
     assert state.iterations == 1
     assert np.allclose(state.jump[:, 0], delta, atol=1e-9)
 
@@ -242,7 +242,7 @@ def test_stepping_accumulates_slip_in_2d():
     mesh, tags, d = setup()
     state, history = None, []
     for shear in (0.05, 0.10, 0.15):
-        state = d.solve_step(dirichlet=load(normal=-STRAIN, shear=shear), state=state)
+        state = d.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-STRAIN, shear=shear)), state=state)
         assert state.converged
         history.append(state.internal[0, 0])
     assert history[0] < history[1] < history[2]

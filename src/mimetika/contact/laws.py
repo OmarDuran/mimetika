@@ -138,6 +138,36 @@ class LinearContact(ContactLaw):
         return trial, state
 
 
+class FrictionlessBilateral(ContactLaw):
+    """A closed, frictionless fault: ``t_t = 0`` and ``g_n = 0``.
+
+    Bilateral in the normal direction -- the fault is held shut and may carry
+    tension -- and free to slide tangentially.  The projection keeps the normal
+    traction and zeroes the shear, so the converged state has no opening and no
+    shear stress, which is exactly the classical frictionless crack.
+
+    Why not ``SignoriniCoulomb(friction=0)``
+    ---------------------------------------
+    That law also clips the normal traction to compression, which is right for a
+    total-stress problem and **wrong for an incremental one**.  A fault sitting
+    under tens of MPa of in-situ compression stays firmly closed, so an
+    incremental solve -- where only the depletion response is computed -- must
+    not read an incremental normal tension as opening.  Using Signorini there
+    would open the fault spuriously wherever the increment happens to be
+    tensile.  The choice between the two is a modelling decision about *what the
+    unknown is*, not about the physics of the fault.
+    """
+
+    n_state = 0
+    symmetric_tangent = True
+
+    def project(self, trial, state, g=None, g_prev=None, dt=None):
+        trial = np.atleast_2d(np.asarray(trial, dtype=float))
+        t = np.zeros_like(trial)
+        t[:, 0] = trial[:, 0]  # normal traction is whatever holds the fault shut
+        return t, state
+
+
 class SignoriniCoulomb(ContactLaw):
     """Unilateral contact with Coulomb friction (Alart--Curnier projection).
 
