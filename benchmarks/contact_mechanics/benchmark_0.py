@@ -30,7 +30,6 @@ from mimetika.assembly.mixed import boundary_facets
 from mimetika.assembly.poromechanics import PoroMechanics
 from mimetika.materials import Material
 from mimetika.mesh import structured_quads
-from mimetika.assembly.mixed import boundary_facets as _bf
 
 from benchmarks.contact_mechanics.common import Parameters, linear_fit
 
@@ -115,6 +114,14 @@ def finite_reservoir(parameters: Parameters, nx: int = 20, ny: int = 120):
     problem = PoroMechanics(mesh, material)
 
     half = 0.5 * parameters.reservoir_height
+    spacing = height / ny
+    if abs(half / spacing - round(half / spacing)) > 1e-9:
+        raise ValueError(
+            f"ny={ny} puts the reservoir boundary at y={half} inside a cell "
+            f"(dy={spacing}); the depletion is assigned per cell, so a boundary "
+            "that bisects a cell shifts the step by half a cell.  Choose ny a "
+            f"multiple of {round(height / (2 * half) * 2)} -- e.g. 40, 80, 120, 200."
+        )
     centroids = mesh.geometry.centroids(2)
     pressure = np.where(np.abs(centroids[:, 1]) < half, parameters.depletion, 0.0)
 
@@ -153,6 +160,8 @@ def combined_stress_profile(
 
     perpendicular, parallel = [], []
     for xi, yi in zip(x, y):
+        # nearest cell centre; ties at a reservoir boundary are why `ny` must put
+        # that boundary on a cell face (checked in `finite_reservoir`)
         cell = int(np.argmin((centroids[:, 0] - xi) ** 2 + (centroids[:, 1] - yi) ** 2))
         total = stress[cell] + parameters.stress_tensor(yi)[0]  # increment + in-situ
         perpendicular.append(normal @ total @ normal)
@@ -162,6 +171,28 @@ def combined_stress_profile(
         "normal": np.array(perpendicular),
         "shear": np.array(parallel),
     }
+
+
+def combined_analytic(y, parameters: Parameters, dip: float = 70.0):
+    """The analytic combined profile of Fig. 4, as a function of ``y``.
+
+    The reference curve the paper plots alongside the simulators.  It is exactly
+    piecewise because the reservoir is infinitely wide: no arching, so outside
+    the depleted band the increment is identically zero and the combined stress
+    is the in-situ state, while inside it is the in-situ state plus the uniaxial
+    increment ``Delta sigma_xx`` (with ``Delta sigma_yy = 0``).  The two branches
+    keep the in-situ depth gradient, so neither is flat.
+    """
+    y = np.atleast_1d(np.asarray(y, dtype=float))
+    normal, tangent = parameters.fault_basis(dip)
+    inside = np.abs(y) < 0.5 * parameters.reservoir_height
+
+    stress = parameters.stress_tensor(y)  # (n, 2, 2) in-situ
+    stress[inside, 0, 0] += parameters.horizontal_total_increment
+    return (
+        np.einsum("i,qij,j->q", normal, stress, normal),
+        np.einsum("i,qij,j->q", tangent, stress, normal),
+    )
 
 
 def combined_closed_form(parameters: Parameters, dip: float = 70.0):

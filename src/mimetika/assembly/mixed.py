@@ -68,10 +68,17 @@ def facet_cell_signs(mesh: Mesh) -> dict[int, int]:
 
 
 def discrete_divergence(mesh: Mesh, dofmap=None) -> sp.csr_matrix:
-    """``B`` with ``(B F)_E = \\int_E div F``: incidence scaled by facet measures.
+    """``B`` with ``(B F)_E = \\int_E div F``: the **signed incidence matrix**.
 
-    Purely topological up to the facet measures -- this is the discrete
-    exterior derivative, not a fitted operator.
+    Purely topological -- integer entries, no geometry at all.  This is the
+    discrete exterior derivative, and Stokes makes it exact.
+
+    That requires the flux DOF to be the *integrated* normal flux
+    ``F_e = int_e F.n``, which is the natural evaluation of a ``(d-1)``-form on a
+    facet, rather than the facet *average*.  With the average convention a
+    ``diag(|e|)`` has to be smuggled into this operator, which puts metric into
+    the one object that should carry none; the measures belong in the inner
+    product, where all the other metric lives.
 
     With a duplicating ``dofmap`` a fracture facet contributes to **one** cell
     per column, so ``un+`` and ``un-`` no longer cancel and the mass exchanged
@@ -79,16 +86,27 @@ def discrete_divergence(mesh: Mesh, dofmap=None) -> sp.csr_matrix:
     """
     d = mesh.dim
     if dofmap is None:
-        inc = mesh.complex.boundary_matrix(d)  # (n_facets, n_cells), signed
-        return (inc.T @ sp.diags(mesh.geometry.measure(d - 1))).tocsr()
+        # Cached on the mesh.  This operator is *metric-free apart from the facet
+        # measures* -- signed incidence, nothing else -- so it is the same matrix
+        # for every physics on a given mesh: Darcy, elasticity, and the flow block
+        # of poromechanics all want this one object.  Rebuilding it per assemble
+        # is pure waste, and the multiphysics systems assemble it several times.
+        cached = getattr(mesh, "_discrete_divergence", None)
+        if cached is not None:
+            return cached
+        divergence = mesh.complex.boundary_matrix(d).T.tocsr()
+        try:
+            mesh._discrete_divergence = divergence
+        except AttributeError:  # frozen mesh: correctness does not depend on it
+            pass
+        return divergence
 
-    area = mesh.geometry.measure(d - 1)
     rows, cols, vals = [], [], []
     for c in range(mesh.num_cells(d)):
         for f, sgn in mesh.complex.facets_of(d, c):
             rows.append(c)
             cols.append(int(dofmap.dofs(c, f)[0]))
-            vals.append(sgn * area[f])
+            vals.append(float(sgn))
     return sp.csr_matrix(
         (vals, (rows, cols)), shape=(mesh.num_cells(d), dofmap.n_dofs)
     )
@@ -153,7 +171,8 @@ class MixedPoisson:
             return g
         for f, s in facet_cell_signs(self.mesh).items():
             qp, qw = self.mesh.geometry.quadrature(d - 1, f)
-            g[f] = s * (qw @ np.asarray(potential(qp)).ravel())
+            # pairs with the *integrated* flux DOF, so the facet mean of p_D
+            g[f] = s * (qw @ np.asarray(potential(qp)).ravel()) / qw.sum()
         return g
 
     def assemble(self, source=None, dirichlet=None):
@@ -191,7 +210,11 @@ class MixedPoisson:
         return out
 
     def interpolate_flux(self, flux) -> np.ndarray:
-        """Average normal flux on each facet, w.r.t. the canonical normal."""
+        """**Integrated** normal flux on each facet, w.r.t. the canonical normal.
+
+        ``int_e F.n``, matching the DOF convention that lets the discrete
+        divergence be the bare signed incidence.
+        """
         d = self.mesh.dim
         normals = (
             self.mesh.geometry.facet_normals()
@@ -202,7 +225,7 @@ class MixedPoisson:
         for f in range(self.n_flux):
             qp, qw = self.mesh.geometry.quadrature(d - 1, f)
             F = np.asarray(flux(qp), dtype=float)
-            out[f] = (qw @ (F @ normals[f])) / qw.sum()
+            out[f] = qw @ (F @ normals[f])  # integrated, not averaged
         return out
 
 
@@ -243,15 +266,30 @@ def _constrain(A: sp.csr_matrix, rhs: np.ndarray, dofs, values):
     (SuperLU's internal scaling hides this; MUMPS does not, and fails with
     ``KSP_DIVERGED_PC_FAILED``.)  Scaling leaves the solution untouched.
     """
+    dofs = np.asarray(dofs, dtype=np.int64)
+    values = np.asarray(values, dtype=float)
     scales = constraint_scales(A, dofs)
-    A = A.tolil(copy=True)
     rhs = rhs - np.asarray(A[:, dofs] @ values).ravel()
-    for (d, v), scale in zip(zip(dofs, values), scales):
-        A[d, :] = 0.0
-        A[:, d] = 0.0
-        A[d, d] = scale
-        rhs[d] = v * scale
-    return A.tocsr(), rhs
+
+    # Drop every entry in a pinned row or column in one pass, then put the scaled
+    # diagonal back.  Doing it per DOF through LIL assignment is quadratic in
+    # practice and dominated the assembly profile.
+    coo = A.tocoo()
+    pinned = np.zeros(A.shape[0], dtype=bool)
+    pinned[dofs] = True
+    keep = ~(pinned[coo.row] | pinned[coo.col])
+    matrix = sp.csr_matrix(
+        (
+            np.concatenate([coo.data[keep], scales]),
+            (
+                np.concatenate([coo.row[keep], dofs]),
+                np.concatenate([coo.col[keep], dofs]),
+            ),
+        ),
+        shape=A.shape,
+    )
+    rhs[dofs] = values * scales
+    return matrix, rhs
 
 
 def _facet_normals_low_dim(mesh: Mesh) -> np.ndarray:

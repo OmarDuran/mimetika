@@ -117,7 +117,16 @@ class PoroMechanics:
 
         Built exactly like ``as_h``, with the identity in place of the rigid
         rotations: ``tr_h(tau)_E = (1/|E|) sum_e int_e (tau n_e) . (x - x_E)``.
+
+        Cached: it depends only on the geometry, not on the material or the time
+        step, but ``assemble`` needs it every call and it loops over every cell.
         """
+        if getattr(self, "_trace", None) is not None:
+            return self._trace
+        self._trace = self._build_trace_operator()
+        return self._trace
+
+    def _build_trace_operator(self) -> sp.csr_matrix:
         from mimetika.geometry.local_cell import LocalCell
 
         d, ndf = self.d, self.mechanics.ndf
@@ -297,7 +306,16 @@ class PoroMechanics:
                 }
             )
         n4 = n3 + self.n_flux
-        x = solve_saddle(A, rhs, (n1 + self.n_flux, n3 - n1 + self.n_cells), **solver)
+        # CPR split: everything against the **pressure**, which is the elliptic
+        # field and is last and contiguous in [sigma, u, s, q, p].  The Schur
+        # complement of this split is `B diag(M)^-1 B^T + S|E|` -- the cell-centred
+        # pressure operator -- so AMG on it is exactly the CPR idea.
+        #
+        # The previous split, `(n_stress + n_flux, ...)`, named no field at all:
+        # entries n1..n1+n_flux are displacement and rotation, not flux, because
+        # q sits at offset n3.  That silently mis-targeted both the fieldsplit
+        # preconditioner and the block scaling.
+        x = solve_saddle(A, rhs, (n4, self.n_cells), **solver)
         return MixedSolution(
             {
                 "stress": x[:n1],

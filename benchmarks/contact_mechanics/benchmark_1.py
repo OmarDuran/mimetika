@@ -19,11 +19,19 @@ are derived for an unbounded medium; the simulation uses the paper's finite
 ``W = H = 4500`` m domain, which is why the comparison below is on the profile
 shape and peak rather than pointwise.
 
-The contact law is :class:`FrictionlessBilateral`, not
-``SignoriniCoulomb(friction=0)``.  This is an **incremental** problem -- only the
-depletion response is computed -- and the fault sits under tens of MPa of in-situ
-compression, so it stays shut; a Signorini condition applied to the increment
-would open it wherever the incremental normal traction happens to be tensile.
+The contact law is :class:`SignoriniCoulomb` with ``friction = 0``: the physical
+model, unilateral and frictionless.  A benchmark exists to *test* laws, so the
+one that represents the situation is the one that should be run.
+
+Making it work requires giving the law the **total** traction.  Signorini
+constrains ``t_N <= 0`` on the total stress, and this is an *incremental* problem
+-- only the depletion response is solved for.  The incremental normal traction
+reaches ``+8.4`` MPa in tension, but the fault sits on ``-57`` MPa of in-situ
+compression and is shut by a wide margin, so the law must be told what it is
+sitting on: that is what ``prestress`` carries.  With it, Signorini correctly
+finds the fault closed and agrees with :class:`FrictionlessBilateral` to
+round-off; without it, it reads the tensile increment as opening.  The deficiency
+was in the incremental formulation, not in the law.
 
 Run with ``python -m benchmarks.contact_mechanics.benchmark_1``.
 """
@@ -37,7 +45,7 @@ import scipy.sparse as sp
 
 from mimetika.assembly.mixed import MixedElasticity, boundary_facets
 from mimetika.assembly.poromechanics import PoroMechanics
-from mimetika.contact import ContactDriver, FrictionlessBilateral
+from mimetika.contact import ContactDriver, FrictionlessBilateral, SignoriniCoulomb
 from mimetika.materials import Material
 from mimetika.mesh import structured_quads
 from mimetika.mesh.fracture import facets_on_plane
@@ -210,17 +218,17 @@ def simulate(
 ):
     """Solve the displaced-fault problem; return slip against ``y``.
 
-    ``law`` defaults to :class:`FrictionlessBilateral`.  Pass
-    ``SignoriniCoulomb(friction=0)`` to run the unilateral model instead -- with
-    ``prestress=True`` the two agree, because the fault really is shut; with
-    ``prestress=False`` the unilateral one opens it, which is the failure this
-    benchmark is able to detect.
+    ``law`` defaults to ``SignoriniCoulomb(friction=0)`` -- the physical model.
+    Pass :class:`FrictionlessBilateral` to run the bonded variant: with
+    ``prestress=True`` the two agree to round-off because the fault really is
+    shut, and with ``prestress=False`` the unilateral one opens it, which is the
+    failure this benchmark is able to detect.
     """
     mesh, fault, pressure = build(parameters, nx=nx, ny=ny)
     driver = ContactDriver(
         mesh,
         fault,
-        FrictionlessBilateral() if law is None else law,
+        SignoriniCoulomb(friction=0.0) if law is None else law,
         prestress=(
             insitu_prestress(mesh, fault, parameters) if prestress else None
         ),

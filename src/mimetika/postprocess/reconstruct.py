@@ -35,10 +35,13 @@ def reconstruct_flux(mesh: Mesh, flux: np.ndarray) -> np.ndarray:
     """Cell-centred velocity vectors ``(n_cells, 3)`` from facet normal fluxes.
 
     Exact whenever the discrete flux is the interpolant of a constant field.
+
+    ``flux`` holds the **integrated** normal flux per facet, the convention that
+    lets the discrete divergence be the bare signed incidence, so the reconstruction
+    formula ``(1/|E|) sum_e s_e (int_e F.n) (x_e - x_E)`` needs no area factor.
     """
     d = mesh.dim
     flux = np.asarray(flux, dtype=float)
-    areas = mesh.geometry.measure(d - 1)
     fcent = mesh.geometry.centroids(d - 1)
     ccent = mesh.geometry.centroids(d)
     vol = mesh.geometry.measure(d)
@@ -47,7 +50,7 @@ def reconstruct_flux(mesh: Mesh, flux: np.ndarray) -> np.ndarray:
     for c in range(mesh.num_cells(d)):
         acc = np.zeros(3)
         for fid, sign in mesh.complex.facets_of(d, c):
-            acc += (sign * flux[fid] * areas[fid]) * (fcent[fid] - ccent[c])
+            acc += (sign * flux[fid]) * (fcent[fid] - ccent[c])
         out[c] = acc / vol[c]
     return out
 

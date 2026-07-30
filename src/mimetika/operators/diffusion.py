@@ -152,7 +152,21 @@ class DiffusionInnerProduct:
             rows.append(np.repeat(f, len(f)))
             cols.append(np.tile(f, len(f)))
             vals.append(M.ravel())
-        return sp.csr_matrix(
+        matrix = sp.csr_matrix(
             (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
             shape=(n, n),
         )
+        # The DOF is the *integrated* normal flux, so that the discrete divergence
+        # can be the bare signed incidence.  The local matrices are built in the
+        # facet-average convention, so the measures are moved here -- into the
+        # inner product, where every other metric quantity already lives.
+        area = self.mesh.geometry.measure(self.mesh.dim - 1)
+        if dofmap is None:
+            scale = 1.0 / area
+        else:  # a duplicated facet's DOFs inherit their parent facet's measure
+            scale = np.ones(n)
+            for facet in range(len(area)):
+                for cell, _ in dofmap.sides(facet):
+                    scale[int(dofmap.dofs(cell, facet)[0])] = 1.0 / area[facet]
+        weights = sp.diags(scale)
+        return (weights @ matrix @ weights).tocsr()

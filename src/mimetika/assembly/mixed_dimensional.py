@@ -140,18 +140,26 @@ class MixedDimensionalDarcy:
             for cell, _ in self.dofmap.sides(int(f)):
                 rows.append(fc)
                 cols.append(int(self.dofmap.dofs(cell, int(f))[0]))
-                vals.append(self._signs[(cell, int(f))] * area[f])
+                # pairs with the *integrated* flux DOF, so no area factor
+                vals.append(float(self._signs[(cell, int(f))]))
         return sp.csr_matrix(
             (vals, (rows, cols)), shape=(self.n_p2, self.n_flux3)
         )
 
     def interface_stiffness(self) -> sp.csr_matrix:
-        """``S = diag(|f| / kappa)`` on the fracture flux DOFs (both sides)."""
+        """``S = diag(1 / (kappa |f|))`` on the fracture flux DOFs (both sides).
+
+        The Robin resistance is ``|f| / kappa`` against the facet-*average* flux;
+        with the integrated DOF ``F = |f| F_avg`` the flux-flux pairing picks up
+        ``1/|f|`` on each side, leaving ``1 / (kappa |f|)``.
+        """
         area = self.mesh.geometry.measure(2)
         diag = np.zeros(self.n_flux3)
         for f in self.fracture.facets:
             for cell, _ in self.dofmap.sides(int(f)):
-                diag[self.dofmap.dofs(cell, int(f))[0]] += area[f] / self.fracture.kappa
+                diag[self.dofmap.dofs(cell, int(f))[0]] += 1.0 / (
+                    self.fracture.kappa * area[f]
+                )
         return sp.diags(diag, format="csr")
 
     def fracture_no_flow(self, dirichlet_facets) -> np.ndarray:
@@ -184,7 +192,12 @@ class MixedDimensionalDarcy:
     # -- right-hand sides ------------------------------------------------------
 
     def _boundary_data(self, mesh, dim, potential, n_dofs, only=None):
-        """``g_e = s_e int_e p_D`` on the facets carrying pressure data."""
+        """``g_e = s_e mean_e p_D`` on the facets carrying pressure data.
+
+        The facet **mean**, not the integral: this pairs with the *integrated*
+        flux DOF ``int_e F.n``, the convention that lets the discrete divergence
+        be the bare signed incidence.
+        """
         g = np.zeros(n_dofs)
         if potential is None:
             return g
@@ -193,7 +206,7 @@ class MixedDimensionalDarcy:
             if allowed is not None and f not in allowed:
                 continue
             qp, qw = mesh.geometry.quadrature(dim - 1, f)
-            g[f] = s * (qw @ np.asarray(potential(qp)).ravel())
+            g[f] = s * (qw @ np.asarray(potential(qp)).ravel()) / qw.sum()
         return g
 
     def _source(self, mesh, dim, source, scale=1.0):

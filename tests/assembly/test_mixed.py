@@ -75,10 +75,17 @@ def flux_field(x):
 
 @pytest.mark.parametrize("mesh", ONLY, ids=IDS)
 def test_discrete_divergence_matches_incidence(mesh):
+    """``B`` is the bare signed incidence -- integer entries, no geometry.
+
+    The flux DOF is the *integrated* normal flux, so Stokes makes this exact
+    without any measures.  Previously ``B`` carried a ``diag(|e|)``, which put
+    metric into the one operator that should have none; the measures now live in
+    the inner product with the rest of the metric.
+    """
     B = discrete_divergence(mesh)
-    inc = mesh.complex.boundary_matrix(mesh.dim)
-    expected = inc.T @ sp.diags(mesh.geometry.measure(mesh.dim - 1))
+    expected = mesh.complex.boundary_matrix(mesh.dim).T
     assert (abs(B - expected) > 1e-14).nnz == 0
+    assert set(np.unique(B.data)) <= {-1.0, 1.0}  # purely topological
 
 
 @pytest.mark.parametrize("mesh", ONLY, ids=IDS)

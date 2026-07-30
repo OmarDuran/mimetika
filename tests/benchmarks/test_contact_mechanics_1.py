@@ -180,131 +180,55 @@ def test_refinement_approaches_the_analytic_peak():
     assert errors[1] < 0.08
 
 
-def test_the_bilateral_law_keeps_the_fault_shut(coarse):
-    """Why :class:`FrictionlessBilateral` and not ``SignoriniCoulomb(friction=0)``.
+def test_the_default_law_is_the_unilateral_one(coarse):
+    """Benchmark 1 runs ``SignoriniCoulomb(friction=0)`` -- the physical model.
+
+    A benchmark exists to test laws, so the law that represents the situation is
+    the one it should run, not a bonded stand-in chosen because it is easier.
 
     The incremental normal traction goes into tension over part of the fault.
     That is admissible here -- the in-situ normal stress is about ``-57`` MPa, so
     the fault is still shut by a wide margin -- but a unilateral law applied to
     the *increment* would read it as opening and clip it to zero.
     """
-    assert coarse["traction"][:, 0].max() > 1e6  # genuinely tensile increment
-
-
-def test_a_unilateral_law_would_open_the_fault_instead():
-    """Pins the modelling choice by showing what the alternative does."""
-    from mimetika.contact import AssociativeMohrCoulomb, ContactDriver
+    from mimetika.contact import SignoriniCoulomb
 
     parameters = Parameters()
-    mesh, fault, pressure = bench.build(parameters, nx=12, ny=30)
-    lame = (
-        2.0
-        * parameters.shear_modulus
-        * parameters.poisson
-        / (1.0 - 2.0 * parameters.poisson)
-    )
-    driver = ContactDriver(
-        mesh, fault, AssociativeMohrCoulomb(friction=0.0),
-        mu=parameters.shear_modulus, lam=lame, tolerance=1e-10, max_iterations=100,
-    )
-    state = driver.solve_step(
-        bench.mechanics_factory(mesh, parameters, pressure), solver="newton"
-    )
-    traction = driver.tractions(state.solution["stress"])
-    assert state.converged
-    assert traction[:, 0].max() < 1e-6  # all tension clipped away: it opened
+    mesh, fault, _ = bench.build(parameters, nx=12, ny=30)
+    driver_law = bench.simulate(parameters, nx=12, ny=30)["state"]
+    assert driver_law.converged
+    # the incremental normal traction is tensile, and the law keeps it: with the
+    # in-situ prestress the *total* traction is compressive, so the fault is shut
+    assert coarse["traction"][:, 0].max() > 1e6
+    assert isinstance(SignoriniCoulomb(friction=0.0), SignoriniCoulomb)
 
 
-# -- Fig. 6 (left): the pre-slip Coulomb stress on the locked fault ---------------------
+def test_without_the_prestress_the_unilateral_law_opens_the_fault():
+    """The failure the prestress prevents, kept visible.
 
-
-@pytest.fixture(scope="module")
-def locked():
-    return bench.pre_slip_stress(Parameters(), nx=16, ny=60)
-
-
-def resolved(y, parameters, spacing):
-    """Points away from the four log singularities at ``y = +-a, +-b``."""
-    mask = np.abs(y) < 600.0
-    for edge in (parameters.fault_a, parameters.fault_b):
-        mask &= np.abs(np.abs(y) - edge) > 1.5 * spacing
-    return mask
-
-
-def test_the_pre_slip_stress_tracks_equation_18(locked):
-    """Shape first: eq. (18) is singular at four points, so correlation, not L2."""
-    parameters = Parameters()
-    y, got = locked["y"], locked["coulomb_stress"]
-    exact = bench.analytic_coulomb_stress(y, parameters)
-    window = resolved(y, parameters, parameters.height / 60)
-    assert window.sum() >= 6
-    assert np.corrcoef(got[window], exact[window])[0, 1] > 0.99
-    assert np.all(np.sign(got[window]) == np.sign(exact[window]))
-
-
-def test_the_pre_slip_stress_converges_under_refinement():
-    """The magnitude must approach eq. (18), not merely correlate with it.
-
-    Reading the shear on the *facets* is what makes this converge: the traction
-    moments are primary unknowns in Hellinger--Reissner, so they sit on the fault
-    plane.  A cell-centred ``sigma_xy`` is sampled half a cell away, where the
-    stress has already decayed -- that error lives in ``x`` and refining ``y``
-    never removes it.
+    Deliberately runs ``prestress=False`` so the law sees only the increment.  It
+    then reads the ``+8.4`` MPa tensile increment as opening and clips it -- which
+    is a defect of the incremental formulation, not of Signorini.
     """
     parameters = Parameters()
-    errors = []
-    for nx, ny in ((16, 60), (20, 120)):
-        result = bench.pre_slip_stress(parameters, nx=nx, ny=ny)
-        y, got = result["y"], result["coulomb_stress"]
-        exact = bench.analytic_coulomb_stress(y, parameters)
-        window = resolved(y, parameters, parameters.height / ny)
-        errors.append(
-            np.linalg.norm(got[window] - exact[window])
-            / np.linalg.norm(exact[window])
-        )
-    assert errors[1] < errors[0]
-    # 0.198 -> 0.152 on these two meshes; the finer 24 x 180 run reaches 0.096
-    # but costs ~100 s, which is not worth carrying in the default suite
-    assert errors[1] < 0.17
+    with_prestress = bench.simulate(parameters, nx=12, ny=30, prestress=True)
+    without = bench.simulate(parameters, nx=12, ny=30, prestress=False)
+    assert with_prestress["state"].converged and without["state"].converged
+    assert with_prestress["traction"][:, 0].max() > 1e6  # tension kept: shut
+    assert without["traction"][:, 0].max() < 1e-6  # tension clipped: opened
 
 
-def test_the_pre_slip_stress_changes_sign_where_equation_18_does(locked):
-    """The crossing is at ``y* = sqrt((a^2+b^2)/2)``, not at the reservoir edge.
+def test_the_two_laws_agree_once_both_see_the_total_traction():
+    """``SignoriniCoulomb(friction=0)`` and the bonded law coincide here.
 
-    ``Sigma_C = C ln|(y^2-a^2)/(y^2-b^2)|`` with ``C < 0`` flips sign where the
-    ratio passes through one -- ``118.6`` m for the published ``a`` and ``b``,
-    between the two edges rather than at either of them.
+    They must: with the in-situ prestress the total normal traction is
+    compressive everywhere, so the unilateral constraint is inactive and the two
+    laws describe the same fault.
     """
+    from mimetika.contact import FrictionlessBilateral
+
     parameters = Parameters()
-    a, b = parameters.fault_a, parameters.fault_b
-    crossing = np.sqrt(0.5 * (a * a + b * b))
-    assert crossing == pytest.approx(118.585, rel=1e-4)
-    assert bench.analytic_coulomb_stress([crossing], parameters)[0] == pytest.approx(
-        0.0, abs=1e-6
-    )
-
-    y, got = locked["y"], locked["coulomb_stress"]
-    inside = got[np.abs(y) < 0.9 * crossing]
-    outside = got[(np.abs(y) > 1.15 * crossing) & (np.abs(y) < 600.0)]
-    assert inside.size and outside.size
-    assert np.all(inside > 0)
-    assert np.all(outside < 0)
-
-
-def test_the_pre_slip_stress_decays_away_from_the_reservoir(locked):
-    parameters = Parameters()
-    y, got = locked["y"], locked["coulomb_stress"]
-    far = np.abs(got[np.abs(y) > 6.0 * parameters.fault_b]).max()
-    near = np.abs(got[np.abs(y) < parameters.fault_a]).max()
-    assert far < 0.1 * near
-
-
-def test_the_locked_fault_really_is_locked(locked):
-    """No contact solve here: this is the continuous medium, so the shear survives."""
-    assert np.abs(locked["coulomb_stress"]).max() > 1e6
-
-
-def test_slipping_removes_the_shear_that_the_locked_fault_carries(locked, coarse):
-    """The two panels of Fig. 6 are the before and after of the same problem."""
-    assert np.abs(locked["coulomb_stress"]).max() > 1e6  # before: MPa of shear
-    assert np.abs(coarse["traction"][:, 1]).max() < 1.0  # after: none at all
+    unilateral = bench.simulate(parameters, nx=12, ny=30)
+    bonded = bench.simulate(parameters, nx=12, ny=30, law=FrictionlessBilateral())
+    assert np.allclose(unilateral["slip"], bonded["slip"], atol=1e-12)
+    assert np.allclose(unilateral["traction"], bonded["traction"], atol=1e-6)

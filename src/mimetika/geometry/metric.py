@@ -392,7 +392,20 @@ class Geometry:
         return s if plus else -s  # a -1-incidence cell reverses the test
 
     def second_moments(self, k: int) -> np.ndarray:
-        """``(n_k, 3, 3)`` with ``int (x - x_c) (x) (x - x_c)`` over each k-cell."""
+        """``(n_k, 3, 3)`` with ``int (x - x_c) (x) (x - x_c)`` over each k-cell.
+
+        Cached per dimension.  It is a whole-mesh quantity that callers ask for
+        one cell at a time -- the contact code wants it once per fracture facet --
+        so recomputing it made the cost quadratic in the number of facets, and it
+        dominated the benchmark profile.
+        """
+        cache = self.__dict__.setdefault("_second_moments", {})
+        if k in cache:
+            return cache[k]
+        cache[k] = self._second_moments_uncached(k)
+        return cache[k]
+
+    def _second_moments_uncached(self, k: int) -> np.ndarray:
         if k == 2:
             return self.facet_second_moments()
         if k == 3:

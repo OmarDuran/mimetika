@@ -324,3 +324,41 @@ def test_the_shear_grows_inside_the_reservoir(profile):
     outside = np.abs(profile["shear"][np.abs(profile["y"]) > half + 20.0])
     assert inside.min() > outside.max()
     assert inside.mean() / 1e6 == pytest.approx(14.2, rel=2e-2)
+
+
+def test_the_profile_matches_the_analytic_curve_to_round_off():
+    """No arching for an infinitely wide reservoir, so this is exact, not close."""
+    from benchmarks.contact_mechanics.benchmark_0 import (
+        combined_analytic, combined_stress_profile)
+
+    parameters = Parameters()
+    result = combined_stress_profile(parameters, nx=8, ny=120)
+    normal, shear = combined_analytic(result["y"], parameters)
+    assert np.abs(result["normal"] - normal).max() < 1.0  # Pa, on a ~1e8 quantity
+    assert np.abs(result["shear"] - shear).max() < 1.0
+
+
+@pytest.mark.parametrize("ny", [180, 100, 30])
+def test_a_grid_that_bisects_the_reservoir_boundary_is_rejected(ny):
+    """The depletion is per cell, so the boundary must land on a cell face.
+
+    With ``ny = 180`` the boundary at ``+-112.5`` m falls exactly on a cell
+    *centre*: that cell is half inside the reservoir, the centroid test excludes
+    it, and the stress step lands half a cell away from where it belongs.  The
+    figure looked plausible and was wrong by 16 MPa over one cell, so this is
+    refused rather than silently approximated.
+    """
+    from benchmarks.contact_mechanics.benchmark_0 import finite_reservoir
+
+    with pytest.raises(ValueError, match="reservoir boundary"):
+        finite_reservoir(Parameters(), nx=4, ny=ny)
+
+
+@pytest.mark.parametrize("ny", [40, 120, 200])
+def test_an_aligned_grid_is_accepted(ny):
+    from benchmarks.contact_mechanics.benchmark_0 import finite_reservoir
+
+    mesh, stress, pressure = finite_reservoir(Parameters(), nx=4, ny=ny)
+    depleted = pressure != 0.0
+    # exactly the cells inside the band, no half-counted row at either edge
+    assert depleted.sum() == 4 * round(Parameters().reservoir_height / (4500 / ny))
