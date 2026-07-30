@@ -84,7 +84,7 @@ def report_mesh(mesh) -> None:
     print(f"  simplicial cells {simplices} / {mesh.num_cells(3)}")
 
 
-def add_common_args(parser) -> None:
+def add_common_args(parser, default_vtu: str = "solution.vtu") -> None:
     parser.add_argument(
         "--backend",
         choices=["auto", "petsc", "scipy"],
@@ -93,18 +93,46 @@ def add_common_args(parser) -> None:
     )
     parser.add_argument(
         "--method",
-        choices=["direct", "minres"],
-        default="direct",
+        choices=["minres", "direct"],
+        default="minres",
         help="direct LU, or MINRES with a Schur-complement block preconditioner",
     )
     parser.add_argument(
         "--rtol", type=float, default=1e-10, help="iterative solver tolerance"
     )
     parser.add_argument(
+        "--pc",
+        choices=["cpr", "schur"],
+        default="cpr",
+        help=(
+            "MINRES preconditioner: 'cpr' applies AMG to the Schur (elliptic) "
+            "block and a cheap factorisation to the leading block, both once; "
+            "'schur' uses PETSc's defaults (an inner GMRES solve per block)."
+        ),
+    )
+    parser.add_argument(
+        "--petsc-opts",
+        type=str,
+        default=None,
+        metavar="STR",
+        help=(
+            'PETSc options passed straight to the options database, e.g. '
+            '--petsc-opts "-ksp_view -ksp_monitor" to have PETSc itself report '
+            "the exact solver stack it is running."
+        ),
+    )
+    parser.add_argument(
         "--vtu",
         type=Path,
+        nargs="?",
         default=None,
-        help="write the post-processed solution to a .vtu file (polyhedra preserved)",
+        const=Path(default_vtu),
+        metavar="PATH",
+        help=(
+            "write the post-processed solution to a .vtu file, with the "
+            "polyhedral cells preserved.  Use the flag alone for the default "
+            f"name ({default_vtu}), or give a path."
+        ),
     )
 
 

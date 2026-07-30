@@ -72,7 +72,7 @@ def pressure_bc(x: np.ndarray) -> np.ndarray:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("Run with")[0])
-    add_common_args(parser)
+    add_common_args(parser, default_vtu="darcy_fault.vtu")
     parser.add_argument(
         "--basis",
         choices=["const", "rt0"],
@@ -109,6 +109,8 @@ def main() -> None:
             method=args.method,
             rtol=args.rtol,
             verbose=True,
+            options=args.petsc_opts,
+            preconditioner=args.pc,
         )
 
     flux, p = sol["flux"], sol["pressure"]

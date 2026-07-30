@@ -41,6 +41,28 @@ def with_explicit_diagonal(A: sp.spmatrix) -> sp.csr_matrix:
     return out
 
 
+def insert_petsc_options(options: str) -> None:
+    """Push a PETSc options string (e.g. ``"-ksp_view -ksp_monitor"``) into the
+    global options database, where ``KSP.setFromOptions()`` will pick it up.
+
+    This is the authoritative way to inspect or override the solver: the values
+    come from PETSc itself, not from anything this library reports.
+    """
+    from petsc4py import PETSc
+
+    opts = PETSc.Options()
+    tokens = options.split()
+    i = 0
+    while i < len(tokens):
+        key = tokens[i].lstrip("-")
+        if i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
+            opts[key] = tokens[i + 1]
+            i += 2
+        else:
+            opts[key] = None
+            i += 1
+
+
 def to_petsc_mat(A: sp.spmatrix, ensure_diagonal: bool = True):
     """Convert a scipy sparse matrix to a PETSc AIJ ``Mat``."""
     from petsc4py import PETSc

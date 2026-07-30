@@ -95,7 +95,7 @@ def linear_stress(x):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("Run with")[0])
-    add_common_args(parser)
+    add_common_args(parser, default_vtu="elasticity_fault.vtu")
     parser.add_argument(
         "--full", action="store_true", help="use the whole mesh (large; use --method minres)"
     )
@@ -149,6 +149,8 @@ def main() -> None:
             method=args.method,
             rtol=args.rtol,
             verbose=True,
+            options=args.petsc_opts,
+            preconditioner=args.pc,
         )
     sigma, u, s = sol["stress"], sol["displacement"], sol["rotation"]
 
@@ -207,7 +209,13 @@ def main() -> None:
     asym = np.abs(sig_cell - np.swapaxes(sig_cell, 1, 2)).max() / np.abs(sig_cell).max()
     summarise("von Mises stress", vm)
     summarise("mean stress", pmean)
-    print(f"    reconstructed asymmetry       {asym:.3e}   (weak symmetry => small)")
+    print(
+        f"    reconstructed asymmetry       {asym:.3e}"
+        "\n      (symmetry is imposed *weakly*: as_h(sigma) = 0 holds exactly above,"
+        "\n       so the reconstructed tensor is symmetric only to discretisation"
+        "\n       error -- this number is itself an error indicator.  von Mises and"
+        "\n       the principal stresses use the symmetric part.)"
+    )
 
     if args.vtu:
         with step(f"writing {args.vtu}"):

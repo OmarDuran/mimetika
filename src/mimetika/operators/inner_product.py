@@ -102,6 +102,28 @@ def consistency_matrix(R: np.ndarray, Kbar: np.ndarray, volume: float) -> np.nda
     return (R @ np.linalg.solve(np.asarray(Kbar, dtype=float), R.T)) / volume
 
 
+def range_projector(A: np.ndarray, rtol: float = 1e-12) -> tuple[np.ndarray, int]:
+    """Orthonormal basis of ``range(A)`` and its rank, via a *thin* SVD.
+
+    The stabilization only ever needs ``I - Q Q^T`` (the projector onto
+    ``ker(A^T)``), never an explicit basis of the null space -- and a thin SVD
+    of a ``D x m`` matrix is far cheaper than the full one, which would build a
+    ``D x D`` factor just to discard most of it.
+    """
+    A = np.asarray(A, dtype=float)
+    # QR is markedly cheaper than SVD and suffices when A has full column rank,
+    # which is the usual case; |diag(R)| reveals when it does not.
+    if A.shape[0] >= A.shape[1] and A.size:
+        Q, Rm = np.linalg.qr(A)
+        diag = np.abs(np.diag(Rm))
+        if diag.size and diag.min() > rtol * diag.max() * max(A.shape):
+            return Q, A.shape[1]
+    U, s, _ = np.linalg.svd(A, full_matrices=False)
+    tol = rtol * (s[0] if s.size else 1.0) * max(A.shape)
+    rank = int(np.sum(s > tol))
+    return U[:, :rank], rank
+
+
 def assemble_local_inner_product(
     N: np.ndarray,
     R: np.ndarray,
@@ -129,12 +151,14 @@ def assemble_local_inner_product(
     When ``D == m`` the stabilization is identically zero.
     """
     M1 = consistency_matrix(R, Kbar, volume)
-    C = nullspace_basis(N)
-    if C.shape[1] == 0:
+    Q, rank = range_projector(N)
+    if rank == N.shape[0]:  # ker(N^T) = {0}: the simplex case, no stabilization
         M = M1
     else:
         s = float(np.mean(np.diag(M1))) if stability_scale is None else stability_scale
-        M = M1 + s * (C @ C.T)
+        # M2 = s (I - Q Q^T), the projector onto ker(N^T)
+        M = M1 - s * (Q @ Q.T)
+        M[np.diag_indices_from(M)] += s
     return 0.5 * (M + M.T)  # symmetrize against round-off
 
 

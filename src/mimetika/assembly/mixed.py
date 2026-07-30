@@ -235,39 +235,60 @@ class MixedElasticity:
         """
         if self._ops is not None:
             return self._ops
-        from mimetika.assembly.local import elasticity_local_operators
+        from mimetika.assembly.local import skew_generators
+        from mimetika.operators.inner_product import assemble_local_inner_product
 
-        d, ndf = self.d, self.ndf
-        M = self.inner.assemble()
+        d, ndf, nsk = self.d, self.ndf, self.n_skew
+        gens = skew_generators(d)
 
-        rows_d, cols_d, vals_d = [], [], []
-        rows_a, cols_a, vals_a = [], [], []
+        # One pass builds all three operators.  Assembling M separately would
+        # recompute every local matrix a second time.
+        m_rows, m_cols, m_vals = [], [], []
+        d_rows, d_cols, d_vals = [], [], []
+        a_rows, a_cols, a_vals = [], [], []
         for c in range(self.n_cells):
-            _, Dv, As, lc = elasticity_local_operators(self.inner, c)
-            gdofs = np.concatenate([self._facet_dofs(f) for f in lc.facet_ids])
-            signs = np.repeat(lc.signs, ndf)
-            # local blocks are scaled by |E| and use outward normals
-            Dloc = lc.volume * Dv * signs
-            Aloc = lc.volume * As * signs
-            for k in range(d):
-                nz = np.nonzero(Dloc[k])[0]
-                rows_d += [c * d + k] * len(nz)
-                cols_d += list(gdofs[nz])
-                vals_d += list(Dloc[k, nz])
-            for p in range(self.n_skew):
-                nz = np.nonzero(Aloc[p])[0]
-                rows_a += [c * self.n_skew + p] * len(nz)
-                cols_a += list(gdofs[nz])
-                vals_a += list(Aloc[p, nz])
+            N, R, Kbar, vol, lc, X = self.inner.local_matrices(
+                c, with_facet_data=True
+            )
+            nf = lc.n_facets
 
-        D = sp.csr_matrix(
-            (vals_d, (rows_d, cols_d)), shape=(d * self.n_cells, self.n_stress)
+            gdofs = (ndf * np.asarray(lc.facet_ids)[:, None] + np.arange(ndf)).ravel()
+            signs = np.repeat(lc.signs, ndf)
+
+            Mloc = assemble_local_inner_product(N, R, Kbar, vol)
+            Mloc = Mloc * signs[:, None] * signs[None, :]  # -> canonical DOFs
+            m_rows.append(np.repeat(gdofs, len(gdofs)))
+            m_cols.append(np.tile(gdofs, len(gdofs)))
+            m_vals.append(Mloc.ravel())
+
+            # div_h, scaled by |E|: the constant moment of each component
+            cols = (np.arange(nf)[:, None] * ndf + np.arange(d)[None, :] * d).ravel()
+            comp = np.tile(np.arange(d), nf)
+            d_rows.append(c * d + comp)
+            d_cols.append(gdofs[cols])
+            d_vals.append(np.repeat(lc.signs, d))
+
+            # as_h, scaled by |E|: pair the tractions with the rigid rotations
+            Aloc = np.einsum("pkc,ibc->pikb", gens, X).reshape(nsk, nf * ndf) * signs
+            a_rows.append(np.repeat(c * nsk + np.arange(nsk), nf * ndf))
+            a_cols.append(np.tile(gdofs, nsk))
+            a_vals.append(Aloc.ravel())
+
+        def build(rows, cols, vals, shape):
+            return sp.csr_matrix(
+                (
+                    np.concatenate(vals),
+                    (np.concatenate(rows), np.concatenate(cols)),
+                ),
+                shape=shape,
+            )
+
+        n_sig = self.n_stress
+        self._ops = (
+            build(m_rows, m_cols, m_vals, (n_sig, n_sig)),
+            build(d_rows, d_cols, d_vals, (d * self.n_cells, n_sig)),
+            build(a_rows, a_cols, a_vals, (nsk * self.n_cells, n_sig)),
         )
-        A = sp.csr_matrix(
-            (vals_a, (rows_a, cols_a)),
-            shape=(self.n_skew * self.n_cells, self.n_stress),
-        )
-        self._ops = (M, D, A)
         return self._ops
 
     def dirichlet_vector(self, displacement) -> np.ndarray:

@@ -111,44 +111,74 @@ class ElasticityInnerProduct:
     def _scale(self, lc: LocalCell) -> float:
         return float(lc.volume ** (1.0 / lc.dim))
 
-    def local_matrices(self, cell_id: int):
-        """Return ``(N, R, Kbar, volume, lc)`` for one cell, in the local frame."""
+    def facet_data(self, lc: LocalCell, scale: float):
+        """Small per-facet tensors that every local matrix is built from.
+
+        Returns ``(moments, expansions)`` where
+
+        * ``moments[i]``   is ``(nb, d+1)`` with ``\\int_{e_i} b phi_s`` -- the
+          moments of the facet basis against the mode scalars ``{1, xi/h}``;
+        * ``expansions[i]`` is ``(nb, d)`` with the ``L^2(e_i)`` expansion
+          coefficients of the coordinate ``xi_c`` in the facet basis.
+
+        Both are tiny, and they are all the geometry the tensor-product mode
+        structure needs.
+        """
+        d, nf, nb = lc.dim, lc.n_facets, lc.dim
+        moments = np.empty((nf, nb, d + 1))
+        grams = np.empty((nf, nb, nb))
+        mom_x = np.empty((nf, nb, d))
+        for i in range(nf):
+            B, qw = lc.facet_scalar_basis(i)
+            wB = qw[:, None] * B
+            grams[i] = B.T @ wB
+            mom_x[i] = wB.T @ lc.facet_quadrature[i][0]
+            moments[i, :, 0] = wB.sum(0)
+        moments[:, :, 1:] = mom_x / scale
+        return moments, np.linalg.solve(grams, mom_x)  # one batched solve
+
+    def local_matrices(self, cell_id: int, with_facet_data: bool = False):
+        """Return ``(N, R, Kbar, volume, lc)`` for one cell, in the local frame.
+
+        Built from the **tensor-product structure** of the reconstruction space
+        rather than by sampling dense mode arrays.  With modes
+        ``T_{(s,r,c)} = phi_s E_{rc}`` and ``C^{-1}T = (T - a tr(T) I)/2mu``:
+
+            ``N[(i,k,b),(s,r,c)]  = delta_kr n_i[c] moments[i][b,s]``
+            ``R[(i,k,b),(r,c)]    = (delta_kr X_i[b,c] - a delta_rc X_i[b,k])/2mu``
+            ``Kbar                = kron(G, (I - a vec(I) vec(I)^T)/2mu)``
+
+        with ``G_ss' = (1/|E|) int_E phi_s phi_s'``.  Every object on the right
+        is tiny, so no ``(nq, m, d, d)`` array is ever formed.
+        """
         lc = LocalCell.build(self.mesh.geometry, cell_id, self.frame)
         d, vol = lc.dim, lc.volume
-        nb = d  # scalar basis functions per facet
-        ndf = self.dofs_per_facet(d)
         scale = self._scale(lc)
+        a = self.lam / (2 * self.mu + d * self.lam)
+        eye = np.eye(d)
 
-        # ---- N: moments of the normal traction of each mode ----------------
-        blocks = []
-        for i in range(lc.n_facets):
-            B, qw = lc.facet_scalar_basis(i)  # (nq, nb), (nq,)
-            modes = self._eval_modes(lc.facet_quadrature[i][0], d, scale)
-            Tn = np.einsum("qmij,j->qmi", modes, lc.facet_normals[i])  # (nq, m, d)
-            blocks.append(
-                np.einsum("q,qb,qmk->kbm", qw, B, Tn).reshape(ndf, -1)
-            )
-        N = np.vstack(blocks)
+        moments, X = self.facet_data(lc, scale)
 
-        # ---- Kbar: Gram matrix of the modes --------------------------------
-        modes_q = self._eval_modes(lc.quad_points, d, scale)  # (nq, m, d, d)
-        CiT = compliance(modes_q, self.mu, self.lam)
-        Kbar = np.einsum(
-            "q,qjab,qlab->jl", lc.quad_weights, CiT, modes_q
-        ) / vol
+        # ---- N ---------------------------------------------------------------
+        N = np.einsum(
+            "kr,ic,ibs->ikbsrc", eye, lc.facet_normals, moments
+        ).reshape(lc.n_facets * d * d, -1)
 
-        # ---- R: canonical columns for the d^2 constant modes ---------------
-        # C^{-1} T_j is constant, so v_j(xi) = (C^{-1} T_j) xi is linear with
-        # zero element mean (the local origin is the centroid).
-        A = compliance(self._tensor_units(d), self.mu, self.lam)  # (d^2, d, d)
-        rows = []
-        for i in range(lc.n_facets):
-            qp = lc.facet_quadrature[i][0]
-            v = np.einsum("jkc,qc->qkj", A, qp)  # (nq, d, d^2) = (v_j)_k
-            coeff = lc.expand_on_facet(i, v)  # (nb, d, d^2)
-            rows.append(np.einsum("bkj->kbj", coeff).reshape(ndf, -1))
-        R = complete_moments(N, Kbar, vol, np.vstack(rows))
+        # ---- R: canonical columns (the d^2 constant modes come first) -------
+        R_canon = (
+            np.einsum("kr,ibc->ikbrc", eye, X) - a * np.einsum("rc,ibk->ikbrc", eye, X)
+        ).reshape(lc.n_facets * d * d, d * d) / (2 * self.mu)
 
+        # ---- Kbar ------------------------------------------------------------
+        phi = np.column_stack([np.ones(len(lc.quad_points)), lc.quad_points / scale])
+        G = (phi.T @ (lc.quad_weights[:, None] * phi)) / vol  # (d+1, d+1)
+        dvec = eye.reshape(-1)  # vec(I) picks out the trace
+        block = (np.eye(d * d) - a * np.outer(dvec, dvec)) / (2 * self.mu)
+        Kbar = np.kron(G, block)
+
+        R = complete_moments(N, Kbar, vol, R_canon)
+        if with_facet_data:
+            return N, R, Kbar, vol, lc, X
         return N, R, Kbar, vol, lc
 
     def local(self, cell_id: int) -> tuple[np.ndarray, list[int]]:

@@ -16,6 +16,27 @@ provided:
   block-diagonal preconditioner built explicitly.  This is what scales to the
   large stress systems, where a direct factorisation is out of reach.
 
+Preconditioner variants (``preconditioner=``):
+
+* ``"cpr"`` (default) -- the mixed-formulation analogue of the **Constrained
+  Pressure Residual** preconditioner of reservoir simulation.  CPR's idea is to
+  solve the elliptic pressure subsystem with AMG and follow it with a cheap
+  global smoother.  Here the elliptic operator is not extracted by an IMPES-style
+  decoupling: in mixed form it *is* the Schur complement ``B diag(M)^{-1} B^T``,
+  the cell-centred pressure Laplacian, which ``selfp`` already assembles.  So the
+  configuration is AMG (hypre BoomerAMG) on the Schur block and a cheap
+  incomplete factorisation on the leading block, both applied **once**
+  (``preonly``).
+* ``"schur"`` -- PETSc's defaults for the sub-blocks: an inner GMRES solve to
+  ``rtol 1e-5`` with ILU on *each* block, every outer iteration.
+
+``cpr`` is both faster and more correct.  Faster because the default re-solves a
+large inner system per outer iteration (roughly 10x on the fault mesh).  More
+correct because MINRES requires a **fixed, symmetric positive-definite**
+preconditioner: a nested GMRES solve makes the preconditioner *variable*, which
+formally invalidates the MINRES recurrence, whereas ``preonly`` with ICC/AMG
+keeps it fixed and symmetric.
+
 PETSc is used when ``petsc4py`` is importable; otherwise everything falls back
 to scipy transparently.
 """
@@ -34,10 +55,12 @@ def solve_saddle(
     rhs: np.ndarray,
     block_sizes: tuple[int, ...],
     backend: str = "auto",
-    method: str = "direct",
-    rtol: float = 1e-10,
+    method: str = "minres",
+    rtol: float = 1e-12,
     max_it: int = 5000,
     verbose: bool = False,
+    options: str | None = None,
+    preconditioner: str = "cpr",
 ) -> np.ndarray:
     """Solve a symmetric indefinite saddle-point system.
 
@@ -56,7 +79,12 @@ def solve_saddle(
     if backend == "auto":
         backend = "petsc" if petsc_available() else "scipy"
     if backend == "petsc":
-        return _solve_petsc(A, rhs, block_sizes, method, rtol, max_it, verbose)
+        return _solve_petsc(
+            A, rhs, block_sizes, method, rtol, max_it, verbose, options,
+            preconditioner,
+        )
+    if options:
+        raise ValueError("PETSc options were given but the scipy backend is in use")
     return _solve_scipy(A, rhs, block_sizes, method, rtol, max_it, verbose)
 
 
@@ -109,10 +137,34 @@ def _solve_scipy(A, rhs, block_sizes, method, rtol, max_it, verbose):
 # -- PETSc --------------------------------------------------------------------
 
 
-def _solve_petsc(A, rhs, block_sizes, method, rtol, max_it, verbose):
+def _cpr_options() -> str:
+    """Sub-block options for the CPR-style preconditioner.
+
+    ``hypre`` is required for the AMG stage: ``gamg`` was measured to produce an
+    *indefinite* preconditioner on the elasticity Schur block (PETSc reason -8,
+    with a visibly wrong answer), which MINRES cannot use.  Without hypre we
+    fall back to ICC, which is symmetric and safe if less scalable.
+    """
     from petsc4py import PETSc
 
-    from mimetika.assembly.backend import to_petsc_mat, to_petsc_vec
+    schur = "hypre" if PETSc.Sys.hasExternalPackage("hypre") else "icc"
+    return (
+        "-fieldsplit_0_ksp_type preonly -fieldsplit_0_pc_type icc "
+        f"-fieldsplit_1_ksp_type preonly -fieldsplit_1_pc_type {schur}"
+    )
+
+
+def _solve_petsc(
+    A, rhs, block_sizes, method, rtol, max_it, verbose, options=None,
+    preconditioner="cpr",
+):
+    from petsc4py import PETSc
+
+    from mimetika.assembly.backend import (
+        insert_petsc_options,
+        to_petsc_mat,
+        to_petsc_vec,
+    )
 
     mat = to_petsc_mat(A)
     b = to_petsc_vec(rhs)
@@ -148,16 +200,29 @@ def _solve_petsc(A, rhs, block_sizes, method, rtol, max_it, verbose):
         # approximate the Schur complement by B diag(M)^{-1} B^T
         pc.setFieldSplitSchurPreType(PETSc.PC.SchurPreType.SELFP)
         ksp.setTolerances(rtol=rtol, max_it=max_it)
+        if preconditioner == "cpr":
+            # inserted before setFromOptions so an explicit --petsc-opts wins
+            insert_petsc_options(_cpr_options())
+        elif preconditioner != "schur":
+            raise ValueError(f"unknown preconditioner {preconditioner!r}")
 
+    if options:  # user options last, so they override the built-in defaults
+        insert_petsc_options(options)
     ksp.setFromOptions()  # let -ksp_* / -pc_* command-line options win
     ksp.solve(b, x)
 
     reason = ksp.getConvergedReason()
     if verbose:
-        print(
-            f"    PETSc {ksp.getType()}/{ksp.getPC().getType()}: "
-            f"{ksp.getIterationNumber()} iterations, reason={reason}"
+        # every field below is queried from the live PETSc objects
+        pc = ksp.getPC()
+        detail = f"    PETSc KSP={ksp.getType()} PC={pc.getType()}"
+        if pc.getType() == "lu":
+            detail += f" ({pc.getFactorSolverType()})"
+        detail += (
+            f" | {ksp.getIterationNumber()} iterations,"
+            f" reason={reason}, rnorm={ksp.getResidualNorm():.3e}"
         )
+        print(detail)
     if reason < 0:
         raise RuntimeError(f"PETSc KSP diverged (reason={reason})")
     return x.getArray().copy()

@@ -47,6 +47,8 @@ class Geometry:
     _measures: dict[int, np.ndarray] | None = None
     _centroids: dict[int, np.ndarray] | None = None
     _facet_normals: np.ndarray | None = None
+    _facet_tangents: np.ndarray | None = None
+    _quad_cache: dict | None = None
 
     def __post_init__(self) -> None:
         self.points = np.asarray(self.points, dtype=float)
@@ -54,6 +56,7 @@ class Geometry:
             raise ValueError("points must be (n_vertices, 3)")
         self._measures = {}
         self._centroids = {}
+        self._quad_cache = {}
 
     # -- measures ------------------------------------------------------------
 
@@ -149,7 +152,25 @@ class Geometry:
 
         Returns ``(points (Nq,3), weights (Nq,))`` with ``sum(weights)`` equal to
         the k-cell measure.
+
+        Cached: every facet is visited once per adjacent cell (twice in the
+        interior) and every cell at least twice (centroid, then assembly), so
+        recomputing dominates assembly on large meshes.
         """
+        if self._quad_cache is None:
+            self._quad_cache = {}
+        hit = self._quad_cache.get((k, cell_id))
+        if hit is not None:
+            return hit
+        out = self._quadrature(k, cell_id)
+        self._quad_cache[(k, cell_id)] = out
+        return out
+
+    def clear_quadrature_cache(self) -> None:
+        """Drop cached quadrature (frees memory on very large meshes)."""
+        self._quad_cache = {}
+
+    def _quadrature(self, k: int, cell_id: int) -> tuple[np.ndarray, np.ndarray]:
         if k == 0:
             return self.points[cell_id][None, :], np.ones(1)
         if k == 1:
@@ -179,17 +200,16 @@ class Geometry:
         normal = self._area_vector(loop)
         normal = normal / np.linalg.norm(normal)
 
-        pts, wts = [], []
-        for i in range(len(loop)):
-            a, b = fp[i], fp[(i + 1) % len(loop)]
-            area = 0.5 * float(np.dot(np.cross(a - apex, b - apex), normal))
-            if area == 0.0:
-                continue
-            tri = np.array([apex, a, b])
-            mids = 0.5 * (tri + np.roll(tri, -1, axis=0))
-            pts.append(mids)
-            wts.append(np.full(3, area / 3.0))
-        return np.vstack(pts), np.concatenate(wts)
+        nxt = np.roll(fp, -1, axis=0)
+        # one cross product for the whole fan; degenerate triangles simply get
+        # zero weight, so they need no special case
+        areas = 0.5 * (np.cross(fp - apex, nxt - apex) @ normal)
+
+        # degree-2 rule: the midpoints of each fan triangle (apex, fp_i, nxt_i)
+        mids = np.stack(
+            [0.5 * (apex + fp), 0.5 * (fp + nxt), 0.5 * (nxt + apex)], axis=1
+        )
+        return mids.reshape(-1, 3), np.repeat(areas / 3.0, 3)
 
     def _polyhedron_quadrature(self, cid: int) -> tuple[np.ndarray, np.ndarray]:
         """Subdivide into tets (cell apex -> facet centroid -> facet edge).
@@ -238,10 +258,18 @@ class Geometry:
 
         Depends only on the canonical facet normal, hence identical for the two
         cells sharing the facet -- so face-based DOFs are globally consistent.
+        Computed once for all facets and cached.
         """
-        n = self.facet_normals()[fid]
-        e = np.zeros(3)
-        e[int(np.argmin(np.abs(n)))] = 1.0
-        t1 = e - np.dot(e, n) * n
-        t1 /= np.linalg.norm(t1)
-        return t1, np.cross(n, t1)
+        t = self.facet_tangent_frames()
+        return t[fid, 0], t[fid, 1]
+
+    def facet_tangent_frames(self) -> np.ndarray:
+        """``(n_facets, 2, 3)`` in-plane frames for every 2-cell, vectorised."""
+        if self._facet_tangents is None:
+            n = self.facet_normals()
+            e = np.zeros_like(n)
+            e[np.arange(len(n)), np.argmin(np.abs(n), axis=1)] = 1.0
+            t1 = e - (np.einsum("ij,ij->i", e, n))[:, None] * n
+            t1 /= np.linalg.norm(t1, axis=1, keepdims=True)
+            self._facet_tangents = np.stack([t1, np.cross(n, t1)], axis=1)
+        return self._facet_tangents

@@ -28,6 +28,13 @@ P_A, P_B = 0.37, np.array([0.8, -1.3, 0.55])
 U_A = np.array([0.31, -0.42, 0.17])
 U_B = np.array([[0.5, -0.3, 0.2], [0.15, 0.4, -0.25], [-0.1, 0.35, 0.6]])
 
+
+# These tests measure *discretisation* error -- whether the scheme reproduces a
+# field exactly -- so they pin the solver to a direct factorisation.  Leaving
+# them on the default (CPR-preconditioned MINRES) would conflate discretisation
+# error with the iterative tolerance; see EXACT below.
+EXACT = {"method": "direct"}
+
 MESHES = [
     ("hex-1", structured_box(1, 1, 1)),
     ("hex-2", structured_box(2, 2, 2)),
@@ -99,7 +106,7 @@ def test_boundary_facets_form_a_closed_surface(mesh):
 @pytest.mark.parametrize("mesh", ONLY, ids=IDS)
 def test_global_poisson_reproduces_linear_potential(mesh, basis):
     problem = MixedPoisson(mesh, K=K_ANISO, basis=basis)
-    sol = problem.solve(source=None, dirichlet=potential)
+    sol = problem.solve(source=None, dirichlet=potential, **EXACT)
     assert np.allclose(
         sol["pressure"], problem.interpolate_pressure(potential), atol=1e-10
     )
@@ -109,7 +116,9 @@ def test_global_poisson_reproduces_linear_potential(mesh, basis):
 @pytest.mark.parametrize("mesh", ONLY, ids=IDS)
 def test_global_poisson_constant_solution(mesh):
     problem = MixedPoisson(mesh, K=K_ANISO)
-    sol = problem.solve(dirichlet=lambda x: np.full(len(np.atleast_2d(x)), 3.25))
+    sol = problem.solve(
+        dirichlet=lambda x: np.full(len(np.atleast_2d(x)), 3.25), **EXACT
+    )
     assert np.allclose(sol["flux"], 0.0, atol=1e-10)
     assert np.allclose(sol["pressure"], 3.25, atol=1e-10)
 
@@ -147,7 +156,7 @@ def test_poisson_solver_methods_agree(method):
 @pytest.mark.parametrize("mesh", ONLY, ids=IDS)
 def test_global_elasticity_reproduces_linear_displacement(mesh):
     problem = MixedElasticity(mesh, mu=MU, lam=LAM)
-    sol = problem.solve(body_force=None, dirichlet=displacement)
+    sol = problem.solve(body_force=None, dirichlet=displacement, **EXACT)
     assert np.allclose(
         sol["displacement"], problem.interpolate_displacement(displacement), atol=1e-9
     )
@@ -165,7 +174,7 @@ def test_global_elasticity_rigid_body_motion_has_no_stress(mesh):
     W = np.array([[0.0, 0.7, -0.4], [-0.7, 0.0, 0.25], [0.4, -0.25, 0.0]])
     a = np.array([1.1, -0.6, 0.3])
     problem = MixedElasticity(mesh, mu=MU, lam=LAM)
-    sol = problem.solve(dirichlet=lambda x: a + np.atleast_2d(x) @ W.T)
+    sol = problem.solve(dirichlet=lambda x: a + np.atleast_2d(x) @ W.T, **EXACT)
 
     assert np.allclose(sol["stress"], 0.0, atol=1e-8)
     assert np.allclose(
@@ -185,7 +194,7 @@ def test_global_elasticity_weak_symmetry_is_enforced(mesh):
     """``as_h(sigma_h) = 0`` is a constraint of the system, so it holds exactly."""
     problem = MixedElasticity(mesh, mu=MU, lam=LAM)
     _, _, A = problem.assemble_operators()
-    sol = problem.solve(body_force=None, dirichlet=displacement)
+    sol = problem.solve(body_force=None, dirichlet=displacement, **EXACT)
     assert np.allclose(A @ sol["stress"], 0.0, atol=1e-9)
 
 
@@ -194,7 +203,7 @@ def test_global_elasticity_equilibrium_is_enforced(mesh):
     """``div_h sigma_h`` equals the prescribed load; here zero."""
     problem = MixedElasticity(mesh, mu=MU, lam=LAM)
     _, D, _ = problem.assemble_operators()
-    sol = problem.solve(body_force=None, dirichlet=displacement)
+    sol = problem.solve(body_force=None, dirichlet=displacement, **EXACT)
     assert np.allclose(D @ sol["stress"], 0.0, atol=1e-9)
 
 
@@ -212,7 +221,7 @@ def test_elasticity_exactness_is_uniform_in_lambda():
     mesh = structured_tets(1, 1, 1)
     for lam in (1.0, 1e4, 1e7):
         problem = MixedElasticity(mesh, mu=1.0, lam=lam)
-        sol = problem.solve(body_force=None, dirichlet=displacement)
+        sol = problem.solve(body_force=None, dirichlet=displacement, **EXACT)
         assert np.allclose(
             sol["displacement"],
             problem.interpolate_displacement(displacement),
@@ -236,7 +245,7 @@ def test_poisson_error_decreases_under_refinement():
     for n in (2, 4):
         mesh = structured_box(n, n, n)
         problem = MixedPoisson(mesh)
-        sol = problem.solve(source=f, dirichlet=p)
+        sol = problem.solve(source=f, dirichlet=p, **EXACT)
         e = sol["pressure"] - problem.interpolate_pressure(p)
         errs.append(np.sqrt(mesh.geometry.measure(3) @ e**2))
     assert errs[1] < 0.5 * errs[0]  # at least first order
