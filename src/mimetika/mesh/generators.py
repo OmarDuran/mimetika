@@ -183,6 +183,64 @@ def structured_quads(
     return Mesh.from_polygons(points, quads)
 
 
+def graded_quads(xs, ys) -> Mesh:
+    """A quadrilateral mesh from **explicit** node coordinates, in ``z = 0``.
+
+    ``structured_quads`` spaces nodes uniformly, which is the wrong tool when the
+    solution has features far smaller than the domain: resolving a 150 m
+    reservoir inside a 4500 m block costs thousands of cells that do nothing.
+    Passing the coordinates directly lets the mesh be fine where the physics is
+    and coarse where it is not -- and, just as importantly, lets material and
+    loading interfaces be placed exactly on cell faces.
+    """
+    xs = np.unique(np.asarray(xs, dtype=float))
+    ys = np.unique(np.asarray(ys, dtype=float))
+    nx, ny = len(xs) - 1, len(ys) - 1
+    if nx < 1 or ny < 1:
+        raise ValueError("need at least two distinct coordinates in each direction")
+    points = np.array([[x, y, 0.0] for y in ys for x in xs])
+
+    def vid(i, j):
+        return j * (nx + 1) + i
+
+    quads = [
+        [vid(i, j), vid(i + 1, j), vid(i + 1, j + 1), vid(i, j + 1)]
+        for j in range(ny)
+        for i in range(nx)
+    ]
+    return Mesh.from_polygons(points, quads)
+
+
+def graded_coordinates(interfaces, extent, spacing, growth: float = 1.35):
+    """Node coordinates that **honour** ``interfaces`` and coarsen away from them.
+
+    Every value in ``interfaces`` becomes a node, so a discontinuity in material
+    or loading lands on a cell face rather than bisecting a cell -- where a
+    cell-centred test would put it on the wrong side and shift the answer by half
+    a cell.  Between the outermost interfaces the spacing is uniform at
+    ``spacing``; beyond them it grows geometrically by ``growth`` out to
+    ``extent``, so the far field costs a handful of cells instead of hundreds.
+    """
+    interfaces = np.unique(np.asarray(interfaces, dtype=float))
+    lo, hi = float(interfaces[0]), float(interfaces[-1])
+    if not (extent[0] <= lo and hi <= extent[1]):
+        raise ValueError("interfaces must lie inside the extent")
+
+    nodes = [lo]
+    for left, right in zip(interfaces[:-1], interfaces[1:]):
+        count = max(1, int(round((right - left) / spacing)))
+        nodes.extend(np.linspace(left, right, count + 1)[1:])
+
+    for start, stop, step in ((lo, extent[0], -1.0), (hi, extent[1], 1.0)):
+        position, size = start, spacing
+        while (stop - position) * step > 1e-9:
+            size *= growth
+            position += step * size
+            nodes.append(position if (stop - position) * step > 0 else stop)
+        nodes.append(stop)
+    return np.unique(np.asarray(nodes, dtype=float))
+
+
 def structured_triangles(
     nx: int,
     ny: int,

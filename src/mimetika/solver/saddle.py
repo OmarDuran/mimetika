@@ -203,6 +203,70 @@ def _cpr_options() -> str:
     )
 
 
+#: MUMPS ``INFOG(1)`` codes that mean "the workspace estimate was too small",
+#: as opposed to a genuinely singular matrix (which is ``-10``).
+_MUMPS_OUT_OF_SPACE = (-8, -9, -14, -15, -17, -20)
+
+
+def _retry_if_out_of_workspace(ksp, b, x, verbose):
+    """Grow MUMPS's working space and refactorise, if that is why it failed.
+
+    MUMPS sizes its workspace from a *symbolic* estimate of the fill-in.  When
+    the numerical factorisation needs more than predicted it aborts, and PETSc
+    surfaces that as ``KSP_DIVERGED_PC_FAILED`` -- the same code it reports for a
+    zero pivot.  The two are indistinguishable from the KSP alone, so this looks
+    exactly like an ill-conditioned matrix and invites the wrong fix.
+
+    ``INFOG(1)`` tells them apart.  Anything in :data:`_MUMPS_OUT_OF_SPACE` is a
+    sizing problem with a well-posed system behind it, and MUMPS's own remedy is
+    to raise ``ICNTL(14)`` -- the percentage by which the estimate is inflated --
+    and factorise again.  Meshes with high cell aspect ratios trip this routinely,
+    because they generate far more fill-in than the estimate anticipates.
+
+    Escalating on demand rather than inflating ``ICNTL(14)`` up front means the
+    common case pays no extra memory.  Returns the final converged reason, or
+    ``None`` if no retry was warranted.
+    """
+    from petsc4py import PETSc
+
+    if ksp.getConvergedReason() >= 0:
+        return None
+    pc = ksp.getPC()
+    if pc.getType() != "lu" or pc.getFactorSolverType() != "mumps":
+        return None
+    try:
+        infog = pc.getFactorMatrix().getMumpsInfog(1)
+    except Exception:  # pragma: no cover - older petsc4py without the accessor
+        return None
+    if infog not in _MUMPS_OUT_OF_SPACE:
+        return None  # a real numerical failure; let the caller raise
+
+    # A spent PC cannot simply be re-run: PETSc caches the failed factorisation,
+    # and ICNTL(14) has to be in place *before* the numeric phase.  So each
+    # attempt gets a fresh KSP over the same operator.
+    mat = ksp.getOperators()[0]
+    options = PETSc.Options()
+    try:
+        for extra in (100, 400, 1600):
+            if verbose:
+                print(f"    MUMPS INFOG(1)={infog}: retrying with ICNTL(14)={extra}")
+            options["mat_mumps_icntl_14"] = extra
+            retry = PETSc.KSP().create()
+            retry.setOperators(mat)
+            retry.setType("preonly")
+            retry_pc = retry.getPC()
+            retry_pc.setType("lu")
+            retry_pc.setFactorSolverType("mumps")
+            retry.setFromOptions()
+            retry.solve(b, x)
+            if retry.getConvergedReason() >= 0:
+                return retry.getConvergedReason()
+        return retry.getConvergedReason()
+    finally:
+        # the options database is global and outlives this call
+        options.delValue("mat_mumps_icntl_14")
+
+
 def _solve_petsc(
     A, rhs, block_sizes, method, rtol, max_it, verbose, options=None,
     preconditioner="cpr",
@@ -259,8 +323,9 @@ def _solve_petsc(
         insert_petsc_options(options)
     ksp.setFromOptions()  # let -ksp_* / -pc_* command-line options win
     ksp.solve(b, x)
+    reason = _retry_if_out_of_workspace(ksp, b, x, verbose)
 
-    reason = ksp.getConvergedReason()
+    reason = ksp.getConvergedReason() if reason is None else reason
     if verbose:
         # every field below is queried from the live PETSc objects
         pc = ksp.getPC()

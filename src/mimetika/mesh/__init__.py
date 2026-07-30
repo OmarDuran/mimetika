@@ -4,6 +4,8 @@ from mimetika.mesh.generators import (
     single_hexahedron,
     single_tetrahedron,
     structured_box,
+    graded_coordinates,
+    graded_quads,
     structured_quads,
     structured_tets,
     structured_triangles,

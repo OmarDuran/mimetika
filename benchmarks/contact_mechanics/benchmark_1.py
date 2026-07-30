@@ -47,7 +47,7 @@ from mimetika.assembly.mixed import MixedElasticity, boundary_facets
 from mimetika.assembly.poromechanics import PoroMechanics
 from mimetika.contact import ContactDriver, FrictionlessBilateral, SignoriniCoulomb
 from mimetika.materials import Material
-from mimetika.mesh import structured_quads
+from mimetika.mesh import graded_coordinates, graded_quads, structured_quads
 from mimetika.mesh.fracture import facets_on_plane
 from mimetika.operators.elasticity import ElasticityInnerProduct
 from mimetika.solver.saddle import solve_saddle
@@ -97,12 +97,26 @@ def peak_slip(parameters: Parameters) -> float:
 # -- the simulation -------------------------------------------------------------------
 
 
-def build(parameters: Parameters, nx: int = 20, ny: int = 60):
-    """Mesh, fault tags and the depletion pressure field of the offset reservoir."""
+def build(parameters: Parameters, nx: int = 20, ny: int = 60, spacing=None):
+    """Mesh, fault tags and the depletion pressure field of the offset reservoir.
+
+    With ``spacing`` given the mesh is **graded**: nodes are placed exactly on the
+    reservoir edges ``y = +-a, +-b`` and on the fault ``x = 0``, uniform at
+    ``spacing`` across the reservoir, coarsening geometrically outwards.  That is
+    the right mesh for this problem -- the features span 300 m inside a 4500 m
+    domain, so a uniform grid spends almost all its cells where nothing happens.
+    Passing ``nx``/``ny`` instead gives the uniform mesh, kept for comparison.
+    """
     width, height = parameters.width, parameters.height
-    mesh = structured_quads(
-        nx, ny, lengths=(width, height), origin=(-width / 2, -height / 2)
-    )
+    if spacing is not None:
+        a, b = parameters.fault_a, parameters.fault_b
+        ys = graded_coordinates([-b, -a, a, b], (-height / 2, height / 2), spacing)
+        xs = graded_coordinates([0.0], (-width / 2, width / 2), 2.0 * spacing)
+        mesh = graded_quads(xs, ys)
+    else:
+        mesh = structured_quads(
+            nx, ny, lengths=(width, height), origin=(-width / 2, -height / 2)
+        )
     fault = facets_on_plane(mesh, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0])
 
     # the reservoir is displaced across the fault: [-b, a] on the left, [-a, b]
@@ -158,7 +172,8 @@ def mechanics_factory(mesh, parameters: Parameters, pressure):
     return factory
 
 
-def pre_slip_stress(parameters: Parameters, nx: int = 20, ny: int = 60):
+def pre_slip_stress(parameters: Parameters, nx: int = 20, ny: int = 60,
+                    spacing=None):
     """Coulomb stress on the **locked** fault -- Fig. 6 (left), eq. (18).
 
     The other half of the benchmark, and a different computation: the fault is
@@ -170,7 +185,7 @@ def pre_slip_stress(parameters: Parameters, nx: int = 20, ny: int = 60):
     is singular at the four reservoir edges ``y = +-a, +-b``, so a cell-centred
     value can only ever track it away from those points.
     """
-    mesh, fault, pressure = build(parameters, nx=nx, ny=ny)
+    mesh, fault, pressure = build(parameters, nx=nx, ny=ny, spacing=spacing)
     problem, matrix, rhs = mechanics_factory(mesh, parameters, pressure)(None)
     solution = problem.split(
         solve_saddle(matrix, rhs, problem.block_sizes, method="direct")
@@ -215,6 +230,7 @@ def simulate(
     ny: int = 60,
     law=None,
     prestress: bool = True,
+    spacing=None,
 ):
     """Solve the displaced-fault problem; return slip against ``y``.
 
@@ -224,7 +240,7 @@ def simulate(
     shut, and with ``prestress=False`` the unilateral one opens it, which is the
     failure this benchmark is able to detect.
     """
-    mesh, fault, pressure = build(parameters, nx=nx, ny=ny)
+    mesh, fault, pressure = build(parameters, nx=nx, ny=ny, spacing=spacing)
     driver = ContactDriver(
         mesh,
         fault,
