@@ -211,15 +211,39 @@ def graded_quads(xs, ys) -> Mesh:
     return Mesh.from_polygons(points, quads)
 
 
-def graded_coordinates(interfaces, extent, spacing, growth: float = 1.35):
-    """Node coordinates that **honour** ``interfaces`` and coarsen away from them.
+def _two_sided(left: float, right: float, spacing: float, growth: float):
+    """Cell sizes across ``[left, right]``: smallest at BOTH ends, largest mid-span.
+
+    A one-sided geometric fan would refine one interface and starve the other.
+    The weights are ``growth ** min(i, n-1-i)``, which is symmetric, so both
+    bounding interfaces get the fine cells.
+    """
+    length = right - left
+    for count in range(1, 4096):
+        weights = growth ** np.minimum(np.arange(count), np.arange(count)[::-1])
+        sizes = length * weights / weights.sum()
+        if sizes.min() <= spacing:
+            return left + np.concatenate([[0.0], np.cumsum(sizes)])
+    raise ValueError("could not reach the requested spacing")  # pragma: no cover
+
+
+def graded_coordinates(interfaces, extent, spacing, growth: float = 1.35,
+                       max_spacing: float | None = None):
+    """Node coordinates that **honour** ``interfaces`` and cluster elements at them.
 
     Every value in ``interfaces`` becomes a node, so a discontinuity in material
     or loading lands on a cell face rather than bisecting a cell -- where a
     cell-centred test would put it on the wrong side and shift the answer by half
-    a cell.  Between the outermost interfaces the spacing is uniform at
-    ``spacing``; beyond them it grows geometrically by ``growth`` out to
-    ``extent``, so the far field costs a handful of cells instead of hundreds.
+    a cell.
+
+    Resolution is concentrated **at** the interfaces, not spread evenly between
+    them.  That is where it is needed: the fields are non-smooth across a
+    material or loading jump (in the displaced-fault benchmark the analytic
+    Coulomb stress is logarithmically singular at the reservoir edges), so the
+    discretisation error is dominated by the few cells nearest each interface
+    and is negligible a handful of cells away.  ``spacing`` is therefore the size
+    *at* an interface; cells grow by ``growth`` away from it -- towards mid-span
+    between two interfaces, and outwards to ``extent`` beyond the outermost.
     """
     interfaces = np.unique(np.asarray(interfaces, dtype=float))
     lo, hi = float(interfaces[0]), float(interfaces[-1])
@@ -228,13 +252,14 @@ def graded_coordinates(interfaces, extent, spacing, growth: float = 1.35):
 
     nodes = [lo]
     for left, right in zip(interfaces[:-1], interfaces[1:]):
-        count = max(1, int(round((right - left) / spacing)))
-        nodes.extend(np.linspace(left, right, count + 1)[1:])
+        nodes.extend(_two_sided(left, right, spacing, growth)[1:])
 
     for start, stop, step in ((lo, extent[0], -1.0), (hi, extent[1], 1.0)):
         position, size = start, spacing
         while (stop - position) * step > 1e-9:
             size *= growth
+            if max_spacing is not None:
+                size = min(size, max_spacing)
             position += step * size
             nodes.append(position if (stop - position) * step > 0 else stop)
         nodes.append(stop)

@@ -97,7 +97,8 @@ def peak_slip(parameters: Parameters) -> float:
 # -- the simulation -------------------------------------------------------------------
 
 
-def build(parameters: Parameters, nx: int = 20, ny: int = 60, spacing=None):
+def build(parameters: Parameters, nx: int = 20, ny: int = 60, spacing=None,
+          boundary_spacing: float = 100.0):
     """Mesh, fault tags and the depletion pressure field of the offset reservoir.
 
     With ``spacing`` given the mesh is **graded**: nodes are placed exactly on the
@@ -110,8 +111,12 @@ def build(parameters: Parameters, nx: int = 20, ny: int = 60, spacing=None):
     width, height = parameters.width, parameters.height
     if spacing is not None:
         a, b = parameters.fault_a, parameters.fault_b
-        ys = graded_coordinates([-b, -a, a, b], (-height / 2, height / 2), spacing)
-        xs = graded_coordinates([0.0], (-width / 2, width / 2), 2.0 * spacing)
+        # Novikov et al., Table 3: for the faulted cases the published grid is
+        # 2 m at the refined region and 100 m at the domain boundary
+        ys = graded_coordinates([-b, -a, a, b], (-height / 2, height / 2),
+                                spacing, max_spacing=boundary_spacing)
+        xs = graded_coordinates([0.0], (-width / 2, width / 2),
+                                spacing, max_spacing=boundary_spacing)
         mesh = graded_quads(xs, ys)
     else:
         mesh = structured_quads(
@@ -173,7 +178,7 @@ def mechanics_factory(mesh, parameters: Parameters, pressure):
 
 
 def pre_slip_stress(parameters: Parameters, nx: int = 20, ny: int = 60,
-                    spacing=None):
+                    spacing=None, boundary_spacing: float = 100.0):
     """Coulomb stress on the **locked** fault -- Fig. 6 (left), eq. (18).
 
     The other half of the benchmark, and a different computation: the fault is
@@ -185,7 +190,8 @@ def pre_slip_stress(parameters: Parameters, nx: int = 20, ny: int = 60,
     is singular at the four reservoir edges ``y = +-a, +-b``, so a cell-centred
     value can only ever track it away from those points.
     """
-    mesh, fault, pressure = build(parameters, nx=nx, ny=ny, spacing=spacing)
+    mesh, fault, pressure = build(parameters, nx=nx, ny=ny, spacing=spacing,
+                                  boundary_spacing=boundary_spacing)
     problem, matrix, rhs = mechanics_factory(mesh, parameters, pressure)(None)
     solution = problem.split(
         solve_saddle(matrix, rhs, problem.block_sizes, method="direct")
@@ -231,6 +237,7 @@ def simulate(
     law=None,
     prestress: bool = True,
     spacing=None,
+    boundary_spacing: float = 100.0,
 ):
     """Solve the displaced-fault problem; return slip against ``y``.
 
@@ -240,7 +247,8 @@ def simulate(
     shut, and with ``prestress=False`` the unilateral one opens it, which is the
     failure this benchmark is able to detect.
     """
-    mesh, fault, pressure = build(parameters, nx=nx, ny=ny, spacing=spacing)
+    mesh, fault, pressure = build(parameters, nx=nx, ny=ny, spacing=spacing,
+                                  boundary_spacing=boundary_spacing)
     driver = ContactDriver(
         mesh,
         fault,
