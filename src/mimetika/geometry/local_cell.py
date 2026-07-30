@@ -164,13 +164,54 @@ def mesh_frame(geometry: Geometry) -> np.ndarray:
 
     Global assembly must express every cell's DOF components in one common
     basis; for a full-dimensional (``d == 3``) mesh this is just the identity.
+
+    The SVD fixes the *span* but not the basis within it: for a square in the
+    ``xy`` plane the two in-plane singular values are equal, so the returned axes
+    are an arbitrary rotation.  They are then aligned with the ambient axes,
+    which costs nothing (everything downstream is frame-covariant) and buys two
+    things: DOF components of a planar mesh read directly in global coordinates,
+    and axis-aligned facets stay axis-aligned in the frame -- which is what
+    component-wise conditions such as rollers need.
     """
     d = geometry.complex.dim
     if d == 3:
         return np.eye(3)
     p = geometry.points
     _, _, vt = np.linalg.svd(p - p.mean(0))
-    return vt[:d].T
+    return _align_to_axes(vt[:d].T)
+
+
+def _align_to_axes(frame: np.ndarray) -> np.ndarray:
+    """Rotate an orthonormal ``(3, d)`` frame to sit as close to ``e_i`` as it can.
+
+    Greedy: repeatedly take the ambient axis with the largest remaining in-span
+    projection, orthonormalise it against the axes already chosen, and keep it.
+    The span is preserved exactly, so this is a change of basis and nothing more.
+    """
+    projector = frame @ frame.T  # onto the span, in ambient coordinates
+    chosen: list[np.ndarray] = []
+    remaining = list(range(3))
+    for _ in range(frame.shape[1]):
+        best, best_vector, best_norm = None, None, -1.0
+        for axis in remaining:
+            v = projector[:, axis].copy()
+            for q in chosen:
+                v -= (v @ q) * q
+            norm = float(np.linalg.norm(v))
+            if norm > best_norm:
+                best, best_vector, best_norm = axis, v, norm
+        if best_norm < 1e-12:  # degenerate: fall back to the SVD basis
+            return frame
+        chosen.append(best_vector / best_norm)
+        remaining.remove(best)
+    aligned = np.column_stack(chosen)
+    # Preserve handedness.  The greedy pick can land on a *reflection* of the
+    # original basis, and in 2D the rotation multiplier is a pseudo-scalar that
+    # changes sign under one -- so a reflection here would silently flip the
+    # weak-symmetry constraint.
+    if np.linalg.det(frame.T @ aligned) < 0:
+        aligned[:, -1] *= -1.0
+    return aligned
 
 
 def _affine_frame(geometry: Geometry, cell_id: int, d: int) -> np.ndarray:
@@ -180,7 +221,9 @@ def _affine_frame(geometry: Geometry, cell_id: int, d: int) -> np.ndarray:
     verts = sorted(geometry.complex.cell_vertices(cell_id, d))
     p = geometry.points[verts]
     u, s, vt = np.linalg.svd(p - p.mean(0))
-    return vt[:d].T  # (3, d)
+    # same canonicalisation as mesh_frame, so a single-cell mesh gets the same
+    # basis whichever route builds it
+    return _align_to_axes(vt[:d].T)  # (3, d)
 
 
 def _facet_normal(

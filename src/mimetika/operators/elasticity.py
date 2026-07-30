@@ -48,6 +48,7 @@ import scipy.sparse as sp
 from mimetika.geometry.local_cell import LocalCell, mesh_frame
 from mimetika.mesh.mesh import Mesh
 from mimetika.operators.inner_product import (
+    apply_pseudo_inverse,
     assemble_local_inner_product,
     complete_moments,
     stabilization_dim,
@@ -73,10 +74,32 @@ def compliance_contraction(
 class ElasticityInnerProduct:
     """Stress inner product for elasticity on facet DOFs (``d^2`` per facet)."""
 
-    def __init__(self, mesh: Mesh, mu: float = 1.0, lam: float = 1.0) -> None:
+    def __init__(
+        self,
+        mesh: Mesh,
+        mu: float = 1.0,
+        lam: float = 1.0,
+        material: "Material | None" = None,
+    ) -> None:
+        from mimetika.materials import Material, poisson_from_lame
+
         self.mesh = mesh
-        self.mu = float(mu)
-        self.lam = float(lam)
+        d = mesh.dim
+        if material is None:
+            material = Material(
+                shear_modulus=mu, poisson=poisson_from_lame(mu, lam, d)
+            )
+        self.material = material.expand(mesh.num_cells(d))
+        # per-cell shear modulus and compliance coefficient; both stay finite at
+        # nu = 1/2, which is what makes the incompressible limit unremarkable
+        self._mu = np.broadcast_to(
+            self.material.shear_modulus, (mesh.num_cells(d),)
+        )
+        self._a = np.broadcast_to(
+            self.material.compliance_coefficient(d), (mesh.num_cells(d),)
+        )
+        self.mu = float(np.mean(self._mu))
+        self.lam = lam
         self.frame = mesh_frame(mesh.geometry)
 
     # -- sizes ----------------------------------------------------------------
@@ -188,7 +211,7 @@ class ElasticityInnerProduct:
         lc = LocalCell.build(self.mesh.geometry, cell_id, self.frame)
         d, vol = lc.dim, lc.volume
         scale = self._scale(lc)
-        a = self.lam / (2 * self.mu + d * self.lam)
+        a, mu = float(self._a[cell_id]), float(self._mu[cell_id])
         eye = np.eye(d)
 
         moments, X = self.facet_data(lc, scale)
@@ -201,13 +224,13 @@ class ElasticityInnerProduct:
         # ---- R: canonical columns (the d^2 constant modes come first) -------
         R_canon = (
             np.einsum("kr,ibc->ikbrc", eye, X) - a * np.einsum("rc,ibk->ikbrc", eye, X)
-        ).reshape(lc.n_facets * d * d, d * d) / (2 * self.mu)
+        ).reshape(lc.n_facets * d * d, d * d) / (2 * mu)
 
         # ---- Kbar ------------------------------------------------------------
         phi = np.column_stack([np.ones(len(lc.quad_points)), lc.quad_points / scale])
         G = (phi.T @ (lc.quad_weights[:, None] * phi)) / vol  # (d+1, d+1)
         dvec = eye.reshape(-1)  # vec(I) picks out the trace
-        block = (np.eye(d * d) - a * np.outer(dvec, dvec)) / (2 * self.mu)
+        block = (np.eye(d * d) - a * np.outer(dvec, dvec)) / (2 * mu)
         Kbar = np.kron(G, block)
 
         R = complete_moments(N, Kbar, vol, R_canon)
@@ -274,7 +297,8 @@ class ElasticityInnerProduct:
         g = self.mesh.geometry
         d, nb, ndf = 3, 3, 9
         nB, nf = facet_ids.shape
-        a = self.lam / (2 * self.mu + d * self.lam)
+        a = self._a[cell_ids]  # (nB,)
+        mu = self._mu[cell_ids]
         eye = np.eye(d)
 
         vol = g.measure(3)[cell_ids]
@@ -302,8 +326,9 @@ class ElasticityInnerProduct:
         )
         R_canon = (
             np.einsum("kr,bfec->bfkerc", eye, X)
-            - a * np.einsum("rc,bfek->bfkerc", eye, X)
-        ).reshape(nB, nf * ndf, d * d) / (2 * self.mu)
+            - a[:, None, None, None, None, None]
+            * np.einsum("rc,bfek->bfkerc", eye, X)
+        ).reshape(nB, nf * ndf, d * d) / (2.0 * mu)[:, None, None]
 
         # Kbar = kron(G, block); the first moment vanishes at the centroid, so G
         # is the identity bordered by the cell inertia tensor
@@ -313,8 +338,10 @@ class ElasticityInnerProduct:
             vol[:, None, None] * scale[:, None, None] ** 2
         )
         dvec = eye.reshape(-1)
-        block = (np.eye(d * d) - a * np.outer(dvec, dvec)) / (2 * self.mu)
-        Kbar = np.einsum("bij,kl->bikjl", G, block).reshape(nB, 36, 36)
+        block = (
+            np.eye(d * d)[None] - a[:, None, None] * np.outer(dvec, dvec)[None]
+        ) / (2 * mu)[:, None, None]  # (nB, d^2, d^2), per cell
+        Kbar = np.einsum("bij,bkl->bikjl", G, block).reshape(nB, 36, 36)
 
         # min-norm completion of the non-canonical columns
         target = vol[:, None, None] * Kbar[:, :, d * d :]
@@ -323,7 +350,9 @@ class ElasticityInnerProduct:
 
     def local_inner_products_batched(self, N, R, Kbar, vol):
         """Batched ``M_E = M1 + M2`` for a group of cells."""
-        M1 = (R @ np.linalg.solve(Kbar, np.swapaxes(R, 1, 2))) / vol[:, None, None]
+        M1 = (
+            R @ apply_pseudo_inverse(Kbar, np.swapaxes(R, 1, 2))
+        ) / vol[:, None, None]
         Q, Rm = np.linalg.qr(N)
         diag = np.abs(np.diagonal(Rm, axis1=1, axis2=2))
         deficient = diag.min(axis=1) <= 1e-12 * diag.max(axis=1) * max(N.shape[1:])

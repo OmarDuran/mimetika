@@ -206,6 +206,18 @@ class MixedPoisson:
         return out
 
 
+def _constrain(A: sp.csr_matrix, rhs: np.ndarray, dofs, values):
+    """Symmetric row/column elimination imposing ``x[dofs] = values``."""
+    A = A.tolil(copy=True)
+    rhs = rhs - np.asarray(A[:, dofs] @ values).ravel()
+    for d, v in zip(dofs, values):
+        A[d, :] = 0.0
+        A[:, d] = 0.0
+        A[d, d] = 1.0
+        rhs[d] = v
+    return A.tocsr(), rhs
+
+
 def _facet_normals_low_dim(mesh: Mesh) -> np.ndarray:
     """Ambient canonical normals of the facets of a 2D mesh (edges)."""
     from mimetika.geometry.local_cell import mesh_frame
@@ -396,11 +408,109 @@ class MixedElasticity:
         )
         return S, rhs
 
+    # -- traction (essential) boundary conditions --------------------------------
+
+    def traction_moments(self, facets, traction) -> np.ndarray:
+        """Traction DOF values on the given facets.
+
+        Prescribing a traction is **essential** in the Hellinger--Reissner form,
+        because the traction *is* a degree of freedom.  It is also what makes the
+        problem well posed at ``nu = 1/2``: with displacement prescribed all
+        round, the hydrostatic stress is only a Lagrange multiplier for
+        ``div u = 0`` and its level is undetermined.
+
+        ``traction(x)`` may return either
+
+        * ``(nq, 3, 3)`` -- the **stress tensor**, from which the traction is
+          formed against the canonical facet normal, or
+        * ``(nq, 3)`` -- the traction vector itself, taken with respect to that
+          same canonical normal (the one :meth:`facet_frame` returns, pointing
+          out of the ``+1`` incidence cell).
+
+        Passing the tensor is the safer of the two: the caller then never has to
+        know which way a given facet's normal points, and the values produced
+        here agree with :meth:`interpolate_stress` facet by facet.  A vector
+        traction assembled against the *wrong* normal is silently sign-flipped,
+        which is exactly the failure this signature exists to avoid.
+        """
+        from mimetika.geometry.local_cell import LocalCell
+
+        ndf = self.ndf
+        wanted = {int(f) for f in facets}
+        out, seen = {}, set()
+        for c in range(self.n_cells):
+            lc = LocalCell.build(self.mesh.geometry, c, self.inner.frame)
+            for i, fid in enumerate(lc.facet_ids):
+                if fid not in wanted or fid in seen:
+                    continue
+                seen.add(fid)
+                qp, qw = lc.facet_quadrature[i]
+                B, _ = lc.facet_scalar_basis(i)
+                # the canonical normal, in local components
+                normal = lc.signs[i] * lc.facet_normals[i]
+                val = np.asarray(traction(lc.to_ambient(qp)), dtype=float)
+                if val.ndim == 3:  # stress tensor: rotate, then contract
+                    S = np.einsum("ai,qab,bj->qij", lc.frame, val, lc.frame)
+                    t = np.einsum("qij,j->qi", S, normal)
+                else:  # traction vector: project onto the mesh frame
+                    t = val @ lc.frame
+                out[fid] = np.einsum("q,qb,qk->kb", qw, B, t).ravel()
+        dofs = np.concatenate([ndf * f + np.arange(ndf) for f in sorted(out)])
+        return dofs, np.concatenate([out[f] for f in sorted(out)])
+
+    def roller_dofs(self, facets) -> np.ndarray:
+        """Traction DOFs to pin for a **roller** (normal displacement, free slip).
+
+        A roller prescribes the *normal* displacement and a *vanishing shear*
+        traction.  In Hellinger--Reissner those land on opposite sides: the
+        displacement is natural and rides along in ``dirichlet``, while the shear
+        traction is essential and must be constrained -- which is what this
+        returns (the tangential components of each facet's traction moments).
+
+        Restricted to **axis-aligned** facets.  For a general normal the shear
+        components are a rotation of the stored ones rather than a subset of
+        them, so pinning them means a change of basis on the facet block; the
+        rectangular domains this is used for do not need it, and silently
+        applying the wrong constraint would be far worse than refusing.
+        """
+        d, ndf = self.d, self.ndf
+        frame = self.inner.frame  # (3, d): DOF components live in the mesh frame
+        out = []
+        for f in sorted({int(x) for x in facets}):
+            normal = self.mesh.geometry.facet_frame(f)[0] @ frame
+            axis = int(np.argmax(np.abs(normal)))
+            if not np.isclose(abs(normal[axis]), 1.0, atol=1e-10):
+                raise ValueError(
+                    f"facet {f} has normal {normal}, which is not axis aligned; "
+                    "roller constraints need a rotated facet basis"
+                )
+            base = ndf * f
+            # DOF layout is component-major: index = component * d + basis
+            out.append(
+                np.concatenate(
+                    [base + k * d + np.arange(d) for k in range(d) if k != axis]
+                )
+            )
+        return np.concatenate(out) if out else np.zeros(0, dtype=int)
+
     def solve(
-        self, body_force=None, dirichlet=None, extra_rhs=None, **kwargs
+        self,
+        body_force=None,
+        dirichlet=None,
+        extra_rhs=None,
+        traction=None,
+        traction_facets=(),
+        roller_facets=(),
+        **kwargs,
     ) -> MixedSolution:
         """Assemble and solve; ``kwargs`` go to :func:`solve_saddle`."""
         S, rhs = self.assemble(body_force, dirichlet, extra_rhs)
+        if len(traction_facets):
+            dofs, values = self.traction_moments(traction_facets, traction)
+            S, rhs = _constrain(S, rhs, dofs, values)
+        if len(roller_facets):
+            dofs = self.roller_dofs(roller_facets)
+            S, rhs = _constrain(S, rhs, dofs, np.zeros(len(dofs)))
         blocks = (self.n_stress, (self.d + self.n_skew) * self.n_cells)
         x = solve_saddle(S, rhs, blocks, **kwargs)
         n1 = self.n_stress
@@ -442,6 +552,33 @@ class MixedElasticity:
             skew = 0.5 * (G - np.swapaxes(G, 1, 2))
             vals = 0.5 * np.einsum("pij,qij->qp", gens, skew)
             out[c * self.n_skew : (c + 1) * self.n_skew] = (qw @ vals) / qw.sum()
+        return out
+
+    def cell_stress(self, dofs) -> np.ndarray:
+        """Cell-mean stress tensors ``(n_cells, d, d)`` in the mesh frame.
+
+        The same contraction the trace operator performs, kept general instead of
+        contracted against the identity::
+
+            ``sigma_E[i,j] = (1/|E|) sum_e s_e int_e (sigma n_e)_i (x - x_E)_j``
+
+        Exact for stress fields that are linear on each facet, and available in
+        any dimension -- unlike the 3D-only flux/stress reconstructions in
+        :mod:`mimetika.postprocess`.
+        """
+        from mimetika.geometry.local_cell import LocalCell
+
+        d, ndf = self.d, self.ndf
+        inner = self.inner
+        dofs = np.asarray(dofs, dtype=float)
+        out = np.zeros((self.n_cells, d, d))
+        for c in range(self.n_cells):
+            lc = LocalCell.build(self.mesh.geometry, c, inner.frame)
+            _, X = inner.facet_data(lc, inner._scale(lc))  # (nf, nb, d)
+            block = dofs[
+                (ndf * np.asarray(lc.facet_ids)[:, None] + np.arange(ndf)).ravel()
+            ].reshape(lc.n_facets, d, d)  # (facet, component, basis)
+            out[c] = np.einsum("f,fib,fbj->ij", lc.signs, block, X) / lc.volume
         return out
 
     def interpolate_stress(self, stress) -> np.ndarray:

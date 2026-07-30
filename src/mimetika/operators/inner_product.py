@@ -96,10 +96,33 @@ def complete_moments(
     return np.hstack([R_canonical, rest])
 
 
+def apply_pseudo_inverse(Kbar: np.ndarray, B: np.ndarray, rtol: float = 1e-12):
+    """``Kbar^+ B`` for symmetric positive *semi*-definite ``Kbar`` (batched).
+
+    ``Kbar`` is only positive **semi**-definite in the incompressible limit: the
+    elasticity Gram matrix is ``kron(G, (I - a vec(I) vec(I)^T)/2mu)``, whose
+    eigenvalue ``1 - a d`` vanishes exactly at ``a = 1/d``, i.e. ``nu = 1/2``.
+    That direction is the hydrostatic mode, which stores no energy -- so it is
+    not a defect to be regularised away but a genuine null space, and the
+    pseudo-inverse is the right inverse to use.
+
+    It costs nothing in accuracy: ``ker(Kbar) subset ker(R)`` (a mode with zero
+    compliance energy also has zero moments), so the rows of ``R`` lie in
+    ``range(Kbar)`` and ``R Kbar^+ Kbar = R`` holds exactly.  Strong consistency
+    ``M1 N = R`` therefore survives the limit intact.
+
+    Leading dimensions broadcast, so a whole group of cells is done at once.
+    """
+    w, V = np.linalg.eigh(np.asarray(Kbar, dtype=float))
+    tol = rtol * np.max(w, axis=-1, keepdims=True)
+    inv = np.where(w > tol, 1.0 / np.where(w > tol, w, 1.0), 0.0)
+    return V @ (inv[..., None] * (np.swapaxes(V, -1, -2) @ np.asarray(B, dtype=float)))
+
+
 def consistency_matrix(R: np.ndarray, Kbar: np.ndarray, volume: float) -> np.ndarray:
-    """Consistency term ``M1 = (1/|E|) R Kbar^{-1} R^T``; satisfies ``M1 N = R``."""
+    """Consistency term ``M1 = (1/|E|) R Kbar^+ R^T``; satisfies ``M1 N = R``."""
     R = np.asarray(R, dtype=float)
-    return (R @ np.linalg.solve(np.asarray(Kbar, dtype=float), R.T)) / volume
+    return (R @ apply_pseudo_inverse(Kbar, R.T)) / volume
 
 
 def range_projector(A: np.ndarray, rtol: float = 1e-12) -> tuple[np.ndarray, int]:

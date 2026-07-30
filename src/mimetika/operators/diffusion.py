@@ -45,7 +45,12 @@ class DiffusionInnerProduct:
         self, mesh: Mesh, K: np.ndarray | None = None, basis: str = "const"
     ) -> None:
         self.mesh = mesh
-        self.K = np.eye(3) if K is None else np.asarray(K, dtype=float)
+        # K is either one ambient 3x3 tensor for the whole mesh, or one per cell
+        # (shape (n_cells, 3, 3)) -- high-contrast media need the latter
+        K = np.eye(3) if K is None else np.asarray(K, dtype=float)
+        if K.ndim == 3 and len(K) != mesh.num_cells(mesh.dim):
+            raise ValueError("per-cell K must have one tensor per cell")
+        self.K = K
         if basis not in ("const", "rt0"):
             raise ValueError("basis must be 'const' or 'rt0'")
         self.basis = basis
@@ -80,11 +85,15 @@ class DiffusionInnerProduct:
 
     # -- local matrices -------------------------------------------------------
 
+    def _cell_tensor(self, cell_id: int) -> np.ndarray:
+        """The ambient conductivity of one cell."""
+        return self.K[cell_id] if self.K.ndim == 3 else self.K
+
     def local_matrices(self, cell_id: int):
         """Return ``(N, R, Kbar, volume, lc)`` for one cell, in the local frame."""
         lc = LocalCell.build(self.mesh.geometry, cell_id, self.frame)
         d, vol = lc.dim, lc.volume
-        Kloc = lc.project_tensor(self.K)
+        Kloc = lc.project_tensor(self._cell_tensor(cell_id))
         Kinv = np.linalg.inv(Kloc)
 
         # N: average normal flux of each mode on each facet (planar facets, so
