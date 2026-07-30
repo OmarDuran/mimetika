@@ -39,16 +39,26 @@ def facets_on_plane(
     n = np.asarray(normal, dtype=float)
     n = n / np.linalg.norm(n)
     p0 = np.asarray(point, dtype=float)
-    cx, pts = mesh.complex, mesh.geometry.points
+    pts = mesh.geometry.points
 
     out = []
-    for f, loop in enumerate(cx.polygon_loops):
-        if np.abs((pts[list(loop)] - p0) @ n).max() > atol:
+    for f in range(mesh.num_cells(mesh.dim - 1)):
+        verts = facet_vertices(mesh, f)
+        if np.abs((pts[list(verts)] - p0) @ n).max() > atol:
             continue
         if interior_only and len(_incident_cells(mesh, f)) < 2:
             continue
         out.append(f)
     return np.array(out, dtype=np.int64)
+
+
+def facet_vertices(mesh: Mesh, facet: int):
+    """Vertices of a facet, whatever the mesh dimension (edge in 2D, face in 3D)."""
+    if mesh.dim == 3:
+        return mesh.complex.polygon_loops[int(facet)]
+    if mesh.dim == 2:
+        return tuple(int(v) for v in mesh.complex.edge_vertices[int(facet)])
+    raise NotImplementedError(f"facet tagging needs dim 2 or 3, got {mesh.dim}")
 
 
 def _incident_cells(mesh: Mesh, facet: int) -> list[int]:
@@ -102,7 +112,7 @@ def write_fracture_tags(path: str | Path, mesh: Mesh, tagged) -> Path:
     text = path.read_text()
     flat, offsets = [], []
     for f in sorted(int(x) for x in tagged):
-        flat += list(mesh.complex.polygon_loops[f])
+        flat += list(facet_vertices(mesh, f))
         offsets.append(len(flat))
 
     block = (
@@ -128,7 +138,8 @@ def read_fracture_tags(path: str | Path, mesh: Mesh) -> np.ndarray:
         return np.zeros(0, dtype=np.int64)
 
     lookup = {
-        frozenset(loop): f for f, loop in enumerate(mesh.complex.polygon_loops)
+        frozenset(facet_vertices(mesh, f)): f
+        for f in range(mesh.num_cells(mesh.dim - 1))
     }
     out, start = [], 0
     for end in offsets:

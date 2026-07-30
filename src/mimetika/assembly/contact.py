@@ -63,27 +63,41 @@ class FractureContact:
     facets: np.ndarray
     normal_stiffness: float = 1.0
     shear_stiffness: float = 1.0
-    dofs_per_facet: int = 9
+    dofs_per_facet: int | None = None  # defaults to d^2
+    #: optional ``(d, d)`` compliance in the **facet** frame, overriding the
+    #: stiffnesses above (the contact driver supplies ``(1/r) I`` through it)
+    facet_compliance: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         self.facets = np.asarray(sorted(int(f) for f in self.facets), dtype=np.int64)
+        self.dim = self.mesh.dim
+        if self.dofs_per_facet is None:
+            self.dofs_per_facet = self.dim * self.dim
 
     # -- ingredients -----------------------------------------------------------
 
+    def rotation(self, facet: int) -> np.ndarray:
+        """``(d, d)`` rotation taking **facet-frame** components to mesh ones."""
+        from mimetika.geometry.local_cell import mesh_frame
+
+        rows = self.mesh.geometry.facet_frame(int(facet))  # (d, 3) ambient
+        if self.dim == 3:
+            return rows.T
+        return (rows @ mesh_frame(self.mesh.geometry)).T  # in-plane components
+
     def local_compliance(self, facet: int) -> np.ndarray:
-        """``A_f`` in **global** components: ``Q diag(1/k_n, 1/k_s, 1/k_s) Q^T``."""
-        g = self.mesh.geometry
-        n = g.facet_normals()[facet]
-        t1, t2 = g.facet_tangents(facet)
-        Q = np.column_stack([n, t1, t2])
-        diag = np.diag(
-            [
-                1.0 / self.normal_stiffness,
-                1.0 / self.shear_stiffness,
-                1.0 / self.shear_stiffness,
-            ]
+        """``A_f`` in **mesh** components: ``R A_facet R^T``, shape ``(d, d)``."""
+        d = self.dim
+        A = (
+            np.diag(
+                [1.0 / self.normal_stiffness]
+                + [1.0 / self.shear_stiffness] * (d - 1)
+            )
+            if self.facet_compliance is None
+            else np.asarray(self.facet_compliance, dtype=float)
         )
-        return Q @ diag @ Q.T
+        R = self.rotation(int(facet))
+        return R @ A @ R.T
 
     def facet_gram(self, facet: int) -> np.ndarray:
         """``Gram_ab = int_f b_a b_b`` for the facet ``P_1`` basis, in closed form.
@@ -91,17 +105,22 @@ class FractureContact:
         The basis is centred on the facet centroid, so the constant decouples:
         ``Gram = diag(|f|, (t_a S t_b)/|f|)`` with ``S`` the second moment.
         """
+        d = self.dim
         g = self.mesh.geometry
-        area = g.measure(2)[facet]
-        S = g.facet_second_moments()[facet]
-        t = np.array(g.facet_tangents(facet))  # (2, 3)
-        gram = np.zeros((3, 3))
+        area = g.measure(d - 1)[facet]
+        S = g.second_moments(d - 1)[facet]
+        t = g.facet_frame(int(facet))[1:]  # (d-1, 3) tangents
+        gram = np.zeros((d, d))
         gram[0, 0] = area
         gram[1:, 1:] = np.einsum("ad,dc,bc->ab", t, S, t) / area
         return gram
 
     def block(self, facet: int) -> np.ndarray:
-        """``A_f (x) Gram^{-1}`` -- the compliance in the traction DOF basis."""
+        """``A_f (x) Gram^{-1}`` -- the compliance in the traction DOF basis.
+
+        Both factors are ``d x d``, so the block is ``d^2 x d^2``: 4x4 in 2D,
+        9x9 in 3D, matching the traction DOFs of a facet.
+        """
         return np.kron(
             self.local_compliance(facet), np.linalg.inv(self.facet_gram(facet))
         )
@@ -111,7 +130,9 @@ class FractureContact:
     def assemble(self, n_dofs: int | None = None) -> sp.csr_matrix:
         """The global compliance contribution, to be **added** to ``M``."""
         ndf = self.dofs_per_facet
-        n = ndf * self.mesh.num_cells(2) if n_dofs is None else n_dofs
+        n = (
+            ndf * self.mesh.num_cells(self.dim - 1) if n_dofs is None else n_dofs
+        )
         rows, cols, vals = [], [], []
         for f in self.facets:
             dofs = ndf * int(f) + np.arange(ndf)
@@ -135,9 +156,9 @@ class FractureContact:
         Returned as the constant part of the jump vector -- the mean opening
         (normal component) and slip (tangential components) of that facet.
         """
-        ndf = self.dofs_per_facet
+        d, ndf = self.dim, self.dofs_per_facet
         moments = np.asarray(stress)[ndf * int(facet) : ndf * (int(facet) + 1)]
-        coeffs = (
-            np.linalg.solve(self.facet_gram(int(facet)), moments.reshape(3, 3).T).T
-        )
+        coeffs = np.linalg.solve(
+            self.facet_gram(int(facet)), moments.reshape(d, d).T
+        ).T
         return self.local_compliance(int(facet)) @ coeffs[:, 0]

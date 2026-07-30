@@ -346,3 +346,61 @@ class Geometry:
                 J[c] = np.einsum("q,qi,qj->ij", qw, rel, rel)
             self._cell_moments = J
         return self._cell_moments
+
+    # -- dimension-generic facet frames and moments ---------------------------
+
+    def facet_frame(self, facet: int) -> np.ndarray:
+        """``(d, 3)`` orthonormal frame ``[n, t_1, ..., t_{d-1}]`` of a facet.
+
+        Ambient (``R^3``) rows, but exactly ``d`` of them: two for an edge of a
+        2D mesh, three for a face of a 3D mesh.  Derived from *globally*
+        determined data, so both cells sharing a facet agree on it.
+
+        **Orientation convention.**  The normal points *out of the cell whose
+        incidence sign is* ``+1``.  In 3D that holds by construction -- the
+        canonical loop is the one the ``+1`` cell traverses outward -- but the
+        2D rotation of an edge direction carries no such guarantee, so it is
+        enforced here.  The convention is not cosmetic: the sign of the gap is
+        tied to it, and Signorini (``g_n >= 0``, ``t_n <= 0``) is *not* invariant
+        under flipping the normal.
+        """
+        d = self.complex.dim
+        if d == 3:
+            n = self.facet_normals()[facet]
+            t1, t2 = self.facet_tangents(facet)
+            return np.array([n, t1, t2])
+        if d != 2:
+            raise NotImplementedError(f"facet frames need dim 2 or 3, got {d}")
+
+        from mimetika.geometry.local_cell import mesh_frame
+
+        basis = mesh_frame(self)
+        plane = np.cross(basis[:, 0], basis[:, 1])
+        a, b = self.points[self.complex.edge_vertices[facet]]
+        t = (b - a) / np.linalg.norm(b - a)
+        n = np.cross(t, plane)
+        return np.array([n * self._outward_sign(facet, n), t])
+
+    def _outward_sign(self, facet: int, normal: np.ndarray) -> float:
+        """``+1`` if ``normal`` points out of the facet's ``+1``-incidence cell."""
+        d = self.complex.dim
+        col = self.complex.boundary_matrix(d).tocsr()[facet]
+        plus = [int(c) for c, v in zip(col.indices, col.data) if v > 0]
+        cell = plus[0] if plus else int(col.indices[0])
+        away = self.centroids(d - 1)[facet] - self.centroids(d)[cell]
+        s = 1.0 if float(away @ normal) >= 0 else -1.0
+        return s if plus else -s  # a -1-incidence cell reverses the test
+
+    def second_moments(self, k: int) -> np.ndarray:
+        """``(n_k, 3, 3)`` with ``int (x - x_c) (x) (x - x_c)`` over each k-cell."""
+        if k == 2:
+            return self.facet_second_moments()
+        if k == 3:
+            return self.cell_second_moments()
+        centroids = self.centroids(k)
+        out = np.zeros((self.complex.num_cells(k), 3, 3))
+        for c in range(len(out)):
+            qp, qw = self.quadrature(k, c)
+            rel = qp - centroids[c]
+            out[c] = np.einsum("q,qi,qj->ij", qw, rel, rel)
+        return out

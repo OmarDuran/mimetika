@@ -268,14 +268,28 @@ class MixedElasticity:
 
         for facet_ids, signs_g, cells in self.inner.cell_groups():
             nB, nf = facet_ids.shape
-            N, R, Kbar, vol, X = self.inner.local_matrices_batched(
-                facet_ids, signs_g, cells
-            )
-            Mloc, deficient = self.inner.local_inner_products_batched(N, R, Kbar, vol)
-            if deficient.any():  # rare; redo those cells with the scalar path
-                for b in np.where(deficient)[0]:
-                    n1, r1, k1, v1, _ = self.inner.local_matrices(int(cells[b]))
-                    Mloc[b] = assemble_local_inner_product(n1, r1, k1, v1)
+            if d == 3:
+                N, R, Kbar, vol, X = self.inner.local_matrices_batched(
+                    facet_ids, signs_g, cells
+                )
+                Mloc, deficient = self.inner.local_inner_products_batched(
+                    N, R, Kbar, vol
+                )
+                if deficient.any():  # rare; redo those cells with the scalar path
+                    for b in np.where(deficient)[0]:
+                        n1, r1, k1, v1, _ = self.inner.local_matrices(int(cells[b]))
+                        Mloc[b] = assemble_local_inner_product(n1, r1, k1, v1)
+            else:
+                # the batched kernel is written for d = 3; other dimensions take
+                # the scalar path, which is dimension-generic
+                Mloc = np.empty((nB, nf * ndf, nf * ndf))
+                X = np.empty((nB, nf, d, d))
+                for b, c in enumerate(cells):
+                    N, R, Kbar, vol, _, Xc = self.inner.local_matrices(
+                        int(c), with_facet_data=True
+                    )
+                    Mloc[b] = assemble_local_inner_product(N, R, Kbar, vol)
+                    X[b] = Xc
 
             gdofs = (
                 ndf * facet_ids[:, :, None] + np.arange(ndf)
@@ -359,25 +373,34 @@ class MixedElasticity:
             out[c * self.d : (c + 1) * self.d] = qw @ f
         return out
 
-    def assemble(self, body_force=None, dirichlet=None):
-        """Return ``(A, rhs)`` of the global saddle-point system."""
+    def assemble(self, body_force=None, dirichlet=None, extra_rhs=None):
+        """Return ``(A, rhs)`` of the global saddle-point system.
+
+        ``extra_rhs`` is added to the stress block; the contact driver uses it
+        to carry the augmented-Lagrangian prestress.
+        """
         M, D, A = self.assemble_operators()
         blocks = [[M, D.T, A.T], [D, None, None], [A, None, None]]
         if self.n_skew == 0:
             blocks = [[M, D.T], [D, None]]
         S = sp.bmat(blocks, format="csr")
+        traction_rhs = self.dirichlet_vector(dirichlet)
+        if extra_rhs is not None:
+            traction_rhs = traction_rhs + np.asarray(extra_rhs, dtype=float)
         rhs = np.concatenate(
             [
-                self.dirichlet_vector(dirichlet),
+                traction_rhs,
                 self.source_vector(body_force),
                 np.zeros(self.n_skew * self.n_cells),
             ]
         )
         return S, rhs
 
-    def solve(self, body_force=None, dirichlet=None, **kwargs) -> MixedSolution:
+    def solve(
+        self, body_force=None, dirichlet=None, extra_rhs=None, **kwargs
+    ) -> MixedSolution:
         """Assemble and solve; ``kwargs`` go to :func:`solve_saddle`."""
-        S, rhs = self.assemble(body_force, dirichlet)
+        S, rhs = self.assemble(body_force, dirichlet, extra_rhs)
         blocks = (self.n_stress, (self.d + self.n_skew) * self.n_cells)
         x = solve_saddle(S, rhs, blocks, **kwargs)
         n1 = self.n_stress

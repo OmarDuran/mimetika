@@ -158,3 +158,46 @@ def _oriented_tet_faces(points: np.ndarray, v: list[int]) -> list[list[int]]:
     if np.linalg.det(p[1:] - p[0]) < 0:  # make the corner ordering positive
         v = [v[0], v[2], v[1], v[3]]
     return [[v[a] for a in f] for f in _TET_FACES]
+
+
+def structured_quads(
+    nx: int,
+    ny: int,
+    lengths: tuple[float, float] = (1.0, 1.0),
+    origin: tuple[float, float] = (0.0, 0.0),
+) -> Mesh:
+    """A structured quadrilateral mesh of a rectangle, in the ``z = 0`` plane."""
+    lx, ly = lengths
+    xs = origin[0] + np.linspace(0, lx, nx + 1)
+    ys = origin[1] + np.linspace(0, ly, ny + 1)
+    points = np.array([[x, y, 0.0] for y in ys for x in xs])
+
+    def vid(i, j):
+        return j * (nx + 1) + i
+
+    quads = [
+        [vid(i, j), vid(i + 1, j), vid(i + 1, j + 1), vid(i, j + 1)]
+        for j in range(ny)
+        for i in range(nx)
+    ]
+    return Mesh.from_polygons(points, quads)
+
+
+def structured_triangles(
+    nx: int,
+    ny: int,
+    lengths: tuple[float, float] = (1.0, 1.0),
+    origin: tuple[float, float] = (0.0, 0.0),
+) -> Mesh:
+    """A conforming triangular mesh of a rectangle (each quad split in two).
+
+    Triangles are the 2D simplex, where the elasticity stabilization vanishes
+    (``3 edges x 4 DOFs = 12 = d^2(d+1)``).
+    """
+    quads = structured_quads(nx, ny, lengths, origin)
+    points = quads.geometry.points
+    tris = []
+    for loop in quads.complex.polygon_loops:
+        a, b, c, d = loop
+        tris += [[a, b, c], [a, c, d]]
+    return Mesh.from_polygons(points, tris)
