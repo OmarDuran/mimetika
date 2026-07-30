@@ -59,6 +59,17 @@ scaling; cohesion shifts the set off the origin and breaks that.
 The conversion to the traction *moments* the linear system actually constrains
 is the linear map ``to_moments``; the gap comes back through the linear map
 ``jump``.  Both are supplied as matrices by whoever knows the discretisation.
+
+Prestress
+---------
+A contact law constrains the **total** traction: Signorini says the total normal
+traction is compressive, not that some increment is.  When only an increment is
+solved for -- a depletion response on top of an in-situ state -- the law must
+still be shown the total, or a unilateral condition will read a tensile
+*increment* on a firmly closed fault as opening.  ``prestress`` carries the
+in-situ traction at the enforcement points: it is added before the projection
+and removed after, so ``x`` stays the incremental unknown the mechanics
+constrains while the law sees physical reality.
 """
 
 from __future__ import annotations
@@ -145,6 +156,8 @@ class ContactMap:
     law: object
     block_sizes: tuple
     solver: dict = field(default_factory=lambda: {"method": "direct"})
+    #: in-situ traction at the enforcement points; the law sees ``x + prestress``
+    prestress: np.ndarray | None = None
 
     @property
     def n_points(self) -> int:
@@ -175,12 +188,13 @@ class ContactMap:
         z = solve_saddle(A, b, self.block_sizes, **self.solver)
 
         gap = (self.jump @ z).reshape(self.shape)
-        trial = x + self.augmentation[:, None] * driving_gap(gap, g_prev)
+        offset = 0.0 if self.prestress is None else self.prestress
+        trial = x + offset + self.augmentation[:, None] * driving_gap(gap, g_prev)
         if internal is None:
             internal = self.law.initial_state(self.n_points)
         y, internal = self.law.project(trial, internal, gap, g_prev, dt)
         return MapEvaluation(
-            value=np.asarray(y).reshape(self.shape),
+            value=np.asarray(y).reshape(self.shape) - offset,
             gap=gap,
             internal=internal,
             solution=z,
@@ -231,6 +245,7 @@ class ContactMap:
             augmentation=self.augmentation,
             law=self.law,
             shape=self.shape,
+            prestress=self.prestress,
         )
 
     def residual(self, x, **kwargs) -> np.ndarray:
@@ -320,6 +335,7 @@ class CondensedContactMap:
     augmentation: np.ndarray
     law: object
     shape: tuple
+    prestress: np.ndarray | None = None
 
     @property
     def n_points(self) -> int:
@@ -362,12 +378,13 @@ class CondensedContactMap:
     def __call__(self, x, internal=None, g_prev=None, dt=None) -> MapEvaluation:
         x = np.asarray(x, dtype=float).reshape(self.shape)
         gap = self.gap(x)
-        trial = x + self.augmentation[:, None] * driving_gap(gap, g_prev)
+        offset = 0.0 if self.prestress is None else self.prestress
+        trial = x + offset + self.augmentation[:, None] * driving_gap(gap, g_prev)
         if internal is None:
             internal = self.law.initial_state(self.n_points)
         y, internal = self.law.project(trial, internal, gap, g_prev, dt)
         return MapEvaluation(
-            value=np.asarray(y).reshape(self.shape),
+            value=np.asarray(y).reshape(self.shape) - offset,
             gap=gap,
             internal=internal,
             solution=None,
@@ -453,7 +470,8 @@ def newton(
         if change <= tolerance * max(np.abs(x).max(), 1.0):
             break
 
-        trial = x + condensed.augmentation[:, None] * evaluation.gap
+        offset = 0.0 if condensed.prestress is None else condensed.prestress
+        trial = x + offset + condensed.augmentation[:, None] * evaluation.gap
         blocks = projection_tangent(
             condensed.law, trial, internal, evaluation.gap, g_prev, dt
         )

@@ -86,6 +86,10 @@ class ContactDriver:
     relaxation: float = 0.5  # Uzawa under-relaxation; 1.0 = none
     max_iterations: int = 200
     tolerance: float = 1e-10
+    #: in-situ traction at the enforcement points, ``(n_points, dim)``.  Fracture
+    #: state, not a boundary condition: a law constrains the *total* traction, so
+    #: an incremental solve has to tell it what it is sitting on top of.
+    prestress: np.ndarray | None = None
 
     _geom: FractureContact = field(init=False, repr=False)
 
@@ -308,6 +312,7 @@ class ContactDriver:
             law=self.law,
             block_sizes=problem.block_sizes,
             solver=solver,
+            prestress=self.prestress,
         )
 
     def initial_state(self) -> ContactState:

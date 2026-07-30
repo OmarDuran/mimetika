@@ -186,13 +186,44 @@ def pre_slip_stress(parameters: Parameters, nx: int = 20, ny: int = 60):
     }
 
 
-def simulate(parameters: Parameters, nx: int = 20, ny: int = 60, condense: bool = True):
-    """Solve the frictionless displaced-fault problem; return slip against ``y``."""
+def insitu_prestress(mesh, fault, parameters: Parameters) -> np.ndarray:
+    """In-situ fault traction at the enforcement points, ``(n_facets, 2)``.
+
+    A contact law constrains the **total** traction, so an incremental solve has
+    to tell it what it is sitting on: on a vertical fault the in-situ normal
+    traction is ``sigma_xx(y) ~ -57`` MPa and the shear vanishes.  Without this
+    a unilateral law reads the tensile *increment* as opening; with it, the same
+    law correctly finds the fault shut.
+    """
+    y = mesh.geometry.centroids(1)[np.asarray(fault, dtype=int)][:, 1]
+    prestress = np.zeros((len(y), 2))
+    prestress[:, 0] = parameters.horizontal_stress(y)  # sigma_xx on a vertical fault
+    return prestress
+
+
+def simulate(
+    parameters: Parameters,
+    nx: int = 20,
+    ny: int = 60,
+    law=None,
+    prestress: bool = True,
+):
+    """Solve the displaced-fault problem; return slip against ``y``.
+
+    ``law`` defaults to :class:`FrictionlessBilateral`.  Pass
+    ``SignoriniCoulomb(friction=0)`` to run the unilateral model instead -- with
+    ``prestress=True`` the two agree, because the fault really is shut; with
+    ``prestress=False`` the unilateral one opens it, which is the failure this
+    benchmark is able to detect.
+    """
     mesh, fault, pressure = build(parameters, nx=nx, ny=ny)
     driver = ContactDriver(
         mesh,
         fault,
-        FrictionlessBilateral(),
+        FrictionlessBilateral() if law is None else law,
+        prestress=(
+            insitu_prestress(mesh, fault, parameters) if prestress else None
+        ),
         mu=parameters.shear_modulus,
         lam=2.0
         * parameters.shear_modulus
