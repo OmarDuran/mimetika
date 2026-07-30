@@ -71,7 +71,7 @@ def test_the_projection_is_the_metric_closest_point(eps_n, eps_t, cohesion):
     model = law(eps_n, eps_t, cohesion)
     rng = np.random.default_rng(1)
     worst, checked = 0.0, 0
-    for _ in range(120):
+    for _ in range(40):  # each trial costs three SLSQP solves
         trial = rng.normal(scale=4.0, size=3)
         reference = closest_point(trial, eps_n, eps_t, cohesion)
         if reference is None:
@@ -79,7 +79,7 @@ def test_the_projection_is_the_metric_closest_point(eps_n, eps_t, cohesion):
         checked += 1
         got, _ = model.project(trial[None, :], None)
         worst = max(worst, np.abs(got[0] - reference).max())
-    assert checked > 100
+    assert checked > 30
     assert worst < 1e-5, f"max deviation from the optimum {worst:.2e}"
 
 

@@ -23,6 +23,7 @@ Run with ``python -m benchmarks.contact_mechanics.benchmark_0``.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 
 import numpy as np
 
@@ -30,6 +31,7 @@ from mimetika.assembly.mixed import boundary_facets
 from mimetika.assembly.poromechanics import PoroMechanics
 from mimetika.materials import Material
 from mimetika.mesh import structured_quads
+from mimetika.postprocess import MixedDimensionalSeries
 
 from benchmarks.contact_mechanics.common import Parameters, linear_fit
 
@@ -211,10 +213,53 @@ def combined_closed_form(parameters: Parameters, dip: float = 70.0):
     }
 
 
+def depletion_series(
+    path,
+    parameters: Parameters,
+    steps: int = 5,
+    nx: int = 8,
+    ny: int = 120,
+    dip: float = 70.0,
+):
+    """The finite-reservoir stress state over a depletion ramp, as a ``.pvd``.
+
+    **Bulk only** -- benchmark 0 has no fault, so there is no lower-dimensional
+    part to write.  The series exists so the stress state can be watched building
+    up: the combined stresses resolved on the ``dip``-degree plane are exactly the
+    quantities the paper plots in Fig. 4, and the step at the reservoir edges is
+    the feature to look for.
+    """
+    normal, tangent = parameters.fault_basis(dip)
+    series = None
+    for level in np.linspace(0.0, parameters.depletion, steps + 1)[1:]:
+        stage = replace(parameters, depletion=float(level))
+        mesh, increment, pressure = finite_reservoir(stage, nx=nx, ny=ny)
+        if series is None:
+            series = MixedDimensionalSeries(path, mesh)
+
+        y = mesh.geometry.centroids(2)[:, 1]
+        combined = parameters.stress_tensor(y) + increment  # in-situ + increment
+        series.write(
+            abs(level) / 1e6,   # the time coordinate is |Delta p| in MPa
+            bulk={
+                "pressure": pressure,
+                "sigma_xx": combined[:, 0, 0],
+                "sigma_yy": combined[:, 1, 1],
+                "sigma_xy": combined[:, 0, 1],
+                "sigma_normal": np.einsum("i,qij,j->q", normal, combined, normal),
+                "sigma_shear": np.einsum("i,qij,j->q", tangent, combined, normal),
+            },
+        )
+    return series
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-n", type=int, default=8, help="cells per side")
     parser.add_argument("--dip", type=float, default=70.0)
+    parser.add_argument("--vtu", nargs="?", const="out/benchmark_0",
+                        help="write a PVD depletion series to this path stem")
+    parser.add_argument("--steps", type=int, default=5)
     arguments = parser.parse_args()
 
     parameters = Parameters(dip=arguments.dip)
@@ -258,6 +303,12 @@ def main() -> None:
     ]
     for name, got, want in rows:
         print(f"    {name:<22} {got:+16.6e}  {want:+16.6e}")
+
+    if arguments.vtu:
+        series = depletion_series(arguments.vtu, parameters,
+                                  steps=arguments.steps, dip=arguments.dip)
+        print(f"\n  wrote {series.collection} "
+              f"({arguments.steps} depletion steps, bulk part only -- no fault)")
 
 
 if __name__ == "__main__":

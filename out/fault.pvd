@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<VTKFile type="Collection" version="0.1" byte_order="LittleEndian">
+  <Collection>
+    <DataSet timestep="4.1666666666666661" group="" part="0" file="fault_bulk_0000.vtu"/>
+    <DataSet timestep="4.1666666666666661" group="" part="1" file="fault_fracture_0000.vtu"/>
+    <DataSet timestep="8.3333333333333321" group="" part="0" file="fault_bulk_0001.vtu"/>
+    <DataSet timestep="8.3333333333333321" group="" part="1" file="fault_fracture_0001.vtu"/>
+    <DataSet timestep="12.5" group="" part="0" file="fault_bulk_0002.vtu"/>
+    <DataSet timestep="12.5" group="" part="1" file="fault_fracture_0002.vtu"/>
+    <DataSet timestep="16.666666666666664" group="" part="0" file="fault_bulk_0003.vtu"/>
+    <DataSet timestep="16.666666666666664" group="" part="1" file="fault_fracture_0003.vtu"/>
+    <DataSet timestep="20.833333333333332" group="" part="0" file="fault_bulk_0004.vtu"/>
+    <DataSet timestep="20.833333333333332" group="" part="1" file="fault_fracture_0004.vtu"/>
+    <DataSet timestep="25" group="" part="0" file="fault_bulk_0005.vtu"/>
+    <DataSet timestep="25" group="" part="1" file="fault_fracture_0005.vtu"/>
+  </Collection>
+</VTKFile>

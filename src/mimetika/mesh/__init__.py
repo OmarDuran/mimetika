@@ -6,6 +6,7 @@ from mimetika.mesh.generators import (
     structured_box,
     graded_coordinates,
     graded_quads,
+    graded_triangles,
     structured_quads,
     structured_tets,
     structured_triangles,

@@ -362,3 +362,46 @@ def test_an_aligned_grid_is_accepted(ny):
     depleted = pressure != 0.0
     # exactly the cells inside the band, no half-counted row at either edge
     assert depleted.sum() == 4 * round(Parameters().reservoir_height / (4500 / ny))
+
+
+def test_the_depletion_series_is_bulk_only(tmp_path):
+    """Benchmark 0 has no fault, so there is no lower-dimensional part to write."""
+    import xml.etree.ElementTree as ET
+
+    from benchmarks.contact_mechanics.benchmark_0 import depletion_series
+
+    series = depletion_series(tmp_path / "insitu", Parameters(), steps=3,
+                              nx=4, ny=40)
+    sets = ET.parse(series.collection).getroot().findall("./Collection/DataSet")
+    assert len(sets) == 3
+    assert all("bulk" in d.get("file") for d in sets)
+    assert not list(tmp_path.glob("*fracture*"))
+
+    piece = ET.parse(tmp_path / sets[-1].get("file")).getroot().find(
+        "./UnstructuredGrid/Piece"
+    )
+    names = {a.get("Name") for a in piece.findall("./CellData/DataArray")}
+    assert {"pressure", "sigma_xx", "sigma_yy", "sigma_normal", "sigma_shear"} <= names
+
+
+def test_the_series_reaches_the_published_combined_stresses(tmp_path):
+    """The last step is the full -25 MPa, so it must match Fig. 4's plateaus."""
+    import xml.etree.ElementTree as ET
+
+    from benchmarks.contact_mechanics.benchmark_0 import (
+        combined_closed_form, depletion_series)
+
+    parameters = Parameters()
+    series = depletion_series(tmp_path / "insitu", parameters, steps=2,
+                              nx=4, ny=40)
+    last = ET.parse(series.collection).getroot().findall("./Collection/DataSet")[-1]
+    piece = ET.parse(tmp_path / last.get("file")).getroot().find(
+        "./UnstructuredGrid/Piece"
+    )
+    fields = {a.get("Name"): np.fromstring(a.text, sep=" ")
+              for a in piece.findall("./CellData/DataArray")}
+    depleted = fields["pressure"] != 0.0
+    closed = combined_closed_form(parameters)
+    assert fields["sigma_normal"][depleted].mean() == pytest.approx(
+        closed["inside"][0], rel=2e-2
+    )

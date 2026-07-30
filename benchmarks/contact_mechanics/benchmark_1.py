@@ -39,6 +39,7 @@ Run with ``python -m benchmarks.contact_mechanics.benchmark_1``.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 
 import numpy as np
 import scipy.sparse as sp
@@ -47,9 +48,19 @@ from mimetika.assembly.mixed import MixedElasticity, boundary_facets
 from mimetika.assembly.poromechanics import PoroMechanics
 from mimetika.contact import ContactDriver, FrictionlessBilateral, SignoriniCoulomb
 from mimetika.materials import Material
-from mimetika.mesh import graded_coordinates, graded_quads, structured_quads
+from mimetika.mesh import (
+    graded_coordinates,
+    graded_quads,
+    graded_triangles,
+    structured_quads,
+)
 from mimetika.mesh.fracture import facets_on_plane
 from mimetika.operators.elasticity import ElasticityInnerProduct
+from mimetika.postprocess import (
+    MixedDimensionalSeries,
+    contact_fields,
+    mechanics_fields,
+)
 from mimetika.solver.saddle import solve_saddle
 
 from benchmarks.contact_mechanics.common import Parameters
@@ -98,7 +109,7 @@ def peak_slip(parameters: Parameters) -> float:
 
 
 def build(parameters: Parameters, nx: int = 20, ny: int = 60, spacing=None,
-          boundary_spacing: float = 100.0):
+          boundary_spacing: float = 100.0, triangles: bool = False):
     """Mesh, fault tags and the depletion pressure field of the offset reservoir.
 
     With ``spacing`` given the mesh is **graded**: nodes are placed exactly on the
@@ -117,7 +128,7 @@ def build(parameters: Parameters, nx: int = 20, ny: int = 60, spacing=None,
                                 spacing, max_spacing=boundary_spacing)
         xs = graded_coordinates([0.0], (-width / 2, width / 2),
                                 spacing, max_spacing=boundary_spacing)
-        mesh = graded_quads(xs, ys)
+        mesh = graded_triangles(xs, ys) if triangles else graded_quads(xs, ys)
     else:
         mesh = structured_quads(
             nx, ny, lengths=(width, height), origin=(-width / 2, -height / 2)
@@ -238,6 +249,7 @@ def simulate(
     prestress: bool = True,
     spacing=None,
     boundary_spacing: float = 100.0,
+    triangles: bool = False,
 ):
     """Solve the displaced-fault problem; return slip against ``y``.
 
@@ -248,7 +260,8 @@ def simulate(
     failure this benchmark is able to detect.
     """
     mesh, fault, pressure = build(parameters, nx=nx, ny=ny, spacing=spacing,
-                                  boundary_spacing=boundary_spacing)
+                                  boundary_spacing=boundary_spacing,
+                                  triangles=triangles)
     driver = ContactDriver(
         mesh,
         fault,
@@ -279,10 +292,65 @@ def simulate(
     }
 
 
+def depletion_series(
+    path,
+    parameters: Parameters,
+    steps: int = 6,
+    spacing: float = 6.25,
+    boundary_spacing: float = 100.0,
+):
+    """Write the fault's response to a depletion ramp as a ``.pvd`` time series.
+
+    Depletion **is** the time axis here: the problem is quasi-static, so nothing
+    depends on real time, but the paper tracks the slip-patch boundaries against
+    incremental pressure (Fig. 12) and that is the sweep worth watching.  Each
+    step re-solves from scratch -- the frictionless law is path independent, so
+    there is no history to carry, and pretending otherwise would be misleading.
+
+    Both parts are written.  The fracture carries the traction and the
+    displacement jump -- a fault is a contact interface, not a thin material, so
+    that is its whole state.  The surrounding rock carries the displacement and
+    stress that drive it, plus the depletion pressure that is the load, and a
+    fault plotted without its surroundings cannot be read.
+    """
+    mesh, fault, _ = build(parameters, spacing=spacing,
+                           boundary_spacing=boundary_spacing)
+    series = MixedDimensionalSeries(path, mesh, fault)
+    lame = (2.0 * parameters.shear_modulus * parameters.poisson
+            / (1.0 - 2.0 * parameters.poisson))
+
+    for level in np.linspace(0.0, parameters.depletion, steps + 1)[1:]:
+        stage = replace(parameters, depletion=float(level))
+        _, _, pressure = build(stage, spacing=spacing,
+                               boundary_spacing=boundary_spacing)
+        driver = ContactDriver(
+            mesh, fault, SignoriniCoulomb(friction=0.0),
+            mu=stage.shear_modulus, lam=lame,
+            prestress=insitu_prestress(mesh, fault, stage),
+        )
+        state = driver.solve_step(
+            mechanics_factory(mesh, stage, pressure), solver="newton"
+        )
+        if not state.converged:
+            raise RuntimeError(f"depletion {level:.3e} Pa did not converge")
+        # the time coordinate is |Delta p| in MPa, which is what Fig. 12 uses
+        series.write(
+            abs(level) / 1e6,
+            bulk=mechanics_fields(state.problem, state.solution, pressure),
+            fracture=contact_fields(driver, state),
+        )
+    return series
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nx", type=int, default=20)
     parser.add_argument("--ny", type=int, default=60)
+    parser.add_argument("--spacing", type=float, default=None,
+                        help="graded mesh: cell size at the reservoir edges")
+    parser.add_argument("--vtu", nargs="?", const="out/benchmark_1",
+                        help="write a PVD depletion series to this path stem")
+    parser.add_argument("--steps", type=int, default=6)
     arguments = parser.parse_args()
 
     parameters = Parameters()
@@ -295,7 +363,17 @@ def main() -> None:
           "        (paper -0.0024)")
     print(f"  peak |delta| = {peak_slip(parameters):.4f} m\n")
 
-    result = simulate(parameters, nx=arguments.nx, ny=arguments.ny)
+    if arguments.vtu:
+        series = depletion_series(
+            arguments.vtu, parameters, steps=arguments.steps,
+            spacing=arguments.spacing or 6.25,
+        )
+        print(f"  wrote {series.collection} "
+              f"({arguments.steps} depletion steps; part 0 = rock cells, "
+              f"part 1 = fault)\n")
+
+    result = simulate(parameters, nx=arguments.nx, ny=arguments.ny,
+                      spacing=arguments.spacing)
     state = result["state"]
     print(f"  mesh {arguments.nx} x {arguments.ny} = {result['cells']} cells, "
           f"{len(result['y'])} fault facets")

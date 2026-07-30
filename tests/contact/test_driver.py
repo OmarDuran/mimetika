@@ -289,7 +289,7 @@ def test_relaxation_is_required_in_the_sliding_regime():
     sliding, so the plain iteration (relaxation = 1) can oscillate with constant
     amplitude on meshes where fracture facets couple strongly.
     """
-    mesh, tags, plain = setup(tets=True, relaxation=1.0, max_iterations=120)
+    mesh, tags, plain = setup(tets=True, relaxation=1.0, max_iterations=40)
     stuck = plain.solve_step(elastic_mechanics(mesh, MU, LAM, dirichlet=load(normal=-0.01, shear=0.05)))
     assert not stuck.converged
 

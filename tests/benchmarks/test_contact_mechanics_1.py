@@ -232,3 +232,101 @@ def test_the_two_laws_agree_once_both_see_the_total_traction():
     bonded = bench.simulate(parameters, nx=12, ny=30, law=FrictionlessBilateral())
     assert np.allclose(unilateral["slip"], bonded["slip"], atol=1e-12)
     assert np.allclose(unilateral["traction"], bonded["traction"], atol=1e-6)
+
+
+# -- PVD output ------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def written_series(tmp_path_factory):
+    """One depletion ramp shared by every output test.
+
+    Four steps at the coarse spacing covers all of them: the collection
+    structure, both parts, the field names, and the monotone slip.  Re-running
+    the ramp per test cost about 90 s and told us nothing extra.
+    """
+    directory = tmp_path_factory.mktemp("series")
+    series = bench.depletion_series(directory / "fault", Parameters(),
+                                    steps=4, spacing=25.0)
+    return series, directory
+
+
+def datasets(series):
+    import xml.etree.ElementTree as ET
+
+    return ET.parse(series.collection).getroot().findall("./Collection/DataSet")
+
+
+def cell_fields(directory, name):
+    import xml.etree.ElementTree as ET
+
+    piece = ET.parse(directory / name).getroot().find("./UnstructuredGrid/Piece")
+    return piece, {a.get("Name"): np.fromstring(a.text, sep=" ")
+                   for a in piece.findall("./CellData/DataArray")}
+
+
+def test_the_depletion_series_writes_a_readable_collection(written_series):
+    """Depletion is the time axis: the problem is quasi-static, and Fig. 12 of the
+    paper tracks the slip patches against incremental pressure, not against time.
+    """
+    series, directory = written_series
+    sets = datasets(series)
+    assert len(sets) == 8  # four steps x two parts (rock, fault)
+    # the timestep is |Delta p| in MPa, ramping to the full 25, twice per step
+    assert [float(d.get("timestep")) for d in sets] == pytest.approx(
+        [6.25, 6.25, 12.5, 12.5, 18.75, 18.75, 25.0, 25.0]
+    )
+    assert all((directory / d.get("file")).exists() for d in sets)
+
+
+def test_both_the_rock_and_the_fault_are_written(written_series):
+    """Two parts, two dimensions: 2D rock cells and the 1D fault facets.
+
+    The fracture carries traction and jump -- a fault is a contact interface, so
+    that is its whole state -- while the rock carries the displacement and stress
+    driving it.  A fault plotted without its surroundings cannot be read.
+    """
+    VTK_LINE, VTK_POLYGON = 3, 7
+    series, directory = written_series
+    sets = datasets(series)
+    assert [d.get("part") for d in sets] == ["0", "1"] * 4
+
+    def read(name):
+        piece, fields = cell_fields(directory, name)
+        kind = int(np.fromstring(
+            piece.find("./Cells/DataArray[@Name='types']").text, sep=" ")[0])
+        return set(fields), kind, int(piece.get("NumberOfCells"))
+
+    rock, rock_type, n_rock = read(sets[-2].get("file"))
+    fault, fault_type, n_fault = read(sets[-1].get("file"))
+    assert (rock_type, fault_type) == (VTK_POLYGON, VTK_LINE)  # 2D cells, 1D facets
+    assert n_rock > n_fault
+    assert fault == {"traction", "jump", "normal_traction", "shear_traction",
+                     "opening", "slip", "dim"}
+    assert {"displacement", "sigma_xx", "sigma_yy", "sigma_xy", "pressure",
+            "dim"} <= rock
+
+
+def test_the_rock_part_shows_where_the_reservoir_is(written_series):
+    """The depletion pressure is carried as the load, so the reservoir is visible."""
+    series, directory = written_series
+    _, fields = cell_fields(directory, datasets(series)[0].get("file"))
+    depleted = fields["pressure"] != 0.0
+    assert depleted.any() and not depleted.all()
+    # 2D: the mesh lies in z = 0, so the displacement has no out-of-plane part
+    assert np.allclose(fields["displacement"].reshape(-1, 3)[:, 2], 0.0)
+
+
+def test_the_slip_grows_monotonically_with_depletion(written_series):
+    """Physics check on the series, not just that files appeared."""
+    series, directory = written_series
+    peaks = []
+    for entry in datasets(series):
+        if "fracture" not in entry.get("file"):
+            continue
+        _, fields = cell_fields(directory, entry.get("file"))
+        peaks.append(fields["slip"].max())
+    assert len(peaks) == 4
+    assert all(b > a for a, b in zip(peaks, peaks[1:]))
+    # frictionless and linear in the load, so the ramp is proportional
+    assert peaks[-1] / peaks[0] == pytest.approx(4.0, rel=1e-6)

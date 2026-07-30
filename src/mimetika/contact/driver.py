@@ -68,6 +68,9 @@ class ContactState:
     internal: np.ndarray  # law state, (nf * points_per_facet, n_state)
     jump: np.ndarray  # facet-frame jump at the enforcement points
     solution: object = None
+    #: the mechanics problem the solution belongs to -- needed to interpret it
+    #: (cell stresses, DOF layout), and the caller never built it
+    problem: object = None
     iterations: int = 0
     converged: bool = True
 
@@ -352,6 +355,7 @@ class ContactDriver:
                 internal=state.internal,
                 jump=np.einsum("ij,pj->pi", exact, traction),
                 solution=sol,
+                problem=problem,
                 iterations=1,
             )
 
@@ -395,6 +399,7 @@ class ContactDriver:
             internal=internal,
             jump=evaluation.gap,
             solution=problem.split(evaluation.solution),
+            problem=problem,
             iterations=result.iterations,
             converged=result.converged,
         )

@@ -8,11 +8,24 @@ from mimetika.postprocess.reconstruct import (
     reconstruct_stress,
     von_mises,
 )
-from mimetika.postprocess.vtu import export_vtu
+from mimetika.postprocess.series import (
+    MixedDimensionalSeries,
+    contact_fields,
+    darcy_fields,
+    mechanics_fields,
+    facet_vectors,
+)
+from mimetika.postprocess.vtu import export_facets, export_vtu
 
 __all__ = [
     "export_vtk",
     "export_vtu",
+    "export_facets",
+    "MixedDimensionalSeries",
+    "contact_fields",
+    "darcy_fields",
+    "mechanics_fields",
+    "facet_vectors",
     "l2_error",
     "reconstruct_flux",
     "reconstruct_stress",

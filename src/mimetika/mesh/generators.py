@@ -227,6 +227,25 @@ def _two_sided(left: float, right: float, spacing: float, growth: float):
     raise ValueError("could not reach the requested spacing")  # pragma: no cover
 
 
+def graded_triangles(xs, ys) -> Mesh:
+    """:func:`graded_quads` with every cell split into two triangles.
+
+    Triangles are the 2D simplex, and on a simplex the Mimetic-AFW stabilisation
+    vanishes identically (``3 edges x 4 DOFs = 12 = d^2(d+1) = m``, so
+    ``ker(N^T) = {0}``): the scheme reduces to the pure Arnold--Falk--Winther
+    mixed element.  A quadrilateral carries ``16 > 12`` DOFs and therefore always
+    carries a stabilisation term, which is a genuine discretisation difference,
+    not a cosmetic one.
+    """
+    quads = graded_quads(xs, ys)
+    points = quads.geometry.points
+    tris = []
+    for loop in quads.complex.polygon_loops:
+        a, b, c, d = loop
+        tris += [[a, b, c], [a, c, d]]
+    return Mesh.from_polygons(points, tris)
+
+
 def graded_coordinates(interfaces, extent, spacing, growth: float = 1.35,
                        max_spacing: float | None = None):
     """Node coordinates that **honour** ``interfaces`` and cluster elements at them.
