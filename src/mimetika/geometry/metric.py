@@ -48,6 +48,9 @@ class Geometry:
     _centroids: dict[int, np.ndarray] | None = None
     _facet_normals: np.ndarray | None = None
     _facet_tangents: np.ndarray | None = None
+    _facet_moments: np.ndarray | None = None
+    _cell_moments: np.ndarray | None = None
+    _area_vectors: np.ndarray | None = None
     _quad_cache: dict | None = None
 
     def __post_init__(self) -> None:
@@ -82,24 +85,34 @@ class Geometry:
         return np.linalg.norm(self.points[ev[:, 1]] - self.points[ev[:, 0]], axis=1)
 
     def _polygon_areas(self) -> np.ndarray:
-        return np.array(
-            [
-                np.linalg.norm(self._area_vector(loop))
-                for loop in self.complex.polygon_loops
-            ]
-        )
+        return np.linalg.norm(self.area_vectors(), axis=1)
+
+    def area_vectors(self) -> np.ndarray:
+        """``(n_facets, 3)`` vector areas of every 2-cell, computed at once.
+
+        Vectorised by grouping facets with equal vertex counts, so Newell's
+        formula runs as a handful of array expressions rather than one Python
+        call per facet.
+        """
+        if self._area_vectors is None:
+            loops = self.complex.polygon_loops
+            counts = np.array([len(l) for l in loops])
+            out = np.zeros((len(loops), 3))
+            for nv in np.unique(counts):
+                idx = np.where(counts == nv)[0]
+                P = self.points[np.array([loops[i] for i in idx])]  # (Ng, nv, 3)
+                c = P.mean(axis=1, keepdims=True)
+                out[idx] = 0.5 * np.cross(P - c, np.roll(P, -1, axis=1) - c).sum(axis=1)
+            self._area_vectors = out
+        return self._area_vectors
 
     def _cell_volumes(self) -> np.ndarray:
         """Volume by the divergence theorem: ``V = (1/3) sum_e s_e (x_e . A_e)``."""
         fc = self.centroids(2)
-        vols = np.zeros(self.complex.num_cells(3))
-        for cid in range(self.complex.num_cells(3)):
-            acc = 0.0
-            for fid, sgn in self.complex.facets_of(3, cid):
-                area_vec = self._area_vector(self.complex.polygon_loops[fid])
-                acc += sgn * float(np.dot(fc[fid], area_vec))
-            vols[cid] = abs(acc) / 3.0
-        return vols
+        av = self.area_vectors()
+        contrib = np.einsum("fi,fi->f", fc, av)  # x_e . A_e per facet
+        inc = self.complex.boundary_matrix(3)  # (n_facets, n_cells), signed
+        return np.abs(inc.T @ contrib) / 3.0
 
     def _area_vector(self, loop: tuple[int, ...]) -> np.ndarray:
         """Vector area of a planar polygon (Newell); direction by right-hand rule."""
@@ -138,9 +151,7 @@ class Geometry:
     def facet_normals(self) -> np.ndarray:
         """Unit normals of the 2-cells, per their canonical loop orientation."""
         if self._facet_normals is None:
-            n = np.array(
-                [self._area_vector(loop) for loop in self.complex.polygon_loops]
-            ).reshape(-1, 3)
+            n = self.area_vectors()
             norms = np.linalg.norm(n, axis=1, keepdims=True)
             self._facet_normals = n / np.where(norms == 0, 1.0, norms)
         return self._facet_normals
@@ -273,3 +284,65 @@ class Geometry:
             t1 /= np.linalg.norm(t1, axis=1, keepdims=True)
             self._facet_tangents = np.stack([t1, np.cross(n, t1)], axis=1)
         return self._facet_tangents
+
+    # -- vectorised facet moments (batched assembly) --------------------------
+
+    def facet_second_moments(self) -> np.ndarray:
+        """``(n_facets, 3, 3)`` with ``int_e (x - x_e) (x) (x - x_e)`` per facet.
+
+        Together with the area, centroid and tangent frame, this second moment
+        is *all* a facet contributes to the mimetic local matrices: the facet
+        Gram matrix and the coordinate expansions both follow from it in closed
+        form, so assembly needs no per-facet quadrature loop.
+
+        Computed for all facets at once by grouping them by vertex count -- the
+        fan decomposition is then a single vectorised expression per group.
+        """
+        if self._facet_moments is not None:
+            return self._facet_moments
+
+        loops = self.complex.polygon_loops
+        counts = np.array([len(l) for l in loops])
+        S = np.zeros((len(loops), 3, 3))
+        normals = self.facet_normals()
+
+        for nv in np.unique(counts):
+            idx = np.where(counts == nv)[0]
+            P = self.points[np.array([loops[i] for i in idx])]  # (Ng, nv, 3)
+            apex = P.mean(axis=1)
+            nxt = np.roll(P, -1, axis=1)
+            a, b = P - apex[:, None], nxt - apex[:, None]
+            areas = 0.5 * np.einsum("gnc,gc->gn", np.cross(a, b), normals[idx])
+
+            # degree-2 rule: the three edge midpoints of each fan triangle
+            mids = np.stack(
+                [0.5 * (apex[:, None] + P), 0.5 * (P + nxt), 0.5 * (nxt + apex[:, None])],
+                axis=2,
+            )  # (Ng, nv, 3, 3)
+            w = np.repeat(areas[:, :, None] / 3.0, 3, axis=2)  # (Ng, nv, 3)
+
+            total = w.sum(axis=(1, 2))
+            centroid = np.einsum("gnq,gnqc->gc", w, mids) / total[:, None]
+            rel = mids - centroid[:, None, None, :]
+            S[idx] = np.einsum("gnq,gnqi,gnqj->gij", w, rel, rel)
+
+        self._facet_moments = S
+        return S
+
+    def cell_second_moments(self) -> np.ndarray:
+        """``(n_cells, 3, 3)`` with ``int_E (x - x_E) (x) (x - x_E)`` per cell.
+
+        The cell counterpart of :meth:`facet_second_moments`: it is the only
+        thing beyond the volume that the mode Gram matrix ``Kbar`` needs, since
+        the first moment vanishes at the centroid.
+        """
+        if self._cell_moments is None:
+            d = self.complex.dim
+            centroids = self.centroids(d)
+            J = np.empty((self.complex.num_cells(d), 3, 3))
+            for c in range(len(J)):
+                qp, qw = self.quadrature(d, c)
+                rel = qp - centroids[c]
+                J[c] = np.einsum("q,qi,qj->ij", qw, rel, rel)
+            self._cell_moments = J
+        return self._cell_moments

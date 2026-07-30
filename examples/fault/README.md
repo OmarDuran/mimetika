@@ -149,6 +149,46 @@ One negative result worth recording: `gamg` on the elasticity Schur block
 produced an **indefinite** preconditioner (PETSc reason −8, answer wrong by
 1.6e-1). `hypre` is used when available, ICC otherwise.
 
+## Choosing the preconditioner
+
+`cpr` is the **default** — there is nothing to pass:
+
+```bash
+python examples/fault/elasticity_fault.py                 # cpr, preonly/icc + preonly/hypre
+python examples/fault/elasticity_fault.py --pc cpr        # the same, explicitly
+python examples/fault/elasticity_fault.py --pc schur      # PETSc defaults instead
+```
+
+Individual sub-blocks are overridden through PETSc, and those win over the `cpr`
+defaults (they are inserted first, yours last, before `setFromOptions`):
+
+```bash
+# swap the leading-block smoother and the AMG package
+--petsc-opts="-fieldsplit_0_pc_type jacobi -fieldsplit_1_pc_type gamg"
+# tune BoomerAMG itself
+--petsc-opts="-fieldsplit_1_pc_hypre_boomeramg_strong_threshold 0.5"
+```
+
+The solver line names what actually ran, so the choice is never ambiguous:
+
+```
+PETSc KSP=minres PC=fieldsplit[preonly/icc + preonly/hypre] | 84 iterations
+PETSc KSP=minres PC=fieldsplit[gmres/ilu + gmres/ilu]       | 7 iterations   (--pc schur)
+```
+
+### Why this combination
+
+| block | choice | reason |
+|---|---|---|
+| outer | `minres` | the system is symmetric indefinite |
+| leading `A00` | `preonly` + `icc` | must be applied **once** and be **symmetric** — MINRES needs a fixed SPD preconditioner, and an inner GMRES makes it variable |
+| Schur `S` | `preonly` + `hypre` | `S ≈ B diag(M)⁻¹Bᵀ` is the elliptic (pressure-Laplacian) operator — the CPR stage AMG is designed for |
+
+Measured alternatives on the elasticity subregion: `icc + hypre` 84 its, `jacobi
++ gamg` 232 its, PETSc defaults 7 its but ~8x slower in wall time. On the full
+mesh `gamg` on the Schur block has also been seen to produce an **indefinite**
+preconditioner (reason −8, wrong answer), which is why `hypre` is the default.
+
 ## Verifying which solver actually ran
 
 Do not take the script's word for it — ask PETSc:

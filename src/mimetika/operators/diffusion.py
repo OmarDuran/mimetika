@@ -122,14 +122,24 @@ class DiffusionInnerProduct:
 
     # -- global assembly ------------------------------------------------------
 
-    def assemble(self) -> sp.csr_matrix:
-        """Assemble the global flux inner product over all facet DOFs."""
+    def assemble(self, dofmap=None) -> sp.csr_matrix:
+        """Assemble the global flux inner product over all facet DOFs.
+
+        ``dofmap`` (a :class:`~mimetika.dof.facet_dofs.FacetDofMap`) decides
+        which cells share a facet's DOF.  With none, or with a conforming map,
+        facet ``f`` *is* DOF ``f`` and the result is unchanged; a map that
+        duplicates fracture facets sends each side to its own DOF.
+        """
         d = self.mesh.dim
-        n = self.mesh.num_cells(d - 1)
+        n = self.mesh.num_cells(d - 1) if dofmap is None else dofmap.n_dofs
         rows, cols, vals = [], [], []
         for cid in range(self.mesh.num_cells(d)):
             M, fids = self.local(cid)
-            f = np.asarray(fids)
+            f = (
+                np.asarray(fids)
+                if dofmap is None
+                else dofmap.cell_dofs(cid, fids)
+            )
             rows.append(np.repeat(f, len(f)))
             cols.append(np.tile(f, len(f)))
             vals.append(M.ravel())

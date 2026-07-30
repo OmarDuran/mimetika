@@ -67,15 +67,31 @@ def facet_cell_signs(mesh: Mesh) -> dict[int, int]:
     return {f: s for f, s in signs.items() if counts[f] == 1}
 
 
-def discrete_divergence(mesh: Mesh) -> sp.csr_matrix:
+def discrete_divergence(mesh: Mesh, dofmap=None) -> sp.csr_matrix:
     """``B`` with ``(B F)_E = \\int_E div F``: incidence scaled by facet measures.
 
     Purely topological up to the facet measures -- this is the discrete
     exterior derivative, not a fitted operator.
+
+    With a duplicating ``dofmap`` a fracture facet contributes to **one** cell
+    per column, so ``un+`` and ``un-`` no longer cancel and the mass exchanged
+    with the fracture is free rather than identically zero.
     """
     d = mesh.dim
-    inc = mesh.complex.boundary_matrix(d)  # (n_facets, n_cells), signed
-    return (inc.T @ sp.diags(mesh.geometry.measure(d - 1))).tocsr()
+    if dofmap is None:
+        inc = mesh.complex.boundary_matrix(d)  # (n_facets, n_cells), signed
+        return (inc.T @ sp.diags(mesh.geometry.measure(d - 1))).tocsr()
+
+    area = mesh.geometry.measure(d - 1)
+    rows, cols, vals = [], [], []
+    for c in range(mesh.num_cells(d)):
+        for f, sgn in mesh.complex.facets_of(d, c):
+            rows.append(c)
+            cols.append(int(dofmap.dofs(c, f)[0]))
+            vals.append(sgn * area[f])
+    return sp.csr_matrix(
+        (vals, (rows, cols)), shape=(mesh.num_cells(d), dofmap.n_dofs)
+    )
 
 
 @dataclass
@@ -209,8 +225,11 @@ def _facet_normals_low_dim(mesh: Mesh) -> np.ndarray:
 class MixedElasticity:
     """Global weakly-symmetric Hellinger--Reissner problem with Dirichlet data."""
 
-    def __init__(self, mesh: Mesh, mu: float = 1.0, lam: float = 1.0) -> None:
+    def __init__(
+        self, mesh: Mesh, mu: float = 1.0, lam: float = 1.0, contact=None
+    ) -> None:
         self.mesh = mesh
+        self.contact = contact  # optional FractureContact: adds compliance to M
         self.inner = ElasticityInnerProduct(mesh, mu=mu, lam=lam)
         self.d = mesh.dim
         self.ndf = self.inner.dofs_per_facet(self.d)
@@ -246,32 +265,43 @@ class MixedElasticity:
         m_rows, m_cols, m_vals = [], [], []
         d_rows, d_cols, d_vals = [], [], []
         a_rows, a_cols, a_vals = [], [], []
-        for c in range(self.n_cells):
-            N, R, Kbar, vol, lc, X = self.inner.local_matrices(
-                c, with_facet_data=True
+
+        for facet_ids, signs_g, cells in self.inner.cell_groups():
+            nB, nf = facet_ids.shape
+            N, R, Kbar, vol, X = self.inner.local_matrices_batched(
+                facet_ids, signs_g, cells
             )
-            nf = lc.n_facets
+            Mloc, deficient = self.inner.local_inner_products_batched(N, R, Kbar, vol)
+            if deficient.any():  # rare; redo those cells with the scalar path
+                for b in np.where(deficient)[0]:
+                    n1, r1, k1, v1, _ = self.inner.local_matrices(int(cells[b]))
+                    Mloc[b] = assemble_local_inner_product(n1, r1, k1, v1)
 
-            gdofs = (ndf * np.asarray(lc.facet_ids)[:, None] + np.arange(ndf)).ravel()
-            signs = np.repeat(lc.signs, ndf)
+            gdofs = (
+                ndf * facet_ids[:, :, None] + np.arange(ndf)
+            ).reshape(nB, nf * ndf)
+            sgn = np.repeat(signs_g, ndf, axis=1)
 
-            Mloc = assemble_local_inner_product(N, R, Kbar, vol)
-            Mloc = Mloc * signs[:, None] * signs[None, :]  # -> canonical DOFs
-            m_rows.append(np.repeat(gdofs, len(gdofs)))
-            m_cols.append(np.tile(gdofs, len(gdofs)))
+            Mloc = Mloc * sgn[:, :, None] * sgn[:, None, :]  # -> canonical DOFs
+            m_rows.append(np.repeat(gdofs, nf * ndf, axis=1).ravel())
+            m_cols.append(np.tile(gdofs, (1, nf * ndf)).ravel())
             m_vals.append(Mloc.ravel())
 
             # div_h, scaled by |E|: the constant moment of each component
             cols = (np.arange(nf)[:, None] * ndf + np.arange(d)[None, :] * d).ravel()
-            comp = np.tile(np.arange(d), nf)
-            d_rows.append(c * d + comp)
-            d_cols.append(gdofs[cols])
-            d_vals.append(np.repeat(lc.signs, d))
+            d_rows.append(
+                (cells[:, None] * d + np.tile(np.arange(d), nf)[None, :]).ravel()
+            )
+            d_cols.append(gdofs[:, cols].ravel())
+            d_vals.append(np.repeat(signs_g, d, axis=1).ravel())
 
             # as_h, scaled by |E|: pair the tractions with the rigid rotations
-            Aloc = np.einsum("pkc,ibc->pikb", gens, X).reshape(nsk, nf * ndf) * signs
-            a_rows.append(np.repeat(c * nsk + np.arange(nsk), nf * ndf))
-            a_cols.append(np.tile(gdofs, nsk))
+            Aloc = np.einsum("pkc,bfec->bpfke", gens, X).reshape(nB, nsk, nf * ndf)
+            Aloc = Aloc * sgn[:, None, :]
+            a_rows.append(
+                np.repeat(cells[:, None] * nsk + np.arange(nsk), nf * ndf, axis=1).ravel()
+            )
+            a_cols.append(np.tile(gdofs[:, None, :], (1, nsk, 1)).ravel())
             a_vals.append(Aloc.ravel())
 
         def build(rows, cols, vals, shape):
@@ -284,8 +314,12 @@ class MixedElasticity:
             )
 
         n_sig = self.n_stress
+        M = build(m_rows, m_cols, m_vals, (n_sig, n_sig))
+        if self.contact is not None:
+            # a compliant fracture adds compliance in series on its facets
+            M = (M + self.contact.assemble(n_sig)).tocsr()
         self._ops = (
-            build(m_rows, m_cols, m_vals, (n_sig, n_sig)),
+            M,
             build(d_rows, d_cols, d_vals, (d * self.n_cells, n_sig)),
             build(a_rows, a_cols, a_vals, (nsk * self.n_cells, n_sig)),
         )

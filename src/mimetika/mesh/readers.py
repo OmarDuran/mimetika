@@ -46,7 +46,7 @@ _LINEAR_CELL_FACES = {
 def read_vtu(path: str | Path) -> Mesh:
     """Read an ASCII ``.vtu`` unstructured grid into a :class:`Mesh`."""
     text = Path(path).read_text()
-    points = _data_array(text, index=0).reshape(-1, 3)
+    points = _points_array(text).reshape(-1, 3)
     types = _data_array(text, name="types").astype(np.int64)
     offsets = _data_array(text, name="offsets").astype(np.int64)
     connectivity = _data_array(text, name="connectivity").astype(np.int64)
@@ -60,6 +60,18 @@ def read_vtu(path: str | Path) -> Mesh:
 
 
 # -- parsing ------------------------------------------------------------------
+
+
+def _points_array(text: str):
+    """The coordinates, located by the ``<Points>`` element.
+
+    Not by DataArray position: a file may carry ``FieldData`` (fracture tags,
+    say) before the points, which would shift any index-based lookup.
+    """
+    section = re.search(r"<Points>(.*?)</Points>", text, re.S)
+    if section is None:
+        raise KeyError("no <Points> section in this .vtu")
+    return _data_array(section.group(1), index=0)
 
 
 def _data_array(text: str, name: str | None = None, index: int | None = None):

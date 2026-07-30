@@ -125,6 +125,40 @@ class ElasticityInnerProduct:
         structure needs.
         """
         d, nf, nb = lc.dim, lc.n_facets, lc.dim
+        if d != 3:
+            return self._facet_data_quadrature(lc, scale)
+
+        # Closed forms.  With the facet basis b_0 = 1, b_a = ((xi - xi_e).t_a)/h
+        # centred on the facet centroid, every integral collapses onto the facet
+        # area A, its centroid offset xi_e, and its second moment S:
+        #     int_e b_0        = A            int_e b_a       = 0
+        #     int_e b_0 xi     = A xi_e       int_e b_a xi    = (t_a S)/h
+        #     gram_00 = A      gram_0a = 0    gram_ab = (t_a S t_b)/h^2
+        A = lc.facet_measures
+        h = np.sqrt(A)
+        xi_e = lc.facet_centroids
+        t = np.stack(lc.facet_tangents)  # (nf, 2, 3)
+        S = self.mesh.geometry.facet_second_moments()[lc.facet_ids]
+
+        W = np.einsum("iad,idc->iac", t, S) / h[:, None, None]  # (nf, 2, 3)
+        T = np.einsum("iac,ibc->iab", W, t) / h[:, None, None]  # (nf, 2, 2)
+
+        mom_x = np.empty((nf, nb, d))
+        mom_x[:, 0] = A[:, None] * xi_e
+        mom_x[:, 1:] = W
+
+        moments = np.zeros((nf, nb, d + 1))
+        moments[:, 0, 0] = A
+        moments[:, :, 1:] = mom_x / scale
+
+        X = np.empty((nf, nb, d))
+        X[:, 0] = xi_e
+        X[:, 1:] = np.linalg.solve(T, W)  # 2x2 systems
+        return moments, X
+
+    def _facet_data_quadrature(self, lc: LocalCell, scale: float):
+        """Reference implementation by quadrature (used for ``d != 3``)."""
+        d, nf, nb = lc.dim, lc.n_facets, lc.dim
         moments = np.empty((nf, nb, d + 1))
         grams = np.empty((nf, nb, nb))
         mom_x = np.empty((nf, nb, d))
@@ -135,7 +169,7 @@ class ElasticityInnerProduct:
             mom_x[i] = wB.T @ lc.facet_quadrature[i][0]
             moments[i, :, 0] = wB.sum(0)
         moments[:, :, 1:] = mom_x / scale
-        return moments, np.linalg.solve(grams, mom_x)  # one batched solve
+        return moments, np.linalg.solve(grams, mom_x)
 
     def local_matrices(self, cell_id: int, with_facet_data: bool = False):
         """Return ``(N, R, Kbar, volume, lc)`` for one cell, in the local frame.
@@ -211,3 +245,91 @@ class ElasticityInnerProduct:
             (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
             shape=(n, n),
         )
+
+    # -- batched construction (many cells at once) ----------------------------
+
+    def cell_groups(self):
+        """Group cell ids by facet count.
+
+        Yields ``(facet_ids, signs, cell_ids)`` with ``facet_ids`` and ``signs``
+        of shape ``(n_cells_in_group, n_facets)``.  Grouping is what makes the
+        local matrices batchable: cells with equal facet counts have identical
+        array shapes, so a whole group goes through one set of stacked NumPy
+        linear-algebra calls instead of a Python loop.
+        """
+        csc = self.mesh.complex._boundary_csc(self.mesh.dim)
+        counts = np.diff(csc.indptr)
+        for nf in np.unique(counts):
+            cells = np.where(counts == nf)[0]
+            starts = csc.indptr[cells][:, None] + np.arange(nf)
+            yield csc.indices[starts], np.sign(csc.data[starts]), cells
+
+    def local_matrices_batched(self, facet_ids, signs, cell_ids):
+        """``(N, R, Kbar, vol, X)`` for a whole group of equal-shaped cells.
+
+        Mathematically identical to :meth:`local_matrices`, expressed with
+        stacked arrays.  Only 3D is supported; callers fall back to the per-cell
+        path otherwise.
+        """
+        g = self.mesh.geometry
+        d, nb, ndf = 3, 3, 9
+        nB, nf = facet_ids.shape
+        a = self.lam / (2 * self.mu + d * self.lam)
+        eye = np.eye(d)
+
+        vol = g.measure(3)[cell_ids]
+        scale = vol ** (1.0 / 3.0)
+        xi_e = g.centroids(2)[facet_ids] - g.centroids(3)[cell_ids][:, None]
+        n_out = signs[..., None] * g.facet_normals()[facet_ids]
+        A = g.measure(2)[facet_ids]
+        h = np.sqrt(A)
+        t = g.facet_tangent_frames()[facet_ids]  # (nB, nf, 2, 3)
+        S = g.facet_second_moments()[facet_ids]  # (nB, nf, 3, 3)
+
+        # facet moments and coordinate expansions, in closed form
+        W = np.einsum("bfad,bfdc->bfac", t, S) / h[..., None, None]
+        T = np.einsum("bfac,bfec->bfae", W, t) / h[..., None, None]
+        mom_x = np.concatenate([(A[..., None] * xi_e)[:, :, None, :], W], axis=2)
+        moments = np.zeros((nB, nf, nb, d + 1))
+        moments[:, :, 0, 0] = A
+        moments[:, :, :, 1:] = mom_x / scale[:, None, None, None]
+        X = np.concatenate(
+            [xi_e[:, :, None, :], np.linalg.solve(T, W)], axis=2
+        )  # (nB, nf, nb, d)
+
+        N = np.einsum("kr,bfc,bfes->bfkesrc", eye, n_out, moments).reshape(
+            nB, nf * ndf, -1
+        )
+        R_canon = (
+            np.einsum("kr,bfec->bfkerc", eye, X)
+            - a * np.einsum("rc,bfek->bfkerc", eye, X)
+        ).reshape(nB, nf * ndf, d * d) / (2 * self.mu)
+
+        # Kbar = kron(G, block); the first moment vanishes at the centroid, so G
+        # is the identity bordered by the cell inertia tensor
+        G = np.zeros((nB, d + 1, d + 1))
+        G[:, 0, 0] = 1.0
+        G[:, 1:, 1:] = g.cell_second_moments()[cell_ids] / (
+            vol[:, None, None] * scale[:, None, None] ** 2
+        )
+        dvec = eye.reshape(-1)
+        block = (np.eye(d * d) - a * np.outer(dvec, dvec)) / (2 * self.mu)
+        Kbar = np.einsum("bij,kl->bikjl", G, block).reshape(nB, 36, 36)
+
+        # min-norm completion of the non-canonical columns
+        target = vol[:, None, None] * Kbar[:, :, d * d :]
+        R_rest = N @ np.linalg.solve(np.einsum("bij,bik->bjk", N, N), target)
+        return N, np.concatenate([R_canon, R_rest], axis=2), Kbar, vol, X
+
+    def local_inner_products_batched(self, N, R, Kbar, vol):
+        """Batched ``M_E = M1 + M2`` for a group of cells."""
+        M1 = (R @ np.linalg.solve(Kbar, np.swapaxes(R, 1, 2))) / vol[:, None, None]
+        Q, Rm = np.linalg.qr(N)
+        diag = np.abs(np.diagonal(Rm, axis1=1, axis2=2))
+        deficient = diag.min(axis=1) <= 1e-12 * diag.max(axis=1) * max(N.shape[1:])
+
+        s = M1.diagonal(axis1=1, axis2=2).mean(axis=1)
+        M = M1 - s[:, None, None] * (Q @ np.swapaxes(Q, 1, 2))
+        idx = np.arange(M.shape[1])
+        M[:, idx, idx] += s[:, None]
+        return 0.5 * (M + np.swapaxes(M, 1, 2)), deficient

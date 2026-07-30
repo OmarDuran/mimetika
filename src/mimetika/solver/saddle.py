@@ -218,6 +218,17 @@ def _solve_petsc(
         detail = f"    PETSc KSP={ksp.getType()} PC={pc.getType()}"
         if pc.getType() == "lu":
             detail += f" ({pc.getFactorSolverType()})"
+        elif pc.getType() == "fieldsplit":
+            # name the sub-block solvers: 'fieldsplit' alone does not say
+            # whether the CPR configuration is actually in force
+            try:
+                subs = pc.getFieldSplitSubKSP()
+                inner = " + ".join(
+                    f"{k.getType()}/{k.getPC().getType()}" for k in subs
+                )
+                detail += f"[{inner}]"
+            except Exception:  # pragma: no cover - PETSc build dependent
+                pass
         detail += (
             f" | {ksp.getIterationNumber()} iterations,"
             f" reason={reason}, rnorm={ksp.getResidualNorm():.3e}"

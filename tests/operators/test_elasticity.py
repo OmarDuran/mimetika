@@ -129,3 +129,68 @@ def test_global_assembly_shape_and_symmetry():
     n = 9 * mesh.num_cells(2)
     assert A.shape == (n, n)
     assert (abs(A - A.T) > 1e-9).nnz == 0
+
+
+# -- closed-form facet data ---------------------------------------------------
+
+
+@pytest.mark.parametrize("rc", [c for c in CELLS if c.dim == 3], ids=[c.name for c in CELLS if c.dim == 3])
+def test_closed_form_facet_data_matches_quadrature(rc):
+    """The 3D fast path uses closed forms; it must equal the quadrature route."""
+    from mimetika.geometry.local_cell import LocalCell
+
+    ip = ElasticityInnerProduct(rc.mesh)
+    lc = LocalCell.build(rc.mesh.geometry, 0, ip.frame)
+    scale = ip._scale(lc)
+    m_fast, x_fast = ip.facet_data(lc, scale)
+    m_ref, x_ref = ip._facet_data_quadrature(lc, scale)
+    assert np.allclose(m_fast, m_ref, atol=1e-13)
+    assert np.allclose(x_fast, x_ref, atol=1e-13)
+
+
+@pytest.mark.parametrize("rc", [c for c in CELLS if c.dim == 3], ids=[c.name for c in CELLS if c.dim == 3])
+def test_facet_second_moments_match_quadrature(rc):
+    g = rc.mesh.geometry
+    S = g.facet_second_moments()
+    for f in range(rc.mesh.num_cells(2)):
+        qp, qw = g.quadrature(2, f)
+        rel = qp - g.centroids(2)[f]
+        assert np.allclose(S[f], np.einsum("q,qi,qj->ij", qw, rel, rel), atol=1e-13)
+
+
+# -- batched vs per-cell ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "mesh",
+    [structured_box(2, 2, 2), reference_cells(dim=3)[6].mesh],
+    ids=["hex", "dented"],
+)
+def test_batched_local_matrices_match_per_cell(mesh):
+    """The grouped/batched path must reproduce the scalar path exactly."""
+    ip = ElasticityInnerProduct(mesh, mu=1.3, lam=2.7)
+    for facet_ids, signs, cells in ip.cell_groups():
+        Nb, Rb, Kb, volb, Xb = ip.local_matrices_batched(facet_ids, signs, cells)
+        Mb, deficient = ip.local_inner_products_batched(Nb, Rb, Kb, volb)
+        assert not deficient.any()
+        for b, c in enumerate(cells):
+            N, R, K, vol, lc = ip.local_matrices(int(c))
+            assert np.allclose(Nb[b], N, atol=1e-12)
+            assert np.allclose(Rb[b], R, atol=1e-12)
+            assert np.allclose(Kb[b], K, atol=1e-12)
+            assert np.isclose(volb[b], vol)
+            assert np.allclose(
+                Mb[b], assemble_local_inner_product(N, R, K, vol), atol=1e-10
+            )
+
+
+def test_cell_groups_cover_every_cell_once():
+    mesh = reference_cells(dim=3)[6].mesh
+    ip = ElasticityInnerProduct(mesh)
+    seen = np.concatenate([c for _, _, c in ip.cell_groups()])
+    assert sorted(seen) == list(range(mesh.num_cells(3)))
+    for facet_ids, signs, cells in ip.cell_groups():
+        for b, c in enumerate(cells):
+            expected = mesh.complex.facets_of(3, int(c))
+            assert list(facet_ids[b]) == [f for f, _ in expected]
+            assert list(signs[b]) == [s for _, s in expected]
