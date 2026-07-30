@@ -72,6 +72,30 @@ import scipy.sparse.linalg as spla
 from mimetika.solver.saddle import solve_saddle
 
 
+def driving_gap(gap: np.ndarray, g_prev=None) -> np.ndarray:
+    """What the augmentation multiplies: total normal gap, tangential *increment*.
+
+    The two components are not treated alike, and the asymmetry is physical.
+    The normal condition ``g_n >= 0`` is a statement about the *absolute* gap, so
+    the normal term is driven by the total jump.  Coulomb friction instead
+    opposes the slip **rate**: eq. (2e) of Frigo et al. (2025) reads
+    ``g_T . t_T = tau_max |g_T|`` with ``g_T`` a rate, which a quasi-static scheme
+    discretises as the backward increment ``Delta_n g_T = g_T,n - g_T,n-1``.
+
+    Driving the tangential part with the total jump instead is equivalent only
+    while the loading is monotone and proportional -- the first step from rest,
+    or any path along a fixed direction.  As soon as the slip direction rotates
+    or reverses, the total jump still points along the accumulated path and the
+    traction lags the direction it should oppose.
+    """
+    gap = np.asarray(gap, dtype=float)
+    if g_prev is None:
+        return gap
+    out = gap.copy()
+    out[:, 1:] = gap[:, 1:] - np.atleast_2d(np.asarray(g_prev, dtype=float))[:, 1:]
+    return out
+
+
 @dataclass
 class MapEvaluation:
     """One evaluation of :class:`ContactMap`."""
@@ -151,7 +175,7 @@ class ContactMap:
         z = solve_saddle(A, b, self.block_sizes, **self.solver)
 
         gap = (self.jump @ z).reshape(self.shape)
-        trial = x + self.augmentation[:, None] * gap
+        trial = x + self.augmentation[:, None] * driving_gap(gap, g_prev)
         if internal is None:
             internal = self.law.initial_state(self.n_points)
         y, internal = self.law.project(trial, internal, gap, g_prev, dt)
@@ -315,7 +339,7 @@ class CondensedContactMap:
     def __call__(self, x, internal=None, g_prev=None, dt=None) -> MapEvaluation:
         x = np.asarray(x, dtype=float).reshape(self.shape)
         gap = self.gap(x)
-        trial = x + self.augmentation[:, None] * gap
+        trial = x + self.augmentation[:, None] * driving_gap(gap, g_prev)
         if internal is None:
             internal = self.law.initial_state(self.n_points)
         y, internal = self.law.project(trial, internal, gap, g_prev, dt)

@@ -30,6 +30,7 @@ import pytest
 import scipy.sparse as sp
 
 from mimetika.contact.laws import (
+    AssociativeMohrCoulomb,
     FrictionlessBilateral,
     LinearContact,
     RateAndStateFriction,
@@ -49,12 +50,18 @@ LAWS = {
     "signorini-mu0.6": SignoriniCoulomb(friction=0.6),
     "signorini-cohesion": SignoriniCoulomb(friction=0.4, cohesion=0.5),
     "rate-and-state": RateAndStateFriction(mu0=0.6, a=0.01, b=0.015, Dc=1e-4),
+    # the associative return mapping: same admissible set, closest-point projection
+    "associative-mc": AssociativeMohrCoulomb(friction=0.6, eps_n=1.0, eps_t=1.0),
+    "associative-mc-anisotropic": AssociativeMohrCoulomb(
+        friction=0.6, cohesion=0.3, eps_n=0.5, eps_t=2.0
+    ),
 }
 UNILATERAL = ("signorini-mu0.2", "signorini-mu0.6", "signorini-cohesion",
-              "rate-and-state")
+              "rate-and-state", "associative-mc", "associative-mc-anisotropic")
 #: laws whose admissible set is a cone through the origin, so ``P`` commutes
 #: with positive scaling.  Cohesion shifts the set off the origin and breaks it.
-CONE = ("frictionless-bilateral", "signorini-mu0.2", "signorini-mu0.6")
+CONE = ("frictionless-bilateral", "signorini-mu0.2", "signorini-mu0.6",
+        "associative-mc")
 
 
 def stub_map(law, r=0.4, load=3.0, points=POINTS, dim=DIM):
@@ -355,3 +362,37 @@ def test_condensation_drops_the_solution_vector():
     """The one thing given up, stated rather than discovered later."""
     condensed = stub_map(LAWS["signorini-mu0.6"]).condense()
     assert condensed(np.zeros((POINTS, DIM))).solution is None
+
+
+# -- the driving gap: total normal, incremental tangential ------------------------------
+
+
+def test_the_normal_term_uses_the_total_gap_and_the_shear_the_increment():
+    """Frigo et al. (2025) eqs (10a)/(10b): the two components differ on purpose.
+
+    ``g_N >= 0`` constrains the *absolute* gap, while Coulomb friction opposes
+    the slip **rate**, discretised as the backward increment.  Driving the shear
+    with the total jump is equivalent only under monotone proportional loading.
+    """
+    from mimetika.contact.map import driving_gap
+
+    gap = np.array([[-2.0, 5.0, 1.0]])
+    previous = np.array([[99.0, 4.0, 0.5]])
+    driven = driving_gap(gap, previous)
+    assert driven[0, 0] == -2.0  # normal: total, previous ignored
+    assert np.allclose(driven[0, 1:], [1.0, 0.5])  # shear: the increment
+    assert np.array_equal(driving_gap(gap, None), gap)  # first step: they coincide
+
+
+def test_the_shear_traction_follows_the_slip_increment_not_the_total():
+    """Under a rotating load the traction must oppose the *current* increment."""
+    from mimetika.contact.map import driving_gap
+
+    total = np.array([[-1.0, -0.05, 0.05]])  # accumulated path points up-left
+    previous = np.array([[0.0, 0.05, 0.05]])  # previous step was up-right
+    driven = driving_gap(total, previous)
+    increment = driven[0, 1:] / np.linalg.norm(driven[0, 1:])
+    assert np.allclose(increment, [-1.0, 0.0], atol=1e-12)
+    # the total jump points somewhere quite different
+    naive = total[0, 1:] / np.linalg.norm(total[0, 1:])
+    assert not np.allclose(naive, increment, atol=1e-2)

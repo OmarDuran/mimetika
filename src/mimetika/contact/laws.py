@@ -309,3 +309,183 @@ class RateAndStateFriction(SignoriniCoulomb):
         if dt:  # implicit aging law -- unconditionally stable
             state[:, 1] = (state[:, 1] + dt) / (1.0 + dt * V / self.Dc)
         return state
+
+
+class AssociativeMohrCoulomb(SignoriniCoulomb):
+    r"""Mohr--Coulomb contact by **closest-point projection** in the full traction space.
+
+    Same admissible set as :class:`SignoriniCoulomb` -- the truncated cone
+
+        ``S* = { t_N <= 0 ,  ||t_T|| <= c - t_N tan(theta) }``
+
+    -- but a different return mapping, and therefore different physics off the
+    stick region.  The updated traction is the point of ``S*`` closest to the
+    trial in the augmentation-weighted metric
+
+        ``d(t_tr, t)^2 = (t_N,tr - t_N)^2 / eps_N + ||t_T,tr - t_T||^2 / eps_T``
+
+    which is the return mapping of associative elastoplasticity, with the
+    augmentation parameters playing the role of the elastic moduli.
+
+    Associative versus non-associative
+    ----------------------------------
+    :class:`SignoriniCoulomb` performs the *partial* return: ``t_N`` is clipped
+    first, and the shear is then projected **radially** in the ``t_T`` plane at
+    that fixed ``t_N``.  Sliding therefore never alters the normal traction --
+    non-associative friction, appropriate to a smooth fault.
+
+    The closest-point projection moves along the cone's own normal, so
+    correcting an over-stressed shear state also **changes the normal
+    traction**: shear and normal response are energetically coupled, which is
+    the traction-space image of dilatancy on a rough fault.  The two agree only
+    where the projection happens to be radial; elsewhere they are genuinely
+    different constitutive assumptions, not two approximations of one.
+
+    Why the metric matters
+    ----------------------
+    ``eps_N`` and ``eps_T`` are *not* free numerical knobs here: they weight the
+    distance, so they select which point of the cone is "closest".  With
+    ``eps_N = eps_T`` the projection is the plain Euclidean shortest path.  They
+    must be the same values the augmented-Lagrangian update uses, or the return
+    mapping and the iteration are minimising different things.
+
+    Solution of the projection
+    --------------------------
+    By rotational symmetry about the ``t_N`` axis the shear stays collinear with
+    the trial, so the problem collapses to two unknowns ``(t_N, rho)`` with
+    ``rho = ||t_T|| >= 0``.  The convex feasible set has three faces, giving four
+    candidate active sets -- the trial itself, the lateral cone, the truncation
+    disc ``t_N = 0``, and the axis ``rho = 0``.  Each has a closed form, so the
+    projection is found by evaluating all four and taking the nearest feasible
+    one.  That is both exact and branch-free, which matters: hand-written
+    case logic on a cone is where these implementations usually go wrong.
+    """
+
+    def __init__(
+        self,
+        friction: float = 0.6,
+        cohesion: float = 0.0,
+        eps_n: float = 1.0,
+        eps_t: float = 1.0,
+    ):
+        super().__init__(friction=friction, cohesion=cohesion)
+        self.eps_n = float(eps_n)
+        self.eps_t = float(eps_t)
+
+    # -- the projection ---------------------------------------------------------
+
+    def _candidates(self, tn, rho):
+        """``(4, n, 2)`` candidate ``(t_N, rho)`` states, one per active set."""
+        mu, c = self.friction, self.cohesion
+        eN, eT = self.eps_n, self.eps_t
+
+        # the trial itself (feasible exactly when it is already admissible)
+        trial = np.stack([tn, rho], axis=-1)
+
+        # lateral cone face: rho + mu t_N = c
+        multiplier = (rho + mu * tn - c) / (eT + mu * mu * eN)
+        lateral = np.stack([tn - multiplier * mu * eN, rho - multiplier * eT], axis=-1)
+
+        # truncation disc t_N = 0, radius c
+        disc = np.stack([np.zeros_like(tn), np.minimum(rho, c)], axis=-1)
+
+        # the axis rho = 0
+        axis = np.stack([np.minimum(tn, 0.0), np.zeros_like(rho)], axis=-1)
+
+        return np.stack([trial, lateral, disc, axis], axis=0)
+
+    def _feasible(self, candidates, tol=1e-12):
+        tn, rho = candidates[..., 0], candidates[..., 1]
+        scale = np.maximum(np.abs(tn).max(initial=1.0), 1.0)
+        return (
+            (tn <= tol * scale)
+            & (rho >= -tol * scale)
+            & (rho <= self.cohesion - self.friction * tn + tol * scale)
+        )
+
+    def _return_map(self, trial):
+        """``(tn, rho, direction, rho_trial, region)`` -- the projection and its branch.
+
+        ``region`` records which active set won: ``0`` interior, ``1`` lateral
+        cone, ``2`` truncation disc, ``3`` axis.  Sharing it between the
+        projection and its derivative is what keeps the two consistent -- a
+        tangent that re-derives the branch independently is exactly how these
+        implementations drift out of step.
+        """
+        trial = np.atleast_2d(np.asarray(trial, dtype=float))
+        tn, shear = trial[:, 0], trial[:, 1:]
+        rho = np.linalg.norm(shear, axis=1)
+
+        candidates = self._candidates(tn, rho)
+        distance = (candidates[..., 0] - tn) ** 2 / self.eps_n + (
+            candidates[..., 1] - rho
+        ) ** 2 / self.eps_t
+        distance = np.where(self._feasible(candidates), distance, np.inf)
+        region = np.argmin(distance, axis=0)
+
+        index = (region, np.arange(len(tn)))
+        safe = np.where(rho > 0.0, rho, 1.0)
+        return (
+            np.minimum(candidates[..., 0][index], 0.0),
+            np.maximum(candidates[..., 1][index], 0.0),
+            shear / safe[:, None],
+            rho,
+            region,
+        )
+
+    def project(self, trial, state, g=None, g_prev=None, dt=None):
+        tn, rho, direction, _, _ = self._return_map(trial)
+        out = np.empty_like(np.atleast_2d(np.asarray(trial, dtype=float)))
+        out[:, 0] = tn
+        out[:, 1:] = direction * rho[:, None]
+        return out, state
+
+    # -- the consistent tangent -------------------------------------------------
+
+    def tangent(self, trial) -> np.ndarray:
+        r"""``d t / d t_trial``, ``(n, dim, dim)`` -- the consistent linearisation.
+
+        What makes this return mapping worth the extra algebra: with the exact
+        derivative of the (semi-smooth) projection, a Newton iteration on the
+        contact map converges quadratically, instead of the linear rate a
+        fixed-point Uzawa sweep gives.
+
+        Off the cone boundary the map is the identity (stick) or a projection
+        with a zero normal block (open).  On the boundary the derivative carries
+        the rank-deficient shear term ``I - m (x) m`` -- no stiffness along the
+        sliding direction, which is the statement that slip costs no traction --
+        together with the normal/shear coupling ``-eps_N tan(theta) m (x) n``
+        that the associative form introduces and the partial return lacks.
+        """
+        trial = np.atleast_2d(np.asarray(trial, dtype=float))
+        n, dim = trial.shape
+        mu, eN, eT = self.friction, self.eps_n, self.eps_t
+        denominator = eT + mu * mu * eN
+
+        tn, rho, direction, rho_trial, region = self._return_map(trial)
+        eye = np.eye(dim - 1)
+        out = np.zeros((n, dim, dim))
+
+        for i in range(n):
+            m = direction[i]
+            if region[i] == 0:  # interior: stick, the map is the identity
+                out[i] = np.eye(dim)
+            elif region[i] == 1:  # lateral cone face
+                # differentiating tn = a - lam mu eN, rho = b - lam eT with
+                # lam = (b + mu a - c) / (eT + mu^2 eN)
+                out[i, 0, 0] = eT / denominator
+                out[i, 0, 1:] = -(mu * eN / denominator) * m
+                out[i, 1:, 0] = -(mu * eT / denominator) * m
+                radial = (mu * mu * eN / denominator) * np.outer(m, m)
+                transverse = (rho[i] / rho_trial[i]) * (eye - np.outer(m, m))
+                out[i, 1:, 1:] = radial + transverse
+            elif region[i] == 2:  # truncation disc t_N = 0
+                if rho_trial[i] <= self.cohesion:
+                    out[i, 1:, 1:] = eye
+                else:
+                    out[i, 1:, 1:] = (self.cohesion / rho_trial[i]) * (
+                        eye - np.outer(m, m)
+                    )
+            else:  # region 3: the axis, shear fully relaxed
+                out[i, 0, 0] = 1.0 if trial[i, 0] < 0.0 else 0.0
+        return out

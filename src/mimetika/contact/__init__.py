@@ -2,6 +2,7 @@
 
 from mimetika.contact.driver import ContactDriver, ContactState, elastic_mechanics
 from mimetika.contact.laws import (
+    AssociativeMohrCoulomb,
     ContactLaw,
     FrictionlessBilateral,
     LinearContact,
@@ -12,6 +13,7 @@ from mimetika.contact.map import ContactMap, FixedPointResult, MapEvaluation, fi
 
 __all__ = [
     "ContactLaw",
+    "AssociativeMohrCoulomb",
     "LinearContact",
     "FrictionlessBilateral",
     "SignoriniCoulomb",
