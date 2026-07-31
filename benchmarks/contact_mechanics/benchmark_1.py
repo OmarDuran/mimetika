@@ -189,7 +189,8 @@ def mechanics_factory(mesh, parameters: Parameters, pressure):
 
 
 def pre_slip_stress(parameters: Parameters, nx: int = 20, ny: int = 60,
-                    spacing=None, boundary_spacing: float = 100.0):
+                    spacing=None, boundary_spacing: float = 100.0,
+                    triangles: bool = False):
     """Coulomb stress on the **locked** fault -- Fig. 6 (left), eq. (18).
 
     The other half of the benchmark, and a different computation: the fault is
@@ -202,7 +203,8 @@ def pre_slip_stress(parameters: Parameters, nx: int = 20, ny: int = 60,
     value can only ever track it away from those points.
     """
     mesh, fault, pressure = build(parameters, nx=nx, ny=ny, spacing=spacing,
-                                  boundary_spacing=boundary_spacing)
+                                  boundary_spacing=boundary_spacing,
+                                  triangles=triangles)
     problem, matrix, rhs = mechanics_factory(mesh, parameters, pressure)(None)
     solution = problem.split(
         solve_saddle(matrix, rhs, problem.block_sizes, method="direct")
@@ -250,6 +252,7 @@ def simulate(
     spacing=None,
     boundary_spacing: float = 100.0,
     triangles: bool = False,
+    enforcement: str = "averaged",
 ):
     """Solve the displaced-fault problem; return slip against ``y``.
 
@@ -266,27 +269,34 @@ def simulate(
         mesh,
         fault,
         SignoriniCoulomb(friction=0.0) if law is None else law,
-        prestress=(
-            insitu_prestress(mesh, fault, parameters) if prestress else None
-        ),
+        prestress=None,
         mu=parameters.shear_modulus,
         lam=2.0
         * parameters.shear_modulus
         * parameters.poisson
         / (1.0 - 2.0 * parameters.poisson),
+        enforcement=enforcement,
         relaxation=1.0,  # the projection is affine here, so no damping is needed
         tolerance=1e-10,
         max_iterations=400,
     )
+    if prestress:  # per facet; the driver knows the enforcement layout
+        driver.prestress = driver.expand_to_points(
+            insitu_prestress(mesh, fault, parameters)
+        )
     state = driver.solve_step(
         mechanics_factory(mesh, parameters, pressure), solver="newton"
     )
     y = mesh.geometry.centroids(1)[np.asarray(fault, dtype=int)][:, 1]
     order = np.argsort(y)
+    # collapse to one value per facet BEFORE ordering: under pointwise
+    # enforcement these arrays have several rows per facet
+    slip = driver.per_facet(state.jump)
+    traction = driver.per_facet(driver.tractions(state.solution["stress"]))
     return {
         "y": y[order],
-        "slip": state.jump[order, 1],
-        "traction": driver.tractions(state.solution["stress"])[order],
+        "slip": slip[order, 1],
+        "traction": traction[order],
         "state": state,
         "cells": mesh.num_cells(2),
     }

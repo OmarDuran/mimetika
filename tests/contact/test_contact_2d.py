@@ -209,7 +209,7 @@ def test_moment_value_round_trip_in_2d(mode):
         if mode == "averaged":
             assert np.allclose(back, vals)
         else:
-            assert back.shape == vals.shape
+            assert np.allclose(back, vals)  # exact in 2D too, after the fix
 
 
 def test_compliance_block_is_4x4_in_2d():

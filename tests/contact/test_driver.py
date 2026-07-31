@@ -94,7 +94,41 @@ def test_moment_value_round_trip(mode):
         if mode == "averaged":
             assert np.allclose(back, vals)  # constant part is exactly recovered
         else:
+            # values -> moments -> values is a PROJECTION, not the identity: a 3D
+            # facet has more quadrature points than P_1 basis functions, so the
+            # first step is a genuine loss.  Idempotence is the sharp statement,
+            # and unlike a shape check it would catch a wrong basis.
             assert back.shape == vals.shape
+            again = d.to_values(d.to_moments(back, int(f)), int(f))
+            assert np.allclose(again, back)
+
+
+@pytest.mark.parametrize("mode", ["averaged", "pointwise"])
+def test_the_moment_round_trip_is_exact(mode):
+    """``moments -> values -> moments`` IS the identity, in the other direction.
+
+    This is the direction the contact constraint actually uses -- the multiplier
+    is converted to moments and pinned -- so it has to be lossless, and for
+    ``pointwise`` it is: the enforcement points carry the full ``P_1`` basis.
+
+    It was NOT lossless in 2D.  ``to_moments`` integrated against a basis scaled
+    by ``|f| ** (1/k)`` while ``to_values`` inverted a Gram built with
+    ``sqrt(|f|)``; those agree only for ``k = 2``, so in 2D the round trip
+    destroyed 88% of the linear part.  The old test asserted only ``back.shape``
+    in this mode and could never have seen it.
+    """
+    mesh, tags, d = setup(enforcement=mode)
+    rng = np.random.default_rng(3)
+    for f in tags:
+        moments = rng.standard_normal(d.ndf)
+        back = d.to_moments(d.to_values(moments, int(f)), int(f))
+        if mode == "pointwise":
+            assert np.allclose(back, moments, atol=1e-12)
+        else:  # averaged keeps only the constant part, by construction
+            block = back.reshape(d.dim, d.dim)
+            original = moments.reshape(d.dim, d.dim)
+            assert np.allclose(block[:, 0], original[:, 0], atol=1e-12)
+            assert np.allclose(block[:, 1:], 0.0, atol=1e-12)
 
 
 def test_enforcement_point_counts():
@@ -300,3 +334,75 @@ def test_relaxation_is_required_in_the_sliding_regime():
     assert np.allclose(
         np.linalg.norm(t[:, 1:], axis=1) / -t[:, 0], damped.law.friction, rtol=1e-6
     )
+
+
+def test_the_jump_operator_recovers_a_prescribed_offset():
+    """The jump operator against a **known** jump -- it had no such test.
+
+    ``test_linear_law_solves_in_one_pass_and_matches_the_contact_law`` looks like
+    this check but is not: a linear law takes the compliance shortcut, where the
+    jump is ``A_f t`` and the jump operator is never evaluated.  The operator is
+    used only on the Uzawa/Newton path, so nothing pinned its scaling.
+
+    Here a very soft fracture is pulled open by a prescribed discontinuous
+    displacement, so the jump is known in advance.  Being h-independent is the
+    sharp part: a spurious ``Gram`` factor in the operator scales the jump by the
+    facet measure, which is invisible on one mesh and obvious across two.
+    """
+    from mimetika.assembly.mixed import MixedElasticity
+    from mimetika.solver.saddle import solve_saddle
+
+    offset = 0.02
+    recovered = []
+    for n in (2, 4):
+        mesh = structured_box(n, n, n)
+        tags = facets_on_plane(mesh, [0.5, 0, 0], [1, 0, 0])
+        driver = ContactDriver(mesh, tags, SignoriniCoulomb(friction=0.6),
+                               mu=MU, lam=LAM)
+
+        def prescribed(x):
+            x = np.atleast_2d(x)
+            out = np.zeros((len(x), 3))
+            out[:, 1] = np.where(x[:, 0] > 0.5, offset, 0.0)  # tangential step
+            return out
+
+        problem = MixedElasticity(mesh, mu=MU, lam=LAM,
+                                  contact=driver.contact_geometry(
+                                      np.diag([1e6, 1e6, 1e6])))
+        matrix, rhs = problem.assemble_constrained(dirichlet=prescribed)
+        solution = problem.split(
+            solve_saddle(matrix, rhs, problem.block_sizes, method="direct")
+        )
+        vector = np.concatenate([solution["stress"], solution["displacement"],
+                                 solution["rotation"]])
+        jump = (driver.jump_operator(problem) @ vector).reshape(
+            driver.n_points, driver.dim
+        )
+        recovered.append(np.abs(jump[:, 1]).max())
+
+    # a soft fracture takes up essentially the whole prescribed offset ...
+    assert recovered[0] == pytest.approx(offset, rel=0.05)
+    # ... and the answer must not depend on the facet size
+    assert recovered[1] == pytest.approx(recovered[0], rel=0.05)
+
+
+def test_the_jump_operator_matches_the_moment_conversion_up_to_the_gram():
+    """Pins *why* the operator carries no ``Gram^{-1}`` while ``to_values`` does.
+
+    They convert different objects.  A traction DOF is a moment, so its values
+    need ``Gram^{-1}``.  The jump residual is paired *against* that moment DOF,
+    so the pairing already supplies one and the residual is already a coefficient
+    vector.  Adding a second inverse divides the jump by ``|e|``.
+    """
+    mesh, tags, driver = setup()
+    facet = int(tags[0])
+    gram = driver._geom.facet_gram(facet)
+    moments = np.arange(1.0, driver.ndf + 1.0)
+    #  to_values solves the Gram; the jump operator's shape function does not
+    as_traction = driver.to_values(moments, facet)
+    as_jump = driver.to_values(
+        (gram @ moments.reshape(driver.dim, driver.dim).T).T.ravel(), facet
+    )
+    assert not np.allclose(as_traction, as_jump)
+    scale = mesh.geometry.measure(mesh.dim - 1)[facet]
+    assert np.allclose(as_jump[:, 0], scale * as_traction[:, 0], rtol=1e-10)

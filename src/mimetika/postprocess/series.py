@@ -153,8 +153,8 @@ def contact_fields(driver, state) -> dict[str, np.ndarray]:
     compression, ``g_n > 0`` is opening, and the tangential magnitude is the slip.
     """
     facets = np.asarray(driver.facets, dtype=np.int64)
-    traction = _per_facet(driver, driver.tractions(state.solution["stress"]))
-    jump = _per_facet(driver, state.jump)
+    traction = driver.per_facet(driver.tractions(state.solution["stress"]))
+    jump = driver.per_facet(state.jump)
     mesh = driver.mesh
     return {
         "traction": facet_vectors(mesh, facets, traction),
@@ -164,15 +164,6 @@ def contact_fields(driver, state) -> dict[str, np.ndarray]:
         "opening": jump[:, 0],
         "slip": np.linalg.norm(jump[:, 1:], axis=1),
     }
-
-
-def _per_facet(driver, values) -> np.ndarray:
-    """Collapse enforcement-point values to one value per facet."""
-    values = np.atleast_2d(np.asarray(values, dtype=float))
-    if len(values) == len(driver.facets):
-        return values
-    return np.vstack([values[driver._slice(i)].mean(axis=0)
-                      for i in range(len(driver.facets))])
 
 
 def mechanics_fields(problem, solution, pressure=None) -> dict[str, np.ndarray]:

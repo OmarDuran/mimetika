@@ -151,7 +151,20 @@ class ContactDriver:
         return sum(self.points_per_facet(int(f)) for f in self.facets)
 
     def _basis(self, facet: int):
-        """``(values (npts, 3), weights (npts,))`` of the facet ``P_1`` basis."""
+        """``(values (npts, 3), weights (npts,))`` of the facet ``P_1`` basis.
+
+        The linear functions are scaled by ``sqrt(|f|)``, which is the scaling
+        :meth:`FractureContact.facet_gram` and
+        :meth:`LocalCell.facet_scalar_basis` -- the basis the stress DOFs are
+        actually defined against -- both use.
+
+        It used to be ``|f| ** (1/k)``.  That agrees for ``k = 2`` (a polygonal
+        facet of a 3D cell) and disagrees for ``k = 1`` (an edge of a 2D cell),
+        where it gives ``|f|`` instead of ``sqrt(|f|)``.  The Gram matrix then
+        came out a factor ``|f|`` too small, so ``to_values`` inverted a different
+        basis from the one ``to_moments`` integrated against and the round trip
+        was not the identity -- silently, and only in 2D.
+        """
         d, k = self.dim, self.dim - 1
         g = self.mesh.geometry
         if self.enforcement == "averaged":
@@ -160,7 +173,7 @@ class ContactDriver:
             return row, np.array([g.measure(k)[int(facet)]])
         qp, qw = g.quadrature(k, int(facet))
         rel = qp - g.centroids(k)[int(facet)]
-        h = g.measure(k)[int(facet)] ** (1.0 / k)
+        h = np.sqrt(g.measure(k)[int(facet)])
         tangents = g.facet_frame(int(facet))[1:]
         cols = [np.ones(len(qp))] + [rel @ t / h for t in tangents]
         return np.column_stack(cols), qw
@@ -185,6 +198,36 @@ class ContactDriver:
         glob = (self._frame(int(facet)) @ np.atleast_2d(values).T).T  # (npts, 3)
         B, w = self._basis(int(facet))
         return np.einsum("p,pb,pk->kb", w, B, glob).ravel()
+
+    def expand_to_points(self, per_facet) -> np.ndarray:
+        """Repeat one value per facet across that facet's enforcement points.
+
+        Only the driver knows how many points a facet carries -- one under
+        ``averaged``, one per quadrature point under ``pointwise`` -- so data
+        supplied per facet, such as an in-situ prestress, has to be expanded
+        here rather than by the caller.
+        """
+        per_facet = np.atleast_2d(np.asarray(per_facet, dtype=float))
+        return np.repeat(
+            per_facet,
+            [self.points_per_facet(int(f)) for f in self.facets],
+            axis=0,
+        )
+
+    def per_facet(self, values) -> np.ndarray:
+        """Collapse enforcement-point values to one per facet -- the inverse of
+        :meth:`expand_to_points`.
+
+        Anything indexed by facet -- a plot against position, a VTU cell array --
+        needs this first.  Under ``pointwise`` there are several points per facet,
+        so indexing a point-valued array with facet indices silently reads the
+        wrong entries and pairs them with the wrong facets.
+        """
+        values = np.atleast_2d(np.asarray(values, dtype=float))
+        if len(values) == len(self.facets):
+            return values
+        return np.vstack([values[self._slice(i)].mean(axis=0)
+                          for i in range(len(self.facets))])
 
     def _slice(self, index: int) -> slice:
         start = sum(self.points_per_facet(int(f)) for f in self.facets[:index])
@@ -261,6 +304,18 @@ class ContactDriver:
         Because it is linear it can be applied even though that row was replaced
         by the contact constraint, and because it is a matrix the contact map
         never needs the mesh.
+
+        No ``Gram^{-1}`` here, and it is worth saying why, because the residual
+        looks like a moment vector and :meth:`to_values` *does* invert the Gram.
+        The two convert different objects.  A traction DOF **is** a moment
+        ``m = int_e (sigma n) b``, so recovering a traction's pointwise values
+        needs ``Gram^{-1} m`` -- that is :meth:`to_values`.  The jump term
+        ``int_e [[u]] . (tau n)`` is instead paired *against* that moment DOF:
+        writing ``(tau n) = sum_b phi_b b_b`` gives ``m = Gram phi``, so the
+        pairing already carries a ``Gram^{-1}`` and the residual emerges as the
+        expansion **coefficients** of the jump, ready to evaluate against the
+        basis.  Inserting a second ``Gram^{-1}`` divides the jump by ``|e|``, and
+        the resulting slip then grows like ``1/h`` under refinement.
         """
         M, D, A = problem.assemble_operators()
         traction_rows = sp.hstack([M, D.T, A.T], format="csr")
@@ -269,7 +324,7 @@ class ContactDriver:
         for i, f in enumerate(self.facets):
             frame = self._frame(int(f))
             B, _ = self._basis(int(f))
-            # values[(p, j)] = -sum_{k,b} frame[k, j] B[p, b] moments[(k, b)]
+            # values[(p, j)] = -sum_{k,b} frame[k, j] B[p, b] residual[(k, b)]
             block = -np.einsum("kj,pb->pjkb", frame, B)
             idx = np.indices(block.shape)
             base_row = self.dim * self._slice(i).start
