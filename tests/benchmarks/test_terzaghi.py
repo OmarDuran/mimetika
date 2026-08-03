@@ -10,6 +10,14 @@ the numbers:
 * **2D and 3D agree**, which they must, having the same 1D solution,
 * the error **converges** at first order, so what remains is discretization.
 
+Both cell families are run: ``cart`` (quadrilaterals, hexahedra) and ``simplex``
+(triangles, tetrahedra).  They are not two spellings of one test.  On simplices
+the mimetic stabilization vanishes, so ``M = M1`` alone; and because every cell
+is split the same way, the mesh is not laterally symmetric, so the column is only
+one-dimensional in the limit.  ``cart`` is uniform across its section to machine
+precision and ``simplex`` is not -- the two therefore carry different tolerances,
+with the simplex asymmetry pinned by a *convergence* test rather than a bound.
+
 The closed form is itself checked against an independent route -- the settlement
 series is verified by integrating the pressure series -- so a mistake in the
 analytic side cannot quietly define the answer.
@@ -38,11 +46,27 @@ def column():
 
 @pytest.fixture(scope="module")
 def solved(column):
-    """One 2D and one 3D run, shared by every test -- these are the slow part."""
+    """One run per (family, dim), shared by every test -- these are the slow part."""
     return {
-        2: simulate(column, dim=2, **COARSE),
-        3: simulate(column, dim=3, axial=20, lateral=2, per_decade=8),
+        (family, dim): simulate(
+            column, dim=dim, family=family,
+            **(COARSE if dim == 2 else dict(axial=20, lateral=2, per_decade=8)),
+        )
+        for family in ("cart", "simplex")
+        for dim in (2, 3)
     }
+
+
+#: ``cart`` is exactly one-dimensional; ``simplex`` is not.  Splitting every cell
+#: the same way breaks the column's left-right symmetry, so a triangulated or
+#: tetrahedralised column has a genuine lateral variation that converges away
+#: under refinement rather than being zero.  Two tolerances, one reason.
+UNIFORM = {"cart": 1e-6, "simplex": 2e-1}
+
+#: Below this the drained boundary layer (thickness ~2 sqrt(T)) is thinner than a
+#: cell, and the unstabilised Biot discretisation rings.  See
+#: ``test_the_early_time_oscillation_is_confined_to_the_drained_face``.
+RESOLVED = 1e-3
 
 
 # -- the closed form, checked against itself -------------------------------------------
@@ -108,43 +132,62 @@ def test_the_derived_constants_are_self_consistent(column):
 # -- the discrete column ----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("dim", [2, 3])
-def test_the_pressure_profile_matches_at_every_time_factor(column, solved, dim):
-    for row in compare(column, solved[dim]):
-        assert row["rms"] < 5e-2, f"T = {row['factor']:g}: rms {row['rms']:.2e}"
-        assert row["max"] < 8e-2, f"T = {row['factor']:g}: max {row['max']:.2e}"
+FAMILIES = [(f, d) for f in ("cart", "simplex") for d in (2, 3)]
 
 
-@pytest.mark.parametrize("dim", [2, 3])
-def test_the_consolidation_curve_matches(column, solved, dim):
-    for row in compare(column, solved[dim]):
+@pytest.mark.parametrize("family,dim", FAMILIES)
+def test_the_pressure_profile_matches_once_the_layer_is_resolved(
+    column, solved, family, dim
+):
+    """Both families track the closed form wherever the mesh can see the front."""
+    for row in compare(column, solved[(family, dim)]):
+        if row["factor"] < RESOLVED:
+            continue
+        assert row["rms"] < 5e-2, f"{family} {dim}D T={row['factor']:g}: {row['rms']:.2e}"
+        assert row["max"] < 8e-2, f"{family} {dim}D T={row['factor']:g}: {row['max']:.2e}"
+
+
+@pytest.mark.parametrize("family,dim", FAMILIES)
+def test_the_consolidation_curve_matches(column, solved, family, dim):
+    """Settlement is an integral of the pressure, so the early-time ringing --
+    which is local to a few cells and changes sign -- largely cancels out of it.
+    It is checked at *every* time factor, including the unresolved ones."""
+    for row in compare(column, solved[(family, dim)]):
         assert abs(row["consolidation"] - row["consolidation_exact"]) < 3e-2
 
 
-@pytest.mark.parametrize("dim", [2, 3])
-def test_the_cross_section_stays_uniform(column, solved, dim):
-    """The rollers must give uniaxial strain: no lateral variation at all.
+@pytest.mark.parametrize("family,dim", FAMILIES)
+def test_the_cross_section_is_uniform_to_the_family_s_limit(
+    column, solved, family, dim
+):
+    """The rollers must impose uniaxial strain.
 
-    This is the boundary-condition test.  A column that bulges is not confined,
-    and it would still produce a plausible-looking profile down the axis.
+    On ``cart`` that is exact -- any lateral variation at all is a broken
+    boundary condition.  On ``simplex`` the mesh itself is not laterally
+    symmetric, so the bound is loose here and
+    :func:`test_the_simplex_section_converges_to_uniform` is what pins it down.
     """
-    for row in compare(column, solved[dim]):
-        assert row["spread"] < 1e-6, f"T = {row['factor']:g}: {row['spread']:.2e}"
+    for row in compare(column, solved[(family, dim)]):
+        assert row["spread"] < UNIFORM[family], (
+            f"{family} {dim}D T={row['factor']:g}: spread {row['spread']:.2e}"
+        )
 
 
-def test_two_and_three_dimensions_agree(column, solved):
+@pytest.mark.parametrize("family", ["cart", "simplex"])
+def test_two_and_three_dimensions_agree(column, solved, family):
     """A 3D box under uniaxial strain has no freedom a 2D one lacks."""
-    for two, three in zip(compare(column, solved[2]), compare(column, solved[3])):
-        assert two["factor"] == three["factor"]
-        assert abs(two["consolidation"] - three["consolidation"]) < 5e-3
+    two = compare(column, solved[(family, 2)])
+    three = compare(column, solved[(family, 3)])
+    for a, b in zip(two, three):
+        assert a["factor"] == b["factor"]
+        assert abs(a["consolidation"] - b["consolidation"]) < 5e-3
 
 
-def test_the_column_fully_consolidates(column, solved):
-    """By ``T = 1`` almost all of the settlement has happened, in both dimensions."""
-    for dim in (2, 3):
-        last = compare(column, solved[dim])[-1]
-        assert last["factor"] == 1.0
-        assert last["consolidation"] > 0.9
+@pytest.mark.parametrize("family,dim", FAMILIES)
+def test_the_column_fully_consolidates(column, solved, family, dim):
+    last = compare(column, solved[(family, dim)])[-1]
+    assert last["factor"] == 1.0
+    assert last["consolidation"] > 0.9
 
 
 # -- the answer must not depend on things it cannot depend on ---------------------------
@@ -152,18 +195,55 @@ def test_the_column_fully_consolidates(column, solved):
 
 def test_the_width_does_not_matter(column):
     """A 1D problem cannot know how wide the column is."""
-    narrow = simulate(Column(width=0.1), dim=2, **COARSE)
-    wide = simulate(Column(width=25.0), dim=2, **COARSE)
-    for a, b in zip(compare(Column(width=0.1), narrow), compare(Column(width=25.0), wide)):
-        assert a["consolidation"] == pytest.approx(b["consolidation"], abs=1e-9)
+    narrow, wide = Column(width=0.1), Column(width=25.0)
+    a = compare(narrow, simulate(narrow, dim=2, **COARSE))
+    b = compare(wide, simulate(wide, dim=2, **COARSE))
+    for one, other in zip(a, b):
+        assert one["consolidation"] == pytest.approx(other["consolidation"], abs=1e-9)
 
 
-def test_the_lateral_cell_count_does_not_matter(column):
-    one = simulate(column, dim=2, axial=30, lateral=1, per_decade=8)
-    five = simulate(column, dim=2, axial=30, lateral=5, per_decade=8)
-    for a, b in zip(compare(column, one), compare(column, five)):
+def test_the_lateral_cell_count_does_not_matter_on_cart(column):
+    """On quadrilaterals the column is exactly 1D, so extra columns change nothing."""
+    one = compare(column, simulate(column, dim=2, axial=30, lateral=1, per_decade=8))
+    five = compare(column, simulate(column, dim=2, axial=30, lateral=5, per_decade=8))
+    for a, b in zip(one, five):
         assert a["consolidation"] == pytest.approx(b["consolidation"], abs=1e-9)
         assert a["rms"] == pytest.approx(b["rms"], abs=1e-9)
+
+
+def test_the_simplex_section_converges_to_uniform(column):
+    """The triangulated column is 1D only in the limit -- but it does get there.
+
+    Every quad is split the same way, which breaks left-right symmetry, so the
+    section varies and the answer depends on the lateral count.  Both effects must
+    shrink under lateral refinement; if they did not, the asymmetry would be a bug
+    rather than a discretisation error.
+    """
+    spreads, settlements = [], []
+    for lateral in (2, 4, 8):
+        result = simulate(column, dim=2, axial=60, lateral=lateral,
+                          per_decade=12, family="simplex")
+        row = {x["factor"]: x for x in compare(column, result)}[1e-4]
+        spreads.append(row["spread"])
+        settlements.append(abs(row["consolidation"] - row["consolidation_exact"]))
+    assert spreads[0] > spreads[1] > spreads[2], spreads
+    assert settlements[0] > settlements[1] > settlements[2], settlements
+
+
+def test_the_early_time_oscillation_is_confined_to_the_drained_face(column):
+    """A known limitation, pinned so it cannot spread unnoticed.
+
+    Below ``T ~ (dz/L)^2`` the drained boundary layer is thinner than a cell and
+    the unstabilised Biot system rings -- the Vermeer-Verruijt condition
+    ``dt >= h^2/(6 c_v)``, a *lower* bound on the step.  What matters is that the
+    ringing stays next to the drained face; the rest of the column must be clean.
+    """
+    result = simulate(column, dim=2, **COARSE)
+    layers = result["profiles"][1e-5]
+    elevation, pressure = layers[:, 0], layers[:, 1] / column.initial_pressure
+    interior = elevation < 0.9
+    assert np.allclose(pressure[interior], 1.0, atol=1e-3), "ringing reached the interior"
+    assert np.abs(pressure[~interior] - 1.0).max() > 1e-4  # it is there, near the face
 
 
 # -- convergence, which is what licenses the tolerances above ---------------------------

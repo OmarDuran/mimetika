@@ -19,7 +19,7 @@ from benchmarks.contact_mechanics.common import Parameters
 
 @pytest.fixture
 def parameters():
-    return Parameters()
+    return bench.wide_parameters()
 
 
 # -- the analytic solution ---------------------------------------------------------
@@ -95,12 +95,21 @@ def test_the_coulomb_stress_decays_far_from_the_reservoir(parameters):
 
 @pytest.fixture(scope="module")
 def coarse():
-    return bench.simulate(Parameters(), nx=12, ny=30)
+    """A graded mesh, not a uniform one.
+
+    The domain is 18 km wide (see ``Parameters.width``) around features spanning
+    300 m, so a uniform grid coarse enough to run in a test has cells over a
+    kilometre across and the answer is meaningless.  Grading is what the benchmark
+    itself uses; the uniform path is kept only for the geometry checks.
+    """
+    return bench.simulate(bench.wide_parameters(), spacing=25.0)
 
 
 def test_the_offset_reservoir_is_built_correctly(parameters):
     """The throw is what loads the fault, so the pressure field must be displaced."""
-    mesh, fault, pressure = bench.build(parameters, nx=12, ny=30)
+    # graded, not uniform: the reservoir is 225 m thick inside a 9 km domain, so a
+    # uniform mesh coarse enough for a test cannot resolve it at all
+    mesh, fault, pressure = bench.build(parameters, spacing=25.0)
     centroids = mesh.geometry.centroids(2)
     depleted = pressure != 0.0
     assert depleted.any() and not depleted.all()
@@ -128,12 +137,12 @@ def test_the_fault_carries_no_shear_traction(coarse):
 def test_the_peak_slip_is_close_to_the_analytic_value(coarse):
     """Within the finite-domain discrepancy; the trend is checked separately."""
     got = np.abs(coarse["slip"]).max()
-    assert got == pytest.approx(bench.peak_slip(Parameters()), rel=0.15)
+    assert got == pytest.approx(bench.peak_slip(bench.wide_parameters()), rel=0.15)
 
 
 def test_the_slip_is_localised_at_the_reservoir(coarse):
     """Slip must die away from the offset, as the analytic profile does."""
-    parameters = Parameters()
+    parameters = bench.wide_parameters()
     y, slip = coarse["y"], np.abs(coarse["slip"])
     far = slip[np.abs(y) > 3.0 * parameters.fault_b]
     # inclusive: on a coarse mesh the innermost facets sit exactly at |y| = a
@@ -151,33 +160,67 @@ def test_the_slip_is_symmetric_about_the_reservoir(coarse):
     at all, so the far field carries a small absolute asymmetry that is large in
     relative terms precisely where the slip is near zero.
 
-    Checked within ``|y| <= 3b``, where the slip is actually resolved.  Beyond
-    that the asymmetry grows steadily towards the top and bottom boundaries --
-    it is the boundary conditions showing through, not the fault.
+    Checked tightly on ``|y| <= b``, the support of the analytic tent, where the
+    slip is O(0.1 m) and symmetry has to hold.  Outside it the profile is the few
+    millimetre far-field lobe, whose own asymmetry is a fixed fraction of itself
+    and therefore unbounded relative to a tent-sized tolerance; that region gets a
+    separate, looser bound rather than being folded into the same number.
     """
-    parameters = Parameters()
+    parameters = bench.wide_parameters()
     y, slip = coarse["y"], np.abs(coarse["slip"])
     peak = slip.max()
-    window = np.abs(y) <= 3.0 * parameters.fault_b
-    paired = {}
-    for value, magnitude in zip(y[window], slip[window]):
-        paired.setdefault(round(abs(value), 6), []).append(magnitude)
-    pairs = [m for m in paired.values() if len(m) == 2]
-    assert len(pairs) >= 3
-    for magnitudes in pairs:
+
+    def pairs_within(limit):
+        window = np.abs(y) <= limit
+        paired = {}
+        for value, magnitude in zip(y[window], slip[window]):
+            paired.setdefault(round(abs(value), 6), []).append(magnitude)
+        return [m for m in paired.values() if len(m) == 2]
+
+    tent = pairs_within(parameters.fault_b)
+    assert len(tent) >= 3
+    for magnitudes in tent:
         assert abs(magnitudes[0] - magnitudes[1]) < 5e-3 * peak
 
+    for magnitudes in pairs_within(3.0 * parameters.fault_b):
+        assert abs(magnitudes[0] - magnitudes[1]) < 2e-2 * peak
 
-def test_refinement_approaches_the_analytic_peak():
-    """The finite domain leaves a gap, but refinement must close most of it."""
-    parameters = Parameters()
-    errors = []
-    for nx, ny in ((12, 30), (16, 60)):
-        result = bench.simulate(parameters, nx=nx, ny=ny)
-        peak = np.abs(result["slip"]).max()
-        errors.append(abs(peak / bench.peak_slip(parameters) - 1.0))
-    assert errors[1] < errors[0]
-    assert errors[1] < 0.08
+
+def test_refinement_converges_and_stays_close_to_the_analytic_peak():
+    """Refinement must converge -- but not necessarily onto the analytic peak.
+
+    On the paper's wide domain the peak overshoots by about 1.4% and *settles*
+    there: +0.87 / +1.25 / +1.37% at spacing 25 / 12.5 / 6.25.  That residual is
+    the fault compliance's own discretisation error, measured independently at
+    ~1% by feeding the discrete operator the exact eq. (18) load, so demanding the
+    peak error shrink would be demanding the wrong thing.  What must hold is that
+    the whole profile converges and the peak stays bounded.
+    """
+    parameters = bench.wide_parameters()
+    profile_errors, peak_errors = [], []
+    for spacing in (25.0, 12.5):
+        result = bench.simulate(parameters, spacing=spacing)
+        y = np.asarray(result["y"])
+        slip = np.abs(np.asarray(result["slip"]))
+        exact = np.abs(bench.analytic_slip(y, parameters))
+        profile_errors.append(float(np.sqrt(np.mean((slip - exact) ** 2))))
+        peak_errors.append(abs(slip.max() / bench.peak_slip(parameters) - 1.0))
+    assert profile_errors[1] < profile_errors[0], profile_errors
+    assert max(peak_errors) < 0.03, peak_errors
+
+
+def test_the_narrow_domain_reproduces_the_published_discrepancy():
+    """W = 4500 m is the Table 2 domain, and it is too narrow -- as the paper says.
+
+    Section 4.1 reports the reference code deviating from the semi-analytical
+    solution on it, cured by widening to 18 km.  Pinning both ends here keeps the
+    default from being changed back by accident, and records *why* it is 18 km.
+    """
+    narrow = bench.simulate(Parameters(), spacing=12.5)      # Table 2's 4500 m box
+    wide = bench.simulate(bench.wide_parameters(), spacing=12.5)
+    target = bench.peak_slip(Parameters())  # C/A (a-b); domain independent
+    assert np.abs(narrow["slip"]).max() / target - 1.0 < -0.02  # short by >2%
+    assert abs(np.abs(wide["slip"]).max() / target - 1.0) < 0.03
 
 
 def test_the_default_law_is_the_unilateral_one(coarse):
@@ -193,7 +236,7 @@ def test_the_default_law_is_the_unilateral_one(coarse):
     """
     from mimetika.contact import SignoriniCoulomb
 
-    parameters = Parameters()
+    parameters = bench.wide_parameters()
     mesh, fault, _ = bench.build(parameters, nx=12, ny=30)
     driver_law = bench.simulate(parameters, nx=12, ny=30)["state"]
     assert driver_law.converged
@@ -210,7 +253,7 @@ def test_without_the_prestress_the_unilateral_law_opens_the_fault():
     then reads the ``+8.4`` MPa tensile increment as opening and clips it -- which
     is a defect of the incremental formulation, not of Signorini.
     """
-    parameters = Parameters()
+    parameters = bench.wide_parameters()
     with_prestress = bench.simulate(parameters, nx=12, ny=30, prestress=True)
     without = bench.simulate(parameters, nx=12, ny=30, prestress=False)
     assert with_prestress["state"].converged and without["state"].converged
@@ -227,9 +270,9 @@ def test_the_two_laws_agree_once_both_see_the_total_traction():
     """
     from mimetika.contact import FrictionlessBilateral
 
-    parameters = Parameters()
-    unilateral = bench.simulate(parameters, nx=12, ny=30)
-    bonded = bench.simulate(parameters, nx=12, ny=30, law=FrictionlessBilateral())
+    parameters = bench.wide_parameters()
+    unilateral = bench.simulate(parameters, spacing=25.0)
+    bonded = bench.simulate(parameters, spacing=25.0, law=FrictionlessBilateral())
     assert np.allclose(unilateral["slip"], bonded["slip"], atol=1e-12)
     assert np.allclose(unilateral["traction"], bonded["traction"], atol=1e-6)
 
@@ -246,7 +289,7 @@ def written_series(tmp_path_factory):
     the ramp per test cost about 90 s and told us nothing extra.
     """
     directory = tmp_path_factory.mktemp("series")
-    series = bench.depletion_series(directory / "fault", Parameters(),
+    series = bench.depletion_series(directory / "fault", bench.wide_parameters(),
                                     steps=4, spacing=25.0)
     return series, directory
 

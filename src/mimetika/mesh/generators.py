@@ -247,7 +247,9 @@ def graded_triangles(xs, ys) -> Mesh:
 
 
 def graded_coordinates(interfaces, extent, spacing, growth: float = 1.35,
-                       max_spacing: float | None = None):
+                       max_spacing: float | None = None,
+                       window: tuple[float, float] | None = None,
+                       window_spacing: float | None = None):
     """Node coordinates that **honour** ``interfaces`` and cluster elements at them.
 
     Every value in ``interfaces`` becomes a node, so a discontinuity in material
@@ -263,18 +265,39 @@ def graded_coordinates(interfaces, extent, spacing, growth: float = 1.35,
     and is negligible a handful of cells away.  ``spacing`` is therefore the size
     *at* an interface; cells grow by ``growth`` away from it -- towards mid-span
     between two interfaces, and outwards to ``extent`` beyond the outermost.
+
+    ``window`` overrides that between two bounds: the range is meshed **uniformly**
+    at ``window_spacing`` (default ``spacing``) and the geometric coarsening starts
+    from its edges instead.  Clustering at interfaces is the right default when the
+    error is concentrated *at* them, but it thins out in between -- and a solution
+    that is smooth yet not small over a whole neighbourhood (the near field of a
+    slipping fault, say) is then under-resolved exactly where it still matters.
+    The interfaces are still forced in, so nothing is lost if they fall off the
+    uniform grid; they simply split one cell.
     """
     interfaces = np.unique(np.asarray(interfaces, dtype=float))
     lo, hi = float(interfaces[0]), float(interfaces[-1])
     if not (extent[0] <= lo and hi <= extent[1]):
         raise ValueError("interfaces must lie inside the extent")
 
-    nodes = [lo]
-    for left, right in zip(interfaces[:-1], interfaces[1:]):
-        nodes.extend(_two_sided(left, right, spacing, growth)[1:])
+    if window is None:
+        outward = spacing
+        nodes = [lo]
+        for left, right in zip(interfaces[:-1], interfaces[1:]):
+            nodes.extend(_two_sided(left, right, spacing, growth)[1:])
+    else:
+        lo, hi = float(min(window)), float(max(window))
+        if not (extent[0] <= lo and hi <= extent[1]):
+            raise ValueError("window must lie inside the extent")
+        if lo > interfaces[0] or hi < interfaces[-1]:
+            raise ValueError("window must contain every interface")
+        outward = float(window_spacing or spacing)
+        count = max(1, int(round((hi - lo) / outward)))
+        nodes = list(np.linspace(lo, hi, count + 1))
+        nodes.extend(interfaces.tolist())
 
     for start, stop, step in ((lo, extent[0], -1.0), (hi, extent[1], 1.0)):
-        position, size = start, spacing
+        position, size = start, outward
         while (stop - position) * step > 1e-9:
             size *= growth
             if max_spacing is not None:

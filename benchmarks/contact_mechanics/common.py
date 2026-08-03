@@ -42,6 +42,8 @@ class Parameters:
     """Table 2 of the benchmark paper, in SI units."""
 
     width: float = 4500.0  # W
+    #: Table 2's box.  Benchmark 1's *slip* comparison needs a much larger
+    #: one -- see ``benchmark_1.WIDE_DOMAIN`` for the numbers and the reason.
     height: float = 4500.0  # H
     depth: float = 3500.0  # D0, to the reservoir reference level
     fault_a: float = 75.0  # a: reservoir edge on the shallow side of the throw
