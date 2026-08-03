@@ -430,6 +430,13 @@ class MixedElasticity:
         # it destroys the diagonality of LumpedDeviatoricStress.  Identical to the
         # accumulated form for AFW.
         M = self.inner.assemble()
+        volumetric = getattr(self.inner, "volumetric_operator", None)
+        if volumetric is not None:
+            # LumpedDeviatoricStress carries only the deviatoric compliance; the
+            # volumetric part is rank one per cell, M + W^T diag(c) W.  Without it M
+            # is singular on the hydrostatic mode.
+            W, cvec = volumetric()
+            M = (M + W.T @ sp.diags(cvec) @ W).tocsr()
         if self.contact is not None:
             # a compliant fracture adds compliance in series on its facets
             M = (M + self.contact.assemble(n_sig)).tocsr()
@@ -456,7 +463,9 @@ class MixedElasticity:
                     continue
                 qp = lc.facet_quadrature[i][0]
                 u = np.asarray(displacement(lc.to_ambient(qp)), dtype=float) @ lc.frame
-                coeff = lc.expand_on_facet(i, u).T.ravel()
+                # keep the moments this space carries: (d, nb_full) -> (d, nb)
+                nb = self.inner.facet_basis_size(self.d)
+                coeff = lc.expand_on_facet(i, u).T[:, :nb].ravel()
                 g[self._facet_dofs(fid)] += lc.signs[i] * coeff
         return g
 
@@ -534,7 +543,9 @@ class MixedElasticity:
                     continue
                 seen.add(fid)
                 qp, qw = lc.facet_quadrature[i]
+                # keep the moments this space carries: (nq, nb_full) -> (nq, nb)
                 B, _ = lc.facet_scalar_basis(i)
+                B = B[:, : self.inner.facet_basis_size(self.d)]
                 # the canonical normal, in local components
                 normal = lc.signs[i] * lc.facet_normals[i]
                 val = np.asarray(traction(lc.to_ambient(qp)), dtype=float)
@@ -574,10 +585,14 @@ class MixedElasticity:
                     "roller constraints need a rotated facet basis"
                 )
             base = ndf * f
-            # DOF layout is component-major: index = component * d + basis
+            # DOF layout is component-major: index = component * nb + basis, with
+            # nb = facet_basis_size (d for AFW, 1 for the lumped space).  Using d in
+            # place of nb pins every DOF on the facet when nb < d, over-constraining
+            # the system.
+            nb = self.inner.facet_basis_size(d)
             out.append(
                 np.concatenate(
-                    [base + k * d + np.arange(d) for k in range(d) if k != axis]
+                    [base + k * nb + np.arange(nb) for k in range(d) if k != axis]
                 )
             )
         return np.concatenate(out) if out else np.zeros(0, dtype=int)

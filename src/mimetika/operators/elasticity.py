@@ -124,6 +124,13 @@ class ElasticityInnerProduct:
 
     # -- sizes ----------------------------------------------------------------
 
+    def facet_basis_size(self, d: int) -> int:
+        """Number of basis functions per facet; ``ndf = d * facet_basis_size``.
+
+        AFW carries the facet P_1 basis: the constant and d-1 linear moments.
+        """
+        return d
+
     def constant_moment_offsets(self, d: int) -> "np.ndarray":
         """Offsets within a facet block holding the constant traction moment.
 

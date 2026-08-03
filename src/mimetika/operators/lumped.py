@@ -194,6 +194,13 @@ class LumpedDeviatoricStress:
 
     # -- sizes ----------------------------------------------------------------
 
+    def facet_basis_size(self, d: int) -> int:
+        """Number of basis functions per facet; ``ndf = d * facet_basis_size``.
+
+        The lumped space carries the constant traction only.
+        """
+        return 1
+
     def constant_moment_offsets(self, d: int) -> np.ndarray:
         """Offsets within a facet block holding the constant traction moment.
 
