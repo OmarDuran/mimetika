@@ -125,22 +125,10 @@ def elasticity_local_operators(inner: ElasticityInnerProduct, cell_id: int):
     d, ndf = lc.dim, inner.dofs_per_facet(lc.dim)
     D = M.shape[0]
 
-    # div_h: pair the tractions with the constant fields phi_k(xi) = e_k.
-    #
-    # This is deliberately the same construction as as_h below -- the two differ
-    # only in the test space, constants for the divergence and rigid rotations for
-    # the asymmetry, which is what they are mathematically.  Writing it as a
-    # pairing through the facet basis is what makes this function agnostic to the
-    # stress space: nothing here knows how many DOFs a facet carries or how they
-    # are ordered.
-    #
-    # It replaces `Dv[k, i*ndf + k*d + 0] = 1/vol`, which reached into the DOF
-    # vector by index and so hardcoded the AFW layout (`ndf = d*d`, constant
-    # moment first).  That form overran the facet block for any space with fewer
-    # DOFs per facet -- LumpedDeviatoricStress carries `ndf = d` -- and was the
-    # only thing tying the assembly to one stress space.  The two agree exactly
-    # because the facet P_1 basis has the constant as its first function, so the
-    # expansion of `phi_k` is `delta_ck` on basis 0 and zero elsewhere.
+    # div_h: pair the tractions with the constant fields phi_k(xi) = e_k, as as_h
+    # below pairs them with the rigid rotations S_p xi.  Going through the facet
+    # basis makes this independent of ndf; the previous form indexed the DOF vector
+    # directly (i*ndf + k*d + 0) and so assumed the AFW layout ndf = d*d.
     Dv = np.zeros((d, D))
     for i in range(lc.n_facets):
         nq = len(lc.facet_quadrature[i][0])

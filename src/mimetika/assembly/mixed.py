@@ -369,13 +369,9 @@ class MixedElasticity:
                 # the batched kernel is written for d = 3; other dimensions take
                 # the scalar path, which is dimension-generic
                 Mloc = np.empty((nB, nf * ndf, nf * ndf))
-                # X is stacked rather than pre-allocated: its facet-basis extent is a
-                # property of the stress space, not of the dimension.  The AFW space
-                # carries d basis functions per facet, the lumped one carries a single
-                # constant.  Pre-allocating `(nB, nf, d, d)` and assigning into it made
-                # a `(nf, 1, d)` block broadcast silently up to `(nf, d, d)`, which
-                # produced a plausible array of the wrong size and only surfaced later
-                # as a reshape error in the as_h einsum.
+                # X is stacked, not pre-allocated: its facet-basis extent is d for
+                # AFW and 1 for LumpedDeviatoricStress.  Pre-allocating (nB, nf, d, d)
+                # broadcast a (nf, 1, d) block up to (nf, d, d) silently.
                 blocks = []
                 for c in cells:
                     N, R, Kbar, vol, _, Xc = self.inner.local_matrices(
@@ -429,7 +425,11 @@ class MixedElasticity:
             )
 
         n_sig = self.n_stress
-        M = build(m_rows, m_cols, m_vals, (n_sig, n_sig))
+        # M is the space's own operator.  Accumulating ``M1 + M2`` here instead would
+        # add a stabilisation term that is nonzero for a space not built that way --
+        # it destroys the diagonality of LumpedDeviatoricStress.  Identical to the
+        # accumulated form for AFW.
+        M = self.inner.assemble()
         if self.contact is not None:
             # a compliant fracture adds compliance in series on its facets
             M = (M + self.contact.assemble(n_sig)).tocsr()
