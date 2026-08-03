@@ -486,3 +486,43 @@ def test_the_batched_path_reproduces_the_per_cell_one(name):
             # the batched inner product is the row-wise least-squares solution of
             # M N = R; on an orthogonal cell that is the closed-form diagonal
             assert np.allclose(Mb[b], ip.local(int(cell))[0], atol=1e-14)
+
+
+# -- the assembled operator, not just the local blocks ---------------------------------
+
+
+@pytest.mark.parametrize("name", ["quads", "hexes", "graded"])
+def test_the_assembled_global_matrix_is_exactly_diagonal(name):
+    r"""Diagonal *after assembly*, which does not follow from the local blocks.
+
+    An interior facet is shared, so its DOFs receive a contribution from each
+    adjacent cell.  Two diagonal local blocks only sum to a diagonal global one if
+    they land on the same DOFs with consistent signs and a consistent component
+    frame; a mismatch there would couple components across the facet and leave
+    off-diagonal entries, while every per-cell test still passed.
+
+    That is the whole point of the operator -- a non-diagonal ``M`` cannot be
+    inverted facet-by-facet and there is nothing left to recommend it -- so it is
+    asserted exactly, not to a tolerance.
+    """
+    from mimetika.mesh import graded_quads, structured_box, structured_quads
+
+    mesh = {
+        "quads": lambda: structured_quads(3, 3),
+        "hexes": lambda: structured_box(2, 2, 2),
+        "graded": lambda: graded_quads(
+            np.array([0.0, 0.3, 1.0]), np.array([0.0, 0.4, 1.0])
+        ),
+    }[name]()
+
+    # Guard the guard: with no shared facet the property is trivially true, so a
+    # single-cell mesh would pass while testing nothing.  A row of the cell-facet
+    # boundary matrix has two entries exactly when that facet is interior.
+    touching = np.diff(mesh.complex.boundary_matrix(mesh.dim).indptr)
+    interior = int((touching == 2).sum())
+    assert interior > 0, "mesh has no shared facets; the test would be vacuous"
+
+    M = LumpedDeviatoricStress(mesh, mu=1.7).assemble().toarray()
+    off = M - np.diag(np.diag(M))
+    assert np.count_nonzero(off) == 0, f"{np.count_nonzero(off)} off-diagonal entries"
+    assert np.all(np.diag(M) > 0.0), "the inner product must be positive definite"
