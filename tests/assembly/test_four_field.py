@@ -20,7 +20,7 @@ import pytest
 import scipy.sparse as sp
 
 from mimetika.assembly.four_field import FourFieldElasticity, FourFieldPoroMechanics
-from mimetika.assembly.mixed import MixedElasticity
+from mimetika.assembly.mixed import MixedElasticity, boundary_facets
 from mimetika.assembly.poromechanics import PoroMechanics
 from mimetika.materials import Material
 from mimetika.mesh import (
@@ -251,6 +251,312 @@ def test_quasi_steady_pressure_data_matches(name):
         assert np.allclose(sol4[field], sol5[field], rtol=1e-7, atol=1e-9), field
     expected = solid_pressure_from_trace(four.mechanics.inner, sol4["stress"])
     assert np.allclose(sol4["solid_pressure"], expected, rtol=1e-7, atol=1e-9)
+
+
+# -- robustness: material contrast and the incompressible limit (mechanics) -----
+#
+# The split moves the volumetric compliance onto ``p_s``, so these regimes are
+# where it could fail *differently* from the three-field form: a modulus
+# contrast scales ``Gamma`` and ``B`` per cell, and ``nu -> 1/2`` sends the
+# ``p_s`` row to its ``gamma = -1`` limit.  Exact uniform/piecewise states make
+# any weakness visible with no discretisation error to hide behind.
+
+
+def layered(mesh, values, axis=1, split=0.5):
+    """Per-cell array taking ``values[0]`` below ``split`` and ``values[1]`` above."""
+    centroids = mesh.geometry.centroids(mesh.dim)
+    return np.where(centroids[:, axis] < split, values[0], values[1])
+
+
+def checkerboard(mesh, values, split=0.5):
+    """Per-cell array alternating between ``values`` on a checkerboard pattern."""
+    centroids = mesh.geometry.centroids(mesh.dim)[:, : mesh.dim]
+    parity = np.floor(centroids / split).astype(int).sum(axis=1) % 2
+    return np.where(parity == 0, values[0], values[1])
+
+
+def poisson_for(shear, inverse_modulus, dim):
+    """The ``nu`` pairing with ``shear`` to give a prescribed bulk compliance.
+
+    Holding ``K`` fixed while raising ``mu`` drives ``nu`` towards ``-1`` --
+    auxetic, so these cells have ``a < 0``: exactly the sign the four-field
+    split must tolerate (only ``a = 0`` is degenerate).
+    """
+    t = 2.0 * np.asarray(shear, dtype=float) * inverse_modulus
+    c = (1.0 - t) / (t * dim)
+    return c / (1.0 + 2.0 * c)
+
+
+def layered_shear(mesh, shear, amplitude=0.5, split=0.5):
+    """Exact pure-shear state of a two-layer medium stacked along ``y``.
+
+    The stress is uniform and **traceless**, so the exact solid pressure is
+    zero -- the contrast must not leak into ``p_s``.
+    """
+    tensor = np.zeros((3, 3))
+    tensor[0, 1] = tensor[1, 0] = amplitude
+    lower, upper = float(shear[0]), float(shear[1])
+
+    def displacement(x):
+        x = np.atleast_2d(x)
+        y = x[:, 1]
+        below = amplitude * y / lower
+        above = amplitude * split / lower + amplitude * (y - split) / upper
+        out = np.zeros((len(x), 3))
+        out[:, 0] = np.where(y < split, below, above)
+        return out
+
+    def stress(x):
+        return np.broadcast_to(tensor, (len(np.atleast_2d(x)), 3, 3))
+
+    return stress, displacement
+
+
+def contrast_problem(mesh, material, space):
+    from mimetika.operators.elasticity import ElasticityInnerProduct
+
+    inner = (
+        LumpedDeviatoricStress(mesh, material=material)
+        if space == "lumped"
+        else ElasticityInnerProduct(mesh, material=material)
+    )
+    return FourFieldElasticity(mesh, inner=inner)
+
+
+CONTRAST_CASES = {
+    "afw-hex": (lambda: structured_box(2, 2, 2), "afw"),
+    "lumped-quad": (lambda: structured_quads(4, 4), "lumped"),
+}
+
+
+@pytest.mark.parametrize("name", list(CONTRAST_CASES))
+@pytest.mark.parametrize("contrast", [1e3, 1e6, 1e9])
+def test_layered_shear_survives_the_modulus_contrast(name, contrast):
+    """Exact to the accuracy the conditioning allows; ``p_s`` stays at zero.
+
+    The attainable accuracy degrades like ``contrast * eps_machine`` -- the
+    optimal double-precision rate at a condition number proportional to the
+    jump -- and the traceless state must not leak into the solid pressure.
+    """
+    make, space = CONTRAST_CASES[name]
+    mesh = make()
+    shear = (1.0, contrast)
+    material = Material(shear_modulus=layered(mesh, shear), poisson=0.3)
+    problem = contrast_problem(mesh, material, space)
+    stress, displacement = layered_shear(mesh, shear)
+
+    sol = problem.solve(dirichlet=displacement, **EXACT)
+    exact = problem.interpolate_stress(stress)
+    scale = np.abs(exact).max()
+    error = np.abs(sol["stress"] - exact).max() / scale
+    assert error < 1e-13 * contrast + 1e-12, f"contrast {contrast:g}: {error:.3e}"
+    assert np.abs(sol["solid_pressure"]).max() < (1e-13 * contrast + 1e-11) * scale
+
+
+@pytest.mark.parametrize("name", list(CONTRAST_CASES))
+@pytest.mark.parametrize("contrast", [1e2, 1e4, 1e6])
+def test_checkerboard_shear_contrast_puts_the_hydrostatic_load_on_p_s(
+    name, contrast
+):
+    """``mu`` alternating cell by cell, ``K`` matched: the load lives on ``p_s``.
+
+    Matching the bulk compliance forces the stiff cells auxetic (``a < 0``), so
+    this doubles as the sign test for the ``p_s`` diagonal.  A hydrostatic
+    stress engages only the volumetric compliance, identical in every cell, so
+    the state is uniform, and the four-field split must report it entirely
+    through ``p_s = tr(sigma)/d`` with the facet field carrying no deviation.
+    """
+    make, space = CONTRAST_CASES[name]
+    mesh = make()
+    d = mesh.dim
+    shear = checkerboard(mesh, (1.0, contrast))
+    # the matched bulk compliance must keep every nu inside (-1, 1/2) *and*
+    # away from the degenerate nu = 0; in 2D (where inv_modulus = (1-2nu)/2mu)
+    # that means scaling it with the contrast -- the stiff cell then sits at
+    # nu = -1/2 and the soft one just under 1/2
+    target = 1.0 / 3.0 if d == 3 else 1.0 / contrast
+    material = Material(
+        shear_modulus=shear, poisson=poisson_for(shear, target, d)
+    )
+    inverse = material.inverse_modulus(d)
+    assert np.allclose(inverse, inverse[0], rtol=1e-12)  # the premise
+    assert np.any(material.compliance_coefficient(d) < 0)  # really auxetic
+
+    problem = contrast_problem(mesh, material, space)
+    amplitude = 2.0
+    tensor = np.zeros((3, 3))
+    tensor[:d, :d] = amplitude * np.eye(d)
+    strain = amplitude * inverse[0] * np.eye(3)  # C^{-1}(p I) = p inv_modulus I
+
+    sol = problem.solve(
+        dirichlet=lambda x: np.atleast_2d(x) @ strain.T, **EXACT
+    )
+    exact = problem.interpolate_stress(
+        lambda x: np.broadcast_to(tensor, (len(np.atleast_2d(x)), 3, 3))
+    )
+    scale = np.abs(exact).max()
+    assert np.abs(sol["stress"] - exact).max() / scale < 1e-13 * contrast + 1e-11
+    assert np.allclose(sol["solid_pressure"], amplitude, rtol=1e-13 * contrast + 1e-10)
+
+
+def boundary_face(mesh, value=1.0, axis=1):
+    """Boundary facets on the plane ``x[axis] == value``."""
+    centroids = mesh.geometry.centroids(mesh.dim - 1)
+    return [
+        f
+        for f in boundary_facets(mesh)
+        if abs(centroids[f][axis] - value) < 1e-12
+    ]
+
+
+@pytest.mark.parametrize("name", list(CASES))
+@pytest.mark.parametrize("nu", [0.45, 0.49999, 0.5])
+def test_the_incompressible_limit_is_exact(name, nu):
+    """``nu -> 1/2`` including the limit itself: constant stress, exact ``p_s``.
+
+    At ``nu = 1/2`` the ``p_s`` row sits at ``gamma = -1``, ``B = d|E|/2mu`` --
+    nothing degenerates -- but the hydrostatic level is only determined once a
+    traction is prescribed somewhere, so one face carries the stress data.
+    """
+    make, space = CASES[name]
+    mesh = make()
+    d = mesh.dim
+    material = Material(shear_modulus=MU, poisson=nu)
+    problem = contrast_problem(mesh, material, space)
+
+    tensor = np.zeros((3, 3))
+    tensor[:d, :d] = np.diag([3.0, -1.0, -2.0])[:d, :d] + 1.5 * np.eye(d)
+    a = float(material.compliance_coefficient(d))
+    strain = np.zeros((3, 3))
+    strain[:d, :d] = (
+        tensor[:d, :d] - a * np.trace(tensor[:d, :d]) * np.eye(d)
+    ) / (2.0 * MU)
+
+    def stress(x):
+        return np.broadcast_to(tensor, (len(np.atleast_2d(x)), 3, 3))
+
+    sol = problem.solve(
+        dirichlet=lambda x: np.atleast_2d(x) @ strain.T,
+        traction=stress,
+        traction_facets=boundary_face(mesh),
+        **EXACT,
+    )
+    exact = problem.interpolate_stress(stress)
+    scale = np.abs(exact).max()
+    assert np.abs(sol["stress"] - exact).max() < 1e-10 * scale
+    assert np.allclose(
+        sol["solid_pressure"], np.trace(tensor[:d, :d]) / d, atol=1e-10 * scale
+    )
+
+
+def test_contrast_next_to_incompressible_cells():
+    """A stiff layer at ``nu = 1/2`` against a soft compressible one.
+
+    Pure shear is traceless, so the answer is independent of ``nu`` -- any
+    sensitivity of the split to the incompressible cells is numerical.
+    """
+    mesh = structured_box(2, 2, 2)
+    contrast = 1e8
+    shear = (1.0, contrast)
+    material = Material(
+        shear_modulus=layered(mesh, shear), poisson=layered(mesh, (0.15, 0.5))
+    )
+    problem = contrast_problem(mesh, material, "afw")
+    stress, displacement = layered_shear(mesh, shear)
+
+    sol = problem.solve(dirichlet=displacement, **EXACT)
+    exact = problem.interpolate_stress(stress)
+    scale = np.abs(exact).max()
+    assert np.abs(sol["stress"] - exact).max() / scale < 1e-13 * contrast + 1e-12
+    assert np.abs(sol["solid_pressure"]).max() < (1e-13 * contrast + 1e-11) * scale
+
+
+# -- robustness: incompressible fluid and the undrained regime (six-field) ------
+
+
+UNDRAINED_CASES = ["afw-tet", "lumped-quad", "lumped-hex"]
+
+
+@pytest.mark.parametrize("name", UNDRAINED_CASES)
+@pytest.mark.parametrize("nu", [0.3, 0.49999])
+def test_the_undrained_incompressible_fluid_response_is_exact(name, nu):
+    """Sealed boundary, ``1/M = 0``: one step is the exact undrained state.
+
+    With every facet sealed and zero previous fluid content, the first backward
+    Euler step enforces ``alpha div u + p/M = 0`` -- for an incompressible
+    fluid, ``div u = 0`` exactly, and the closed form is Skempton ``B = 1``:
+
+        ``p = -tr(sigma)/(d alpha)`` ,   ``eps = C^{-1}(sigma + alpha p I)`` .
+
+    The state is uniform, so the discrete solution must reproduce it exactly at
+    any time step -- including ``nu = 0.49999``, where the storage
+    ``S = d alpha^2 inv_modulus`` is tiny but the response is unchanged.
+    """
+    make, space = CASES[name]
+    mesh = make()
+    d = mesh.dim
+    alpha = 0.9
+    material = Material(
+        shear_modulus=1.0, poisson=nu, biot=alpha, inverse_biot_modulus=0.0
+    )
+    inner = make_inner(mesh, space, material)
+    problem = FourFieldPoroMechanics(mesh, material, stress_inner=inner)
+
+    total = np.zeros((3, 3))
+    total[:d, :d] = np.diag([3.0, -1.0, -2.0])[:d, :d] + 2.0 * np.eye(d)
+    trace = np.trace(total[:d, :d])
+    p_undrained = -trace / (d * alpha)
+
+    effective = total[:d, :d] + alpha * p_undrained * np.eye(d)
+    a = float(material.compliance_coefficient(d))
+    strain = (effective - a * np.trace(effective) * np.eye(d)) / 2.0
+    assert abs(np.trace(strain)) < 1e-12  # the undrained state is isochoric
+    grad = np.zeros((3, 3))
+    grad[:d, :d] = strain
+
+    def stress(x):
+        return np.broadcast_to(total, (len(np.atleast_2d(x)), 3, 3))
+
+    sol = problem.solve(
+        dt=0.37,  # any step: the sealed uniform state is stationary
+        dirichlet=lambda x: np.atleast_2d(x) @ grad.T,
+        traction=stress,
+        traction_facets=boundary_face(mesh),
+        no_flow=boundary_facets(mesh),
+        **EXACT,
+    )
+    exact = problem.mechanics.interpolate_stress(stress)
+    scale = np.abs(exact).max()
+    assert np.allclose(sol["pressure"], p_undrained, rtol=1e-9)
+    assert np.abs(sol["flux"]).max() < 1e-9 * scale
+    assert np.abs(sol["stress"] - exact).max() < 1e-9 * scale
+    assert np.allclose(sol["solid_pressure"], trace / d, atol=1e-9 * scale)
+    assert np.abs(problem.volumetric_strain(sol)).max() < 1e-11 * scale
+
+
+def test_the_doubly_incompressible_transient_stays_nonsingular():
+    """``nu = 1/2`` and ``1/M = 0`` together: every diagonal the pressure has
+    vanishes (``delta = Delta = S = 0``), leaving pure constraints -- the system
+    must remain a well-posed saddle point."""
+    mesh = structured_quads(2, 2)
+    material = Material(
+        shear_modulus=1.0, poisson=0.5, biot=0.9, inverse_biot_modulus=0.0
+    )
+    problem = FourFieldPoroMechanics(mesh, material)
+
+    tensor = np.diag([3.0, -1.0, 0.0])
+
+    def stress(x):
+        return np.broadcast_to(tensor, (len(np.atleast_2d(x)), 3, 3))
+
+    matrix, _, _ = problem.assemble(
+        dt=0.1,
+        dirichlet=lambda x: np.zeros((len(np.atleast_2d(x)), 3)),
+        traction=stress,
+        traction_facets=boundary_face(mesh),
+    )
+    singular_values = np.linalg.svd(matrix.toarray(), compute_uv=False)
+    assert singular_values[-1] > 1e-8 * singular_values[0]
 
 
 def test_biot_coupling_is_diagonal():
