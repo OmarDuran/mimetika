@@ -319,9 +319,13 @@ class ContactDriver:
         basis.  Inserting a second ``Gram^{-1}`` divides the jump by ``|e|``, and
         the resulting slip then grows like ``1/h`` under refinement.
         """
-        # the assembled stress-row block, in whatever field layout the problem
-        # uses -- three- and four-field evaluate the same functional
-        traction_rows = problem.constitutive_rows()
+        # the assembled stress-row block of the *unfractured* system, in
+        # whatever field layout the problem uses -- three- and four-field
+        # evaluate the same functional.  Stripping the fracture compliance is
+        # essential: at the solution the fractured row is satisfied exactly, so
+        # its residual is zero, whereas the unfractured residual is A_f sigma,
+        # i.e. the jump this operator exists to extract.
+        traction_rows = problem.constitutive_rows(contact=False)
 
         blocks, rows, cols, vals = [], [], [], []
         for i, f in enumerate(self.facets):

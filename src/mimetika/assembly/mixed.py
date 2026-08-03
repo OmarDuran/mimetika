@@ -659,7 +659,7 @@ class MixedElasticity:
             S, rhs = _constrain(S, rhs, dofs, np.zeros(len(dofs)))
         return S, rhs
 
-    def constitutive_rows(self) -> sp.csr_matrix:
+    def constitutive_rows(self, contact: bool = True) -> sp.csr_matrix:
         """The stress-row block ``[M | D^T | A^T]``, matching :meth:`split`.
 
         Applied to a solution vector it evaluates the constitutive functional on
@@ -667,8 +667,16 @@ class MixedElasticity:
         is the boundary-displacement pairing the contact driver reads the
         fracture jump from.  A formulation with more fields overrides this so
         the driver never has to know the block layout.
+
+        ``contact=False`` strips the embedded fracture compliance and returns
+        the rows of the **unfractured** system.  The distinction is the whole
+        story for a compliant fracture: at the solution the fractured row is
+        satisfied *exactly*, so its residual is zero, while the unfractured
+        residual equals ``A_f sigma`` -- the jump itself.
         """
         M, D, A = self.assemble_operators()
+        if not contact and self.contact is not None:
+            M = (M - self.contact.assemble(self.n_stress)).tocsr()
         return sp.hstack([M, D.T, A.T], format="csr")
 
     @property

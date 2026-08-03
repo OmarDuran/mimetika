@@ -215,15 +215,18 @@ class FourFieldElasticity(MixedElasticity):
         )
         return S, rhs
 
-    def constitutive_rows(self) -> sp.csr_matrix:
+    def constitutive_rows(self, contact: bool = True) -> sp.csr_matrix:
         """``[M_dev | Gamma^T | D^T | A^T]``, matching :meth:`split`.
 
         At any solution the solid-pressure row gives ``Gamma^T p_s =
         -Gamma^T B^{-1} Gamma sigma``, so this evaluates to the three-field
         ``M_full sigma + D^T u + A^T s`` -- the fracture jump the contact driver
-        extracts is formulation-independent, as it must be.
+        extracts is formulation-independent, as it must be.  ``contact=False``
+        strips the fracture compliance, exactly as in the base class.
         """
         M, D, A = self.assemble_operators()
+        if not contact and self.contact is not None:
+            M = (M - self.contact.assemble(self.n_stress)).tocsr()
         Gamma, _ = self.solid_pressure_blocks()
         return sp.hstack([M, Gamma.T, D.T, A.T], format="csr")
 

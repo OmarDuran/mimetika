@@ -361,9 +361,14 @@ def test_the_jump_operator_recovers_a_prescribed_offset():
                                mu=MU, lam=LAM)
 
         def prescribed(x):
+            # tangential step across the fracture plane, decided once per facet
+            # (the mean of the quadrature batch): the boundary facets touching
+            # the plane carry quadrature points *on* the step itself, and
+            # sampling those pointwise tilts the facet expansion into a ramp --
+            # an O(h) data error that masquerades as an operator bug
             x = np.atleast_2d(x)
             out = np.zeros((len(x), 3))
-            out[:, 1] = np.where(x[:, 0] > 0.5, offset, 0.0)  # tangential step
+            out[:, 1] = offset if x[:, 0].mean() > 0.5 else 0.0
             return out
 
         problem = MixedElasticity(mesh, mu=MU, lam=LAM,
