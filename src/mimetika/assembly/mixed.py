@@ -388,7 +388,12 @@ class MixedElasticity:
             m_vals.append(Mloc.ravel())
 
             # div_h, scaled by |E|: the constant moment of each component
-            cols = (np.arange(nf)[:, None] * ndf + np.arange(d)[None, :] * d).ravel()
+            # where the constant moment of each component sits is a property of
+            # the stress space, not of the assembly -- see
+            # `constant_moment_offsets`.  The values below stay pure signs, so D
+            # remains topological.
+            offsets = self.inner.constant_moment_offsets(d)
+            cols = (np.arange(nf)[:, None] * ndf + offsets[None, :]).ravel()
             d_rows.append(
                 (cells[:, None] * d + np.tile(np.arange(d), nf)[None, :]).ravel()
             )

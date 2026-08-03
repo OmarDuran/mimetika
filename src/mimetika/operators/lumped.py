@@ -194,6 +194,16 @@ class LumpedDeviatoricStress:
 
     # -- sizes ----------------------------------------------------------------
 
+    def constant_moment_offsets(self, d: int) -> np.ndarray:
+        """Offsets within a facet block holding the constant traction moment.
+
+        The lumped space carries *only* the constant traction, one DOF per
+        component (``ndf = d``), so component ``k`` is simply at ``k`` -- there are
+        no higher moments to skip over.  Contrast AFW, where the same quantity
+        lives at ``k * d``.
+        """
+        return np.arange(d)
+
     def dofs_per_facet(self, d: int) -> int:
         """``d`` -- one traction vector, no facet moments (module docstring, 2)."""
         return d

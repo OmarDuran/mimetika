@@ -124,6 +124,20 @@ class ElasticityInnerProduct:
 
     # -- sizes ----------------------------------------------------------------
 
+    def constant_moment_offsets(self, d: int) -> "np.ndarray":
+        """Offsets within a facet block holding the constant traction moment.
+
+        The discrete divergence is the constant moment of each component summed
+        over facets, so assembly needs to know *where* in a facet's DOF block those
+        live.  Declaring it here rather than hardcoding it at the assembly site is
+        what lets a different stress space -- LumpedDeviatoricStress carries only
+        the constant traction, `ndf = d` -- share the same assembly code.
+
+        AFW orders a facet block as ``component * d + basis`` with the facet P_1
+        constant first, so component ``k`` sits at ``k * d``.
+        """
+        return np.arange(d) * d
+
     def dofs_per_facet(self, d: int) -> int:
         return d * d
 
