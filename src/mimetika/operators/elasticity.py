@@ -71,6 +71,26 @@ def compliance_contraction(
     return np.einsum("...ij,...ij->...", compliance(T, mu, lam), S)
 
 
+def cell_groups(mesh: Mesh):
+    """Group cell ids by facet count.
+
+    Yields ``(facet_ids, signs, cell_ids)`` with ``facet_ids`` and ``signs`` of
+    shape ``(n_cells_in_group, n_facets)``.  Grouping is what makes the local
+    matrices batchable: cells with equal facet counts have identical array
+    shapes, so a whole group goes through one set of stacked NumPy
+    linear-algebra calls instead of a Python loop.
+
+    A free function because it is pure topology -- every facet-DOF inner product
+    needs the same traversal, whatever it then does with it.
+    """
+    csc = mesh.complex._boundary_csc(mesh.dim)
+    counts = np.diff(csc.indptr)
+    for nf in np.unique(counts):
+        cells = np.where(counts == nf)[0]
+        starts = csc.indptr[cells][:, None] + np.arange(nf)
+        yield csc.indices[starts], np.sign(csc.data[starts]), cells
+
+
 class ElasticityInnerProduct:
     """Stress inner product for elasticity on facet DOFs (``d^2`` per facet)."""
 
@@ -272,20 +292,8 @@ class ElasticityInnerProduct:
     # -- batched construction (many cells at once) ----------------------------
 
     def cell_groups(self):
-        """Group cell ids by facet count.
-
-        Yields ``(facet_ids, signs, cell_ids)`` with ``facet_ids`` and ``signs``
-        of shape ``(n_cells_in_group, n_facets)``.  Grouping is what makes the
-        local matrices batchable: cells with equal facet counts have identical
-        array shapes, so a whole group goes through one set of stacked NumPy
-        linear-algebra calls instead of a Python loop.
-        """
-        csc = self.mesh.complex._boundary_csc(self.mesh.dim)
-        counts = np.diff(csc.indptr)
-        for nf in np.unique(counts):
-            cells = np.where(counts == nf)[0]
-            starts = csc.indptr[cells][:, None] + np.arange(nf)
-            yield csc.indices[starts], np.sign(csc.data[starts]), cells
+        """Group cell ids by facet count; see :func:`cell_groups`."""
+        return cell_groups(self.mesh)
 
     def local_matrices_batched(self, facet_ids, signs, cell_ids):
         """``(N, R, Kbar, vol, X)`` for a whole group of equal-shaped cells.
