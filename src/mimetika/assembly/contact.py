@@ -118,11 +118,15 @@ class FractureContact:
     def block(self, facet: int) -> np.ndarray:
         """``A_f (x) Gram^{-1}`` -- the compliance in the traction DOF basis.
 
-        Both factors are ``d x d``, so the block is ``d^2 x d^2``: 4x4 in 2D,
-        9x9 in 3D, matching the traction DOFs of a facet.
+        The Gram is restricted to the facet basis the stress space carries:
+        the full ``P_1`` basis for AFW (``ndf = d^2``, 9x9 blocks in 3D), the
+        constant alone for the lumped space (``ndf = d``, where the block
+        collapses to ``A_f / |f|``).
         """
+        nb = self.dofs_per_facet // self.dim
         return np.kron(
-            self.local_compliance(facet), np.linalg.inv(self.facet_gram(facet))
+            self.local_compliance(facet),
+            np.linalg.inv(self.facet_gram(facet)[:nb, :nb]),
         )
 
     # -- assembly ---------------------------------------------------------------
