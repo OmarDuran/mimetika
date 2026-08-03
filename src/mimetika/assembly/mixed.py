@@ -369,13 +369,23 @@ class MixedElasticity:
                 # the batched kernel is written for d = 3; other dimensions take
                 # the scalar path, which is dimension-generic
                 Mloc = np.empty((nB, nf * ndf, nf * ndf))
-                X = np.empty((nB, nf, d, d))
-                for b, c in enumerate(cells):
+                # X is stacked rather than pre-allocated: its facet-basis extent is a
+                # property of the stress space, not of the dimension.  The AFW space
+                # carries d basis functions per facet, the lumped one carries a single
+                # constant.  Pre-allocating `(nB, nf, d, d)` and assigning into it made
+                # a `(nf, 1, d)` block broadcast silently up to `(nf, d, d)`, which
+                # produced a plausible array of the wrong size and only surfaced later
+                # as a reshape error in the as_h einsum.
+                blocks = []
+                for c in cells:
                     N, R, Kbar, vol, _, Xc = self.inner.local_matrices(
                         int(c), with_facet_data=True
                     )
-                    Mloc[b] = assemble_local_inner_product(N, R, Kbar, vol)
-                    X[b] = Xc
+                    blocks.append(Xc)
+                    Mloc[len(blocks) - 1] = assemble_local_inner_product(
+                        N, R, Kbar, vol
+                    )
+                X = np.stack(blocks)
 
             gdofs = (
                 ndf * facet_ids[:, :, None] + np.arange(ndf)
