@@ -1,6 +1,12 @@
 r"""Four-field mimetic elasticity and poromechanics: the solid pressure as an
 explicit unknown.
 
+This is the **standard** formulation of the library -- four fields for
+elasticity, six when coupled with flow.  The classic three-field system
+(:class:`~mimetika.assembly.mixed.MixedElasticity`, five-field with flow) is
+kept as the reference and example; the two are solution-identical by exact
+congruence, which is what the tests in ``test_four_field.py`` pin.
+
 The deviatoric/hydrostatic split of the complementary energy (Cockburn),
 
     ``sigma : C^{-1} sigma = (1/2mu) |sigma_dev|^2 + (d (1-ad)/2mu) p_s^2`` ,

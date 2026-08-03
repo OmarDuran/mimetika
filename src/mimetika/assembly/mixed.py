@@ -309,7 +309,15 @@ def _facet_normals_low_dim(mesh: Mesh) -> np.ndarray:
 
 
 class MixedElasticity:
-    """Global weakly-symmetric Hellinger--Reissner problem with Dirichlet data."""
+    """Global weakly-symmetric Hellinger--Reissner problem with Dirichlet data.
+
+    This is the **classic three-field** formulation ``(sigma, u, s)``, kept as
+    the reference implementation and the base class.  The standard formulation
+    is the four-field split
+    (:class:`~mimetika.assembly.four_field.FourFieldElasticity`), which carries
+    the solid pressure explicitly and is solution-identical by exact
+    congruence; the contact driver and the benchmarks build that one.
+    """
 
     def __init__(
         self,

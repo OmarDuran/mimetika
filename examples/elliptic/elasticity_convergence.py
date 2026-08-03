@@ -49,6 +49,8 @@ from common import (  # noqa: E402  (path bootstrap lives in common)
     print_table,
 )
 
+# the *classic* three-field AFW formulation, kept as the reference example;
+# the standard four-field split lives in mimetika.assembly.four_field
 from mimetika.assembly.mixed import MixedElasticity  # noqa: E402
 from mimetika.mesh import structured_box, structured_tets  # noqa: E402
 
