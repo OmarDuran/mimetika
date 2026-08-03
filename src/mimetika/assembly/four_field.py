@@ -66,8 +66,9 @@ whenever ``M_full`` is: its Schur complement *is* ``M_full``.
 
 The construction degenerates only at ``a = 0`` (``nu = 0``): there the
 volumetric compliance vanishes and ``p_s`` carries no energy, so the second row
-would be identically zero.  Cells with ``a <= 0`` are rejected -- use the
-three-field form for such materials.
+would be identically zero -- such cells are rejected; use the three-field form.
+A negative ``a`` (auxetic) is admissible: the congruence holds for any
+``a != 0``, with the ``p_s`` diagonal turning negative.
 
 Poromechanics: the diagonal Biot coupling
 -----------------------------------------
@@ -109,15 +110,24 @@ from mimetika.solver.saddle import solve_saddle
 
 
 def _require_volumetric_energy(a: np.ndarray) -> None:
-    """The split stores the hydrostatic energy on ``p_s``; ``a <= 0`` has none."""
-    if np.any(np.asarray(a) <= 0.0):
-        worst = int(np.argmin(a))
+    """The split stores the hydrostatic energy on ``p_s``; ``a = 0`` has none.
+
+    Only the *zero* is degenerate: at ``a = 0`` (``nu = 0``) the solid-pressure
+    row would be identically zero.  A **negative** ``a`` (auxetic material) is
+    fine -- the congruence with the three-field system is exact for any
+    ``a != 0`` -- the ``p_s`` diagonal merely changes sign, so the ``(sigma,
+    p_s)`` block is then indefinite rather than definite.  Direct solvers do
+    not care; a block preconditioner assuming a definite leading block would.
+    """
+    a = np.asarray(a)
+    if np.any(np.abs(a) < 1e-12):
+        worst = int(np.argmin(np.abs(a)))
         raise ValueError(
-            f"the four-field split needs a positive compliance coefficient "
+            f"the four-field split needs a nonzero compliance coefficient "
             f"a = nu/(1-2nu+d nu) in every cell, but cell {worst} has "
-            f"a = {float(np.asarray(a)[worst]):.3e} (nu <= 0).  With no "
-            f"volumetric compliance the solid-pressure row is identically "
-            f"zero; use the three-field formulation instead."
+            f"a = {float(a[worst]):.3e} (nu = 0).  With no volumetric "
+            f"compliance the solid-pressure row is identically zero; use the "
+            f"three-field formulation instead."
         )
 
 
@@ -198,6 +208,18 @@ class FourFieldElasticity(MixedElasticity):
             ]
         )
         return S, rhs
+
+    def constitutive_rows(self) -> sp.csr_matrix:
+        """``[M_dev | Gamma^T | D^T | A^T]``, matching :meth:`split`.
+
+        At any solution the solid-pressure row gives ``Gamma^T p_s =
+        -Gamma^T B^{-1} Gamma sigma``, so this evaluates to the three-field
+        ``M_full sigma + D^T u + A^T s`` -- the fracture jump the contact driver
+        extracts is formulation-independent, as it must be.
+        """
+        M, D, A = self.assemble_operators()
+        Gamma, _ = self.solid_pressure_blocks()
+        return sp.hstack([M, Gamma.T, D.T, A.T], format="csr")
 
     @property
     def block_sizes(self) -> tuple[int, int]:

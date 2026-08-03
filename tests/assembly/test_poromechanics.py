@@ -24,7 +24,11 @@ import numpy as np
 import pytest
 
 from mimetika.assembly.mixed import boundary_facets
-from mimetika.assembly.poromechanics import PoroMechanics
+# The whole module runs the **standard** formulation -- the four-field split
+# with the solid pressure explicit.  The robustness limits below are therefore
+# statements about the formulation users actually get; the classic five-field
+# system keeps its coverage through the congruence tests in test_four_field.py.
+from mimetika.assembly.four_field import FourFieldPoroMechanics as PoroMechanics
 from mimetika.materials import Material, compliance_coefficient
 from mimetika.mesh import (
     structured_box,

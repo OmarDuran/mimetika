@@ -651,6 +651,18 @@ class MixedElasticity:
             S, rhs = _constrain(S, rhs, dofs, np.zeros(len(dofs)))
         return S, rhs
 
+    def constitutive_rows(self) -> sp.csr_matrix:
+        """The stress-row block ``[M | D^T | A^T]``, matching :meth:`split`.
+
+        Applied to a solution vector it evaluates the constitutive functional on
+        every traction DOF; its residual against the assembled right-hand side
+        is the boundary-displacement pairing the contact driver reads the
+        fracture jump from.  A formulation with more fields overrides this so
+        the driver never has to know the block layout.
+        """
+        M, D, A = self.assemble_operators()
+        return sp.hstack([M, D.T, A.T], format="csr")
+
     @property
     def block_sizes(self) -> tuple[int, int]:
         return (self.n_stress, (self.d + self.n_skew) * self.n_cells)

@@ -44,7 +44,8 @@ from dataclasses import replace
 import numpy as np
 import scipy.sparse as sp
 
-from mimetika.assembly.mixed import MixedElasticity, boundary_facets
+from mimetika.assembly.four_field import FourFieldElasticity
+from mimetika.assembly.mixed import boundary_facets
 from mimetika.assembly.poromechanics import PoroMechanics
 from mimetika.contact import ContactDriver, FrictionlessBilateral, SignoriniCoulomb
 from mimetika.materials import Material
@@ -221,7 +222,7 @@ def mechanics_factory(mesh, parameters: Parameters, pressure):
     free = lambda x: np.zeros((len(np.atleast_2d(x)), 3, 3))  # noqa: E731
 
     def factory(contact=None):
-        problem = MixedElasticity(
+        problem = FourFieldElasticity(
             mesh,
             contact=contact,
             inner=ElasticityInnerProduct(mesh, material=material),

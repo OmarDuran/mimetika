@@ -296,9 +296,11 @@ class ContactDriver:
         """``J``: solution vector -> facet-frame gap at the enforcement points.
 
         The gap is a **linear** functional of the solution -- the assembled
-        traction row of the *unfractured* system,
+        traction row of the *unfractured* system
+        (:meth:`~mimetika.assembly.mixed.MixedElasticity.constitutive_rows`,
+        in whatever field layout the problem uses; in three-field terms
 
-            ``g_f = -( M sigma + D^T u + A^T s )_f`` ,
+            ``g_f = -( M sigma + D^T u + A^T s )_f`` ),
 
         rotated into the facet frame and evaluated at the enforcement points.
         Because it is linear it can be applied even though that row was replaced
@@ -317,8 +319,9 @@ class ContactDriver:
         basis.  Inserting a second ``Gram^{-1}`` divides the jump by ``|e|``, and
         the resulting slip then grows like ``1/h`` under refinement.
         """
-        M, D, A = problem.assemble_operators()
-        traction_rows = sp.hstack([M, D.T, A.T], format="csr")
+        # the assembled stress-row block, in whatever field layout the problem
+        # uses -- three- and four-field evaluate the same functional
+        traction_rows = problem.constitutive_rows()
 
         blocks, rows, cols, vals = [], [], [], []
         for i, f in enumerate(self.facets):
@@ -475,11 +478,16 @@ def elastic_mechanics(mesh, mu: float = 1.0, lam: float = 1.0, **boundary):
     per-cell materials, poromechanics, a pressure-driven right-hand side -- write
     another factory with the same three-value signature; nothing downstream can
     tell the difference.
+
+    Builds the **four-field** formulation -- the standard one.  The driver only
+    touches the problem through ``block_sizes``, ``split`` and
+    ``constitutive_rows``, so a factory returning the classic three-field
+    :class:`~mimetika.assembly.mixed.MixedElasticity` works identically.
     """
-    from mimetika.assembly.mixed import MixedElasticity
+    from mimetika.assembly.four_field import FourFieldElasticity
 
     def build(contact=None):
-        problem = MixedElasticity(mesh, mu=mu, lam=lam, contact=contact)
+        problem = FourFieldElasticity(mesh, mu=mu, lam=lam, contact=contact)
         matrix, rhs = problem.assemble_constrained(**boundary)
         return problem, matrix, rhs
 

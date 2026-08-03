@@ -28,7 +28,7 @@ from dataclasses import replace
 import numpy as np
 
 from mimetika.assembly.mixed import boundary_facets
-from mimetika.assembly.poromechanics import PoroMechanics
+from mimetika.assembly.four_field import FourFieldPoroMechanics
 from mimetika.materials import Material
 from mimetika.mesh import structured_quads
 from mimetika.postprocess import MixedDimensionalSeries
@@ -56,7 +56,7 @@ def depletion_response(parameters: Parameters, n: int = 8):
     only enters through ``Delta h = h eps_yy``, applied afterwards.
     """
     mesh = structured_quads(n, n)
-    problem = PoroMechanics(
+    problem = FourFieldPoroMechanics(
         mesh,
         Material(
             shear_modulus=parameters.shear_modulus,
@@ -113,7 +113,7 @@ def finite_reservoir(parameters: Parameters, nx: int = 20, ny: int = 120):
         poisson=parameters.poisson,
         biot=parameters.biot,
     )
-    problem = PoroMechanics(mesh, material)
+    problem = FourFieldPoroMechanics(mesh, material)
 
     half = 0.5 * parameters.reservoir_height
     spacing = height / ny

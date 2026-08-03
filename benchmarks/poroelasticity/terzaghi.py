@@ -62,6 +62,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from mimetika.assembly.four_field import FourFieldPoroMechanics
 from mimetika.assembly.mixed import boundary_facets
 from mimetika.assembly.poromechanics import PoroMechanics
 from mimetika.materials import Material
@@ -262,6 +263,7 @@ def simulate(
     lateral: int = 2,
     per_decade: int = 12,
     family: str = "cart",
+    poromechanics=FourFieldPoroMechanics,
     **solver,
 ):
     """March the column through the time factors; sample ``p`` and the settlement.
@@ -276,7 +278,9 @@ def simulate(
     steps would either crawl through the tail or miss the whole early transient.
     """
     mesh, top, confined = build(column, dim, axial, lateral, family)
-    poro = PoroMechanics(mesh, column.material())
+    # the standard four-field formulation; pass poromechanics=PoroMechanics for
+    # the classic five-field system (the two agree to solver round-off)
+    poro = poromechanics(mesh, column.material())
     axis = dim - 1
 
     load = np.zeros((3, 3))
