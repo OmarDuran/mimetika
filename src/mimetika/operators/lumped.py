@@ -70,10 +70,29 @@ non-orthogonal cell is an error, not a warning (see :meth:`check_orthogonality`)
 
 Because the collocation point ``x_c`` is a free parameter of the consistency
 derivation -- ``u(x_i) - u(x_c) = eps (x_i - x_c)`` holds for any ``x_c`` -- the
-condition ``d || n`` can be *arranged* rather than merely hoped for, on exactly
-TPFA's admissible family: Cartesian grids satisfy it with centroids, Voronoi /
-PEBI grids with the generator, Delaunay simplices with the circumcentre.  Pass
-those points as ``collocation``.
+condition ``d || n`` can be *arranged* rather than merely hoped for.
+
+What it asks for is an **orthogonal complex**: a polytopal mesh carrying one point
+per cell such that every facet is orthogonal to the segment joining the two cell
+points it separates.  That is the object, and it is a property of the (mesh, points)
+pair -- not of any cell shape.  A Voronoi/PEBI complex is the general construction,
+its generators being the points; a Cartesian grid is the degenerate case where the
+centroids already work.  Simplices with circumcentres are a *special case* of the
+same idea via Delaunay duality, useful but not the definition -- and in 3D they do
+not even deliver it (see :func:`circumcentres`).
+
+Supply the points as ``collocation``.  Because any route to them is acceptable, the
+**check** rather than the construction is the interface that matters here: whatever
+produced the points, :meth:`check_orthogonality` is what decides whether the operator
+is legitimate on this mesh.
+
+A caveat that bites in 3D.  ``d || n`` constrains the cell point *and* the facet
+point, and this class takes the facet point to be the facet centroid, as the rest of
+the library does.  Orthogonality really wants it at the orthogonal projection of
+``x_c`` onto the facet plane.  On a polygon facet in 2D -- an edge -- those coincide,
+which is why 2D works exactly; on a polygonal facet in 3D they differ in general.
+Full 3D polytopal support therefore needs facet points to become mesh data too, so
+that an orthogonal complex is a pairing of cell points *and* facet points.
 
 .. todo:: ask the user for the precise Cockburn reference for the
    deviatoric/volumetric separation before this docstring cites one.
@@ -111,11 +130,14 @@ class LumpedDeviatoricStress:
     material
         Per-cell :class:`~mimetika.materials.Material`; takes precedence.
     collocation
-        ``(n_cells, 3)`` collocation points ``x_c``, one per cell.  Defaults to
-        the cell centroids, which is the right choice on a Cartesian grid.  Use
-        the generator on a Voronoi/PEBI grid and the circumcentre on a Delaunay
-        simplex -- the operator is consistent exactly when ``x_i - x_c`` is
-        parallel to ``n_i``, and that is what these choices arrange.
+        ``(n_cells, 3)`` collocation points ``x_c``, one per cell -- the cell
+        points of an **orthogonal complex**.  Defaults to the cell centroids,
+        which already satisfy the condition on a Cartesian grid.  On a general
+        polytopal mesh supply the Voronoi/PEBI generators; :func:`circumcentres`
+        covers simplicial cells in 2D.  The operator is consistent exactly when
+        ``x_i - x_c`` is parallel to ``n_i``; how the points were obtained is
+        irrelevant, which is why the guard checks the property rather than the
+        provenance.
     orthogonality_tol
         Largest tolerated orthogonality defect ``max_i |d_t|/|d|``, checked at
         construction.  The defect is a *sine*, so it never exceeds 1: passing
@@ -298,8 +320,9 @@ class LumpedDeviatoricStress:
                 f"d = x_f - x_c makes an angle with the facet normal on facet "
                 f"{int(defect_facet[worst])}, |d_t|/|d| = {defect[worst]:.3e} > "
                 f"{tol:.1e}.  A lumped deviatoric stress is consistent only when "
-                f"d is parallel to n; move the collocation point (Voronoi "
-                f"generator, or circumcentre on a simplex) or use "
+                f"d is parallel to n; supply cell points forming an orthogonal "
+                f"complex (Voronoi/PEBI generators; circumcentres for 2D "
+                f"simplices) or use "
                 f"ElasticityInnerProduct."
             )
         thin = int(np.argmin(dn))
@@ -552,3 +575,51 @@ class LumpedDeviatoricStress:
         idx = np.arange(N.shape[1])
         M[:, idx, idx] = m
         return M, np.zeros(N.shape[0], dtype=bool)
+
+
+def circumcentres(mesh) -> np.ndarray:
+    """``(n_cells, 3)`` circumcentres of a **simplicial** mesh.
+
+    A convenience for one cell type, **not** the definition of a collocation point.
+    The concept :class:`LumpedDeviatoricStress` needs is an orthogonal complex (see
+    that class); circumcentres are simply the construction that yields one when the
+    cells happen to be simplices, by Delaunay duality.  On a general polytopal mesh
+    the primitive is the Voronoi/PEBI generator, and this function does not apply.
+
+    Where it does work, it works because the circumcentre is equidistant from every
+    vertex, so the perpendicular from it to a facet lands on that facet's own
+    circumcentre.  The centroid has no such property.
+
+    Solved as the linear system ``2 (v_i - v_0) . x = |v_i|^2 - |v_0|^2``, which is
+    the definition (equidistance) rather than a formula to be trusted on sight.
+
+    Two warnings, both real rather than theoretical:
+
+    * **2D only, in practice.** The perpendicular foot is the *facet's* circumcentre.
+      For an edge that is its midpoint, which is also its centroid, so 2D is exact
+      (defect ~1e-16). For a polygonal facet in 3D the two differ, the condition
+      fails, and on a distorted tetrahedron the circumcentre is measurably *worse*
+      than the centroid. Do not reach for this in 3D; supply generators instead.
+    * On an **obtuse** simplex the circumcentre falls *outside* the cell and the
+      offset ``d_n`` to the far facet goes non-positive, which destroys positive
+      definiteness.  This is the direct analogue of TPFA's negative transmissibility
+      on a non-Delaunay grid.  It is not caught here -- build the operator and call
+      :meth:`LumpedDeviatoricStress.check_orthogonality`, which tests for it.
+    * With ``x_c`` a circumcentre the displacement unknown is ``u(x_c)``, not the cell
+      average.  Nothing downstream may assume the latter.
+    """
+    d = mesh.dim
+    points = mesh.geometry.points
+    out = np.zeros((mesh.num_cells(d), 3))
+    for cell in range(mesh.num_cells(d)):
+        verts = sorted(mesh.complex.cell_vertices(cell, d))
+        if len(verts) != d + 1:
+            raise ValueError(
+                f"circumcentres need simplices: cell {cell} has {len(verts)} "
+                f"vertices, expected {d + 1}"
+            )
+        P = points[verts][:, :d]
+        A = 2.0 * (P[1:] - P[0])
+        rhs = (P[1:] ** 2).sum(axis=1) - (P[0] ** 2).sum()
+        out[cell, :d] = np.linalg.solve(A, rhs)
+    return out
