@@ -24,4 +24,22 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# -v so each test name is printed as it starts.  This suite has individual tests
+# that take tens of seconds -- solves on graded fault meshes, consolidation runs
+# marching through six time factors -- and under "-q" a slow one is
+# indistinguishable from a hang.  Seeing the name is what tells you which.
+# --durations surfaces the expensive ones, which is how the suite runtime was cut
+# from 8:17 to 1:18 previously and how it stays there.
+# -m "not benchmark" keeps the default run to tests OF THE SOURCE.  Everything under
+# tests/benchmarks reproduces a published problem end to end and takes minutes; see
+# tests/benchmarks/conftest.py.  Run them with `pytest -m benchmark`, or `pytest -m ""`
+# for everything.  Deselected is not passing -- the benchmarks still need running
+# before a release and after touching an operator, mesh generator or solver.
+addopts = "-v -ra --durations=15 --tb=short -m 'not benchmark'"
+
+markers = [
+    "benchmark: reproduces a published problem end to end; slow, deselected by default",
+]
+# "count" prints 37/98 rather than a percentage; with slow tests an absolute
+# count is easier to reason about than 38%.
+console_output_style = "count"
