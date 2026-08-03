@@ -721,6 +721,7 @@ class MixedElasticity:
                 done.add(fid)
                 qp, qw = lc.facet_quadrature[i]
                 B, _ = lc.facet_scalar_basis(i)
+                B = B[:, : self.inner.facet_basis_size(self.d)]
                 amb = lc.to_ambient(qp)
                 S = np.asarray(stress(amb), dtype=float)
                 S = np.einsum("ai,qab,bj->qij", lc.frame, S, lc.frame)
