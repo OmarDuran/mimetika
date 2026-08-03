@@ -112,6 +112,8 @@ from __future__ import annotations
 import numpy as np
 import scipy.sparse as sp
 
+from mimetika.assembly.local import skew_generators
+
 from mimetika.geometry.local_cell import LocalCell, mesh_frame
 from mimetika.mesh.mesh import Mesh
 from mimetika.operators.elasticity import cell_groups
@@ -516,6 +518,39 @@ class LumpedDeviatoricStress:
         w = w.ravel() / (2.0 * float(self._mu[cell_id]))
         c = -2.0 * float(self._mu[cell_id]) * float(self._a[cell_id]) / lc.volume
         return w, lc.facet_ids, c
+
+    def rotation_stabilization(self, gamma: float = 1.0) -> sp.csr_matrix:
+        """``S`` for the ``(s, s)`` block: ``gamma`` times the cell-graph Laplacian.
+
+        ``s^T S s = gamma sum_f w_f (s_L - s_R)^2`` over interior facets, one copy
+        per skew component, with ``w_f = |e_f| h_f / 2mu``.
+
+        Placed in the rotation block, not in ``M``, so ``M`` stays diagonal.
+        Consistent for any ``gamma``: a linear displacement has constant rotation,
+        so every jump vanishes and the patch test is unaffected.
+        """
+        d = self.mesh.dim
+        nsk = len(skew_generators(d))
+        n_cells = self.mesh.num_cells(d)
+        inc = self.mesh.complex.boundary_matrix(d).tocsr()
+        area = self.mesh.geometry.measure(d - 1)
+        vol = self.mesh.geometry.measure(d)
+        rows, cols, vals = [], [], []
+        for f in range(self.mesh.num_cells(d - 1)):
+            cells = inc.indices[inc.indptr[f] : inc.indptr[f + 1]]
+            if len(cells) != 2:
+                continue
+            a, b = int(cells[0]), int(cells[1])
+            h = 0.5 * (vol[a] + vol[b]) ** (1.0 / d)
+            w = gamma * area[f] * h / (2.0 * 0.5 * (self._mu[a] + self._mu[b]))
+            for k in range(nsk):
+                ia, ib = a * nsk + k, b * nsk + k
+                rows += [ia, ib, ia, ib]
+                cols += [ia, ib, ib, ia]
+                vals += [w, w, -w, -w]
+        return sp.csr_matrix(
+            (vals, (rows, cols)), shape=(nsk * n_cells, nsk * n_cells)
+        )
 
     def volumetric_operator(self) -> tuple[sp.csr_matrix, np.ndarray]:
         """``(W, c)`` with the full compliance ``M + W^T diag(c) W``.

@@ -71,6 +71,12 @@ from mimetika.operators.diffusion import DiffusionInnerProduct
 from mimetika.solver.saddle import solve_saddle
 
 
+def _rot_stab(inner):
+    """Negated rotation stabilisation for the (s, s) block, or None."""
+    hook = getattr(inner, "rotation_stabilization", None)
+    return None if hook is None else -hook()
+
+
 @dataclass
 class PoroMechanics:
     """Biot poromechanics on a mesh with (possibly) per-cell materials."""
@@ -208,7 +214,7 @@ class PoroMechanics:
             [
                 [M, D.T, A.T, None, coupling.T],
                 [D, None, None, None, None],
-                [A, None, None, None, None],
+                [A, None, _rot_stab(self.mechanics.inner), None, None],
                 [None, None, None, -dt * Mq, dt * Bq.T],
                 [coupling, None, None, dt * Bq, storage],
             ],

@@ -1,0 +1,308 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{hyperref}
+
+\newcommand{\dev}{\mathrm{dev}}
+\newcommand{\tr}{\operatorname{tr}}
+\newcommand{\skw}{\operatorname{skw}}
+\newcommand{\dv}{\operatorname{div}}
+\newcommand{\bsig}{\boldsymbol{\sigma}}
+\newcommand{\bu}{\boldsymbol{u}}
+\newcommand{\bq}{\boldsymbol{q}}
+\newcommand{\bn}{\boldsymbol{n}}
+\newcommand{\bI}{\boldsymbol{I}}
+\newcommand{\bC}{\mathbb{C}}
+\newcommand{\Real}{\mathbb{R}}
+
+\theoremstyle{plain}
+\newtheorem{proposition}{Proposition}
+\theoremstyle{remark}
+\newtheorem{remark}{Remark}
+
+\title{A four-field mimetic Arnold--Falk--Winther formulation\\
+       with an explicit hydrostatic unknown}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We record the four-field form of the mimetic Arnold--Falk--Winther (AFW)
+discretisation of linear elasticity with weakly imposed symmetry, obtained by
+carrying the hydrostatic stress $p_s = \tr\bsig/d$ as an independent cell
+unknown. The split is an exact change of variables, not an enrichment: the
+resulting system is congruent to the standard three-field one. Its purpose is
+structural. Coupled to Darcy flow, the Biot term degenerates from the discrete
+trace operator---which couples a cell pressure to every facet of that
+cell---to a diagonal cell--cell block. The deviatoric/hydrostatic separation
+also exposes the stress invariants $I_1$ and $J_2$ as primary unknowns.
+\end{abstract}
+
+\section{Notation and the continuous problem}
+
+Let $\Omega\subset\Real^d$, $d\in\{2,3\}$, be a polytopal domain meshed by a
+complex whose $d$-cells are $E$ and whose $(d-1)$-facets are $e$. Write
+$|E|$, $|e|$ for their measures, $\bn_e$ for the facet normal in a fixed
+(canonical) orientation, and $s_{E,e}=\pm1$ for the incidence sign of $e$ in
+$\partial E$.
+
+Elasticity in Hellinger--Reissner form with weakly imposed symmetry seeks a
+(not \emph{a priori} symmetric) stress $\bsig$, a displacement $\bu$ and a
+rotation multiplier $\boldsymbol{s}$ with
+\begin{equation}
+  \bC^{-1}\bsig = \nabla\bu - \boldsymbol{s},\qquad
+  \dv\bsig = \boldsymbol{f},\qquad
+  \skw\bsig = 0 ,
+  \label{eq:hr}
+\end{equation}
+the last imposed weakly through $\boldsymbol{s}$. For isotropic material,
+\begin{equation}
+  \bC^{-1}\bsig = \frac{1}{2\mu}\Bigl(\bsig - a\,\tr(\bsig)\,\bI\Bigr),
+  \qquad
+  a = \frac{\nu}{1-2\nu+d\nu},
+  \label{eq:compliance}
+\end{equation}
+so that $a\to 1/d$ as $\nu\to\tfrac12$. Note $a$ is bounded on the whole range
+of $\nu$; the incompressible limit degenerates only through $1-ad$.
+
+\section{The deviatoric/hydrostatic split}
+
+Set
+\begin{equation}
+  p_s := \tfrac{1}{d}\tr\bsig,
+  \qquad
+  \bsig_{\dev} := \bsig - p_s\bI ,
+  \qquad \tr\bsig_{\dev}=0 .
+  \label{eq:split}
+\end{equation}
+The complementary energy separates exactly:
+\begin{equation}
+  \bsig : \bC^{-1}\bsig
+  = \underbrace{\frac{1}{2\mu}\,\bsig_{\dev}\!:\!\bsig_{\dev}}_{\text{deviatoric}}
+  + \underbrace{\frac{d\,(1-ad)}{2\mu}\,p_s^{2}}_{\text{hydrostatic}} .
+  \label{eq:energy}
+\end{equation}
+The two terms involve disjoint variables. This is the algebraic content of the
+split: the compliance is block diagonal in $(\bsig_{\dev},p_s)$.
+
+\begin{remark}
+The hydrostatic coefficient $d(1-ad)/2\mu$ vanishes as $\nu\to\tfrac12$, which
+is the incompressibility constraint appearing as a vanishing diagonal rather
+than as an unbounded one. This is the reason to carry $p_s$ explicitly.
+\end{remark}
+
+\section{Discrete spaces}
+
+Facet stress degrees of freedom are traction moments; write $n_{\mathrm{df}}$
+for their number per facet. Two choices are used here:
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+space & $n_{\mathrm{df}}$ & consistency modes & exactness \\
+\midrule
+AFW    & $d^{2}$ & $d^{2}(d+1)$ & constants and linears, any mesh \\
+lumped & $d$     & $d^{2}$      & constants, orthogonal cells only \\
+\bottomrule
+\end{tabular}
+\end{center}
+The hydrostatic unknown $p_s$ is one scalar per cell, the displacement $\bu$ is
+$d$ per cell and the rotation $\boldsymbol{s}$ is $d(d-1)/2$ per cell.
+
+\section{Operators}
+
+Let $D$ be the discrete divergence and $A$ the discrete asymmetry, both acting
+on facet stress degrees of freedom, and let $M_{\dev}$ be the inner product
+induced by the first term of \eqref{eq:energy}. Define the \emph{hydrostatic
+embedding} $E$, mapping a cell scalar to the facet tractions of $p_s\bI$,
+\begin{equation}
+  (E\,p_s)_{e} \;=\; s_{E,e}\,|e|\,p_s\,\bn_e ,
+  \label{eq:embedding}
+\end{equation}
+and the diagonal hydrostatic inner product
+\begin{equation}
+  (M_{\mathrm{vol}})_{EE} = |E|\,\frac{d\,(1-ad)}{2\mu} .
+  \label{eq:mvol}
+\end{equation}
+
+\begin{proposition}[Structure of the split operators]
+\label{prop:identities}
+With $E$ as in \eqref{eq:embedding},
+\begin{align}
+  D_{\mathrm{vol}} &= D\,E , \label{eq:dvol}\\
+  A\,E &= 0 . \label{eq:ae}
+\end{align}
+\end{proposition}
+
+\begin{proof}
+\eqref{eq:dvol}: the divergence acts on the traction, and $E$ is by definition
+the traction of $p_s\bI$; there is no second divergence operator, only the
+embedding. \eqref{eq:ae}: $\skw(p_s\bI)=0$ because $\bI$ is symmetric, so the
+hydrostatic part carries no asymmetry.
+\end{proof}
+
+Identity~\eqref{eq:dvol} is what keeps $D$ purely topological: it remains the
+signed incidence matrix, composed with the diagonal metric factor $|e|\bn_e$
+carried by $E$. Identity~\eqref{eq:ae} has a consequence developed in
+Section~\ref{sec:infsup}.
+
+\section{The four-field system}
+
+Elasticity alone reads
+\begin{equation}
+  \begin{bmatrix}
+    M_{\dev} & 0 & D^{\!\top} & A^{\!\top}\\
+    0 & M_{\mathrm{vol}} & D_{\mathrm{vol}}^{\!\top} & 0\\
+    D & D_{\mathrm{vol}} & 0 & 0\\
+    A & 0 & 0 & 0
+  \end{bmatrix}
+  \begin{bmatrix}\bsig_{\dev}\\ p_s\\ \bu\\ \boldsymbol{s}\end{bmatrix}
+  =
+  \begin{bmatrix}\boldsymbol{g}\\ 0\\ \boldsymbol{f}\\ 0\end{bmatrix}.
+  \label{eq:fourfield}
+\end{equation}
+
+\subsection{Equivalence with the three-field system}
+
+Let $T$ be the change of variables $\bsig = \bsig_{\dev} + E\,p_s$, i.e.
+\begin{equation}
+  T = \begin{bmatrix} I & -E & 0 & 0\\ 0&I&0&0\\ 0&0&I&0\\ 0&0&0&I\end{bmatrix}.
+\end{equation}
+Applying the congruence $T^{\!\top}\!K\,T$ to \eqref{eq:fourfield} and using
+\eqref{eq:dvol} and \eqref{eq:ae}---which annihilate the $(3,2)$ and $(4,2)$
+blocks exactly---gives
+\begin{equation}
+  \begin{bmatrix}
+    M_{\dev} & -M_{\dev}E & D^{\!\top} & A^{\!\top}\\
+    -E^{\!\top}\!M_{\dev} & E^{\!\top}\!M_{\dev}E + M_{\mathrm{vol}} & 0 & 0\\
+    D & 0 & 0 & 0\\
+    A & 0 & 0 & 0
+  \end{bmatrix},
+\end{equation}
+whose $\bu$ and $\boldsymbol{s}$ rows are $D\bsig=\boldsymbol{f}$ and
+$A\bsig=0$. Eliminating $p_s$ recovers the three-field system with
+\begin{equation}
+  M_{\mathrm{eff}}
+  = M_{\dev} - M_{\dev}E\bigl(E^{\!\top}\!M_{\dev}E + M_{\mathrm{vol}}\bigr)^{-1}
+    E^{\!\top}\!M_{\dev},
+  \label{eq:meff}
+\end{equation}
+which is the full compliance in Woodbury form: $M_{\dev}$ plus a correction of
+rank one \emph{per cell}. Eliminating $p_s$ \emph{before} the change of
+variables instead leaves $M_{\dev}$ untouched and produces a grad--div term
+$G = D_{\mathrm{vol}}M_{\mathrm{vol}}^{-1}D_{\mathrm{vol}}^{\!\top}$ in the
+$(\bu,\bu)$ block. The three forms are related by congruence and share a
+solution; they differ only in where the hydrostatic energy is stored.
+
+\begin{remark}
+$M_{\mathrm{eff}}$ should be applied, not assembled: forming
+\eqref{eq:meff} explicitly fills in globally, whereas the Woodbury application
+costs a diagonal solve plus an auxiliary system of size $n_{\text{cells}}$.
+\end{remark}
+
+\section{Coupling to Darcy flow}
+
+With Darcy flux $\bq$ and fluid pressure $p_f$, backward Euler over $\Delta t$,
+and Biot coefficient $\alpha$, the six-field system is
+\begin{equation}
+  \begin{bmatrix}
+    M_{\dev} & 0 & D^{\!\top} & A^{\!\top} & 0 & 0\\
+    0 & M_{\mathrm{vol}} & D_{\mathrm{vol}}^{\!\top} & 0 & 0 & \alpha I\\
+    D & D_{\mathrm{vol}} & 0 & 0 & 0 & 0\\
+    A & 0 & 0 & 0 & 0 & 0\\
+    0 & 0 & 0 & 0 & -\Delta t\,M_q & \Delta t\,B^{\!\top}\\
+    0 & \alpha I & 0 & 0 & \Delta t\,B & S|E|
+  \end{bmatrix}
+  \begin{bmatrix}
+    \bsig_{\dev}\\ p_s\\ \bu\\ \boldsymbol{s}\\ \bq\\ p_f
+  \end{bmatrix}
+  =
+  \begin{bmatrix}
+    \boldsymbol{g}\\ 0\\ \boldsymbol{f}\\ 0\\ -\Delta t\,\boldsymbol{g}_p\\ r
+  \end{bmatrix}.
+  \label{eq:sixfield}
+\end{equation}
+
+This is the motivation for the split. In the three-field form the Biot term
+enters as $\bigl(\tfrac{\alpha}{dK}T\bigr)^{\!\top}p_f$, where the discrete
+trace $T$ couples each cell pressure to \emph{every facet degree of freedom of
+that cell}. With $p_s$ explicit the same coupling is the diagonal block
+$\alpha I$ and $T$ disappears from the system. Consequences:
+\begin{itemize}
+  \item the $(p_s,p_f)$ sub-block is $2\times2$ per cell, with
+        $M_{\mathrm{vol}}$ and the storage $S|E|$ both diagonal;
+  \item a pressure Schur complement can be formed on a variable that has a
+        nonzero diagonal, which is what a CPR-type preconditioner requires;
+  \item the stress invariants are primary unknowns, $I_1 = d\,p_s$ and
+        $J_2 = \tfrac12\bsig_{\dev}\!:\!\bsig_{\dev}$, so a yield function
+        $F(I_1,J_2)$ and its Jacobian need no reconstruction through $T$.
+\end{itemize}
+
+For interface contact the alignment is only partial. Writing the facet
+traction $\boldsymbol{t}=\bsig\bn$,
+\begin{equation}
+  t_N = \bn\cdot\bsig_{\dev}\bn + p_s ,
+  \qquad
+  \boldsymbol{t}_T = \bsig_{\dev}\bn - (\bn\cdot\bsig_{\dev}\bn)\,\bn ,
+\end{equation}
+since $p_s\bI\bn = p_s\bn$ is purely normal. The tangential traction is
+therefore independent of $p_s$, while the normal traction mixes; the Coulomb
+condition $|\boldsymbol{t}_T|\le\mu|t_N|$ still couples the two.
+
+\section{Degree-of-freedom counts}
+
+Per cell, asymptotically, with $\rho$ the facet-to-cell ratio ($3/2$ for
+triangles, $2$ for tetrahedra and quadrilaterals, $3$ for hexahedra):
+\begin{center}
+\begin{tabular}{lrrrrrrrr}
+\toprule
+family & $\bsig_{\dev}$ & $p_s$ & $\bu$ & $\boldsymbol{s}$ & $\bq$ & $p_f$
+       & total & vs.\ unsplit \\
+\midrule
+triangles    &  6.0 & 1 & 2 & 1 & 1.5 & 1 & 12.5 & $+8.7\%$ \\
+tetrahedra   & 18.0 & 1 & 3 & 3 & 2.0 & 1 & 28.0 & $+3.7\%$ \\
+quadrilaterals & 8.0 & 1 & 2 & 1 & 2.0 & 1 & 15.0 & $+7.1\%$ \\
+hexahedra    & 27.0 & 1 & 3 & 3 & 3.0 & 1 & 38.0 & $+2.7\%$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The split costs one unknown per cell. The stress block dominates: $48\%$ of the
+unknowns in 2D and $64\%$ in 3D.
+
+\section{Sparsity}
+
+$M_{\mathrm{vol}}$ is diagonal by construction for any space. $M_{\dev}$ is
+diagonal only in the lumped space and only on orthogonal cells; for AFW it is
+dense within each cell, because the density arises from consistency on the
+$d^{2}(d+1)$ modes rather than from the hydrostatic coupling. Removing the
+hydrostatic direction is a rank-one change and cannot alter that.
+
+\section{On stability of the lumped variant}
+\label{sec:infsup}
+
+By \eqref{eq:ae} the rotation constraint does not see $p_s$. Hence the
+inf--sup pairing between the stress space and $\boldsymbol{s}$ is unchanged by
+the split, and no rearrangement of the hydrostatic unknown can affect it. This
+is a statement about the \emph{space}, not about the choice of inner product.
+
+Numerically, on a sequence of uniform quadrilateral meshes, the smallest
+eigenvalue of the Schur complement in the multiplier mass norm behaves as
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+$h$ & $1/2$ & $1/4$ & $1/8$ & $1/16$ \\
+\midrule
+AFW                    & $2.97$ & $1.95$ & $1.90$ & $1.87$ \\
+lumped, $d$ per facet  & $1.38$ & $0.320$ & $0.0814$ & $0.0205$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The AFW constant is bounded below; the lumped one decays as $O(h^{2})$ and is
+recovered only by adding a rotation-jump term in the $(\boldsymbol{s},
+\boldsymbol{s})$ block, at the cost of the zero block. The four-field split
+does not change either column.
+
+\end{document}
