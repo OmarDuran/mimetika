@@ -312,15 +312,26 @@ class MixedElasticity:
     """Global weakly-symmetric Hellinger--Reissner problem with Dirichlet data."""
 
     def __init__(
-        self, mesh: Mesh, mu: float = 1.0, lam: float = 1.0, contact=None
+        self,
+        mesh: Mesh,
+        mu: float = 1.0,
+        lam: float = 1.0,
+        contact=None,
+        inner=None,
     ) -> None:
         self.mesh = mesh
         self.contact = contact  # optional FractureContact: adds compliance to M
-        self.inner = ElasticityInnerProduct(mesh, mu=mu, lam=lam)
+        # any facet-DOF stress inner product works here -- the assembly asks the
+        # space for its sizes and offsets rather than assuming AFW's.  Passing
+        # e.g. LumpedDeviatoricStress swaps the discretisation wholesale.
+        self.inner = (
+            ElasticityInnerProduct(mesh, mu=mu, lam=lam) if inner is None else inner
+        )
         self.d = mesh.dim
         self.ndf = self.inner.dofs_per_facet(self.d)
         self.n_skew = len(skew_generators(self.d))
         self._ops = None
+        self._space_ops = None
 
     @property
     def n_stress(self) -> int:
@@ -334,12 +345,36 @@ class MixedElasticity:
         return self.ndf * fid + np.arange(self.ndf)
 
     def assemble_operators(self):
-        """Assemble ``(M, D, A)``: inner product, discrete div and asymmetry.
+        """Assemble ``(M, D, A)`` with ``M`` the **full** compliance.
 
-        Cached -- this is by far the costly part of a solve.
+        When the space keeps the volumetric part out of its own operator
+        (``volumetric_included = False``: the lumped space), it is folded back
+        in here as ``W^T diag(c) W`` -- one rank-one update per cell, Woodbury
+        in matrix form.  That completes the compliance but fills in the facet
+        couplings of each cell, so the diagonality of the lumped ``M`` is lost;
+        the four-field assembly (:class:`.four_field.FourFieldElasticity`)
+        exists to avoid exactly this step.
         """
         if self._ops is not None:
             return self._ops
+        M, D, A = self._space_operators()
+        if not getattr(self.inner, "volumetric_included", True):
+            W, cvec = self.inner.volumetric_operator()
+            M = (M + W.T @ sp.diags(cvec) @ W).tocsr()
+        self._ops = (M, D, A)
+        return self._ops
+
+    def _space_operators(self):
+        """``(M, D, A)`` with ``M`` the *space's own* inner product.
+
+        For AFW that is the full compliance; for the lumped space it is the
+        diagonal deviatoric part only.  The fracture-contact compliance, which
+        is facet compliance in series whatever the space, is included.  Cached
+        -- this is by far the costly part of a solve, and both the three- and
+        four-field assemblies start from it.
+        """
+        if self._space_ops is not None:
+            return self._space_ops
         from mimetika.assembly.local import skew_generators
         from mimetika.operators.inner_product import assemble_local_inner_product
 
@@ -430,22 +465,15 @@ class MixedElasticity:
         # it destroys the diagonality of LumpedDeviatoricStress.  Identical to the
         # accumulated form for AFW.
         M = self.inner.assemble()
-        volumetric = getattr(self.inner, "volumetric_operator", None)
-        if volumetric is not None:
-            # LumpedDeviatoricStress carries only the deviatoric compliance; the
-            # volumetric part is rank one per cell, M + W^T diag(c) W.  Without it M
-            # is singular on the hydrostatic mode.
-            W, cvec = volumetric()
-            M = (M + W.T @ sp.diags(cvec) @ W).tocsr()
         if self.contact is not None:
             # a compliant fracture adds compliance in series on its facets
             M = (M + self.contact.assemble(n_sig)).tocsr()
-        self._ops = (
+        self._space_ops = (
             M,
             build(d_rows, d_cols, d_vals, (d * self.n_cells, n_sig)),
             build(a_rows, a_cols, a_vals, (nsk * self.n_cells, n_sig)),
         )
-        return self._ops
+        return self._space_ops
 
     def dirichlet_vector(self, displacement) -> np.ndarray:
         """Boundary displacement data, expanded in the facet ``P_1`` basis."""
@@ -696,6 +724,7 @@ class MixedElasticity:
 
         d, ndf = self.d, self.ndf
         inner = self.inner
+        nb = inner.facet_basis_size(d)  # d for AFW, 1 for the lumped space
         dofs = np.asarray(dofs, dtype=float)
         out = np.zeros((self.n_cells, d, d))
         for c in range(self.n_cells):
@@ -703,7 +732,7 @@ class MixedElasticity:
             _, X = inner.facet_data(lc, inner._scale(lc))  # (nf, nb, d)
             block = dofs[
                 (ndf * np.asarray(lc.facet_ids)[:, None] + np.arange(ndf)).ravel()
-            ].reshape(lc.n_facets, d, d)  # (facet, component, basis)
+            ].reshape(lc.n_facets, d, nb)  # (facet, component, basis)
             out[c] = np.einsum("f,fib,fbj->ij", lc.signs, block, X) / lc.volume
         return out
 

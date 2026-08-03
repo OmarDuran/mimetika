@@ -49,6 +49,12 @@ and the pressure row by ``dt`` so the whole thing stays **symmetric**)::
 with ``Tc = diag(alpha/(dK)) T``.  Setting ``dt = None`` drops the flow rows and
 treats the pressure as **given data** -- the quasi-steady regime the fault
 benchmarks use, where the pressure field is prescribed cell by cell.
+
+``Tc`` couples each cell pressure to *every* facet DOF of that cell.  The
+four-field variant (:class:`.four_field.FourFieldPoroMechanics`) carries the
+solid pressure ``p_s = tr_h(sigma)/d`` as an explicit unknown, and there the
+same physics enters through a **diagonal** cell--cell block instead -- ``Tc``
+disappears from the matrix entirely.
 """
 
 from __future__ import annotations
@@ -84,16 +90,27 @@ class PoroMechanics:
     mesh: Mesh
     material: Material
     contact: object = None  # optional FractureContact
+    #: optional stress inner product (e.g. ``LumpedDeviatoricStress`` built with
+    #: the same ``material``); ``None`` means AFW.  The caller owns the
+    #: material consistency between the two.
+    stress_inner: object = None
+
+    #: which mixed-elasticity assembly to build the mechanics rows with; the
+    #: four-field variant overrides this single hook.
+    mechanics_class = MixedElasticity
 
     def __post_init__(self) -> None:
         d = self.mesh.dim
         self.d = d
         self.material = self.material.expand(self.mesh.num_cells(d))
-        self.mechanics = MixedElasticity(
-            self.mesh, contact=self.contact
+        inner = (
+            self.stress_inner
+            if self.stress_inner is not None
+            else _elasticity_with(self.mesh, self.material)
         )
-        self.mechanics.inner = _elasticity_with(self.mesh, self.material)
-        self.mechanics._ops = None
+        self.mechanics = self.mechanics_class(
+            self.mesh, contact=self.contact, inner=inner
+        )
         # the flow block must see the *per-cell* mobility k/mu_f, or a
         # permeability contrast would silently vanish from the system
         self.flow = DiffusionInnerProduct(
@@ -133,30 +150,12 @@ class PoroMechanics:
         return self._trace
 
     def _build_trace_operator(self) -> sp.csr_matrix:
-        from mimetika.geometry.local_cell import LocalCell
-
-        d, ndf = self.d, self.mechanics.ndf
+        # T = diag(2 mu) W: the volumetric coupling every stress space exposes
+        # *is* the trace, scaled by the compliance 1/2mu -- one builder, both
+        # spaces, and the four-field split reuses the same object.
         ip = self.mechanics.inner
-        rows, cols, vals = [], [], []
-        for c in range(self.n_cells):
-            lc = LocalCell.build(self.mesh.geometry, c, ip.frame)
-            _, X = ip.facet_data(lc, ip._scale(lc))
-            gdofs = (
-                ndf * np.asarray(lc.facet_ids)[:, None] + np.arange(ndf)
-            ).ravel()
-            signs = np.repeat(lc.signs, ndf)
-            # coefficient of (x - x_E)_k against component k, summed over k
-            block = np.einsum("fbk,kk->fkb", X, np.eye(d)).reshape(-1) * signs
-            rows.append(np.full(len(gdofs), c))
-            cols.append(gdofs)
-            vals.append(block)
-        return sp.csr_matrix(
-            (
-                np.concatenate(vals),
-                (np.concatenate(rows), np.concatenate(cols)),
-            ),
-            shape=(self.n_cells, self.n_stress),
-        )
+        W, _ = ip.volumetric_operator()
+        return (sp.diags(2.0 * ip._mu) @ W).tocsr()
 
     # -- assembly ------------------------------------------------------------------
 
@@ -248,10 +247,14 @@ class PoroMechanics:
             dofs = self.mechanics.roller_dofs(roller_facets)
             S, rhs = _constrain(S, rhs, dofs, np.zeros(len(dofs)))
         if len(no_flow):
-            offset = self.n_stress + (self.d + self.n_skew) * self.n_cells
-            sealed = offset + np.asarray(sorted({int(f) for f in no_flow}))
+            sealed = self._flux_offset + np.asarray(sorted({int(f) for f in no_flow}))
             S, rhs = _constrain(S, rhs, sealed, np.zeros(len(sealed)))
         return S, rhs
+
+    @property
+    def _flux_offset(self) -> int:
+        """Index of the first flux DOF in the assembled vector."""
+        return self.n_stress + (self.d + self.n_skew) * self.n_cells
 
     def _pressure_data(self, pressure) -> np.ndarray:
         if pressure is None:

@@ -221,9 +221,11 @@ def mechanics_factory(mesh, parameters: Parameters, pressure):
     free = lambda x: np.zeros((len(np.atleast_2d(x)), 3, 3))  # noqa: E731
 
     def factory(contact=None):
-        problem = MixedElasticity(mesh, contact=contact)
-        problem.inner = ElasticityInnerProduct(mesh, material=material)
-        problem._ops = None
+        problem = MixedElasticity(
+            mesh,
+            contact=contact,
+            inner=ElasticityInnerProduct(mesh, material=material),
+        )
         matrix, rhs = problem.assemble_constrained(
             dirichlet=zero,
             extra_rhs=extra,

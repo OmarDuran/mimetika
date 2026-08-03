@@ -23,11 +23,14 @@ as a map on ``d x d`` matrices the piece that is left out is exactly rank one,
 
     ``C^{-1} = (1/2mu) I_{d^2} - (a/2mu) vec(I) vec(I)^T`` ,   ``a = nu/(1-2nu+d nu)``
 
-so it is kept **out** of ``M`` and handed to the solver as one rank-one update
-per cell (:meth:`volumetric_operator`), to be applied by Woodbury; the auxiliary
-``n_cells``-sized system is algebraically the solid pressure.  What this buys is
-that the field structure ``(sigma, u, s)`` is untouched -- there is no fourth
-unknown, and ``D`` and ``A`` keep their usual meaning.
+so it is kept **out** of ``M`` and handed downstream as one rank-one update per
+cell (:meth:`volumetric_operator`).  Two consumers exist.  The three-field
+assembly folds it back into ``M`` (Woodbury in matrix form), keeping the field
+structure ``(sigma, u, s)`` untouched at the price of the diagonality.  The
+**four-field** assembly (:mod:`mimetika.assembly.four_field`) instead promotes
+the auxiliary ``n_cells``-sized variable -- which *is* the solid pressure
+``p_s = tr_h(sigma)/d`` -- to an explicit unknown, so ``M`` stays diagonal and
+``D`` and ``A`` still keep their usual meaning.
 
 **2.  The stress space is reduced: ``d`` DOFs per facet, not ``d^2``.**  The
 DOFs here are the *traction vector* ``int_e sigma n_e`` alone; the ``d-1`` first
@@ -146,6 +149,12 @@ class LumpedDeviatoricStress:
         ``1.0`` disables the guard, which is only ever useful for studying the
         failure it exists to prevent.
     """
+
+    #: :meth:`assemble` deliberately **excludes** the volumetric compliance --
+    #: that is what keeps it diagonal.  ``M_full = assemble() + W^T diag(c) W``
+    #: with :meth:`volumetric_operator`.  See the same flag on
+    #: :class:`~mimetika.operators.elasticity.ElasticityInnerProduct`.
+    volumetric_included = False
 
     def __init__(
         self,
@@ -508,9 +517,11 @@ class LumpedDeviatoricStress:
         ``1/2mu``, and at ``nu = 1/2`` (``a = 1/d``) nothing degenerates.
 
         Deliberately **not** added to ``M``: baking it in would destroy the
-        diagonality that is the entire point, and promoting it to a fourth field
-        would change the ``(sigma, u, s)`` structure that ``D`` and ``A`` are
-        written against.
+        diagonality that is the entire point.  The four-field formulation
+        (:mod:`mimetika.assembly.four_field`) is the consumer that keeps the
+        diagonality: it carries the auxiliary variable explicitly as the solid
+        pressure, leaving ``D`` and ``A`` -- which act on the *total* stress
+        DOFs -- untouched.
         """
         lc = LocalCell.build(self.mesh.geometry, cell_id, self.frame)
         offset = self._local_offset(lc, cell_id)

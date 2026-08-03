@@ -94,6 +94,14 @@ def cell_groups(mesh: Mesh):
 class ElasticityInnerProduct:
     """Stress inner product for elasticity on facet DOFs (``d^2`` per facet)."""
 
+    #: :meth:`assemble` returns the **full** compliance, volumetric part
+    #: included.  The lumped space sets this ``False``: there the volumetric
+    #: part is kept out of ``M`` (to preserve its diagonality) and carried
+    #: separately by :meth:`volumetric_operator`.  Assembly code keys off this
+    #: flag, never off the mere presence of ``volumetric_operator`` -- both
+    #: spaces provide that method.
+    volumetric_included = True
+
     def __init__(
         self,
         mesh: Mesh,
@@ -309,6 +317,52 @@ class ElasticityInnerProduct:
             (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
             shape=(n, n),
         )
+
+    # -- the volumetric (hydrostatic) coupling ---------------------------------
+
+    def volumetric_operator(self) -> tuple[sp.csr_matrix, np.ndarray]:
+        """``(W, c)`` with ``w_E . sigma = |E| tr_h(sigma) / 2mu_E``.
+
+        Row ``E`` of ``W`` is the moment column of the constant hydrostatic mode
+        ``I`` -- ``R vec(I)``, i.e. ``w[(i,k,b)] = s_i X_i[b,k] / 2mu`` -- so
+        ``W`` is the discrete trace scaled by the deviatoric compliance, and
+        ``c = -2 mu a / |E|``.
+
+        Same payload and normalisation as
+        :meth:`.LumpedDeviatoricStress.volumetric_operator`, but the *meaning*
+        differs by :attr:`volumetric_included`: here ``assemble()`` already
+        carries the full compliance, so ``M - W^T diag(c) W`` **adds back** the
+        constant-hydrostatic stiffness (``c < 0``) and yields the ``M_dev`` of
+        the four-field split, whereas for the lumped space ``M + W^T diag(c) W``
+        completes the compliance.  Either way ``M_full = M_dev + W^T diag(c) W``
+        holds exactly, which is the identity the four-field formulation rests on
+        (see :mod:`mimetika.assembly.four_field`).
+        """
+        d, ndf = self.mesh.dim, self.dofs_per_facet(self.mesh.dim)
+        n_cells = self.mesh.num_cells(d)
+        vol = self.mesh.geometry.measure(d)
+        rows, cols, vals = [], [], []
+        for c in range(n_cells):
+            lc = LocalCell.build(self.mesh.geometry, c, self.frame)
+            _, X = self.facet_data(lc, self._scale(lc))
+            gdofs = (
+                ndf * np.asarray(lc.facet_ids)[:, None] + np.arange(ndf)
+            ).ravel()
+            signs = np.repeat(lc.signs, ndf)
+            # coefficient of (x - x_E)_k against component k: X_i[b, k] at the
+            # DOF (i, k, b), matching the component-major facet block layout
+            w = np.einsum("fbk,kk->fkb", X, np.eye(d)).reshape(-1) * signs
+            rows.append(np.full(len(gdofs), c))
+            cols.append(gdofs)
+            vals.append(w / (2.0 * float(self._mu[c])))
+        W = sp.csr_matrix(
+            (
+                np.concatenate(vals),
+                (np.concatenate(rows), np.concatenate(cols)),
+            ),
+            shape=(n_cells, ndf * self.mesh.num_cells(d - 1)),
+        )
+        return W, -2.0 * self._mu * self._a / vol
 
     # -- batched construction (many cells at once) ----------------------------
 
