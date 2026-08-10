@@ -389,7 +389,7 @@ class FourFieldPoroMechanics(PoroMechanics):
 
         vol = self.mesh.geometry.measure(self.d)
         Mq = self.flow.assemble()
-        Bq = discrete_divergence(self.mesh)
+        Bq = self._flow_divergence()
         storage = sp.diags(self.material.storage(self.d) * vol)
         Dd = sp.diags(delta)
 

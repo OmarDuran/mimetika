@@ -647,7 +647,9 @@ def test_no_flow_facets_are_genuinely_sealed():
         source=lambda x: np.ones(len(np.atleast_2d(x))),
         no_flow=sealed,
     )
-    assert np.all(solution["flux"][sealed] == 0.0)
+    ndf = problem._ndf_q
+    dofs = (ndf * np.asarray(sealed)[:, None] + np.arange(ndf)).ravel()
+    assert np.all(solution["flux"][dofs] == 0.0)
 
 
 def test_draining_is_the_default_and_loses_mass():
@@ -719,7 +721,7 @@ def test_block_sizes(name):
     d, mesh = problem.d, problem.mesh
     assert problem.n_stress == d * d * mesh.num_cells(d - 1)
     assert problem.n_cells == mesh.num_cells(d)
-    assert problem.n_flux == mesh.num_cells(d - 1)
+    assert problem.n_flux == problem._ndf_q * mesh.num_cells(d - 1)
     assert problem.n_skew == d * (d - 1) // 2
     assert problem.trace_operator().shape == (problem.n_cells, problem.n_stress)
 
@@ -739,3 +741,56 @@ def test_quasi_steady_returns_the_prescribed_pressure(name):
     centroids = problem.mesh.geometry.centroids(problem.d)
     assert np.allclose(solution["pressure"], field(centroids))
     assert np.all(solution["flux"] == 0.0)
+
+
+def test_derham_flow_block_reproduces_a_linear_pressure_state():
+    """One backward-Euler step from the exact linear-pressure state is exact.
+
+    With ``alpha = 0`` the flow decouples; a linear pressure with its constant
+    flux is a steady state of the de Rham flow block, so the step must return
+    it to machine precision -- this pins the sign and scaling of the
+    boundary-pressure pairing on the moment DOFs.
+    """
+    mesh = structured_box(2, 2, 2)
+    problem = PoroMechanics(
+        mesh,
+        Material(
+            shear_modulus=1.0,
+            poisson=0.25,
+            biot=0.0,
+            inverse_biot_modulus=1.0,
+            permeability=1.0,
+            viscosity=1.0,
+        ),
+    )
+    assert problem._ndf_q == mesh.dim  # the de Rham flow space is the default
+
+    from mimetika.assembly.mixed import MixedSolution
+
+    p_lin = lambda x: 2.0 + np.atleast_2d(x)[:, 0] - 3.0 * np.atleast_2d(x)[:, 1]
+    centroids = mesh.geometry.centroids(3)
+    previous = MixedSolution(
+        {"stress": np.zeros(problem.n_stress), "pressure": p_lin(centroids)}
+    )
+    solution = problem.solve(
+        dt=0.5,
+        dirichlet=lambda x: np.zeros((len(np.atleast_2d(x)), 3)),
+        pressure_bc=p_lin,
+        previous=previous,
+    )
+    assert np.allclose(solution["pressure"], p_lin(centroids), atol=1e-9)
+    # the flux is the interpolant of the exact constant field q = -grad p
+    from mimetika.geometry.local_cell import LocalCell
+
+    q_exact = np.array([-1.0, 3.0, 0.0])
+    ndf, done = problem._ndf_q, set()
+    q_I = np.zeros(problem.n_flux)
+    for c in range(problem.n_cells):
+        lc = LocalCell.build(mesh.geometry, c, problem.flow.frame)
+        for i, fid in enumerate(lc.facet_ids):
+            if fid in done:
+                continue
+            done.add(fid)
+            qn = (lc.frame.T @ q_exact) @ lc.facet_normals[i]
+            q_I[ndf * fid] = lc.signs[i] * lc.facet_measures[i] * qn
+    assert np.allclose(solution["flux"], q_I, atol=1e-8)

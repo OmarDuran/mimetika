@@ -95,6 +95,13 @@ class PoroMechanics:
     #: material consistency between the two.
     stress_inner: object = None
 
+    #: optional flux inner product; ``None`` means the de Rham flow space
+    #: (``d`` facet ``P_1`` moments per facet, no stabilization).  Passing a
+    #: :class:`~mimetika.operators.diffusion.DiffusionInnerProduct` selects
+    #: the one-average-per-facet space (the ``M_1 + M_2`` example, and the
+    #: diagonal member the exact condensation requires).
+    flow_inner: object = None
+
     #: which mixed-elasticity assembly to build the mechanics rows with; the
     #: four-field variant overrides this single hook.
     mechanics_class = MixedElasticity
@@ -113,9 +120,18 @@ class PoroMechanics:
         )
         # the flow block must see the *per-cell* mobility k/mu_f, or a
         # permeability contrast would silently vanish from the system
-        self.flow = DiffusionInnerProduct(
-            self.mesh,
-            K=self.material.mobility[:, None, None] * np.eye(3)[None],
+        if self.flow_inner is None:
+            from mimetika.operators.derham import DeRhamDiffusionInnerProduct
+
+            self.flow_inner = DeRhamDiffusionInnerProduct(
+                self.mesh,
+                K=self.material.mobility[:, None, None] * np.eye(3)[None],
+            )
+        self.flow = self.flow_inner
+        self._ndf_q = (
+            self.flow.dofs_per_facet(d)
+            if hasattr(self.flow, "dofs_per_facet")
+            else 1
         )
         self.n_skew = len(skew_generators(d))
 
@@ -131,7 +147,22 @@ class PoroMechanics:
 
     @property
     def n_flux(self) -> int:
-        return self.mesh.num_cells(self.d - 1)
+        return self._ndf_q * self.mesh.num_cells(self.d - 1)
+
+    def _flow_divergence(self) -> sp.csr_matrix:
+        """Topological flux divergence on this flow space's DOFs."""
+        if self._ndf_q == 1:
+            return discrete_divergence(self.mesh)
+        ndf = self._ndf_q
+        rows, cols, vals = [], [], []
+        for c in range(self.n_cells):
+            for f, sgn in self.mesh.complex.facets_of(self.d, c):
+                rows.append(c)
+                cols.append(ndf * f)
+                vals.append(float(np.sign(sgn)))
+        return sp.csr_matrix(
+            (vals, (rows, cols)), shape=(self.n_cells, self.n_flux)
+        )
 
     # -- the trace operator ------------------------------------------------------
 
@@ -206,7 +237,7 @@ class PoroMechanics:
 
         vol = self.mesh.geometry.measure(self.d)
         Mq = self.flow.assemble()
-        Bq = discrete_divergence(self.mesh)
+        Bq = self._flow_divergence()
         storage = sp.diags(self.material.storage(self.d) * vol)
 
         S = sp.bmat(
@@ -247,7 +278,13 @@ class PoroMechanics:
             dofs = self.mechanics.roller_dofs(roller_facets)
             S, rhs = _constrain(S, rhs, dofs, np.zeros(len(dofs)))
         if len(no_flow):
-            sealed = self._flux_offset + np.asarray(sorted({int(f) for f in no_flow}))
+            ndf = self._ndf_q
+            facets = np.asarray(sorted({int(f) for f in no_flow}))
+            # a sealed facet has zero normal flux: every moment vanishes
+            sealed = (
+                self._flux_offset
+                + (ndf * facets[:, None] + np.arange(ndf)).ravel()
+            )
             S, rhs = _constrain(S, rhs, sealed, np.zeros(len(sealed)))
         return S, rhs
 
@@ -272,12 +309,40 @@ class PoroMechanics:
         return coupling @ previous["stress"] + storage @ previous["pressure"]
 
     def _flow_dirichlet(self, pressure_bc) -> np.ndarray:
+        """Boundary-pressure pairing on the flux row.
+
+        For the de Rham space the facet ``P_1`` expansion coefficients of the
+        boundary pressure pair against the moment DOFs; for the one-average
+        space, the integrated pressure.
+        """
+        from mimetika.geometry.local_cell import LocalCell
+
         g = np.zeros(self.n_flux)
         if pressure_bc is None:
             return g
-        for f, s in facet_cell_signs(self.mesh).items():
-            qp, qw = self.mesh.geometry.quadrature(self.d - 1, f)
-            g[f] = s * (qw @ np.asarray(pressure_bc(qp)).ravel())
+        on_boundary = facet_cell_signs(self.mesh)
+        if self._ndf_q == 1:
+            for f, sgn in on_boundary.items():
+                qp, qw = self.mesh.geometry.quadrature(self.d - 1, f)
+                g[f] = sgn * (qw @ np.asarray(pressure_bc(qp)).ravel())
+            return g
+        ndf = self._ndf_q
+        done: set[int] = set()
+        for c in range(self.n_cells):
+            lc = LocalCell.build(self.mesh.geometry, c, self.flow.frame)
+            for i, fid in enumerate(lc.facet_ids):
+                if fid not in on_boundary or fid in done:
+                    continue
+                done.add(fid)
+                qp, _ = lc.facet_quadrature[i]
+                p = np.asarray(
+                    pressure_bc(lc.to_ambient(qp)), dtype=float
+                ).ravel()
+                # the flux row reads ``Mq q = Bq^T p + g``, so the boundary
+                # pairing enters with the opposite sign of the weak form
+                g[ndf * fid : ndf * (fid + 1)] = (
+                    -lc.signs[i] * lc.expand_on_facet(i, p)
+                )
         return g
 
     def _source(self, source) -> np.ndarray:
@@ -350,6 +415,6 @@ class PoroMechanics:
 
 
 def _elasticity_with(mesh: Mesh, material: Material):
-    from mimetika.operators.elasticity import ElasticityInnerProduct
+    from mimetika.operators.derham import DeRhamDeviatoricStress
 
-    return ElasticityInnerProduct(mesh, material=material)
+    return DeRhamDeviatoricStress(mesh, material=material)
