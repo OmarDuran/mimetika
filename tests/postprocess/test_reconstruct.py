@@ -56,7 +56,7 @@ def exact_stress():
 
 @pytest.mark.parametrize("mesh", ONLY, ids=IDS)
 def test_flux_reconstruction_is_exact_for_constant_velocity(mesh):
-    problem = MixedPoisson(mesh, K=K_ANISO)
+    problem = MixedPoisson(mesh, K=K_ANISO, basis="const")
     sol = problem.solve(dirichlet=linear_potential, **EXACT)
     velocity = reconstruct_flux(mesh, sol["flux"])
     expected = -K_ANISO @ GRAD
@@ -67,7 +67,7 @@ def test_flux_reconstruction_is_exact_for_constant_velocity(mesh):
 @pytest.mark.parametrize("mesh", ONLY, ids=IDS)
 def test_flux_reconstruction_of_interpolant(mesh):
     """Reconstruction inverts interpolation on constant fields."""
-    problem = MixedPoisson(mesh, K=K_ANISO)
+    problem = MixedPoisson(mesh, K=K_ANISO, basis="const")
     field = np.array([0.4, -0.9, 1.3])
     dofs = problem.interpolate_flux(
         lambda x: np.broadcast_to(field, (len(np.atleast_2d(x)), 3))

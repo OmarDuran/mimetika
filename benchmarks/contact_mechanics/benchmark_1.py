@@ -196,7 +196,7 @@ def build(parameters: Parameters, nx: int = 20, ny: int = 60, spacing=None,
     return mesh, fault, pressure
 
 
-def mechanics_factory(mesh, parameters: Parameters, pressure):
+def mechanics_factory(mesh, parameters: Parameters, pressure, space: str = "afw"):
     """A ``mechanics`` factory carrying the depletion load and the roller frame.
 
     The pore pressure reaches the fault entirely through ``extra_rhs``: in the
@@ -209,7 +209,22 @@ def mechanics_factory(mesh, parameters: Parameters, pressure):
         poisson=parameters.poisson,
         biot=parameters.biot,
     )
-    poro = PoroMechanics(mesh, material)
+
+    def make_inner():
+        # "afw" (d^2 traction DOFs per facet) or "lumped" (d per facet, the
+        # two-point space; the graded tensor grid is face-orthogonal, so the
+        # lumped guard passes).  The contact driver must be built with the
+        # matching dofs_per_facet.
+        if space == "lumped":
+            from mimetika.operators.lumped import LumpedDeviatoricStress
+
+            return LumpedDeviatoricStress(mesh, material=material)
+        return ElasticityInnerProduct(mesh, material=material)
+
+    # the depletion load enters the stress row as -(alpha/(dK)) T^T p; the
+    # trace operator must belong to the *same* stress space as the mechanics,
+    # or the right-hand side has the wrong layout entirely
+    poro = PoroMechanics(mesh, material, stress_inner=make_inner())
     coupling = sp.diags(poro.material.pressure_coupling(2)) @ poro.trace_operator()
     extra = -(coupling.T @ pressure)
 
@@ -222,11 +237,7 @@ def mechanics_factory(mesh, parameters: Parameters, pressure):
     free = lambda x: np.zeros((len(np.atleast_2d(x)), 3, 3))  # noqa: E731
 
     def factory(contact=None):
-        problem = FourFieldElasticity(
-            mesh,
-            contact=contact,
-            inner=ElasticityInnerProduct(mesh, material=material),
-        )
+        problem = FourFieldElasticity(mesh, contact=contact, inner=make_inner())
         matrix, rhs = problem.assemble_constrained(
             dirichlet=zero,
             extra_rhs=extra,
@@ -240,6 +251,7 @@ def mechanics_factory(mesh, parameters: Parameters, pressure):
 
 
 def pre_slip_stress(parameters: Parameters, nx: int = 20, ny: int = 60,
+                    space: str = "afw",
                     spacing=None, boundary_spacing: float = 500.0,
                     triangles: bool = False):
     """Coulomb stress on the **locked** fault -- Fig. 6 (left), eq. (18).
@@ -256,7 +268,7 @@ def pre_slip_stress(parameters: Parameters, nx: int = 20, ny: int = 60,
     mesh, fault, pressure = build(parameters, nx=nx, ny=ny, spacing=spacing,
                                   boundary_spacing=boundary_spacing,
                                   triangles=triangles)
-    problem, matrix, rhs = mechanics_factory(mesh, parameters, pressure)(None)
+    problem, matrix, rhs = mechanics_factory(mesh, parameters, pressure, space=space)(None)
     solution = problem.split(
         solve_saddle(matrix, rhs, problem.block_sizes, method="direct")
     )
@@ -267,7 +279,8 @@ def pre_slip_stress(parameters: Parameters, nx: int = 20, ny: int = 60,
     # is sampled half a cell away, where the stress has already decayed, and no
     # amount of refinement in y fixes an error in x.
     driver = ContactDriver(
-        mesh, fault, FrictionlessBilateral(), mu=parameters.shear_modulus, lam=1.0
+        mesh, fault, FrictionlessBilateral(), mu=parameters.shear_modulus, lam=1.0,
+        dofs_per_facet=mesh.dim if space == "lumped" else None,
     )
     traction = driver.tractions(solution["stress"])
     y = mesh.geometry.centroids(1)[np.asarray(fault, dtype=int)][:, 1]
@@ -298,6 +311,7 @@ def simulate(
     parameters: Parameters,
     nx: int = 20,
     ny: int = 60,
+    space: str = "afw",
     law=None,
     prestress: bool = True,
     spacing=None,
@@ -321,6 +335,7 @@ def simulate(
         fault,
         SignoriniCoulomb(friction=0.0) if law is None else law,
         prestress=None,
+        dofs_per_facet=mesh.dim if space == "lumped" else None,
         mu=parameters.shear_modulus,
         lam=2.0
         * parameters.shear_modulus
@@ -336,7 +351,7 @@ def simulate(
             insitu_prestress(mesh, fault, parameters)
         )
     state = driver.solve_step(
-        mechanics_factory(mesh, parameters, pressure), solver="newton"
+        mechanics_factory(mesh, parameters, pressure, space=space), solver="newton"
     )
     y = mesh.geometry.centroids(1)[np.asarray(fault, dtype=int)][:, 1]
     order = np.argsort(y)

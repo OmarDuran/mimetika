@@ -36,6 +36,15 @@ from mimetika.postprocess import MixedDimensionalSeries
 from benchmarks.contact_mechanics.common import Parameters, linear_fit
 
 
+def _stress_inner(mesh, material, stress_space: str):
+    """``None`` for AFW (the default space); the lumped operator otherwise."""
+    if stress_space == "afw":
+        return None
+    from mimetika.operators.lumped import LumpedDeviatoricStress
+
+    return LumpedDeviatoricStress(mesh, material=material)
+
+
 def in_situ_report(parameters: Parameters, samples: int = 11):
     """Fitted ``(intercept, gradient)`` of every in-situ field the paper lists."""
     y = np.linspace(-parameters.height / 2, parameters.height / 2, samples)
@@ -49,20 +58,20 @@ def in_situ_report(parameters: Parameters, samples: int = 11):
     }
 
 
-def depletion_response(parameters: Parameters, n: int = 8):
+def depletion_response(parameters: Parameters, n: int = 8, stress_space: str = "afw"):
     """Simulate uniform depletion of a confined block; return the key responses.
 
     The mesh is the unit square: the response is a *strain*, so the domain size
     only enters through ``Delta h = h eps_yy``, applied afterwards.
     """
     mesh = structured_quads(n, n)
+    material = Material(
+        shear_modulus=parameters.shear_modulus,
+        poisson=parameters.poisson,
+        biot=parameters.biot,
+    )
     problem = FourFieldPoroMechanics(
-        mesh,
-        Material(
-            shear_modulus=parameters.shear_modulus,
-            poisson=parameters.poisson,
-            biot=parameters.biot,
-        ),
+        mesh, material, stress_inner=_stress_inner(mesh, material, stress_space)
     )
     centroids = mesh.geometry.centroids(1)
     boundary = boundary_facets(mesh)
@@ -94,7 +103,8 @@ def depletion_response(parameters: Parameters, n: int = 8):
 # -- Fig. 4: combined stresses across a finite reservoir --------------------------------
 
 
-def finite_reservoir(parameters: Parameters, nx: int = 20, ny: int = 120):
+def finite_reservoir(parameters: Parameters, nx: int = 20, ny: int = 120,
+                     stress_space: str = "afw"):
     """Deplete a reservoir of finite thickness inside the full domain.
 
     Different from :func:`depletion_response`, and harder.  That one depletes the
@@ -113,7 +123,9 @@ def finite_reservoir(parameters: Parameters, nx: int = 20, ny: int = 120):
         poisson=parameters.poisson,
         biot=parameters.biot,
     )
-    problem = FourFieldPoroMechanics(mesh, material)
+    problem = FourFieldPoroMechanics(
+        mesh, material, stress_inner=_stress_inner(mesh, material, stress_space)
+    )
 
     half = 0.5 * parameters.reservoir_height
     spacing = height / ny

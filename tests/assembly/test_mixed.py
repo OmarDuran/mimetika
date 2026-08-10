@@ -91,8 +91,8 @@ def test_discrete_divergence_matches_incidence(mesh):
 @pytest.mark.parametrize("mesh", ONLY, ids=IDS)
 def test_discrete_divergence_of_constant_flux_vanishes(mesh):
     """Gauss: a constant field has zero net flux through a closed cell."""
-    B = discrete_divergence(mesh)
     problem = MixedPoisson(mesh, K=K_ANISO)
+    B = problem.divergence()
     assert np.allclose(B @ problem.interpolate_flux(flux_field), 0.0, atol=1e-12)
 
 

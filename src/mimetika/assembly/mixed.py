@@ -126,16 +126,37 @@ class MixedSolution:
 
 
 class MixedPoisson:
-    """Global mixed Poisson problem with Dirichlet data."""
+    """Global mixed Poisson problem with Dirichlet data.
+
+    The default flux space is the de Rham (consistency-only) product:
+    ``d`` facet ``P_1`` moments per facet, no stabilization.  Passing
+    ``basis='const'`` or ``'rt0'`` selects the stabilized
+    :class:`~mimetika.operators.diffusion.DiffusionInnerProduct` (one
+    average flux per facet), retained as the ``M_1 + M_2`` example.
+    """
 
     def __init__(
         self,
         mesh: Mesh,
         K: np.ndarray | None = None,
-        basis: str = "const",
+        basis: str | None = None,
+        inner=None,
     ) -> None:
         self.mesh = mesh
-        self.inner = DiffusionInnerProduct(mesh, K=K, basis=basis)
+        if inner is None:
+            if basis is not None:
+                inner = DiffusionInnerProduct(mesh, K=K, basis=basis)
+            else:
+                from mimetika.operators.derham import (
+                    DeRhamDiffusionInnerProduct,
+                )
+
+                inner = DeRhamDiffusionInnerProduct(mesh, K=K)
+        self.inner = inner
+        d = mesh.dim
+        self.ndf = (
+            inner.dofs_per_facet(d) if hasattr(inner, "dofs_per_facet") else 1
+        )
         self._M: sp.csr_matrix | None = None
 
     def inner_product(self) -> sp.csr_matrix:
@@ -146,7 +167,7 @@ class MixedPoisson:
 
     @property
     def n_flux(self) -> int:
-        return self.mesh.num_cells(self.mesh.dim - 1)
+        return self.ndf * self.mesh.num_cells(self.mesh.dim - 1)
 
     @property
     def n_pressure(self) -> int:
@@ -164,16 +185,57 @@ class MixedPoisson:
         return b
 
     def dirichlet_vector(self, potential) -> np.ndarray:
-        """``g_e = s_e \\int_e p_D`` on boundary facets, zero elsewhere."""
-        d = self.mesh.dim
+        """Boundary-pressure pairing on boundary facets, zero elsewhere.
+
+        One average per facet for the stabilized space; the facet ``P_1``
+        moments of ``p_D`` for the de Rham space.
+        """
+        from mimetika.geometry.local_cell import LocalCell
+
+        d, ndf = self.mesh.dim, self.ndf
         g = np.zeros(self.n_flux)
         if potential is None:
             return g
-        for f, s in facet_cell_signs(self.mesh).items():
-            qp, qw = self.mesh.geometry.quadrature(d - 1, f)
-            # pairs with the *integrated* flux DOF, so the facet mean of p_D
-            g[f] = s * (qw @ np.asarray(potential(qp)).ravel()) / qw.sum()
+        on_boundary = facet_cell_signs(self.mesh)
+        if ndf == 1:
+            for f, sgn in on_boundary.items():
+                qp, qw = self.mesh.geometry.quadrature(d - 1, f)
+                # pairs with the *integrated* flux DOF: the facet mean of p_D
+                g[f] = sgn * (qw @ np.asarray(potential(qp)).ravel()) / qw.sum()
+            return g
+        done: set[int] = set()
+        for c in range(self.n_pressure):
+            lc = LocalCell.build(self.mesh.geometry, c, self.inner.frame)
+            for i, fid in enumerate(lc.facet_ids):
+                if fid not in on_boundary or fid in done:
+                    continue
+                done.add(fid)
+                qp, _ = lc.facet_quadrature[i]
+                p = np.asarray(potential(lc.to_ambient(qp)), dtype=float).ravel()
+                g[ndf * fid : ndf * (fid + 1)] = (
+                    lc.signs[i] * lc.expand_on_facet(i, p)
+                )
         return g
+
+    def divergence(self) -> sp.csr_matrix:
+        """The discrete divergence on this space's flux DOFs.
+
+        Signed incidence on the facet DOF for the stabilized space; on the
+        constant (``b = 0``) moment of each facet block for the de Rham
+        space -- topological either way.
+        """
+        if self.ndf == 1:
+            return discrete_divergence(self.mesh)
+        d, ndf = self.mesh.dim, self.ndf
+        rows, cols, vals = [], [], []
+        for c in range(self.n_pressure):
+            for f, sgn in self.mesh.complex.facets_of(d, c):
+                rows.append(c)
+                cols.append(ndf * f)
+                vals.append(float(np.sign(sgn)))
+        return sp.csr_matrix(
+            (vals, (rows, cols)), shape=(self.n_pressure, self.n_flux)
+        )
 
     def assemble(self, source=None, dirichlet=None):
         """Return ``(A, rhs)`` of the global saddle-point system.
@@ -183,7 +245,7 @@ class MixedPoisson:
         The solution is unchanged.
         """
         M = self.inner_product()
-        B = discrete_divergence(self.mesh)
+        B = self.divergence()
         A = sp.bmat([[M, -B.T], [-B, None]], format="csr")
         rhs = np.concatenate(
             [-self.dirichlet_vector(dirichlet), -self.source_vector(source)]
@@ -210,22 +272,41 @@ class MixedPoisson:
         return out
 
     def interpolate_flux(self, flux) -> np.ndarray:
-        """**Integrated** normal flux on each facet, w.r.t. the canonical normal.
+        """Flux DOFs of the exact field, w.r.t. the canonical normals.
 
-        ``int_e F.n``, matching the DOF convention that lets the discrete
-        divergence be the bare signed incidence.
+        Integrated normal flux per facet for the stabilized space; the full
+        facet ``P_1`` moments for the de Rham space.
         """
-        d = self.mesh.dim
-        normals = (
-            self.mesh.geometry.facet_normals()
-            if d == 3
-            else _facet_normals_low_dim(self.mesh)
-        )
+        from mimetika.geometry.local_cell import LocalCell
+
+        d, ndf = self.mesh.dim, self.ndf
         out = np.zeros(self.n_flux)
-        for f in range(self.n_flux):
-            qp, qw = self.mesh.geometry.quadrature(d - 1, f)
-            F = np.asarray(flux(qp), dtype=float)
-            out[f] = qw @ (F @ normals[f])  # integrated, not averaged
+        if ndf == 1:
+            normals = (
+                self.mesh.geometry.facet_normals()
+                if d == 3
+                else _facet_normals_low_dim(self.mesh)
+            )
+            for f in range(self.mesh.num_cells(d - 1)):
+                qp, qw = self.mesh.geometry.quadrature(d - 1, f)
+                F = np.asarray(flux(qp), dtype=float)
+                out[f] = qw @ (F @ normals[f])  # integrated, not averaged
+            return out
+        done: set[int] = set()
+        for c in range(self.n_pressure):
+            lc = LocalCell.build(self.mesh.geometry, c, self.inner.frame)
+            for i, fid in enumerate(lc.facet_ids):
+                if fid in done:
+                    continue
+                done.add(fid)
+                qp, qw = lc.facet_quadrature[i]
+                B, _ = lc.facet_scalar_basis(i)
+                Fn = (
+                    np.asarray(flux(lc.to_ambient(qp)), dtype=float) @ lc.frame
+                ) @ lc.facet_normals[i]
+                out[ndf * fid : ndf * (fid + 1)] = lc.signs[i] * np.einsum(
+                    "q,qb,q->b", qw, B, Fn
+                )
         return out
 
 
@@ -330,11 +411,21 @@ class MixedElasticity:
         self.mesh = mesh
         self.contact = contact  # optional FractureContact: adds compliance to M
         # any facet-DOF stress inner product works here -- the assembly asks the
-        # space for its sizes and offsets rather than assuming AFW's.  Passing
-        # e.g. LumpedDeviatoricStress swaps the discretisation wholesale.
-        self.inner = (
-            ElasticityInnerProduct(mesh, mu=mu, lam=lam) if inner is None else inner
-        )
+        # space for its sizes and offsets rather than assuming a layout.  The
+        # default is the de Rham (consistency-only) product; passing e.g.
+        # ElasticityInnerProduct (stabilized) or LumpedDeviatoricStress
+        # (diagonal) swaps the discretisation.
+        if inner is None:
+            # both formulations default to the same de Rham member (the
+            # deviatoric space; here its volumetric completion is folded back
+            # in), so three- and four-field solves stay solution-identical
+            # under defaults.  DeRhamElasticityInnerProduct (linear-trace
+            # member, = AFW on simplices) and the stabilized
+            # ElasticityInnerProduct remain available explicitly.
+            from mimetika.operators.derham import DeRhamDeviatoricStress
+
+            inner = DeRhamDeviatoricStress(mesh, mu=mu, lam=lam)
+        self.inner = inner
         self.d = mesh.dim
         self.ndf = self.inner.dofs_per_facet(self.d)
         self.n_skew = len(skew_generators(self.d))

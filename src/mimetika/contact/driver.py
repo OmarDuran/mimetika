@@ -93,6 +93,11 @@ class ContactDriver:
     #: state, not a boundary condition: a law constrains the *total* traction, so
     #: an incremental solve has to tell it what it is sitting on top of.
     prestress: np.ndarray | None = None
+    #: traction DOFs per facet of the stress space the mechanics uses:
+    #: ``d^2`` for AFW (the default), ``d`` for the lumped space, whose facet
+    #: basis is the constant alone.  Must match the problems the ``mechanics``
+    #: factory builds -- the driver reads and pins stress DOFs by this stride.
+    dofs_per_facet: int | None = None
 
     _geom: FractureContact = field(init=False, repr=False)
 
@@ -102,8 +107,20 @@ class ContactDriver:
             raise ValueError("enforcement must be 'averaged' or 'pointwise'")
         # geometry helper: facet frames, Gram matrices, compliance blocks
         self.dim = self.mesh.dim
-        self.ndf = self.dim * self.dim
-        self._geom = FractureContact(self.mesh, self.facets)
+        self.ndf = (
+            self.dim * self.dim
+            if self.dofs_per_facet is None
+            else int(self.dofs_per_facet)
+        )
+        self.nb = self.ndf // self.dim  # facet basis size: d for AFW, 1 lumped
+        if self.nb * self.dim != self.ndf or not 1 <= self.nb <= self.dim:
+            raise ValueError(
+                f"dofs_per_facet must be d * nb with 1 <= nb <= d; got "
+                f"{self.ndf} in dimension {self.dim}"
+            )
+        self._geom = FractureContact(
+            self.mesh, self.facets, dofs_per_facet=self.ndf
+        )
         self._r = (
             self.default_augmentation()
             if self.augmentation is None
@@ -168,7 +185,7 @@ class ContactDriver:
         d, k = self.dim, self.dim - 1
         g = self.mesh.geometry
         if self.enforcement == "averaged":
-            row = np.zeros((1, d))
+            row = np.zeros((1, self.nb))
             row[0, 0] = 1.0
             return row, np.array([g.measure(k)[int(facet)]])
         qp, qw = g.quadrature(k, int(facet))
@@ -176,7 +193,7 @@ class ContactDriver:
         h = np.sqrt(g.measure(k)[int(facet)])
         tangents = g.facet_frame(int(facet))[1:]
         cols = [np.ones(len(qp))] + [rel @ t / h for t in tangents]
-        return np.column_stack(cols), qw
+        return np.column_stack(cols)[:, : self.nb], qw
 
     def _frame(self, facet: int) -> np.ndarray:
         """``(d, d)`` rotation taking facet-frame components to mesh components."""
@@ -187,8 +204,8 @@ class ContactDriver:
     def to_values(self, moments: np.ndarray, facet: int) -> np.ndarray:
         """Traction moments on a facet -> facet-frame values at the enforcement points."""
         d = self.dim
-        gram = self._geom.facet_gram(int(facet))
-        coeffs = np.linalg.solve(gram, moments.reshape(d, d).T).T  # (comp, basis)
+        gram = self._geom.facet_gram(int(facet))[: self.nb, : self.nb]
+        coeffs = np.linalg.solve(gram, moments.reshape(d, self.nb).T).T  # (comp, basis)
         B, _ = self._basis(int(facet))
         vals = coeffs @ B.T  # (3 comp, npts), global components
         return (self._frame(int(facet)).T @ vals).T  # -> facet frame, (npts, 3)
@@ -252,16 +269,12 @@ class ContactDriver:
         ``g = -( M sigma + D^T u + A^T s )_f``, with ``M`` the *unfractured*
         inner product.  Positive normal component means the fracture is open.
         """
-        M, D, A = problem.assemble_operators()
-        r = (
-            M @ solution["stress"]
-            + D.T @ solution["displacement"]
-            + A.T @ solution["rotation"]
-        )
+        x = np.concatenate([solution[k] for k in solution.blocks])
+        r = problem.constitutive_rows(contact=False) @ x
         out = []
         for f in self.facets:
             coeffs = -r[self.ndf * int(f) : self.ndf * (int(f) + 1)].reshape(
-                self.dim, self.dim
+                self.dim, self.nb
             )  # (comp, basis)
             B, _ = self._basis(int(f))
             out.append((self._frame(int(f)).T @ (coeffs @ B.T)).T)
@@ -284,7 +297,7 @@ class ContactDriver:
             base_row = self.ndf * i
             base_col = self.dim * self._slice(i).start
             idx = np.indices(block.shape)
-            rows.append(base_row + idx[0].ravel() * self.dim + idx[1].ravel())
+            rows.append(base_row + idx[0].ravel() * self.nb + idx[1].ravel())
             cols.append(base_col + idx[2].ravel() * self.dim + idx[3].ravel())
             vals.append(block.ravel())
         return sp.csr_matrix(
@@ -337,7 +350,7 @@ class ContactDriver:
             base_row = self.dim * self._slice(i).start
             base_col = self.ndf * int(f)
             rows.append(base_row + idx[0].ravel() * self.dim + idx[1].ravel())
-            cols.append(base_col + idx[2].ravel() * self.dim + idx[3].ravel())
+            cols.append(base_col + idx[2].ravel() * self.nb + idx[3].ravel())
             vals.append(block.ravel())
         gather = sp.csr_matrix(
             (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
@@ -357,7 +370,12 @@ class ContactDriver:
         Constitutive and geometric data -- the driver's own business.  Handed to
         whoever builds the mechanics so the fracture is embedded in ``A``.
         """
-        return FractureContact(self.mesh, self.facets, facet_compliance=compliance)
+        return FractureContact(
+            self.mesh,
+            self.facets,
+            facet_compliance=compliance,
+            dofs_per_facet=self.ndf,
+        )
 
     def contact_map(self, problem, matrix, rhs, **solver) -> ContactMap:
         """Assemble the nonlinear algebraic map ``y = CD(x)`` for a given system.

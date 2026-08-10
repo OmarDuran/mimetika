@@ -97,8 +97,9 @@ which is why 2D works exactly; on a polygonal facet in 3D they differ in general
 Full 3D polytopal support therefore needs facet points to become mesh data too, so
 that an orthogonal complex is a pairing of cell points *and* facet points.
 
-.. todo:: ask the user for the precise Cockburn reference for the
-   deviatoric/volumetric separation before this docstring cites one.
+Splitting the stress into its deviatoric and hydrostatic components as
+independent discrete quantities goes back to Nguyen, Peraire & Cockburn,
+J. Comput. Phys. 230 (2011) 3695--3718 (doi 10.1016/j.jcp.2011.01.035).
 
 Degrees of freedom
 ------------------

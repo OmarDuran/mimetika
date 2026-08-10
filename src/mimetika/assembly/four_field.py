@@ -148,9 +148,32 @@ class FourFieldElasticity(MixedElasticity):
     stays diagonal.
     """
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args, solid_pressure: str = "constant", **kwargs) -> None:
+        # default stress space: the de Rham deviatoric member -- the volumetric
+        # part belongs to the (Gamma, B) pair here, so the four-field default
+        # is the deviatoric product rather than the full three-field one
+        if len(args) < 5 and kwargs.get("inner") is None:
+            from mimetika.operators.derham import DeRhamDeviatoricStress
+
+            mesh = args[0] if args else kwargs["mesh"]
+            mu = kwargs.get("mu", args[1] if len(args) > 1 else 1.0)
+            lam = kwargs.get("lam", args[2] if len(args) > 2 else 1.0)
+            kwargs["inner"] = DeRhamDeviatoricStress(mesh, mu=mu, lam=lam)
         super().__init__(*args, **kwargs)
+        if solid_pressure not in ("constant", "linear"):
+            raise ValueError("solid_pressure must be 'constant' or 'linear'")
+        # "linear": p_s carries the P1 trace moments (d+1 per cell) instead of
+        # the mean alone.  On simplices the folded operator then has the exact
+        # linear-trace energy, and with the de Rham space the method coincides
+        # with the AFW element degree of freedom for degree of freedom; with
+        # the constant p_s it differs by the covariance of the linear trace.
+        self.solid_pressure = solid_pressure
         self._pressure_blocks = None
+
+    @property
+    def n_pressure(self) -> int:
+        nb = 1 if self.solid_pressure == "constant" else self.d + 1
+        return nb * self.n_cells
 
     def assemble_operators(self):
         """``(M_dev, D, A)`` -- the inner product *without* the volumetric term.
@@ -182,10 +205,27 @@ class FourFieldElasticity(MixedElasticity):
         d = self.d
         a, mu = self.inner._a, self.inner._mu
         _require_volumetric_energy(a)
-        vol = self.mesh.geometry.measure(d)
-        W, _ = self.inner.volumetric_operator()
-        Gamma = (sp.diags(-a * d) @ W).tocsr()
-        B = sp.diags(a * d * d * vol / (2.0 * mu), format="csr")
+        if self.solid_pressure == "linear":
+            if not hasattr(self.inner, "trace_moment_operator"):
+                raise ValueError(
+                    "solid_pressure='linear' needs a space providing "
+                    "trace_moment_operator (the de Rham space does)"
+                )
+            # same scaling derivation as the constant case, per moment: with
+            # Gamma = -(a d / 2mu) Gvol P and B = (a d^2 / 2mu) Gvol, row two
+            # evaluates the P1 moments of tr(sigma)/d and the Schur complement
+            # restores the exact (projected) trace energy (a/2mu) P^T Gvol P.
+            P, Gvol = self.inner.trace_moment_operator()
+            nb = d + 1
+            s1 = sp.diags(np.repeat(a * d / (2.0 * mu), nb))
+            s2 = sp.diags(np.repeat(a * d * d / (2.0 * mu), nb))
+            Gamma = (-s1 @ Gvol @ P).tocsr()
+            B = (s2 @ Gvol).tocsr()
+        else:
+            vol = self.mesh.geometry.measure(d)
+            W, _ = self.inner.volumetric_operator()
+            Gamma = (sp.diags(-a * d) @ W).tocsr()
+            B = sp.diags(a * d * d * vol / (2.0 * mu), format="csr")
         self._pressure_blocks = (Gamma, B)
         return self._pressure_blocks
 
@@ -208,7 +248,7 @@ class FourFieldElasticity(MixedElasticity):
         rhs = np.concatenate(
             [
                 traction_rhs,
-                np.zeros(self.n_cells),
+                np.zeros(self.n_pressure),
                 self.source_vector(body_force),
                 np.zeros(self.n_skew * self.n_cells),
             ]
@@ -234,13 +274,13 @@ class FourFieldElasticity(MixedElasticity):
     def block_sizes(self) -> tuple[int, int]:
         # (sigma, p_s) form the definite block: its Schur complement is M_full
         return (
-            self.n_stress + self.n_cells,
+            self.n_stress + self.n_pressure,
             (self.d + self.n_skew) * self.n_cells,
         )
 
     def split(self, x: np.ndarray) -> MixedSolution:
         n1 = self.n_stress
-        n1p = n1 + self.n_cells
+        n1p = n1 + self.n_pressure
         n2 = n1p + self.d * self.n_cells
         return MixedSolution(
             {
@@ -258,6 +298,10 @@ class FourFieldElasticity(MixedElasticity):
         trace reconstruction: the hydrostatic part is subtracted as ``p_s I``.
         """
         p = np.asarray(solution["solid_pressure"], dtype=float)
+        if self.solid_pressure == "linear":
+            # the cell basis is {1, xi/h} with zero-mean coordinates, so the
+            # mean solid pressure is the leading coefficient of each block
+            p = p.reshape(self.n_cells, self.d + 1)[:, 0]
         S = self.cell_stress(solution["stress"])
         dev = S - p[:, None, None] * np.eye(self.d)
         return self.d * p, 0.5 * np.einsum("cij,cij->c", dev, dev)

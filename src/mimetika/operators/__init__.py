@@ -4,6 +4,11 @@ from mimetika.operators.derivative import curl, div, exterior_derivative, grad
 from mimetika.operators.diffusion import DiffusionInnerProduct
 from mimetika.operators.elasticity import ElasticityInnerProduct
 from mimetika.operators.hodge import DiagonalHodge, HodgeOperator
+from mimetika.operators.derham import (
+    DeRhamDeviatoricStress,
+    DeRhamDiffusionInnerProduct,
+    DeRhamElasticityInnerProduct,
+)
 from mimetika.operators.lumped import (
     LumpedDeviatoricStress,
     circumcentres,
@@ -26,8 +31,11 @@ __all__ = [
     "consistency_matrix",
     "nullspace_basis",
     "stabilization_dim",
+    "DeRhamDiffusionInnerProduct",
     "DiffusionInnerProduct",
     "ElasticityInnerProduct",
     "LumpedDeviatoricStress",
+    "DeRhamDeviatoricStress",
+    "DeRhamElasticityInnerProduct",
     "circumcentres",
 ]
