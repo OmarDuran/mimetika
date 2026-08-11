@@ -418,6 +418,8 @@ def compare(runs, path):
 
             order = np.argsort(r[sel])
             kw = dict(ls=styles[dim], lw=1.1, color=colors[Tr])
+            if dim == 2:  # sparse markers so the 3D overlap is visible on top
+                kw.update(marker="s", ms=2.2, mfc=colors[Tr], markevery=7)
             ax1.plot(r[sel][order], pb_num[sel][order], **kw)
             ax2.plot(r[sel][order], xib_num[sel][order], **kw)
 
@@ -434,7 +436,7 @@ def compare(runs, path):
     ax1.legend(handles=handles, fancybox=True, framealpha=0.9,
                edgecolor="0.8", fontsize=8, title="time", title_fontsize=8)
     style = [
-        Line2D([], [], color="k", lw=1.1,
+        Line2D([], [], color="k", lw=1.1, marker="s", ms=2.2,
                label="mimetic-AFW-BDM six fields, 2D (triangles)"),
         Line2D([], [], color="k", lw=1.1, ls="--",
                label="mimetic-AFW-BDM six fields, 3D (prisms)"),
@@ -453,17 +455,19 @@ def compare(runs, path):
         fontsize=10,
     )
     fig.text(
-        0.01, 0.005,
-        r"Postprocessing of the DOFs: $\bar{p} = (p_E - p_0)/(p_1 - p_0)$"
-        r" from the cell pore-pressure unknowns; $\bar{\xi}$ from the"
-        r" cell-mean displacement projected on $e_r$, minus the pre-drilling"
-        r" strain $\epsilon_0 x$ and the undrained term"
-        r" $(p_1{-}\varpi)a^2/2\mu r$, scaled by"
-        r" $(K + \tfrac{4}{3}\mu)/(a\,b\,(p_1 - p_0))$;"
+        0.02, 0.02,
+        "Postprocessing of the DOFs:  "
+        r"$\bar{p} = (p_E - p_0)/(p_1 - p_0)$ from the cell pore-pressure"
+        " unknowns;\n"
+        r"$\bar{\xi}$ from the cell-mean displacement projected on $e_r$,"
+        r" minus the pre-drilling strain $\epsilon_0 x$ and the undrained"
+        r" term $(p_1{-}\varpi)a^2/2\mu r$,"
+        "\n"
+        r"scaled by $(K + 4\mu/3)/(a\,b\,(p_1 - p_0))$;"
         " cell values are sorted by $r = |x|$ (all layers in 3D).",
-        fontsize=6.5, color="0.35",
+        fontsize=6.5, color="0.35", va="bottom", linespacing=1.5,
     )
-    fig.tight_layout(rect=(0, 0.035, 1, 1))
+    fig.tight_layout(rect=(0, 0.12, 1, 1))
     fig.savefig(path, dpi=150)
     _save_cache()
     print(f"wrote {path}  (exact-solution cache: {len(_cache)} entries)")
