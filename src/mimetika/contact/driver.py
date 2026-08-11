@@ -263,14 +263,18 @@ class ContactDriver:
             ]
         )
 
-    def gap(self, problem, solution) -> np.ndarray:
+    def gap(self, problem, solution, rhs=None) -> np.ndarray:
         """Facet-frame gap at the enforcement points, from the jump operator.
 
-        ``g = -( M sigma + D^T u + A^T s )_f``, with ``M`` the *unfractured*
-        inner product.  Positive normal component means the fracture is open.
+        ``g = -( M sigma + D^T u + A^T s - b_f )_f``, with ``M`` the
+        *unfractured* inner product and ``b_f`` the mechanics right-hand side
+        on those rows (pass ``rhs`` to include it -- see :meth:`jump_offset`).
+        Positive normal component means the fracture is open.
         """
         x = np.concatenate([solution[k] for k in solution.blocks])
         r = problem.constitutive_rows(contact=False) @ x
+        if rhs is not None:
+            r = r - np.asarray(rhs, dtype=float)
         out = []
         for f in self.facets:
             coeffs = -r[self.ndf * int(f) : self.ndf * (int(f) + 1)].reshape(
@@ -358,6 +362,26 @@ class ContactDriver:
         )
         return (gather @ traction_rows).tocsr()
 
+    def jump_offset(self, rhs: np.ndarray) -> np.ndarray:
+        """Gap contribution of the mechanics right-hand side on the fault rows.
+
+        The gap is the **residual** of the replaced constitutive rows,
+        ``g = -(row . z - b_f)``, at the enforcement points: whatever the
+        assembly put into ``b_f`` on the fault facets -- notably the Biot
+        pore-pressure coupling -- belongs in the gap.  Reading ``J z`` alone
+        instead imposes a spurious jump with ``b_f``'s coefficients, which on
+        an unstructured mesh alternate facet to facet and rattle the whole
+        contact solution.
+        """
+        out = []
+        for f in self.facets:
+            coeffs = np.asarray(
+                rhs[self.ndf * int(f): self.ndf * (int(f) + 1)], dtype=float
+            ).reshape(self.dim, self.nb)
+            B, _ = self._basis(int(f))
+            out.append((self._frame(int(f)).T @ (coeffs @ B.T)).T)
+        return np.vstack(out)
+
     def contact_dofs(self) -> np.ndarray:
         """Indices of the fracture traction unknowns, in ``moment_operator`` order."""
         return np.concatenate(
@@ -391,6 +415,7 @@ class ContactDriver:
             dofs=self.contact_dofs(),
             to_moments=self.moment_operator(),
             jump=self.jump_operator(problem),
+            gap_shift=self.jump_offset(rhs),
             augmentation=self._r,
             law=self.law,
             block_sizes=problem.block_sizes,

@@ -119,7 +119,10 @@ def test_the_offset_reservoir_is_built_correctly(parameters):
     # left spans [-b, a], right spans [-a, b]: the two are mirror images in y
     assert centroids[left, 1].min() < centroids[right, 1].min()
     assert centroids[left, 1].max() < centroids[right, 1].max()
-    assert len(fault) == 30  # one fault facet per row of cells
+    # one fault facet per row of cells -- derived, not hardcoded: the count
+    # follows the graded y-grid and changes with the domain
+    rows = len(np.unique(np.round(centroids[:, 1], 9)))
+    assert len(fault) == rows
 
 
 def test_the_solve_converges(coarse):

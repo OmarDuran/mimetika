@@ -316,6 +316,7 @@ class DeRhamDiffusionInnerProduct:
 
         g = self.mesh.geometry
         lc = LocalCell.build(g, cell_id, self.frame)
+
         if lc.dim == 2 and lc.n_facets == 3:
             out = self._local_simplex_2d(cell_id, lc)
             if not hasattr(self, "_cache"):
@@ -377,7 +378,15 @@ class DeRhamDiffusionInnerProduct:
             )
         proj = N_all[:, m1:] - Q1 @ (Q1.T @ N_all[:, m1:])
         _, _, piv = scipy.linalg.qr(proj, mode="economic", pivoting=True)
-        sel = m1 + piv[: n_dof - m1]
+        # Sorted, so congruent cells produce identical N and G.  LAPACK breaks
+        # equal-magnitude pivots by encounter order, which round-off flips from
+        # cell to cell: on a structured quad mesh the same two curl modes were
+        # selected as (7, 8) or (8, 7) at random.  M is invariant under the
+        # permutation, but N and G are not, which defeats caching on congruent
+        # cells and makes the operator reproducible only up to that permutation.
+        # Sorting fixes the order; it does not fix which columns are chosen when
+        # two candidates are near-tied in magnitude.
+        sel = m1 + np.sort(piv[: n_dof - m1])
         idx = np.concatenate([np.arange(m1), sel])
         N = N_all[:, idx]
 

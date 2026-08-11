@@ -85,7 +85,11 @@ from benchmarks.contact_mechanics.common import Parameters
 #: H = 9000 m is used: the tail is small and the peak sits on the analytic value.
 #: The cost is nil -- the far field is meshed at ``boundary_spacing`` = 500 m and
 #: only has to be present, not resolved.
-WIDE_DOMAIN = dict(width=18000.0, height=9000.0)
+#: Width only.  H stays at Table 2's 4500 m: the in-situ state is defined by
+#: depth = D0 - y with D0 = 3500 m, so H = 9000 would put the domain top 1000 m
+#: *above* the ground surface, where sigma_xx extrapolates to tension and a
+#: unilateral law opens the fault.  H = 7000 is the physical ceiling.
+WIDE_DOMAIN = dict(width=18000.0)
 
 
 def wide_parameters(**overrides) -> Parameters:

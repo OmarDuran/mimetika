@@ -1,0 +1,6 @@
+* File name: Data_GGGG_NovikovEtAl2024.xlsx
+* File type: Excel spreadsheet
+* Description: Data for most of the figures displayed in the journal pubication: Novikov, A.V., Shokrollahzadeh Behbahani, S., Voskov, D., Hajibeygi, H. and Jansen, J.D. (2024): "Benchmarking analytical and numerical simulation of induced fault slip", Geomechanics and Geophysics for Geo-Enegy and Geo-Resources. Special Issue "Selected Contributions from the 57th US Rock Mechanics/Geomechanics Symposium, Atlanta, GA, 2023."
+* Format: The first column lists the (sub) figure number, the second column the variable name and the third column the units. For each figure (or sub figure), one row is provided with the independent data (absissa) and one or two rows with the corresponding  dependent data (ordinates).
+* Note 1: the values on the absissa in most of the data sets (and the corresponding ordinate values) cover a larger domain than displayed in the figures; i.e. the figures mostly display zoomed-in views. 
+* Note 2: theses data form a replacement of an earlier data set (DOI 10.4121/22240309) corresponding to the conference version of the paper. The current data set contains an additional figure (Fig. 14), while some of the other figures have been displayed on a somewhat more detailed and/or somewhat more regular grid..      

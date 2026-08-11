@@ -158,6 +158,11 @@ class ContactMap:
     solver: dict = field(default_factory=lambda: {"method": "direct"})
     #: in-situ traction at the enforcement points; the law sees ``x + prestress``
     prestress: np.ndarray | None = None
+    #: gap contribution of the mechanics rhs on the replaced fault rows,
+    #: ``(n_points, dim)``.  The gap is the *residual* of those rows,
+    #: ``-(row . z - b_f)``; reading ``J z`` alone imposes a spurious jump
+    #: equal to ``b_f``'s coefficients (e.g. the Biot pore-coupling term).
+    gap_shift: np.ndarray | None = None
 
     @property
     def n_points(self) -> int:
@@ -188,10 +193,14 @@ class ContactMap:
         z = solve_saddle(A, b, self.block_sizes, **self.solver)
 
         gap = (self.jump @ z).reshape(self.shape)
+        if self.gap_shift is not None:
+            gap = gap + self.gap_shift
         offset = 0.0 if self.prestress is None else self.prestress
         trial = x + offset + self.augmentation[:, None] * driving_gap(gap, g_prev)
         if internal is None:
             internal = self.law.initial_state(self.n_points)
+        if getattr(self.law, "wants_augmentation", False):
+            self.law._augmentation = self.augmentation
         y, internal = self.law.project(trial, internal, gap, g_prev, dt)
         return MapEvaluation(
             value=np.asarray(y).reshape(self.shape) - offset,
@@ -239,8 +248,9 @@ class ContactMap:
         factor = spla.splu(sp.csc_matrix(A0))
         base = factor.solve(b0)
         response = factor.solve(load)
+        shift = 0.0 if self.gap_shift is None else self.gap_shift
         return CondensedContactMap(
-            gap_offset=(self.jump @ base).reshape(self.shape),
+            gap_offset=(self.jump @ base).reshape(self.shape) + shift,
             gap_matrix=np.asarray(self.jump @ response),
             augmentation=self.augmentation,
             law=self.law,
@@ -382,6 +392,8 @@ class CondensedContactMap:
         trial = x + offset + self.augmentation[:, None] * driving_gap(gap, g_prev)
         if internal is None:
             internal = self.law.initial_state(self.n_points)
+        if getattr(self.law, "wants_augmentation", False):
+            self.law._augmentation = self.augmentation
         y, internal = self.law.project(trial, internal, gap, g_prev, dt)
         return MapEvaluation(
             value=np.asarray(y).reshape(self.shape) - offset,
