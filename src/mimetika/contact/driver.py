@@ -50,6 +50,7 @@ scheme later.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from dataclasses import replace as dc_replace
 
 import numpy as np
 import scipy.sparse as sp
@@ -73,6 +74,10 @@ class ContactState:
     problem: object = None
     iterations: int = 0
     converged: bool = True
+    #: the condensed map of the solve, when one was built -- pass it back as
+    #: ``solve_step(..., reuse=...)`` to skip the factorisation and ``Ghat``
+    #: when only the rhs or a law parameter changed
+    condensed: object = None
 
 
 @dataclass
@@ -247,8 +252,14 @@ class ContactDriver:
                           for i in range(len(self.facets))])
 
     def _slice(self, index: int) -> slice:
-        start = sum(self.points_per_facet(int(f)) for f in self.facets[:index])
-        return slice(start, start + self.points_per_facet(int(self.facets[index])))
+        # cumulative offsets, cached: the naive per-call sum is quadratic in
+        # the facet count and showed up as millions of generator evaluations
+        offsets = self.__dict__.get("_point_offsets")
+        if offsets is None:
+            counts = [self.points_per_facet(int(f)) for f in self.facets]
+            offsets = np.concatenate([[0], np.cumsum(counts)]).astype(int)
+            self.__dict__["_point_offsets"] = offsets
+        return slice(int(offsets[index]), int(offsets[index + 1]))
 
     # -- gather -----------------------------------------------------------------
 
@@ -435,7 +446,7 @@ class ContactDriver:
     def solve_step(
         self, mechanics, state: ContactState | None = None,
         dt: float | None = None, condense: bool = False,
-        solver: str = "picard", **kwargs,
+        solver: str = "picard", reuse=None, recover: bool = True, **kwargs,
     ) -> ContactState:
         """Advance one load/time step by solving ``x = CD(x)``.
 
@@ -471,7 +482,7 @@ class ContactDriver:
         # iteration count exceeds the number of contact unknowns
         driven = cd
         if condense or solver == "newton":
-            driven = cd.condense()
+            driven = cd.condense(reuse=reuse)
             if self.augmentation is None and solver != "newton":
                 # the condensed operator is the exact fracture compliance, so it
                 # beats the geometric estimate -- decisively so for a fault that
@@ -492,8 +503,16 @@ class ContactDriver:
         else:
             raise ValueError(f"unknown solver {solver!r}")
         evaluation = result.evaluation
-        if evaluation.solution is None:  # condensed: recover the field once
-            evaluation = cd(result.x, internal=state.internal, g_prev=state.jump, dt=dt)
+        if evaluation.solution is None and recover:
+            # condensed: recover the field once.  Callers that only read the
+            # jump (an outer iteration on a law parameter) skip this with
+            # ``recover=False`` -- one back-substitution saved per solve.
+            z = driven.recover(result.x) if hasattr(driven, "recover") else None
+            if z is not None:
+                evaluation = dc_replace(evaluation, solution=z)
+            else:
+                evaluation = cd(result.x, internal=state.internal,
+                                g_prev=state.jump, dt=dt)
         internal = self.law.advance(
             evaluation.value, evaluation.gap, evaluation.internal, dt, state.jump
         )
@@ -503,10 +522,12 @@ class ContactDriver:
             ),
             internal=internal,
             jump=evaluation.gap,
-            solution=problem.split(evaluation.solution),
+            solution=(problem.split(evaluation.solution)
+                      if evaluation.solution is not None else None),
             problem=problem,
             iterations=result.iterations,
             converged=result.converged,
+            condensed=driven if driven is not cd else None,
         )
 
     def values_of(self, multiplier: np.ndarray) -> np.ndarray:

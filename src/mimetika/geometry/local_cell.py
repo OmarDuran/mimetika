@@ -195,21 +195,16 @@ def mesh_frame(geometry: Geometry) -> np.ndarray:
     d = geometry.complex.dim
     if d == 3:
         return np.eye(3)
-    # cached: this is a property of the mesh, but it is asked for once per facet
-    # frame and once per local cell, and each miss is an SVD of the *whole* point
-    # cloud -- which dominated the profile before this line existed
-    cached = getattr(geometry, "_mesh_frame", None)
-    if cached is not None:
-        return cached
     p = geometry.points
-    _, _, vt = np.linalg.svd(p - p.mean(0))
+    # reduced SVD: only the (3, 3) row space is wanted, and the default
+    # full_matrices=True materialises an (N, N) left factor -- gigabytes and
+    # seconds for nothing on a large point cloud
+    _, _, vt = np.linalg.svd(p - p.mean(0), full_matrices=False)
     frame = _align_to_axes(vt[:d].T)
     try:
         geometry._mesh_frame = frame
     except AttributeError:  # frozen geometry: correctness does not depend on it
         pass
-    frame = frame
-    geometry._mesh_frame = frame
     return frame
 
 

@@ -78,6 +78,84 @@ def reference_pre_slip():
     return (data["y"], data["Sigma_shear"], data["Sigma_slip"],
             data["Sigma_shear"] - data["Sigma_slip"])
 
+
+_slip_cache: dict = {}
+
+
+def reference_slip_exact(level_pa: float):
+    """Semi-analytical slip for Figs. 9-10, reconstructed from genuine rows.
+
+    The dataset's ``delta`` rows are corrupted (all four hold the Fig. 14
+    curve), but the slip is recoverable from what is genuine: on the patches
+    the slip-induced shear must cancel the pre-slip Coulomb excess,
+
+        ``Sigma_C_pre(y) = A pv-int delta'(xi) / (y - xi) dxi`` ,
+
+    with ``A = G / (2 pi (1 - nu))`` (paper Eq. 21) and the patch ends taken
+    from the zeros of the genuine ``Sigma_C_post`` rows.  The loading at any
+    level follows from the ``p = -25`` MPa data because each stress component
+    is affine in ``p`` (fixed in-situ part plus a depletion part linear in
+    ``p``).  Piecewise-linear ``delta``, element-midpoint collocation, dense
+    least squares; verified peaks 7.5/8.7 mm at -25 and 12.8 mm at -27
+    against the paper's analytic curves.
+    """
+    key = round(level_pa, 3)
+    tag = {-25e6: "25", -27e6: "27"}.get(key)
+    if tag is None or not REFERENCE_DATA.exists():
+        return None
+    if key in _slip_cache:
+        return _slip_cache[key]
+
+    p = wide_parameters()
+    A = p.shear_modulus / (2.0 * np.pi * (1.0 - p.poisson))
+    th = np.radians(p.dip)
+    n = np.array([np.sin(th), -np.cos(th)])
+    t = np.array([np.cos(th), np.sin(th)])
+
+    d8 = load_reference("8 left")
+    y8 = d8["y"]
+    sig0 = np.array([p.stress_tensor(yy)[0] for yy in y8])
+    shear0 = np.einsum("i,kij,j->k", t, sig0, n)
+    slip0 = -p.friction * (
+        np.einsum("i,kij,j->k", n, sig0, n)
+        + p.biot * np.array([p.pressure(yy) for yy in y8])
+    )
+    s = level_pa / -25e6
+    excess = ((shear0 + s * (d8["Sigma_shear"] - shear0))
+              - (slip0 + s * (d8["Sigma_slip"] - slip0)))
+
+    d9 = load_reference("9 & 10 left")
+    yc, cc = d9[f"y_{tag}"], d9[f"Sigma_C_post_{tag}"]
+    at0 = np.abs(cc) < 1e3
+    runs = np.split(np.where(at0)[0],
+                    np.where(np.diff(np.where(at0)[0]) > 1)[0] + 1)
+    patches = [(yc[r].min(), yc[r].max()) for r in runs if len(r) > 3]
+
+    nodes, elems = [], []
+    for (a, b) in patches:
+        xs = np.linspace(a, b, 401)
+        base = len(nodes)
+        nodes.extend(xs)
+        elems.extend([(base + i, base + i + 1) for i in range(400)])
+    nodes = np.asarray(nodes)
+    free = [i for i in range(len(nodes))
+            if not any(np.isclose(nodes[i], e) for pp in patches for e in pp)]
+    mids = np.array([(nodes[i] + nodes[j]) / 2 for i, j in elems])
+    M = np.zeros((len(mids), len(nodes)))
+    for e, (i, j) in enumerate(elems):
+        xl, xr = nodes[i], nodes[j]
+        with np.errstate(divide="ignore"):
+            k = np.log(np.abs((mids - xl) / (mids - xr)))
+        k[e] = 0.0  # PV over the element's own midpoint vanishes by symmetry
+        M[:, j] += k / (xr - xl)
+        M[:, i] -= k / (xr - xl)
+    sol = np.linalg.lstsq(A * M[:, free], np.interp(mids, y8, excess),
+                          rcond=None)[0]
+    delta = np.zeros(len(nodes))
+    delta[free] = sol
+    _slip_cache[key] = (nodes, np.maximum(delta, 0.0))
+    return _slip_cache[key]
+
 # the paper widens the domain to W = 18,000 m (its Fig. 11) but keeps
 # H = 4500 m: the linear in-situ profiles extrapolate to a *tensile* fault
 # above ~3.5 km, so a taller domain opens the fault top unphysically
@@ -203,15 +281,30 @@ def pressure_field(mesh, parameters: Parameters) -> np.ndarray:
 # -- mechanics ----------------------------------------------------------------
 
 
-def mechanics_factory(mesh, parameters: Parameters, pressure):
-    """Depletion load and boundary frame; the de Rham space is the default."""
+def mechanics_factory(mesh, parameters: Parameters, pressure, cache=None):
+    """Depletion load and boundary frame; the de Rham space is the default.
+
+    ``cache`` (a mutable dict, one per mesh) short-circuits the expensive
+    parts across depletion levels: the pressure-coupling operator, and --
+    for the driver's ``contact=None`` path -- the assembled system itself.
+    Only the rhs depends on the pressure, additively through
+    ``extra = -(coupling.T @ p)`` on the stress block, so a new level is the
+    cached ``(problem, matrix)`` with ``rhs + (extra - extra_cached)`` and
+    the boundary-pinned rows left untouched (they carry BC data, not load).
+    """
     material = Material(
         shear_modulus=parameters.shear_modulus,
         poisson=parameters.poisson,
         biot=parameters.biot,
     )
-    poro = PoroMechanics(mesh, material)
-    coupling = sp.diags(poro.material.pressure_coupling(2)) @ poro.trace_operator()
+    if cache is not None and "coupling" in cache:
+        coupling = cache["coupling"]
+    else:
+        poro = PoroMechanics(mesh, material)
+        coupling = (sp.diags(poro.material.pressure_coupling(2))
+                    @ poro.trace_operator())
+        if cache is not None:
+            cache["coupling"] = coupling
     extra = -(coupling.T @ pressure)
 
     centroids = mesh.geometry.centroids(1)
@@ -225,6 +318,12 @@ def mechanics_factory(mesh, parameters: Parameters, pressure):
     from mimetika.operators.derham import DeRhamDeviatoricStress
 
     def factory(contact=None):
+        if contact is None and cache is not None and "system" in cache:
+            problem, matrix, rhs0, extra0, pinned = cache["system"]
+            delta = np.zeros_like(rhs0)
+            delta[: len(extra)] = np.asarray(extra - extra0).ravel()
+            delta[pinned] = 0.0
+            return problem, matrix, rhs0 + delta
         problem = FourFieldElasticity(
             mesh, contact=contact,
             inner=DeRhamDeviatoricStress(mesh, material=material),
@@ -236,6 +335,11 @@ def mechanics_factory(mesh, parameters: Parameters, pressure):
             traction_facets=top,  # zero overburden increment
             roller_facets=rollers,
         )
+        if contact is None and cache is not None:
+            pins, _ = problem.traction_moments(top, free)
+            pinned = np.concatenate([np.asarray(pins, dtype=np.int64),
+                                     problem.roller_dofs(rollers)])
+            cache["system"] = (problem, matrix, rhs, extra, pinned)
         return problem, matrix, rhs
 
     return factory
@@ -269,12 +373,21 @@ def insitu_prestress(mesh, fault, parameters: Parameters,
 
 
 def simulate(parameters: Parameters, spacing: float = 2.0,
-             boundary_spacing: float = 100.0, built=None):
-    """Solve at ``parameters.depletion``; return slip and patch structure."""
+             boundary_spacing: float = 100.0, built=None, substeps: int = 1):
+    """Solve at ``parameters.depletion``; return slip and patch structure.
+
+    ``substeps > 1`` ramps the depletion in equal load steps, warm-starting
+    each contact solve from the previous state.  A single step suffices on
+    the wide domain; the confined ``W = 4500`` m one needs the ramp -- from
+    a zero initial guess at full load, Newton overshoots into a spurious
+    runaway branch (kilometres of shallow fault slipping) even though the
+    locked stress state shows only bounded threshold exceedance.
+    """
     if built is None:
         mesh, fault, pressure = build(parameters, spacing, boundary_spacing)
+        cache = {}
     else:  # reuse the mesh; the pressure belongs to *this* depletion level
-        mesh, fault, _ = built
+        mesh, fault, _, cache = built
         pressure = pressure_field(mesh, parameters)
     lam = (2.0 * parameters.shear_modulus * parameters.poisson
            / (1.0 - 2.0 * parameters.poisson))
@@ -283,12 +396,20 @@ def simulate(parameters: Parameters, spacing: float = 2.0,
         prestress=None, mu=parameters.shear_modulus, lam=lam,
         tolerance=1e-10, max_iterations=400,
     )
-    driver.prestress = driver.expand_to_points(
-        insitu_prestress(mesh, fault, parameters, pressure)
-    )
-    state = driver.solve_step(
-        mechanics_factory(mesh, parameters, pressure), solver="newton"
-    )
+    state = None
+    for k in range(substeps):
+        stage = replace(parameters,
+                        depletion=parameters.depletion * (k + 1) / substeps)
+        pressure = pressure_field(mesh, stage)
+        driver.prestress = driver.expand_to_points(
+            insitu_prestress(mesh, fault, stage, pressure)
+        )
+        state = driver.solve_step(
+            mechanics_factory(mesh, stage, pressure, cache),
+            state=state, solver="newton", reuse=cache.get("condensed"),
+        )
+        if state.condensed is not None:
+            cache["condensed"] = state.condensed
     y = mesh.geometry.centroids(1)[np.asarray(fault, dtype=int)][:, 1]
     order = np.argsort(y)
     slip = driver.per_facet(state.jump)[:, 1]
@@ -316,7 +437,7 @@ def simulate(parameters: Parameters, spacing: float = 2.0,
     return {
         "y": yy, "slip": ss, "coulomb": coulomb[order], "patches": patches,
         "state": state, "cells": mesh.num_cells(2), "mesh": mesh,
-        "fault": fault, "built": (mesh, fault, pressure),
+        "fault": fault, "built": (mesh, fault, pressure, cache),
     }
 
 
@@ -329,10 +450,12 @@ def pre_slip_stress(parameters: Parameters, spacing: float = 2.0,
 
     if built is None:
         mesh, fault, pressure = build(parameters, spacing)
+        cache = {}
     else:
-        mesh, fault, _ = built
+        mesh, fault, _, cache = built
         pressure = pressure_field(mesh, parameters)
-    problem, matrix, rhs = mechanics_factory(mesh, parameters, pressure)(None)
+    problem, matrix, rhs = mechanics_factory(mesh, parameters, pressure,
+                                             cache)(None)
     solution = problem.split(
         solve_saddle(matrix, rhs, problem.block_sizes, method="direct")
     )
@@ -353,7 +476,7 @@ def pre_slip_stress(parameters: Parameters, spacing: float = 2.0,
         "threshold": -parameters.friction * total[order, 0],
         "coulomb": (np.abs(total[order, 1])
                     + parameters.friction * total[order, 0]),
-        "built": (mesh, fault, pressure),
+        "built": (mesh, fault, pressure, cache),
     }
 
 
@@ -368,8 +491,14 @@ def pair_average(y, v):
     return 0.5 * (y[:-1] + y[1:]), 0.5 * (v[:-1] + v[1:])
 
 
-def figure(parameters, results, path):
-    """Slip profiles at the requested depletion levels (paper Figs. 9-10)."""
+def figure(parameters, results, path, paper_figure: str = "9-10"):
+    """Post-slip Coulomb stress (left) and slip (right) -- one paper figure.
+
+    Mirrors the layout of the paper's Figs. 9 and 10: ``Sigma_C`` clipped to
+    ``[-2, 1]`` MPa, ``|y| <= 100`` m; the left references are the genuine
+    ``Sigma_C_post`` rows, the right ones the reconstructed exact slip
+    (:func:`reference_slip_exact`).
+    """
     import matplotlib
 
     matplotlib.use("Agg")
@@ -390,12 +519,18 @@ def figure(parameters, results, path):
                       mfc="white", mew=0.9, lw=0, color=line.get_color())
         right.plot(np.abs(res["slip"][inside]) * 1e3, res["y"][inside],
                    lw=1.5, color=line.get_color())
+        refs = reference_slip_exact(level)
+        if refs is not None:
+            yn, dn = refs
+            right.plot(dn[::16] * 1e3, yn[::16], "o", ms=3.2, mfc="white",
+                       mew=0.9, lw=0, color=line.get_color())
     for ax in (left, right):
         for edge in (parameters.fault_a, -parameters.fault_a):
             ax.axhline(edge, color="k", lw=0.6, ls=":")
         ax.grid(alpha=0.25)
     left.axvline(0.0, color="k", lw=0.6)
-    left.set_xlabel(r"$\Sigma_C$   (MPa, two-facet average)")
+    left.set_xlim(-2.0, 1.0)
+    left.set_xlabel(r"$\Sigma_C$   (MPa)")
     left.set_ylabel("y   (m)")
     left.set_ylim(-100, 100)
     right.set_xlabel(r"$\delta$   (mm)")
@@ -408,8 +543,9 @@ def figure(parameters, results, path):
     left.legend(handles=handles, fancybox=True, framealpha=0.9,
                 edgecolor="0.8", fontsize=8.5)
     fig.suptitle("Benchmark 2 -- inclined displaced fault, "
-                 f"constant friction $\\mu$ = {parameters.friction:g}   "
-                 "(Novikov et al. 2024, Sect. 4.1, Figs. 9-10)",
+                 f"constant friction $\\mu$ = {parameters.friction:g}, "
+                 f"W = {parameters.width:g} m   "
+                 f"(Novikov et al. 2024, Fig. {paper_figure})",
                  fontsize=10)
     fig.tight_layout()
     fig.savefig(path, dpi=150)
@@ -428,78 +564,103 @@ def main() -> None:
                         default="benchmarks/contact_mechanics/benchmark_2.png",
                         help="path of the slip-profile figure")
     parser.add_argument("--no-plots", action="store_true")
+    parser.add_argument("--width", choices=["4500", "18000", "both"],
+                        default="both",
+                        help="domain width: 4500 m (paper Fig. 9), 18000 m "
+                             "(Fig. 10), or both")
     parser.add_argument("--vtk", nargs="?", const="out/benchmark_2",
                         default=None,
                         help="write the final level's state as .pvd/.vtu")
     arguments = parser.parse_args()
 
-    parameters = wide_parameters()
     print("Benchmark 2 -- inclined displaced fault, constant friction\n")
-    print(f"  dip = {parameters.dip:g} deg, mu = {parameters.friction:g}, "
-          f"W = {parameters.width:g} m, H = {parameters.height:g} m")
     print("  paper: two patches at -25 MPa, merging at ~ -26.9 MPa "
           "(Figs. 9, 10, 12)\n")
 
-    built, results = None, {}
-    for level in arguments.levels:
-        stage = replace(parameters, depletion=level * 1e6)
-        res = simulate(stage, spacing=arguments.spacing, built=built)
-        built = res["built"]
-        results[level * 1e6] = res
-        state = res["state"]
-        print(f"  p = {level:6.1f} MPa   ({res['cells']} cells, "
-              f"converged={state.converged} in {state.iterations} iterations)")
-        if not res["patches"]:
-            print("    no slip")
-        for y0, y1, peak in res["patches"]:
-            print(f"    patch  y in [{y0:8.2f}, {y1:8.2f}] m   "
-                  f"peak |slip| = {peak * 1e3:6.2f} mm")
-        n_p = len(res["patches"])
-        status = "merged" if n_p == 1 else "separate" if n_p > 1 else "--"
-        print(f"    ({status})")
-        ref = reference_coulomb(level * 1e6)
-        if ref is not None:
-            yr, cr = ref
-            yc, cc = pair_average(res["y"], res["coulomb"])
-            ours = np.interp(yr, yc, cc)
+    domains = {"4500": [(4500.0, "9")], "18000": [(18000.0, "10")],
+               "both": [(4500.0, "9"), (18000.0, "10")]}[arguments.width]
+    for width, fig_tag in domains:
+        parameters = wide_parameters(width=width)
+        print(f"  -- W = {width:g} m (paper Fig. {fig_tag}), "
+              f"dip = {parameters.dip:g} deg, mu = {parameters.friction:g} --")
+        built, results = None, {}
+        for level in arguments.levels:
+            stage = replace(parameters, depletion=level * 1e6)
+            res = simulate(stage, spacing=arguments.spacing, built=built,
+                           substeps=5 if width <= 4500.0 else 1)
+            built = res["built"]
+            results[level * 1e6] = res
+            state = res["state"]
+            print(f"  p = {level:6.1f} MPa   ({res['cells']} cells, "
+                  f"converged={state.converged} in {state.iterations} "
+                  "iterations)")
+            if not res["patches"]:
+                print("    no slip")
+            for y0, y1, peak in res["patches"]:
+                print(f"    patch  y in [{y0:8.2f}, {y1:8.2f}] m   "
+                      f"peak |slip| = {peak * 1e3:6.2f} mm")
+            n_p = len(res["patches"])
+            status = "merged" if n_p == 1 else "separate" if n_p > 1 else "--"
+            print(f"    ({status})")
+            ref = reference_coulomb(level * 1e6)
+            if ref is not None:
+                yr, cr = ref
+                yc, cc = pair_average(res["y"], res["coulomb"])
+                ours = np.interp(yr, yc, cc)
+                sel = np.abs(yr) <= 100.0
+                rms = np.sqrt(np.mean((ours[sel] - cr[sel]) ** 2))
+                print("    vs semi-analytical (4TU), Sigma_C over "
+                      f"|y| <= 100 m: rms = {rms / 1e6:.3f} MPa "
+                      f"(scale {np.abs(cr[sel]).max() / 1e6:.1f} MPa)")
+            refs = reference_slip_exact(level * 1e6)
+            if refs is not None:
+                yn, dn = refs
+                ours = np.interp(yn, res["y"], np.abs(res["slip"]))
+                rms = np.sqrt(np.mean((ours - dn) ** 2))
+                print("    vs semi-analytical (reconstructed), slip: "
+                      f"rms = {rms * 1e3:.3f} mm "
+                      f"(peaks {np.abs(res['slip']).max() * 1e3:.2f} / "
+                      f"{dn.max() * 1e3:.2f} mm)")
+            print()
+
+        pre_ref = reference_pre_slip()
+        if (pre_ref is not None and width == 18000.0
+                and -25.0 in [round(lv, 6) for lv in arguments.levels]):
+            stage = replace(parameters, depletion=-25e6)
+            pre = pre_slip_stress(stage, spacing=arguments.spacing,
+                                  built=built)
+            yr, shear_r, slip_r, coulomb_r = pre_ref
             sel = np.abs(yr) <= 100.0
-            rms = np.sqrt(np.mean((ours[sel] - cr[sel]) ** 2))
-            print("    vs semi-analytical (4TU), Sigma_C (two-facet average) "
-                  f"over |y| <= 100 m: rms = {rms / 1e6:.3f} MPa "
-                  f"(scale {np.abs(cr[sel]).max() / 1e6:.1f} MPa)")
-        print()
+            print("  pre-slip (locked fault) at p = -25 MPa vs 4TU Fig. 8, "
+                  "|y| <= 100 m:")
+            # our tangent sign is per-facet (facet_frame), the dataset's is a
+            # global convention: compare through |shear|, and rebuild the
+            # Coulomb function from it so both sides use the same definition
+            for name, ours_c, ref_c in (
+                ("|Sigma_shear|", pre["shear"], np.abs(shear_r)),
+                ("Sigma_slip   ", pre["threshold"], slip_r),
+                ("Sigma_C_pre  ", pre["coulomb"], np.abs(shear_r) - slip_r),
+            ):
+                ours = np.interp(yr, pre["y"], ours_c)
+                rms = np.sqrt(np.mean((ours[sel] - ref_c[sel]) ** 2))
+                print(f"    {name}: rms = {rms / 1e6:.3f} MPa "
+                      f"(scale {np.abs(ref_c[sel]).max() / 1e6:.1f} MPa)")
+            print()
 
-    pre_ref = reference_pre_slip()
-    if pre_ref is not None and -25.0 in [round(lv, 6) for lv in arguments.levels]:
-        stage = replace(parameters, depletion=-25e6)
-        pre = pre_slip_stress(stage, spacing=arguments.spacing, built=built)
-        yr, shear_r, slip_r, coulomb_r = pre_ref
-        sel = np.abs(yr) <= 100.0
-        print("  pre-slip (locked fault) at p = -25 MPa vs 4TU Fig. 8, "
-              "|y| <= 100 m:")
-        # our tangent sign is per-facet (facet_frame), the dataset's is a
-        # global convention: compare through |shear|, and rebuild the
-        # Coulomb function from it so both sides use the same definition
-        for name, ours_c, ref_c in (
-            ("|Sigma_shear|", pre["shear"], np.abs(shear_r)),
-            ("Sigma_slip   ", pre["threshold"], slip_r),
-            ("Sigma_C_pre  ", pre["coulomb"], np.abs(shear_r) - slip_r),
-        ):
-            ours = np.interp(yr, pre["y"], ours_c)
-            rms = np.sqrt(np.mean((ours[sel] - ref_c[sel]) ** 2))
-            print(f"    {name}: rms = {rms / 1e6:.3f} MPa "
-                  f"(scale {np.abs(ref_c[sel]).max() / 1e6:.1f} MPa)")
-        print()
-
-    if arguments.figure and not arguments.no_plots:
-        print("  wrote", figure(parameters, results, arguments.figure))
+        if arguments.figure and not arguments.no_plots:
+            stem, dot, ext = arguments.figure.rpartition(".")
+            path = f"{stem}_fig{fig_tag}{dot}{ext}" if dot else \
+                f"{arguments.figure}_fig{fig_tag}"
+            print("  wrote", figure(parameters, results, path,
+                                    paper_figure=fig_tag))
+            print()
 
     if arguments.vtk:
         from mimetika.postprocess import (
             MixedDimensionalSeries, contact_fields, mechanics_fields,
         )
 
-        mesh, fault, pressure = built
+        mesh, fault, pressure, _ = built
         series = MixedDimensionalSeries(arguments.vtk, mesh, fault)
         for level, res in sorted(results.items()):
             state = res["state"]

@@ -211,7 +211,8 @@ class ContactMap:
 
     # -- condensation ------------------------------------------------------------
 
-    def condense(self) -> "CondensedContactMap":
+    def condense(self, reuse: "CondensedContactMap | None" = None
+                 ) -> "CondensedContactMap":
         """Reduce to the contact unknowns alone -- no linear solve per evaluation.
 
         The nonlinear system is *small*: it has ``n_points * dim`` unknowns, a
@@ -233,29 +234,74 @@ class ContactMap:
         which is the usual case for friction; for a very large fracture and a
         near-linear law the uncondensed form can still win, so this is offered
         rather than imposed.
+
+        ``reuse`` skips the factorisation and ``Ghat`` entirely: pass the
+        condensed map of a *previous* system with the **same matrix** (a new
+        load level, a new law parameter) and only the affine offset is redone
+        -- one back-substitution instead of ``n + 1`` plus a factorisation.
         """
-        from mimetika.assembly.mixed import _constrain, constraint_scales
+        from mimetika.assembly.mixed import constraint_scales
 
         n = self.n_points * self.dim
+        shift = 0.0 if self.gap_shift is None else self.gap_shift
+        # with zero pinned values _constrain reduces to zeroing the pinned rhs
+        # entries (rhs - A[:, dofs] @ 0, then rhs[dofs] = 0 * scales)
+        b0 = np.asarray(self.rhs, dtype=float).copy()
+        b0[self.dofs] = 0.0
+
+        if reuse is not None and reuse.factor is not None:
+            if reuse.b0 is not None and np.array_equal(b0, reuse.b0):
+                # identical rhs (same load level): the affine offset is
+                # already correct -- no back-substitution at all
+                return replace(
+                    reuse,
+                    augmentation=self.augmentation,
+                    law=self.law,
+                    prestress=self.prestress,
+                )
+            base = reuse.factor.solve(b0)
+            return replace(
+                reuse,
+                gap_offset=(self.jump @ base).reshape(self.shape) + shift,
+                augmentation=self.augmentation,
+                law=self.law,
+                prestress=self.prestress,
+                base=base,
+                b0=b0,
+            )
+
+        from mimetika.assembly.mixed import _constrain
+
         scales = constraint_scales(self.matrix, self.dofs)
-        A0, b0 = _constrain(self.matrix, self.rhs, self.dofs, np.zeros(len(self.dofs)))
+        A0, _ = _constrain(self.matrix, self.rhs, self.dofs,
+                           np.zeros(len(self.dofs)))
 
         # b(v) - b_0 = -A[:, dofs] v, with the pinned rows overwritten by scale * v
         columns = -self.matrix[:, self.dofs].tolil()
         columns[self.dofs, :] = sp.diags(scales)
-        load = (columns.tocsr() @ self.to_moments).toarray()  # (N, n)
+        load = (columns.tocsr() @ self.to_moments).tocsc()  # (N, n), sparse
 
         factor = spla.splu(sp.csc_matrix(A0))
         base = factor.solve(b0)
-        response = factor.solve(load)
-        shift = 0.0 if self.gap_shift is None else self.gap_shift
+        # contract J A^{-1} B W in column blocks: the full response matrix is
+        # (N, n) dense -- gigabytes at scale -- but only its projection onto
+        # the fault rows survives, so never materialise it
+        gap_matrix = np.empty((self.jump.shape[0], n))
+        step = 64
+        for j0 in range(0, n, step):
+            block = np.asarray(load[:, j0:j0 + step].todense())
+            gap_matrix[:, j0:j0 + step] = self.jump @ factor.solve(block)
         return CondensedContactMap(
             gap_offset=(self.jump @ base).reshape(self.shape) + shift,
-            gap_matrix=np.asarray(self.jump @ response),
+            gap_matrix=gap_matrix,
             augmentation=self.augmentation,
             law=self.law,
             shape=self.shape,
             prestress=self.prestress,
+            factor=factor,
+            load=load,
+            base=base,
+            b0=b0,
         )
 
     def residual(self, x, **kwargs) -> np.ndarray:
@@ -346,6 +392,13 @@ class CondensedContactMap:
     law: object
     shape: tuple
     prestress: np.ndarray | None = None
+    #: retained pieces of the condensation, for :meth:`recover` and for
+    #: rebuilding the affine offset under a new rhs (``ContactMap.condense``
+    #: with ``reuse``) without refactorising
+    factor: object = None  # the splu factor of the pinned matrix
+    load: object = None  # sparse (N, n): moment values -> rhs contribution
+    base: np.ndarray | None = None  # A0^{-1} b_0
+    b0: np.ndarray | None = None  # the pinned rhs the base belongs to
 
     @property
     def n_points(self) -> int:
@@ -384,6 +437,18 @@ class CondensedContactMap:
     def gap(self, x) -> np.ndarray:
         x = np.asarray(x, dtype=float).reshape(self.shape)
         return self.gap_offset + (self.gap_matrix @ x.ravel()).reshape(self.shape)
+
+    def recover(self, x) -> np.ndarray | None:
+        """Full solution vector at multiplier ``x`` -- one back-substitution.
+
+        ``z(x) = A_0^{-1}(b_0 + B W x) = base + A_0^{-1}(B W x)``.  Replaces
+        the full pinned solve (a second factorisation) that recovering the
+        fields otherwise costs.  ``None`` when the factor was not retained.
+        """
+        if self.factor is None:
+            return None
+        x = np.asarray(x, dtype=float).ravel()
+        return self.base + self.factor.solve(np.asarray(self.load @ x).ravel())
 
     def __call__(self, x, internal=None, g_prev=None, dt=None) -> MapEvaluation:
         x = np.asarray(x, dtype=float).reshape(self.shape)
@@ -430,6 +495,34 @@ def projection_tangent(law, trial, internal=None, g=None, g_prev=None, dt=None,
         shift[j] = step * scale
         plus, _ = law.project(trial + shift, internal, g, g_prev, dt)
         minus, _ = law.project(trial - shift, internal, g, g_prev, dt)
+        out[:, :, j] = (np.asarray(plus) - np.asarray(minus)) / (2 * step * scale)
+    return out
+
+
+def projection_gap_tangent(law, trial, internal=None, g=None, g_prev=None,
+                           dt=None, step: float = 1e-5) -> np.ndarray:
+    """``dP/dg`` at fixed trial: ``(n_points, dim, dim)`` blocks.
+
+    Zero for plain Coulomb -- the projection reads the jump only through the
+    trial -- but not for a law whose *coefficients* depend on the jump (slip
+    weakening, rate and state).  There the term ``dP/dg . Ghat`` belongs in
+    the Newton Jacobian: it is exactly the destabilising feedback of the
+    weakening, and dropping it degrades Newton to a Picard-like alternation
+    that spirals near the nucleation fold while the equilibrium branch still
+    exists.  Central differences per gap component, pointwise blocks.
+    """
+    g = np.atleast_2d(np.asarray(g, dtype=float))
+    trial = np.atleast_2d(np.asarray(trial, dtype=float))
+    n, dim = g.shape
+    if internal is None:
+        internal = law.initial_state(n)
+    out = np.zeros((n, dim, dim))
+    scale = max(np.abs(g).max(), 1e-6)
+    for j in range(dim):
+        shift = np.zeros(dim)
+        shift[j] = step * scale
+        plus, _ = law.project(trial, internal, g + shift, g_prev, dt)
+        minus, _ = law.project(trial, internal, g - shift, g_prev, dt)
         out[:, :, j] = (np.asarray(plus) - np.asarray(minus)) / (2 * step * scale)
     return out
 
@@ -488,6 +581,15 @@ def newton(
             condensed.law, trial, internal, evaluation.gap, g_prev, dt
         )
         jacobian = sp.block_diag(blocks, format="csr") @ trial_jacobian - np.eye(size)
+        if getattr(condensed.law, "gap_dependent", False):
+            # laws whose coefficients read the jump need the dP/dg . Ghat
+            # chain-rule term -- the weakening feedback itself
+            gap_blocks = projection_gap_tangent(
+                condensed.law, trial, internal, evaluation.gap, g_prev, dt
+            )
+            jacobian = jacobian + (
+                sp.block_diag(gap_blocks, format="csr") @ condensed.gap_matrix
+            )
         step = np.linalg.solve(np.asarray(jacobian), -residual)
         x = x + damping * step.reshape(condensed.shape)
 

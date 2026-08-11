@@ -7,8 +7,9 @@ reduces the fault's carrying capacity, and below the *nucleation pressure*
 ``p*`` no quasi-static equilibrium exists -- a seismic event.  The paper's
 semi-analytical estimate (Uenishi & Rice 2003 as modified by Jansen &
 Meulenbroek 2022) is ``p* = -17.41`` MPa; its DARTS simulation arrives at
-``p* = -17.27`` MPa.  The benchmark sweeps the depletion until the
-friction fixed point stops settling and brackets ``p*``.
+``p* = -17.27`` MPa.  The benchmark continues the *coupled* slip-weakening
+solve down the depletion levels, each warm-started from the previous
+equilibrium, until the stable branch is lost -- that level brackets ``p*``.
 
 Resolution.  The Uenishi--Rice critical nucleation length for these
 parameters is ``h* ~ 1.16 G delta_c / ((1 - nu)(mu_s - mu_d) |sigma_n'|)
@@ -75,6 +76,7 @@ class SlipWeakening(SignoriniCoulomb):
     """
 
     path_dependent = True  # the projection needs the jump
+    gap_dependent = True  # ...and the Newton Jacobian needs dP/dg
 
     def __init__(self, static: float = 0.52, dynamic: float = 0.20,
                  critical: float = 0.02):
@@ -102,59 +104,94 @@ class SlipWeakening(SignoriniCoulomb):
 
 
 def simulate(parameters: Parameters, law: SlipWeakening,
-             spacing: float = 2.0, built=None):
-    """Quasi-static solve at ``parameters.depletion``; None if no equilibrium."""
+             spacing: float = 2.0, built=None, mu0=None):
+    """Quasi-static solve at ``parameters.depletion``; ``None`` past the fold.
+
+    Outer fixed point on a *frozen* friction coefficient: solve plain Coulomb
+    with ``mu`` from the previous iterate's slip, update, repeat.  This is
+    the physical branch tracker: the linearisation of the ``mu``-update map
+    is exactly the slip-weakening stability operator, so the iteration
+    contracts precisely while the quasi-static branch is stable and diverges
+    at the Uenishi--Rice fold.  For that equivalence to hold the iteration
+    must *enter* each level near the branch -- warm-start ``mu0`` from the
+    previous depletion level.  (Solving the coupled law directly with Newton
+    is not an alternative near the fold: the stable and fully-weakened
+    equilibria draw close and Newton hops basins.)
+    """
     if built is None:
-        built = build(parameters, spacing)
-    mesh, fault, _ = built
+        mesh, fault, pressure = build(parameters, spacing)
+        built = (mesh, fault, pressure, {})
+    mesh, fault, _, cache = built
     pressure = pressure_field(mesh, parameters)
     lam = (2.0 * parameters.shear_modulus * parameters.poisson
            / (1.0 - 2.0 * parameters.poisson))
-    factory = mechanics_factory(mesh, parameters, pressure)
+    factory = mechanics_factory(mesh, parameters, pressure, cache)
     pre = insitu_prestress(mesh, fault, parameters, pressure)
 
-    # outer fixed point on the friction coefficient: solve with mu frozen at
-    # the previous iterate's slip, then update.  This follows the *stable*
-    # quasi-static branch; at nucleation the update runs away instead of
-    # settling, which is the physical loss of equilibrium.
     inner = SignoriniCoulomb(friction=law.static)
-    mu_pts = None
-    state, slip_pts, converged = None, None, False
-    y_all = mesh.geometry.centroids(1)[np.asarray(fault, dtype=int)][:, 1]
-    order_f = np.argsort(y_all)
-    y_sorted = y_all[order_f]
-    history = []
-    for outer in range(40):
-        driver = ContactDriver(
-            mesh, fault, inner, prestress=None,
-            mu=parameters.shear_modulus, lam=lam,
-            tolerance=1e-10, max_iterations=200,
-        )
-        driver.prestress = driver.expand_to_points(pre)
+    driver = ContactDriver(
+        mesh, fault, inner, prestress=None,
+        mu=parameters.shear_modulus, lam=lam,
+        tolerance=1e-10, max_iterations=200,
+    )
+    driver.prestress = driver.expand_to_points(pre)
+    # inner solves are deliberately cold (state=None): with a warm ``g_prev``
+    # the tangential driving becomes increment-based and near-threshold
+    # facets flip slip direction on noise-scale increments, which loses the
+    # branch *earlier*.  Only ``mu`` is continued across levels.
+    # near the fold the contraction factor approaches 1 and the iteration
+    # creeps: an iteration cap cannot tell slow convergence from divergence,
+    # but the mu-update magnitude can -- it shrinks on the stable side and
+    # grows past the fold
+    mu_pts, converged = mu0, False
+    last_change, growing = None, 0
+    for outer in range(600):
         if mu_pts is not None:
             inner.friction = mu_pts  # per-point array broadcasts in the law
-        state = driver.solve_step(factory, solver="newton")
-        jump = driver.per_facet(state.jump)
-        slip_new = np.abs(jump[:, 1])
-        mu_new = np.maximum(
+        state = driver.solve_step(factory, solver="newton",
+                                  reuse=cache.get("condensed"),
+                                  recover=False)  # the loop reads only slip
+        if state.condensed is not None:
+            cache["condensed"] = state.condensed
+        slip_new = np.abs(driver.per_facet(state.jump)[:, 1])
+        mu_new = driver.expand_to_points(np.maximum(
             law.dynamic,
             law.static - (law.static - law.dynamic) * slip_new / law.critical,
-        )
-        mu_new = driver.expand_to_points(mu_new[:, None]).ravel()
-        history.append((y_sorted, np.abs(jump[order_f, 1])))
-        if mu_pts is not None and np.abs(mu_new - mu_pts).max() < 1e-4:
+        )[:, None]).ravel()
+        change = (np.inf if mu_pts is None
+                  else float(np.abs(mu_new - mu_pts).max()))
+        if change < 1e-4:
             converged = bool(state.converged)
             break
-        if slip_new.max() > 50 * law.critical:  # runaway: no equilibrium
-            converged = False
+        if slip_new.max() > 50 * law.critical:  # runaway: past the fold
             break
+        if last_change is not None and np.isfinite(last_change):
+            growing = growing + 1 if change > last_change else 0
+            if growing >= 10:  # persistently growing update: divergence
+                break
+        last_change = change
         mu_pts = mu_new
+    # one recovering solve for the fields the postprocessing reads
+    state = driver.solve_step(factory, solver="newton",
+                              reuse=cache.get("condensed"))
     y = mesh.geometry.centroids(1)[np.asarray(fault, dtype=int)][:, 1]
     order = np.argsort(y)
     slip = driver.per_facet(state.jump)[:, 1]
+    converged = converged and float(np.abs(slip).max()) < 50 * law.critical
+    # post-slip Coulomb function with the slip-weakening coefficient (Fig. 14
+    # left): total effective traction = in-situ prestress + solved increment
+    total = driver.per_facet(
+        driver.prestress + driver.tractions(state.solution["stress"])
+    )
+    mu_fac = np.maximum(
+        law.dynamic,
+        law.static - (law.static - law.dynamic) * np.abs(slip) / law.critical,
+    )
+    coulomb = np.abs(total[:, 1]) + mu_fac * total[:, 0]
     return {
-        "y": y[order], "slip": slip[order], "state": state, "built": built,
-        "converged": converged, "history": history,
+        "y": y[order], "slip": slip[order], "coulomb": coulomb[order],
+        "state": state, "built": built, "mu": mu_pts,
+        "converged": converged,
         "peak": float(np.abs(slip).max()),
     }
 
@@ -184,24 +221,29 @@ def main() -> None:
           "-17.27 MPa (DARTS)\n")
 
     built, last, nucleated, nucleation_res = None, None, None, None
+    mu0, profiles = None, []
     for level in np.arange(arguments.start, arguments.stop - 1e-9,
                            -abs(arguments.step)):
         stage = replace(parameters, depletion=level * 1e6)
-        res = simulate(stage, law, spacing=arguments.spacing, built=built)
+        res = simulate(stage, law, spacing=arguments.spacing, built=built,
+                       mu0=mu0)
         built = res["built"]
         status = ("converged" if res["converged"] else "NO EQUILIBRIUM")
         print(f"  p = {level:7.2f} MPa   peak |slip| = "
               f"{res['peak'] * 1e3:7.3f} mm   {status}")
+        profiles.append((level, res["y"], np.abs(res["slip"])))
         if not res["converged"] or res["peak"] > 50 * law.critical:
             nucleated, nucleation_res = level, res
             break
         last = (level, res)
+        mu0 = res["mu"]  # continue the friction field along the branch
 
     if nucleated is not None:
         upper = f"{last[0]:.2f}" if last is not None else f"> {nucleated:.2f}"
         print(f"\n  nucleation bracketed: p* in ({nucleated:.2f}, {upper}) MPa")
-        print("  (paper: -17.41 / -17.27 MPa; here p* tracks the "
-              "mesh-dependent slip onset -- see the docstring's h* caveat)")
+        print("  (paper: -17.41 MPa semi-analytical, -17.27 MPa DARTS; on "
+              "coarse fault spacings p* shifts to the mesh-dependent slip "
+              "onset -- see the docstring)")
     elif last is not None:
         print("\n  no nucleation down to the last level -- extend --stop")
 
@@ -218,17 +260,73 @@ def main() -> None:
         print("    (different pressures -- the comparison is of the "
               "pre-nucleation *state*, not pointwise equality)")
 
-    if nucleation_res is not None and arguments.figure and not arguments.no_plots:
+    stem, dot, ext = arguments.figure.rpartition(".")
+    base = stem if dot else arguments.figure
+    suffix = f"{dot}{ext}" if dot else ".png"
+
+    if last is not None and arguments.figure and not arguments.no_plots:
+        # paper Fig. 14: post-slip Coulomb stress (left) and slip (right) in
+        # the upper patch at the last quasi-static equilibrium
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        level, res = last
+        fig, (left_ax, right_ax) = plt.subplots(1, 2, figsize=(9.0, 6.0),
+                                                sharey=True)
+        sel = (res["y"] >= 60.0) & (res["y"] <= 80.0)
+        left_ax.plot(res["coulomb"][sel] / 1e6, res["y"][sel], lw=1.5,
+                     label="mimetic-AFW-BDM")
+        right_ax.plot(np.abs(res["slip"][sel]) * 1e3, res["y"][sel], lw=1.5)
+        if REFERENCE_DATA.exists():
+            rl = load_reference("14 left")
+            rr = load_reference("14 right")
+            for ax, (yy, vv), scale in ((left_ax, (rl["y"], rl["Sigma_C_post"]),
+                                         1e-6),
+                                        (right_ax, (rr["y"], rr["delta"]),
+                                         1e3)):
+                keep = (yy >= 60.0) & (yy <= 80.0)
+                ax.plot(vv[keep][::12] * scale, yy[keep][::12], "ro", ms=3.5,
+                        mfc="white", mew=0.9, lw=0)
+            left_ax.plot([], [], "ro", ms=3.5, mfc="white", mew=0.9, lw=0,
+                         label="semi-analytical (4TU)")
+        for ax in (left_ax, right_ax):
+            ax.axhline(parameters.fault_a, color="k", lw=0.6, ls=":")
+            ax.grid(alpha=0.25)
+        left_ax.axvline(0.0, color="k", lw=0.6)
+        left_ax.set_xlabel(r"$\Sigma_C$   (MPa)")
+        left_ax.set_ylabel("y   (m)")
+        left_ax.set_ylim(60, 80)
+        right_ax.set_xlabel(r"$|\delta|$   (mm)")
+        left_ax.legend(fancybox=True, framealpha=0.9, edgecolor="0.8",
+                       fontsize=8.5)
+        fig.suptitle("Benchmark 3 -- slip-weakening, last equilibrium at "
+                     f"p = {level:g} MPa   (Novikov et al. 2024, Fig. 14, "
+                     "paper p* = -17.41 MPa)", fontsize=10)
+        fig.tight_layout()
+        path = f"{base}_fig14{suffix}"
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
+        print(f"  wrote {path}")
+
+    if len(profiles) > 1 and arguments.figure and not arguments.no_plots:
+        # the continuation: slip profiles level by level up to (and including)
+        # the nucleated state, against the semi-analytical pre-nucleation one
         import matplotlib
 
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
         fig, ax = plt.subplots(figsize=(6.2, 6.0))
-        for k, (yy, ss) in enumerate(nucleation_res["history"]):
+        for level, yy, ss in profiles:
             sel = np.abs(yy) < 150.0
-            ax.plot(np.abs(ss[sel]) * 1e3, yy[sel], lw=1.3,
-                    label=f"fixed-point iterate {k}")
+            runaway = nucleated is not None and level == nucleated
+            ax.plot(np.abs(ss[sel]) * 1e3, yy[sel],
+                    lw=2.0 if runaway else 1.2,
+                    color="crimson" if runaway else None,
+                    label=f"p = {level:g} MPa"
+                          + (" (no equilibrium)" if runaway else ""))
         if ref is not None:
             yr, dr = ref
             keep = (np.abs(yr) < 150.0) & (np.abs(dr) > 1e-6)
@@ -240,14 +338,15 @@ def main() -> None:
         ax.set_xscale("log")
         ax.set_xlabel(r"$|\delta|$   (mm)")
         ax.set_ylabel("y   (m)")
-        ax.set_title("Benchmark 3 -- nucleation cascade at "
-                     f"p = {nucleated:g} MPa\n(slip-weakening runaway: no "
-                     "quasi-static equilibrium)", fontsize=10)
+        ax.set_title("Benchmark 3 -- continuation to nucleation\n"
+                     "(coupled slip-weakening, warm-started levels)",
+                     fontsize=10)
         ax.grid(alpha=0.25)
-        ax.legend(fancybox=True, framealpha=0.9, edgecolor="0.8", fontsize=8)
+        ax.legend(fancybox=True, framealpha=0.9, edgecolor="0.8", fontsize=7)
         fig.tight_layout()
-        fig.savefig(arguments.figure, dpi=150)
-        print(f"  wrote {arguments.figure}")
+        path = f"{base}_cascade{suffix}"
+        fig.savefig(path, dpi=150)
+        print(f"  wrote {path}")
 
 
 if __name__ == "__main__":
