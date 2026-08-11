@@ -220,10 +220,11 @@ def _curl_modes(eta: np.ndarray, d: int, degree: int) -> np.ndarray:
         if d == 2:
             fields.append(np.stack([g[:, 1], -g[:, 0]], axis=1))
         else:
-            for a in range(3):
-                e = np.zeros(3)
-                e[a] = 1.0
-                fields.append(np.cross(g, e))
+            gx, gy, gz = g[:, 0], g[:, 1], g[:, 2]
+            zero = np.zeros_like(gx)
+            fields.append(np.stack([zero, gz, -gy], axis=1))   # grad x e_x
+            fields.append(np.stack([-gz, zero, gx], axis=1))   # grad x e_y
+            fields.append(np.stack([gy, -gx, zero], axis=1))   # grad x e_z
     return np.stack(fields, axis=1)
 
 
@@ -312,20 +313,36 @@ class DeRhamDiffusionInnerProduct:
         hit = self._cache.get(cell_id) if hasattr(self, "_cache") else None
         if hit is not None:
             return hit
+
+        g = self.mesh.geometry
+        lc = LocalCell.build(g, cell_id, self.frame)
+        if lc.dim == 2 and lc.n_facets == 3:
+            out = self._local_simplex_2d(cell_id, lc)
+            if not hasattr(self, "_cache"):
+                self._cache = {}
+            self._cache[cell_id] = out
+            return out
         g = self.mesh.geometry
         lc = LocalCell.build(g, cell_id, self.frame)
         d, nf = lc.dim, lc.n_facets
         n_dof = d * nf
         scale = float(lc.volume ** (1.0 / d))
-        nq1 = self.max_degree + 2  # facet integrand degree <= max_degree + 1
+        quad_cache: dict = {}
 
-        fquad = [
-            _facet_quadrature_ho(g, lc.facet_ids[i], lc, i, nq1)
-            for i in range(nf)
-        ]
-        chi = [self._facet_chi(lc, i, fquad[i][0]) for i in range(nf)]
+        def facet_rule(degree: int):
+            # integrand degree <= degree + 1; the rules are exact at 2n - 2
+            n = degree // 2 + 2
+            if n not in quad_cache:
+                fq = [
+                    _facet_quadrature_ho(g, lc.facet_ids[i], lc, i, n)
+                    for i in range(nf)
+                ]
+                quad_cache[n] = (fq, [self._facet_chi(lc, i, fq[i][0])
+                                      for i in range(nf)])
+            return quad_cache[n]
 
         def dof_matrix(degree: int) -> np.ndarray:
+            fquad, chi = facet_rule(degree)
             N = np.empty((n_dof, 0))
             cols = None
             for i in range(nf):
@@ -368,12 +385,45 @@ class DeRhamDiffusionInnerProduct:
         qp, qw = _cell_quadrature_ho(g, cell_id, lc, degree + 1)
         evals = self._candidates(qp / scale, d, degree)[:, idx]
         Kinv = np.linalg.inv(lc.project_tensor(self._cell_tensor(cell_id)))
-        G = np.einsum("q,qic,cd,qjd->ij", qw, evals, Kinv, evals)
+        Kw = (evals @ Kinv.T) * qw[:, None, None]
+        G = np.einsum("qic,qjc->ij", evals, Kw, optimize=True)
         out = (N, G, lc, degree, idx, scale)
         if not hasattr(self, "_cache"):
             self._cache = {}
         self._cache[cell_id] = out
         return out
+
+    def _local_simplex_2d(self, cell_id: int, lc: LocalCell):
+        """Closed-form ``(N, G, lc, degree, idx, scale)`` on triangles.
+
+        No enrichment exists on a simplex, and every integral of the P1
+        modes against the edge basis is polynomial: the degree-of-freedom
+        matrix follows from the edge moments and the Gram from the cell
+        second moments -- no high-order quadrature, no rank machinery.
+        """
+        d, nf = 2, 3
+        scale = float(lc.volume ** 0.5)
+        L = lc.facet_measures
+        xe = lc.facet_centroids
+        t = np.stack([tt[0] for tt in lc.facet_tangents])
+        # edge moments of the mode scalars {1, eta_1, eta_2}
+        mom = np.zeros((nf, 2, 3))
+        mom[:, 0, 0] = L
+        mom[:, 0, 1:] = L[:, None] * xe / scale
+        mom[:, 1, 1:] = t * (L**2.5 / 12.0)[:, None] / scale
+        # N[(i, b), s*d + c] = n_c * mom[i, b, s]
+        N = np.einsum("ibs,ic->ibsc", mom, lc.facet_normals).reshape(
+            2 * nf, 3 * d
+        )
+        Kinv = np.linalg.inv(lc.project_tensor(self._cell_tensor(cell_id)))
+        S2 = np.einsum(
+            "q,qi,qj->ij", lc.quad_weights, lc.quad_points, lc.quad_points
+        )
+        Mphi = np.zeros((3, 3))
+        Mphi[0, 0] = lc.volume
+        Mphi[1:, 1:] = S2 / scale**2
+        G = np.kron(Mphi, Kinv)
+        return N, G, lc, 2, np.arange(3 * d), scale
 
     def local(self, cell_id: int) -> tuple[np.ndarray, list[int]]:
         """``(M_E, facet_ids)`` in the global (canonical-orientation) basis."""

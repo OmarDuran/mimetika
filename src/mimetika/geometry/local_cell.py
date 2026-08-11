@@ -67,6 +67,12 @@ class LocalCell:
         if d == 0:
             raise ValueError("0-dimensional cells carry no differential structure")
 
+        canonical = getattr(geometry, "_mesh_frame", None)
+        cache = getattr(geometry, "_localcell_cache", None)
+        cacheable = frame is not None and frame is canonical
+        if cacheable and cache is not None and cell_id in cache:
+            return cache[cell_id]
+
         origin = geometry.centroids(d)[cell_id]
         frame = _affine_frame(geometry, cell_id, d) if frame is None else frame
 
@@ -94,7 +100,7 @@ class LocalCell:
         normals *= flip[:, None]
 
         qp, qw = geometry.quadrature(d, cell_id)
-        return cls(
+        built = cls(
             dim=d,
             volume=float(geometry.measure(d)[cell_id]),
             frame=frame,
@@ -109,6 +115,15 @@ class LocalCell:
             quad_points=to_local(qp),
             quad_weights=qw,
         )
+        if cacheable:
+            if cache is None:
+                cache = {}
+                try:
+                    geometry._localcell_cache = cache
+                except AttributeError:
+                    return built
+            cache[cell_id] = built
+        return built
 
     # -- helpers -------------------------------------------------------------
 
@@ -173,6 +188,10 @@ def mesh_frame(geometry: Geometry) -> np.ndarray:
     and axis-aligned facets stay axis-aligned in the frame -- which is what
     component-wise conditions such as rollers need.
     """
+
+    cached = getattr(geometry, "_mesh_frame", None)
+    if cached is not None:
+        return cached
     d = geometry.complex.dim
     if d == 3:
         return np.eye(3)
@@ -189,6 +208,8 @@ def mesh_frame(geometry: Geometry) -> np.ndarray:
         geometry._mesh_frame = frame
     except AttributeError:  # frozen geometry: correctness does not depend on it
         pass
+    frame = frame
+    geometry._mesh_frame = frame
     return frame
 
 

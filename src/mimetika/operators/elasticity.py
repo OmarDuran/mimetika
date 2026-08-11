@@ -229,8 +229,22 @@ class ElasticityInnerProduct:
         return moments, X
 
     def _facet_data_quadrature(self, lc: LocalCell, scale: float):
-        """Reference implementation by quadrature (used for ``d != 3``)."""
+        """Closed forms for ``d = 2`` edges; quadrature fallback otherwise."""
         d, nf, nb = lc.dim, lc.n_facets, lc.dim
+        if d == 2:
+            # edge basis chi0 = 1, chi1 = s / sqrt(L) with s the centred
+            # arclength: int chi0 = L, int chi0 xi = L xi_e,
+            # int chi1 xi = t L^{5/2}/12, <chi1, chi1> = L^2/12, so the
+            # coordinate expansion is X = [xi_e; sqrt(L) t]
+            L = lc.facet_measures
+            xe = lc.facet_centroids
+            t = np.stack([tt[0] for tt in lc.facet_tangents])  # (nf, 2)
+            moments = np.zeros((nf, 2, 3))
+            moments[:, 0, 0] = L
+            moments[:, 0, 1:] = L[:, None] * xe / scale
+            moments[:, 1, 1:] = t * (L**2.5 / 12.0)[:, None] / scale
+            X = np.stack([xe, np.sqrt(L)[:, None] * t], axis=1)
+            return moments, X
         moments = np.empty((nf, nb, d + 1))
         grams = np.empty((nf, nb, nb))
         mom_x = np.empty((nf, nb, d))
