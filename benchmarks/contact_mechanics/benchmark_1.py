@@ -145,9 +145,87 @@ NEAR_FIELD = None
 NEAR_FIELD_REFINEMENT = 1.0
 
 
-def build(parameters: Parameters, nx: int = 20, ny: int = 60, spacing=None,
+#: the fine band half-width and the y-coarsening factor of the outer regions
+GLUE_X = 1000.0
+COARSEN = 4
+
+
+def polyhedral_mesh(parameters: Parameters, nx: int = 40, ny: int = 120,
+                    boundary_spacing: float = 2000.0):
+    """Fine band, coarse far field, glued by a layer of polygonal cells.
+
+    ``nx`` columns of fine quads span ``|x| <= GLUE_X`` at ``ny`` rows over the
+    full height; outside, the mesh coarsens (``COARSEN``-fold in ``y``,
+    geometrically in ``x``).  The two regions are glued conformingly by one
+    column of general polygons per side: coarse cells whose inner edge carries
+    the fine subdivision -- hanging nodes made admissible as polytopal cells,
+    which the de Rham operators support without stabilization.
+    """
+    from mimetika.mesh.mesh import Mesh
+
+    W, H = parameters.width, parameters.height
+    b = parameters.fault_b
+    ys = np.linspace(-H / 2, H / 2, ny + 1)
+    keep = sorted({i for i, y in enumerate(ys)
+                   if abs(y) <= b + 1e-9 or i % COARSEN == 0 or i == ny})
+    ysc = ys[keep]
+    # the fine band inherits the *uniform* cell size (width/nx), so the
+    # polytopal mesh is strictly coarser than the uniform one overall
+    dx_nominal = W / nx
+    ncols = max(2, 2 * round(GLUE_X / dx_nominal))
+    xsf = np.linspace(-GLUE_X, GLUE_X, ncols + 1)
+    dxf = 2 * GLUE_X / ncols
+    wg = dxf                           # width of the glue column
+    xs_out = [GLUE_X + wg]
+    step = 4 * dxf
+    while xs_out[-1] < W / 2 - 1e-9:
+        xs_out.append(min(xs_out[-1] + step, W / 2))
+        step = min(step * 1.7, boundary_spacing)
+
+    pts: dict = {}
+
+    def pid(x, y):
+        key = (round(x, 6), round(y, 6))
+        if key not in pts:
+            pts[key] = len(pts)
+        return pts[key]
+
+    polys = []
+    for i in range(ncols):             # fine quads
+        for j in range(ny):
+            polys.append([pid(xsf[i], ys[j]), pid(xsf[i + 1], ys[j]),
+                          pid(xsf[i + 1], ys[j + 1]), pid(xsf[i], ys[j + 1])])
+    for sign in (+1, -1):
+        xin, xout = sign * GLUE_X, sign * (GLUE_X + wg)
+        for j in range(len(ysc) - 1):  # the polygonal glue column
+            y0, y1 = ysc[j], ysc[j + 1]
+            inner = [y for y in ys if y0 - 1e-9 <= y <= y1 + 1e-9]
+            if sign > 0:               # fine edge on the left, CCW
+                loop = ([pid(xin, y0), pid(xout, y0), pid(xout, y1)]
+                        + [pid(xin, y) for y in inner[::-1][:-1]])
+            else:                      # fine edge on the right, CCW
+                loop = ([pid(xout, y0)] + [pid(xin, y) for y in inner]
+                        + [pid(xout, y1)])
+            polys.append(loop)
+        for k in range(len(xs_out) - 1):  # coarse quads
+            x0, x1 = sign * xs_out[k], sign * xs_out[k + 1]
+            if sign < 0:
+                x0, x1 = x1, x0
+            for j in range(len(ysc) - 1):
+                polys.append([pid(x0, ysc[j]), pid(x1, ysc[j]),
+                              pid(x1, ysc[j + 1]), pid(x0, ysc[j + 1])])
+    points = np.zeros((len(pts), 3))
+    for (x, y), i in pts.items():
+        points[i, :2] = (x, y)
+    return Mesh.from_polygons(points, polys)
+
+
+
+
+def build(parameters: Parameters, nx: int = 40, ny: int = 120, spacing=None,
           boundary_spacing: float = 500.0, triangles: bool = False,
-          near_field: float | None = NEAR_FIELD):
+          near_field: float | None = NEAR_FIELD, mesh_kind: str | None = None,
+          refine: int = 1):
     """Mesh, fault tags and the depletion pressure field of the offset reservoir.
 
     With ``spacing`` given the mesh is **graded**: nodes are placed exactly on the
@@ -158,7 +236,10 @@ def build(parameters: Parameters, nx: int = 20, ny: int = 60, spacing=None,
     Passing ``nx``/``ny`` instead gives the uniform mesh, kept for comparison.
     """
     width, height = parameters.width, parameters.height
-    if spacing is not None:
+    kind = mesh_kind or "graded"
+    if kind == "graded" and spacing is None:
+        spacing = 6.25  # Table 3: the paper's mesh
+    if kind == "graded":
         a, b = parameters.fault_a, parameters.fault_b
         # Table 3 gives 2 m at the refined region and 100 m at the domain
         # boundary, for their 4500 m box.  The domain here is 18 km wide and 9 km
@@ -171,17 +252,23 @@ def build(parameters: Parameters, nx: int = 20, ny: int = 60, spacing=None,
         # is still meshed at ``spacing``.
         fine = spacing / NEAR_FIELD_REFINEMENT
         near = None if near_field is None else (-near_field, near_field)
+        # refine = 1 is the paper's mesh; --graded-refined runs refine = 4
         ys = graded_coordinates([-b, -a, a, b], (-height / 2, height / 2),
-                                spacing, max_spacing=boundary_spacing,
-                                window=near, window_spacing=fine)
+                                spacing / refine, max_spacing=boundary_spacing,
+                                window=near, window_spacing=fine / refine)
         xs = graded_coordinates([0.0], (-width / 2, width / 2),
-                                spacing, max_spacing=boundary_spacing,
-                                window=near, window_spacing=fine)
+                                spacing / refine, max_spacing=boundary_spacing,
+                                window=near, window_spacing=fine / refine)
         mesh = graded_triangles(xs, ys) if triangles else graded_quads(xs, ys)
-    else:
+    elif kind == "uniform":
         mesh = structured_quads(
             nx, ny, lengths=(width, height), origin=(-width / 2, -height / 2)
         )
+    else:
+        # "poly" (default): the full polytopal support -- fine band, coarse
+        # far field, polygonal glue columns
+        mesh = polyhedral_mesh(parameters, nx=nx, ny=ny,
+                               boundary_spacing=boundary_spacing)
     fault = facets_on_plane(mesh, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0])
 
     # the reservoir is displaced across the fault: [-b, a] on the left, [-a, b]
@@ -196,7 +283,7 @@ def build(parameters: Parameters, nx: int = 20, ny: int = 60, spacing=None,
     return mesh, fault, pressure
 
 
-def mechanics_factory(mesh, parameters: Parameters, pressure, space: str = "afw"):
+def mechanics_factory(mesh, parameters: Parameters, pressure, space: str = "derham"):
     """A ``mechanics`` factory carrying the depletion load and the roller frame.
 
     The pore pressure reaches the fault entirely through ``extra_rhs``: in the
@@ -211,15 +298,23 @@ def mechanics_factory(mesh, parameters: Parameters, pressure, space: str = "afw"
     )
 
     def make_inner():
-        # "afw" (d^2 traction DOFs per facet) or "lumped" (d per facet, the
-        # two-point space; the graded tensor grid is face-orthogonal, so the
+        # "derham" (default): the mimetic-AFW-BDM deviatoric member, d^2
+        # traction DOFs per facet, no stabilization; "afw": the stabilized
+        # extended product on the same layout; "lumped": the two-point space
+        # (d per facet; the graded tensor grid is face-orthogonal, so the
         # lumped guard passes).  The contact driver must be built with the
         # matching dofs_per_facet.
         if space == "lumped":
             from mimetika.operators.lumped import LumpedDeviatoricStress
 
             return LumpedDeviatoricStress(mesh, material=material)
-        return ElasticityInnerProduct(mesh, material=material)
+        if space == "afw":
+            return ElasticityInnerProduct(mesh, material=material)
+        from mimetika.operators.derham import DeRhamDeviatoricStress
+
+        # the polygonal glue cells carry collinear sub-edges, which need
+        # higher-degree curl enrichment to reach unisolvence
+        return DeRhamDeviatoricStress(mesh, material=material, max_degree=10)
 
     # the depletion load enters the stress row as -(alpha/(dK)) T^T p; the
     # trace operator must belong to the *same* stress space as the mechanics,
@@ -250,10 +345,11 @@ def mechanics_factory(mesh, parameters: Parameters, pressure, space: str = "afw"
     return factory
 
 
-def pre_slip_stress(parameters: Parameters, nx: int = 20, ny: int = 60,
-                    space: str = "afw",
+def pre_slip_stress(parameters: Parameters, nx: int = 40, ny: int = 120,
+                    space: str = "derham",
                     spacing=None, boundary_spacing: float = 500.0,
-                    triangles: bool = False):
+                    triangles: bool = False, mesh_kind: str | None = None,
+                    refine: int = 1):
     """Coulomb stress on the **locked** fault -- Fig. 6 (left), eq. (18).
 
     The other half of the benchmark, and a different computation: the fault is
@@ -267,7 +363,7 @@ def pre_slip_stress(parameters: Parameters, nx: int = 20, ny: int = 60,
     """
     mesh, fault, pressure = build(parameters, nx=nx, ny=ny, spacing=spacing,
                                   boundary_spacing=boundary_spacing,
-                                  triangles=triangles)
+                                  triangles=triangles, mesh_kind=mesh_kind, refine=refine)
     problem, matrix, rhs = mechanics_factory(mesh, parameters, pressure, space=space)(None)
     solution = problem.split(
         solve_saddle(matrix, rhs, problem.block_sizes, method="direct")
@@ -309,15 +405,17 @@ def insitu_prestress(mesh, fault, parameters: Parameters) -> np.ndarray:
 
 def simulate(
     parameters: Parameters,
-    nx: int = 20,
-    ny: int = 60,
-    space: str = "afw",
+    nx: int = 40,
+    ny: int = 120,
+    space: str = "derham",
     law=None,
     prestress: bool = True,
     spacing=None,
     boundary_spacing: float = 500.0,
     triangles: bool = False,
     enforcement: str = "averaged",
+    mesh_kind: str | None = None,
+    refine: int = 1,
 ):
     """Solve the displaced-fault problem; return slip against ``y``.
 
@@ -329,7 +427,7 @@ def simulate(
     """
     mesh, fault, pressure = build(parameters, nx=nx, ny=ny, spacing=spacing,
                                   boundary_spacing=boundary_spacing,
-                                  triangles=triangles)
+                                  triangles=triangles, mesh_kind=mesh_kind, refine=refine)
     driver = ContactDriver(
         mesh,
         fault,
@@ -374,6 +472,8 @@ def depletion_series(
     steps: int = 6,
     spacing: float = 6.25,
     boundary_spacing: float = 500.0,
+    mesh_kind: str | None = None,
+    refine: int = 1,
 ):
     """Write the fault's response to a depletion ramp as a ``.pvd`` time series.
 
@@ -390,7 +490,8 @@ def depletion_series(
     fault plotted without its surroundings cannot be read.
     """
     mesh, fault, _ = build(parameters, spacing=spacing,
-                           boundary_spacing=boundary_spacing)
+                           boundary_spacing=boundary_spacing,
+                           mesh_kind=mesh_kind, refine=refine)
     series = MixedDimensionalSeries(path, mesh, fault)
     lame = (2.0 * parameters.shear_modulus * parameters.poisson
             / (1.0 - 2.0 * parameters.poisson))
@@ -398,7 +499,8 @@ def depletion_series(
     for level in np.linspace(0.0, parameters.depletion, steps + 1)[1:]:
         stage = replace(parameters, depletion=float(level))
         _, _, pressure = build(stage, spacing=spacing,
-                               boundary_spacing=boundary_spacing)
+                               boundary_spacing=boundary_spacing,
+                               mesh_kind=mesh_kind, refine=refine)
         driver = ContactDriver(
             mesh, fault, SignoriniCoulomb(friction=0.0),
             mu=stage.shear_modulus, lam=lame,
@@ -420,7 +522,8 @@ def depletion_series(
 
 def figure_6(parameters: Parameters | None = None, spacing: float = 6.25,
              boundary_spacing: float = 500.0,
-             path: str = "benchmarks/contact_mechanics/benchmark_1_fig6.png") -> str:
+             path: str = "benchmarks/contact_mechanics/benchmark_1_fig6.png",
+             mesh_kind: str | None = None, refine: int = 1) -> str:
     """Reproduce Fig. 6: pre-slip Coulomb stress (left) and the resulting slip (right).
 
     Both panels are the frictionless fault.  The left one holds it **locked** --
@@ -440,9 +543,11 @@ def figure_6(parameters: Parameters | None = None, spacing: float = 6.25,
 
     parameters = parameters or wide_parameters()
     locked = pre_slip_stress(parameters, spacing=spacing,
-                             boundary_spacing=boundary_spacing)
+                             boundary_spacing=boundary_spacing,
+                             mesh_kind=mesh_kind, refine=refine)
     slipped = simulate(parameters, spacing=spacing,
-                       boundary_spacing=boundary_spacing)
+                       boundary_spacing=boundary_spacing,
+                       mesh_kind=mesh_kind, refine=refine)
 
     window = 250.0
     fine = np.linspace(-window, window, 4001)
@@ -456,7 +561,8 @@ def figure_6(parameters: Parameters | None = None, spacing: float = 6.25,
               ms=5, mfc="none", lw=0, label="analytical", zorder=4)
     y, sigma = np.asarray(locked["y"]), np.asarray(locked["coulomb_stress"])
     inside = np.abs(y) <= window
-    left.plot(sigma[inside] / 1e6, y[inside], "b-", lw=1.4, label="mimetika")
+    left.plot(sigma[inside] / 1e6, y[inside], "b--", lw=1.6,
+              dashes=(5, 2.5), label="mimetic-AFW-BDM six fields", zorder=5)
     left.set_xlabel(r"$\Sigma_C\ (=\sigma_{xy})$   (MPa)")
     left.set_ylabel(r"$y$   (m)")
     left.set_xlim(-20, 20)
@@ -467,7 +573,8 @@ def figure_6(parameters: Parameters | None = None, spacing: float = 6.25,
                lw=0, label="analytical", zorder=4)
     y, slip = np.asarray(slipped["y"]), np.abs(np.asarray(slipped["slip"]))
     inside = np.abs(y) <= window
-    right.plot(slip[inside], y[inside], "b-", lw=1.4, label="mimetika")
+    right.plot(slip[inside], y[inside], "b--", lw=1.6,
+               dashes=(5, 2.5), label="mimetic-AFW-BDM six fields", zorder=5)
     right.set_xlabel(r"$\delta$   (m)")
     right.set_xlim(-0.005, 0.2)
     right.set_title("Resulting slip")
@@ -495,20 +602,26 @@ def figure_6(parameters: Parameters | None = None, spacing: float = 6.25,
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--nx", type=int, default=20)
-    parser.add_argument("--ny", type=int, default=60)
+    parser.add_argument("--nx", type=int, default=40)
+    parser.add_argument("--ny", type=int, default=120)
+    parser.add_argument("--graded-refined", action="store_true",
+                        help="run the graded mesh at 4x the nominal "
+                             "resolution (default: the paper's exact mesh)")
     parser.add_argument("--spacing", type=float, default=None,
                         help="graded mesh: cell size at the reservoir edges")
-    parser.add_argument("--vtu", nargs="?", const="out/benchmark_1",
+    parser.add_argument("--vtk", nargs="?",
+                        const="out/benchmark_1",
                         help="write a PVD depletion series to this path stem")
     parser.add_argument("--steps", type=int, default=6)
     parser.add_argument("--width", type=float, default=None,
                         help="domain width W in m (default: see Parameters)")
     parser.add_argument("--height", type=float, default=None,
                         help="domain height H in m; also the fault length")
-    parser.add_argument("--figure", nargs="?",
-                        const="benchmarks/contact_mechanics/benchmark_1_fig6.png",
-                        help="write the Fig. 6 comparison to this path")
+    parser.add_argument("--figure",
+                        default="benchmarks/contact_mechanics/benchmark_1_fig6.png",
+                        help="path of the Fig. 6 comparison figure")
+    parser.add_argument("--no-plots", action="store_true",
+                        help="skip figure output")
     arguments = parser.parse_args()
 
     parameters = wide_parameters(**{
@@ -516,6 +629,7 @@ def main() -> None:
         for name, value in (("width", arguments.width), ("height", arguments.height))
         if value is not None
     })
+    refine = 4 if arguments.graded_refined else 1
     print("Benchmark 1 -- vertical displaced fault, frictionless\n")
     print(f"  a = {parameters.fault_a:g} m, b = {parameters.fault_b:g} m, "
           f"throw = {parameters.throw:g} m, h = {parameters.reservoir_height:g} m")
@@ -525,21 +639,21 @@ def main() -> None:
           "        (paper -0.0024)")
     print(f"  peak |delta| = {peak_slip(parameters):.4f} m\n")
 
-    if arguments.vtu:
+    if arguments.vtk:
         series = depletion_series(
-            arguments.vtu, parameters, steps=arguments.steps,
-            spacing=arguments.spacing or 6.25,
+            arguments.vtk, parameters, steps=arguments.steps,
+            spacing=arguments.spacing or 6.25, refine=refine,
         )
         print(f"  wrote {series.collection} "
               f"({arguments.steps} depletion steps; part 0 = rock cells, "
               f"part 1 = fault)\n")
 
-    if arguments.figure:
+    if arguments.figure and not arguments.no_plots:
         print("  wrote", figure_6(parameters, spacing=arguments.spacing or 6.25,
-                                  path=arguments.figure), "\n")
+                                  path=arguments.figure, refine=refine), "\n")
 
     result = simulate(parameters, nx=arguments.nx, ny=arguments.ny,
-                      spacing=arguments.spacing)
+                      spacing=arguments.spacing, refine=refine)
     state = result["state"]
     print(f"  mesh {arguments.nx} x {arguments.ny} = {result['cells']} cells, "
           f"{len(result['y'])} fault facets")

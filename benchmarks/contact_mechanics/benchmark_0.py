@@ -37,9 +37,15 @@ from benchmarks.contact_mechanics.common import Parameters, linear_fit
 
 
 def _stress_inner(mesh, material, stress_space: str):
-    """``None`` for AFW (the default space); the lumped operator otherwise."""
-    if stress_space == "afw":
+    """``None`` selects the library default -- the de Rham (mimetic-AFW-BDM)
+    deviatoric member; ``"afw"`` the stabilized extended product; ``"lumped"``
+    the two-point space."""
+    if stress_space == "derham":
         return None
+    if stress_space == "afw":
+        from mimetika.operators.elasticity import ElasticityInnerProduct
+
+        return ElasticityInnerProduct(mesh, material=material)
     from mimetika.operators.lumped import LumpedDeviatoricStress
 
     return LumpedDeviatoricStress(mesh, material=material)
@@ -58,7 +64,7 @@ def in_situ_report(parameters: Parameters, samples: int = 11):
     }
 
 
-def depletion_response(parameters: Parameters, n: int = 8, stress_space: str = "afw"):
+def depletion_response(parameters: Parameters, n: int = 8, stress_space: str = "derham"):
     """Simulate uniform depletion of a confined block; return the key responses.
 
     The mesh is the unit square: the response is a *strain*, so the domain size
@@ -104,7 +110,7 @@ def depletion_response(parameters: Parameters, n: int = 8, stress_space: str = "
 
 
 def finite_reservoir(parameters: Parameters, nx: int = 20, ny: int = 120,
-                     stress_space: str = "afw"):
+                     stress_space: str = "derham"):
     """Deplete a reservoir of finite thickness inside the full domain.
 
     Different from :func:`depletion_response`, and harder.  That one depletes the
@@ -265,13 +271,65 @@ def depletion_series(
     return series
 
 
+def figure_4(parameters: Parameters, nx: int = 20, ny: int = 120,
+             dip: float = 70.0,
+             path: str = "benchmarks/contact_mechanics/benchmark_0_fig4.png"):
+    """Fig. 4: combined stresses resolved on the ``dip``-degree plane.
+
+    Lines: the simulated combined stress sampled along the fault line;
+    open markers: the analytic piecewise profile (in-situ outside the
+    reservoir band, in-situ plus the uniaxial increment inside).
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    profile = combined_stress_profile(parameters, nx=nx, ny=ny, dip=dip)
+    marks = np.linspace(-245.0, 245.0, 26)
+    normal_a, shear_a = combined_analytic(marks, parameters, dip=dip)
+
+    fig, (left, right) = plt.subplots(1, 2, figsize=(10, 5.6), sharey=True)
+    left.plot(profile["normal"] / 1e6, profile["y"], "b-", lw=1.3,
+              label="mimetic-AFW-BDM")
+    left.plot(normal_a / 1e6, marks, "ro", ms=4.5, mfc="none",
+              label="analytical")
+    left.set_xlabel(r"$\sigma_{n}$  (MPa)")
+    left.set_ylabel("y  (m)")
+    left.set_title(f"combined normal stress ({dip:g}$^\circ$ plane)")
+    right.plot(profile["shear"] / 1e6, profile["y"], "b-", lw=1.3,
+               label="mimetic-AFW-BDM")
+    right.plot(shear_a / 1e6, marks, "ro", ms=4.5, mfc="none",
+               label="analytical")
+    right.set_xlabel(r"$\tau$  (MPa)")
+    right.set_title("combined shear stress")
+    half = 0.5 * parameters.reservoir_height
+    for axis in (left, right):
+        axis.grid(alpha=0.25)
+        for edge in (half, -half):
+            axis.axhline(edge, color="k", lw=0.6, ls=":")
+        axis.legend(loc="best", fontsize=9)
+    fig.suptitle("Benchmark 0 -- combined stresses across the depleted "
+                 "reservoir (Fig. 4)", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-n", type=int, default=8, help="cells per side")
     parser.add_argument("--dip", type=float, default=70.0)
-    parser.add_argument("--vtu", nargs="?", const="out/benchmark_0",
+    parser.add_argument("--vtk", nargs="?",
+                        const="out/benchmark_0",
                         help="write a PVD depletion series to this path stem")
     parser.add_argument("--steps", type=int, default=5)
+    parser.add_argument("--figure",
+                        default="benchmarks/contact_mechanics/benchmark_0_fig4.png",
+                        help="path of the Fig. 4 comparison figure")
+    parser.add_argument("--no-plots", action="store_true",
+                        help="skip figure output")
     arguments = parser.parse_args()
 
     parameters = Parameters(dip=arguments.dip)
@@ -316,8 +374,12 @@ def main() -> None:
     for name, got, want in rows:
         print(f"    {name:<22} {got:+16.6e}  {want:+16.6e}")
 
-    if arguments.vtu:
-        series = depletion_series(arguments.vtu, parameters,
+    if arguments.figure and not arguments.no_plots:
+        print("\n  wrote", figure_4(parameters, dip=arguments.dip,
+                                     path=arguments.figure))
+
+    if arguments.vtk:
+        series = depletion_series(arguments.vtk, parameters,
                                   steps=arguments.steps, dip=arguments.dip)
         print(f"\n  wrote {series.collection} "
               f"({arguments.steps} depletion steps, bulk part only -- no fault)")
