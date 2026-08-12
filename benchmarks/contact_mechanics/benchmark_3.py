@@ -235,6 +235,9 @@ def main() -> None:
     parser.add_argument("--figure",
                         default="benchmarks/contact_mechanics/benchmark_3.png")
     parser.add_argument("--no-plots", action="store_true")
+    parser.add_argument("--cascade", action="store_true",
+                        help="also write the continuation-cascade diagnostic "
+                             "figure (not a paper figure)")
     arguments = parser.parse_args()
 
     parameters = wide_parameters()
@@ -359,7 +362,8 @@ def main() -> None:
         plt.close(fig)
         print(f"  wrote {path}")
 
-    if len(profiles) > 1 and arguments.figure and not arguments.no_plots:
+    if (len(profiles) > 1 and arguments.cascade
+            and arguments.figure and not arguments.no_plots):
         # the continuation: slip profiles level by level up to (and including)
         # the nucleated state, against the semi-analytical pre-nucleation one
         import matplotlib

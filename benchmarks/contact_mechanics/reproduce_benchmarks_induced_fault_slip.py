@@ -26,6 +26,7 @@ or directly as a script from anywhere in the repository.
 
 from __future__ import annotations
 
+import argparse
 import pathlib
 import subprocess
 import sys
@@ -44,13 +45,23 @@ RUNS = [
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--cascade", action="store_true",
+                        help="also produce benchmark_3_cascade.png (the "
+                             "continuation diagnostic; not a paper figure)")
+    arguments = parser.parse_args()
+
     OUT.mkdir(exist_ok=True)
     t0 = time.time()
     for module, figure in RUNS:
         print(f"\n=== {module} ===", flush=True)
         t1 = time.time()
+        extra = (["--cascade"]
+                 if arguments.cascade and module.endswith("benchmark_3")
+                 else [])
         subprocess.run(
-            [sys.executable, "-m", module, "--figure", str(OUT / figure)],
+            [sys.executable, "-m", module, "--figure", str(OUT / figure),
+             *extra],
             check=True,
             cwd=REPO,
         )
