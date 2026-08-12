@@ -373,15 +373,20 @@ def insitu_prestress(mesh, fault, parameters: Parameters,
 
 
 def simulate(parameters: Parameters, spacing: float = 2.0,
-             boundary_spacing: float = 100.0, built=None, substeps: int = 1):
+             boundary_spacing: float = 100.0, built=None, substeps: int = 1,
+             warm_from_locked: bool = False):
     """Solve at ``parameters.depletion``; return slip and patch structure.
 
-    ``substeps > 1`` ramps the depletion in equal load steps, warm-starting
-    each contact solve from the previous state.  A single step suffices on
-    the wide domain; the confined ``W = 4500`` m one needs the ramp -- from
-    a zero initial guess at full load, Newton overshoots into a spurious
-    runaway branch (kilometres of shallow fault slipping) even though the
-    locked stress state shows only bounded threshold exceedance.
+    ``warm_from_locked`` starts the contact Newton at the **locked**
+    (unfractured) solution's fault tractions instead of zero.  On the
+    confined ``W = 4500`` m domain the cold start diverges: the first trial
+    has the fault carrying nothing, the projection clips metre-scale
+    excursions, and the iteration exits the physical basin into a spurious
+    whole-fault runaway -- even at levels where the fault is fully stuck.
+    The locked tractions are one direct solve away and sit next to the
+    contact solution (their map residual is just ``r`` times the
+    enforcement-truncation gap), so Newton converges in a handful of steps.
+    ``substeps > 1`` additionally ramps the depletion with warm restarts.
     """
     if built is None:
         mesh, fault, pressure = build(parameters, spacing, boundary_spacing)
@@ -404,8 +409,22 @@ def simulate(parameters: Parameters, spacing: float = 2.0,
         driver.prestress = driver.expand_to_points(
             insitu_prestress(mesh, fault, stage, pressure)
         )
+        factory = mechanics_factory(mesh, stage, pressure, cache)
+        if state is None and warm_from_locked:
+            from mimetika.contact import ContactState
+            from mimetika.solver.saddle import solve_saddle
+
+            problem0, matrix0, rhs0 = factory(None)
+            sol0 = problem0.split(solve_saddle(
+                matrix0, rhs0, problem0.block_sizes, method="direct"))
+            xstar = driver.tractions(sol0["stress"])
+            mult = (driver.moment_operator() @ xstar.ravel()).reshape(
+                len(driver.facets), driver.ndf)
+            s0 = driver.initial_state()
+            state = ContactState(multiplier=mult, internal=s0.internal,
+                                 jump=s0.jump)
         state = driver.solve_step(
-            mechanics_factory(mesh, stage, pressure, cache),
+            factory,
             state=state, solver="newton", reuse=cache.get("condensed"),
         )
         if state.condensed is not None:
@@ -587,7 +606,7 @@ def main() -> None:
         for level in arguments.levels:
             stage = replace(parameters, depletion=level * 1e6)
             res = simulate(stage, spacing=arguments.spacing, built=built,
-                           substeps=5 if width <= 4500.0 else 1)
+                           warm_from_locked=width <= 4500.0)
             built = res["built"]
             results[level * 1e6] = res
             state = res["state"]
