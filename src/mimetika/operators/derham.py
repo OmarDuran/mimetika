@@ -649,6 +649,98 @@ class DeRhamDeviatoricStress:
 
     # -- batched interface (the 3D assembly path loops through here) ----------
 
+    def facet_data_batched(self, facet_ids, cells):
+        return self._afw.facet_data_batched(facet_ids, cells)
+
+    def _triangle_ms_batched(self, facet_ids, cells):
+        """Stacked scalar products ``Ms`` on a group of 2D triangles.
+
+        The closed forms of ``_local_simplex_2d`` vectorised over the group:
+        canonical edge tangents, star-shapedness outward normals, edge
+        moments, and the exact Gram from the triangle second moments
+        ``S2 = (A/12) sum_k v_k v_k^T`` (centroid origin).  With the
+        isotropic scalar tensor ``K = 2 mu I`` the frame projection is
+        ``2 mu I_2``, so no per-cell inversion appears anywhere; the whole
+        group reduces to one stacked ``solve``.
+        """
+        g = self.mesh.geometry
+        Q = self.frame
+        pts = g.points
+        ev = self.mesh.complex.edge_vertices
+        nB = len(cells)
+        area = g.measure(2)[cells]
+        scale = np.sqrt(area)
+        cent = g.centroids(2)[cells]
+
+        a = pts[ev[facet_ids, 0]]
+        b = pts[ev[facet_ids, 1]]
+        e = (b - a) @ Q  # (nB, 3, 2), canonical direction
+        L = np.linalg.norm(e, axis=2)
+        t = e / L[..., None]
+        n = np.stack([t[..., 1], -t[..., 0]], axis=-1)
+        xe = (0.5 * (a + b) - cent[:, None, :]) @ Q
+        flip = np.sign(np.einsum("bic,bic->bi", xe, n))
+        flip[flip == 0.0] = 1.0
+        n = n * flip[..., None]  # outward
+
+        # edge moments of the mode scalars {1, eta_1, eta_2}
+        mom = np.zeros((nB, 3, 2, 3))
+        mom[:, :, 0, 0] = L
+        mom[:, :, 0, 1:] = L[..., None] * xe / scale[:, None, None]
+        mom[:, :, 1, 1:] = (t * (L ** 2.5 / 12.0)[..., None]
+                            / scale[:, None, None])
+        Ns = np.einsum("birs,bic->birsc", mom, n).reshape(nB, 6, 6)
+
+        loops = np.array([self.mesh.complex.polygon_loops[int(c)]
+                          for c in cells])
+        v = (pts[loops] - cent[:, None, :]) @ Q  # centred vertices (nB, 3, 2)
+        S2 = np.einsum("bkc,bkd->bcd", v, v) * (area / 12.0)[:, None, None]
+        Mphi = np.zeros((nB, 3, 3))
+        Mphi[:, 0, 0] = area
+        Mphi[:, 1:, 1:] = S2 / area[:, None, None]  # scale^2 = area
+        Kinv = np.eye(2)[None] / (2.0 * np.asarray(self._mu)[cells,
+                                                             None, None])
+        Gs = np.einsum("bpq,bcd->bpcqd", Mphi, Kinv).reshape(nB, 6, 6)
+
+        NsT = np.swapaxes(Ns, 1, 2)
+        Ms = np.linalg.solve(NsT, np.swapaxes(np.linalg.solve(NsT, Gs), 1, 2))
+        return 0.5 * (Ms + np.swapaxes(Ms, 1, 2))
+
+    def assemble(self) -> sp.csr_matrix:
+        """Assemble over all facet DOFs (``d^2`` per facet, AFW layout).
+
+        On 2D meshes the triangle groups go through the batched closed
+        forms; anything else (polygons, 3D) takes the per-cell path.
+        """
+        d = self.mesh.dim
+        ndf = d * d
+        n = ndf * self.mesh.num_cells(d - 1)
+        rows, cols, vals = [], [], []
+        for facet_ids, signs_g, cells in self.cell_groups():
+            nf = facet_ids.shape[1]
+            if d == 2 and nf == 3:
+                Ms = self._triangle_ms_batched(facet_ids, cells)
+                s6 = np.repeat(signs_g, 2, axis=1)
+                Ms = Ms * s6[:, :, None] * s6[:, None, :]
+                for k in range(d):
+                    # global dofs of row k: facet d^2 + k d + basis
+                    gdk = (ndf * facet_ids[:, :, None]
+                           + k * d + np.arange(d)).reshape(len(cells), 6)
+                    rows.append(np.repeat(gdk, 6, axis=1).ravel())
+                    cols.append(np.tile(gdk, (1, 6)).ravel())
+                    vals.append(Ms.ravel())
+                continue
+            for cid in cells:
+                M, fids = self.local(int(cid))
+                gd = (ndf * np.asarray(fids)[:, None] + np.arange(ndf)).ravel()
+                rows.append(np.repeat(gd, len(gd)))
+                cols.append(np.tile(gd, len(gd)))
+                vals.append(M.ravel())
+        return sp.csr_matrix(
+            (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+            shape=(n, n),
+        )
+
     def local_matrices_batched(self, facet_ids, signs, cells):
         """Stacked ``(N, R, Kbar, vol, X)`` for a group of equal-``nf`` cells.
 
@@ -674,26 +766,6 @@ class DeRhamDeviatoricStress:
             ).T
             Mloc[b] = 0.5 * (Mloc[b] + Mloc[b].T)
         return Mloc, np.zeros(len(N), dtype=bool)
-
-    # -- global assembly -------------------------------------------------------
-
-    def assemble(self) -> sp.csr_matrix:
-        """Assemble over all facet DOFs (``d^2`` per facet, AFW layout)."""
-        d = self.mesh.dim
-        ndf = d * d
-        n = ndf * self.mesh.num_cells(d - 1)
-        rows, cols, vals = [], [], []
-        for cid in range(self.mesh.num_cells(d)):
-            M, fids = self.local(cid)
-            gd = (ndf * np.asarray(fids)[:, None] + np.arange(ndf)).ravel()
-            rows.append(np.repeat(gd, len(gd)))
-            cols.append(np.tile(gd, len(gd)))
-            vals.append(M.ravel())
-        return sp.csr_matrix(
-            (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
-            shape=(n, n),
-        )
-
 
 class DeRhamElasticityInnerProduct(DeRhamDeviatoricStress):
     """The full AFW compliance built as ``d`` copies of the BDM product.

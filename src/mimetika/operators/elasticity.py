@@ -228,6 +228,28 @@ class ElasticityInnerProduct:
         X[:, 1:] = np.linalg.solve(T, W)  # 2x2 systems
         return moments, X
 
+    def facet_data_batched(self, facet_ids: np.ndarray, cells: np.ndarray):
+        """``X`` for a whole cell group at once (2D only): ``(nB, nf, 2, 2)``.
+
+        The closed form of the ``d = 2`` branch of
+        :meth:`_facet_data_quadrature`, vectorised over the group:
+        ``X[b, i] = [xi_e; sqrt(L) t]`` with the *canonical* edge tangent and
+        the edge centroid relative to the cell centroid, all in the mesh
+        frame.  Valid for any polygon -- only the facet count of the group
+        must be uniform, which :func:`cell_groups` guarantees.
+        """
+        g = self.mesh.geometry
+        Q = self.frame
+        pts = g.points
+        ev = self.mesh.complex.edge_vertices
+        a = pts[ev[facet_ids, 0]]
+        b = pts[ev[facet_ids, 1]]
+        e = (b - a) @ Q  # (nB, nf, 2), canonical direction
+        L = np.linalg.norm(e, axis=2)
+        t = e / L[..., None]
+        xe = (0.5 * (a + b) - g.centroids(2)[cells][:, None, :]) @ Q
+        return np.stack([xe, np.sqrt(L)[..., None] * t], axis=2)
+
     def _facet_data_quadrature(self, lc: LocalCell, scale: float):
         """Closed forms for ``d = 2`` edges; quadrature fallback otherwise."""
         d, nf, nb = lc.dim, lc.n_facets, lc.dim
@@ -356,19 +378,28 @@ class ElasticityInnerProduct:
         n_cells = self.mesh.num_cells(d)
         vol = self.mesh.geometry.measure(d)
         rows, cols, vals = [], [], []
-        for c in range(n_cells):
-            lc = LocalCell.build(self.mesh.geometry, c, self.frame)
-            _, X = self.facet_data(lc, self._scale(lc))
-            gdofs = (
-                ndf * np.asarray(lc.facet_ids)[:, None] + np.arange(ndf)
-            ).ravel()
-            signs = np.repeat(lc.signs, ndf)
+        for facet_ids, signs_g, cells in self.cell_groups():
+            if d == 2 and self.facet_basis_size(d) == d:
+                X = self.facet_data_batched(facet_ids, cells)  # (nB, nf, 2, 2)
+            else:
+                X = np.stack([
+                    self.facet_data(
+                        lc := LocalCell.build(self.mesh.geometry, int(c),
+                                              self.frame),
+                        self._scale(lc),
+                    )[1]
+                    for c in cells
+                ])
+            nB, nf = facet_ids.shape
+            gdofs = (ndf * facet_ids[:, :, None]
+                     + np.arange(ndf)).reshape(nB, -1)
+            sgn = np.repeat(signs_g, ndf, axis=1)
             # coefficient of (x - x_E)_k against component k: X_i[b, k] at the
             # DOF (i, k, b), matching the component-major facet block layout
-            w = np.einsum("fbk,kk->fkb", X, np.eye(d)).reshape(-1) * signs
-            rows.append(np.full(len(gdofs), c))
-            cols.append(gdofs)
-            vals.append(w / (2.0 * float(self._mu[c])))
+            w = np.swapaxes(X, 2, 3).reshape(nB, -1) * sgn
+            rows.append(np.repeat(cells, gdofs.shape[1]))
+            cols.append(gdofs.ravel())
+            vals.append((w / (2.0 * self._mu[cells])[:, None]).ravel())
         W = sp.csr_matrix(
             (
                 np.concatenate(vals),

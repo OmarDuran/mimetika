@@ -475,57 +475,39 @@ class MixedElasticity:
         if self._space_ops is not None:
             return self._space_ops
         from mimetika.assembly.local import skew_generators
-        from mimetika.operators.inner_product import assemble_local_inner_product
 
         d, ndf, nsk = self.d, self.ndf, self.n_skew
         gens = skew_generators(d)
 
-        # One pass builds all three operators.  Assembling M separately would
-        # recompute every local matrix a second time.
-        m_rows, m_cols, m_vals = [], [], []
+        # This pass builds D and A only; M is the space's own :meth:`assemble`.
         d_rows, d_cols, d_vals = [], [], []
         a_rows, a_cols, a_vals = [], [], []
 
         for facet_ids, signs_g, cells in self.inner.cell_groups():
             nB, nf = facet_ids.shape
-            if d == 3:
-                N, R, Kbar, vol, X = self.inner.local_matrices_batched(
+            if (d == 2 and hasattr(self.inner, "facet_data_batched")
+                    and self.inner.facet_basis_size(d) == d):
+                X = self.inner.facet_data_batched(facet_ids, cells)
+            elif d == 3:
+                *_, X = self.inner.local_matrices_batched(
                     facet_ids, signs_g, cells
                 )
-                Mloc, deficient = self.inner.local_inner_products_batched(
-                    N, R, Kbar, vol
-                )
-                if deficient.any():  # rare; redo those cells with the scalar path
-                    for b in np.where(deficient)[0]:
-                        n1, r1, k1, v1, _ = self.inner.local_matrices(int(cells[b]))
-                        Mloc[b] = assemble_local_inner_product(n1, r1, k1, v1)
             else:
-                # the batched kernel is written for d = 3; other dimensions take
-                # the scalar path, which is dimension-generic
-                Mloc = np.empty((nB, nf * ndf, nf * ndf))
                 # X is stacked, not pre-allocated: its facet-basis extent is d for
                 # AFW and 1 for LumpedDeviatoricStress.  Pre-allocating (nB, nf, d, d)
                 # broadcast a (nf, 1, d) block up to (nf, d, d) silently.
                 blocks = []
                 for c in cells:
-                    N, R, Kbar, vol, _, Xc = self.inner.local_matrices(
+                    *_, Xc = self.inner.local_matrices(
                         int(c), with_facet_data=True
                     )
                     blocks.append(Xc)
-                    Mloc[len(blocks) - 1] = assemble_local_inner_product(
-                        N, R, Kbar, vol
-                    )
                 X = np.stack(blocks)
 
             gdofs = (
                 ndf * facet_ids[:, :, None] + np.arange(ndf)
             ).reshape(nB, nf * ndf)
             sgn = np.repeat(signs_g, ndf, axis=1)
-
-            Mloc = Mloc * sgn[:, :, None] * sgn[:, None, :]  # -> canonical DOFs
-            m_rows.append(np.repeat(gdofs, nf * ndf, axis=1).ravel())
-            m_cols.append(np.tile(gdofs, (1, nf * ndf)).ravel())
-            m_vals.append(Mloc.ravel())
 
             # div_h, scaled by |E|: the constant moment of each component
             # where the constant moment of each component sits is a property of
@@ -583,8 +565,16 @@ class MixedElasticity:
         if displacement is None:
             return g
         on_boundary = facet_cell_signs(self.mesh)
-        for c in range(self.n_cells):
-            lc = LocalCell.build(self.mesh.geometry, c, self.inner.frame)
+        if not on_boundary:
+            return g
+        # only cells touching a boundary facet contribute -- iterating all of
+        # them builds tens of thousands of LocalCells to visit a few hundred
+        bm = self.mesh.complex.boundary_matrix(self.d).tocsr()
+        boundary_cells = np.unique(np.concatenate(
+            [bm[int(f)].indices for f in on_boundary]
+        ))
+        for c in boundary_cells:
+            lc = LocalCell.build(self.mesh.geometry, int(c), self.inner.frame)
             for i, fid in enumerate(lc.facet_ids):
                 if fid not in on_boundary:
                     continue
@@ -663,7 +653,13 @@ class MixedElasticity:
         ndf = self.ndf
         wanted = {int(f) for f in facets}
         out, seen = {}, set()
-        for c in range(self.n_cells):
+        # only cells adjacent to a wanted facet can contribute
+        bm = self.mesh.complex.boundary_matrix(self.d).tocsr()
+        adjacent = (np.unique(np.concatenate(
+            [bm[f].indices for f in sorted(wanted)]
+        )) if wanted else np.empty(0, dtype=int))
+        for c in adjacent:
+            c = int(c)
             lc = LocalCell.build(self.mesh.geometry, c, self.inner.frame)
             for i, fid in enumerate(lc.facet_ids):
                 if fid not in wanted or fid in seen:
