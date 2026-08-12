@@ -50,6 +50,10 @@ from mimetika.materials import Material
 from mimetika.mesh.fracture import facets_on_plane
 from mimetika.mesh.mesh import Mesh
 
+from mimetika.simulation import (
+    MechanicsBC, PoromechanicsIC, PoromechanicsSolver,
+)
+
 from benchmarks.contact_mechanics.common import Parameters
 from benchmarks.contact_mechanics.reference_data import DATA as REFERENCE_DATA
 from benchmarks.contact_mechanics.reference_data import load as load_reference
@@ -281,32 +285,17 @@ def pressure_field(mesh, parameters: Parameters) -> np.ndarray:
 # -- mechanics ----------------------------------------------------------------
 
 
-def mechanics_factory(mesh, parameters: Parameters, pressure, cache=None):
-    """Depletion load and boundary frame; the de Rham space is the default.
-
-    ``cache`` (a mutable dict, one per mesh) short-circuits the expensive
-    parts across depletion levels: the pressure-coupling operator, and --
-    for the driver's ``contact=None`` path -- the assembled system itself.
-    Only the rhs depends on the pressure, additively through
-    ``extra = -(coupling.T @ p)`` on the stress block, so a new level is the
-    cached ``(problem, matrix)`` with ``rhs + (extra - extra_cached)`` and
-    the boundary-pinned rows left untouched (they carry BC data, not load).
-    """
-    material = Material(
+def material_of(parameters: Parameters) -> Material:
+    return Material(
         shear_modulus=parameters.shear_modulus,
         poisson=parameters.poisson,
         biot=parameters.biot,
     )
-    if cache is not None and "coupling" in cache:
-        coupling = cache["coupling"]
-    else:
-        poro = PoroMechanics(mesh, material)
-        coupling = (sp.diags(poro.material.pressure_coupling(2))
-                    @ poro.trace_operator())
-        if cache is not None:
-            cache["coupling"] = coupling
-    extra = -(coupling.T @ pressure)
 
+
+def boundary_conditions(mesh, parameters: Parameters) -> MechanicsBC:
+    """Incremental-problem frame: zero overburden increment on the top,
+    rollers everywhere else, zero incremental boundary displacement."""
     centroids = mesh.geometry.centroids(1)
     boundary = boundary_facets(mesh)
     top = [f for f in boundary
@@ -314,33 +303,38 @@ def mechanics_factory(mesh, parameters: Parameters, pressure, cache=None):
     rollers = [f for f in boundary if f not in set(top)]
     zero = lambda x: np.zeros((len(np.atleast_2d(x)), 3))  # noqa: E731
     free = lambda x: np.zeros((len(np.atleast_2d(x)), 3, 3))  # noqa: E731
+    return MechanicsBC(traction=free, traction_facets=top,
+                       roller_facets=rollers, dirichlet=zero)
 
-    from mimetika.operators.derham import DeRhamDeviatoricStress
+
+def poromechanics_solver(mesh, parameters: Parameters, cache=None,
+                         driver=None) -> PoromechanicsSolver:
+    """The benchmark's :class:`PoromechanicsSolver`: quasi-static, direct.
+
+    A fracture tag implies contact, so the fault enters as
+    ``{"fault": driver}``; without a driver the solver is the plain
+    unfractured poromechanics one (assembly, locked solves).
+    """
+    return PoromechanicsSolver(
+        mesh, material_of(parameters),
+        fractures=None if driver is None else {"fault": driver},
+        bc=boundary_conditions(mesh, parameters),
+        ic=PoromechanicsIC(prestress=None),
+        dt=0.0, linear_solver="direct",
+        cache=cache,
+    )
+
+
+def mechanics_factory(mesh, parameters: Parameters, pressure, cache=None):
+    """The mechanics of one depletion level, as the driver expects it.
+
+    A thin wrapper over :meth:`PoromechanicsSolver.mechanics`, kept for the
+    callers that only need the assembled system.
+    """
+    solver = poromechanics_solver(mesh, parameters, cache=cache)
 
     def factory(contact=None):
-        if contact is None and cache is not None and "system" in cache:
-            problem, matrix, rhs0, extra0, pinned = cache["system"]
-            delta = np.zeros_like(rhs0)
-            delta[: len(extra)] = np.asarray(extra - extra0).ravel()
-            delta[pinned] = 0.0
-            return problem, matrix, rhs0 + delta
-        problem = FourFieldElasticity(
-            mesh, contact=contact,
-            inner=DeRhamDeviatoricStress(mesh, material=material),
-        )
-        matrix, rhs = problem.assemble_constrained(
-            dirichlet=zero,
-            extra_rhs=extra,
-            traction=free,
-            traction_facets=top,  # zero overburden increment
-            roller_facets=rollers,
-        )
-        if contact is None and cache is not None:
-            pins, _ = problem.traction_moments(top, free)
-            pinned = np.concatenate([np.asarray(pins, dtype=np.int64),
-                                     problem.roller_dofs(rollers)])
-            cache["system"] = (problem, matrix, rhs, extra, pinned)
-        return problem, matrix, rhs
+        return solver.mechanics(pressure, contact=contact)
 
     return factory
 
@@ -401,34 +395,19 @@ def simulate(parameters: Parameters, spacing: float = 2.0,
         prestress=None, mu=parameters.shear_modulus, lam=lam,
         tolerance=1e-10, max_iterations=400,
     )
+    solver = poromechanics_solver(mesh, parameters, cache=cache,
+                                  driver=driver)
     state = None
     for k in range(substeps):
         stage = replace(parameters,
                         depletion=parameters.depletion * (k + 1) / substeps)
         pressure = pressure_field(mesh, stage)
-        driver.prestress = driver.expand_to_points(
-            insitu_prestress(mesh, fault, stage, pressure)
+        state = solver.step(
+            pressure,
+            state=state,
+            prestress=insitu_prestress(mesh, fault, stage, pressure),
+            warm_from_locked=(state is None and warm_from_locked),
         )
-        factory = mechanics_factory(mesh, stage, pressure, cache)
-        if state is None and warm_from_locked:
-            from mimetika.contact import ContactState
-            from mimetika.solver.saddle import solve_saddle
-
-            problem0, matrix0, rhs0 = factory(None)
-            sol0 = problem0.split(solve_saddle(
-                matrix0, rhs0, problem0.block_sizes, method="direct"))
-            xstar = driver.tractions(sol0["stress"])
-            mult = (driver.moment_operator() @ xstar.ravel()).reshape(
-                len(driver.facets), driver.ndf)
-            s0 = driver.initial_state()
-            state = ContactState(multiplier=mult, internal=s0.internal,
-                                 jump=s0.jump)
-        state = driver.solve_step(
-            factory,
-            state=state, solver="newton", reuse=cache.get("condensed"),
-        )
-        if state.condensed is not None:
-            cache["condensed"] = state.condensed
     y = mesh.geometry.centroids(1)[np.asarray(fault, dtype=int)][:, 1]
     order = np.argsort(y)
     slip = driver.per_facet(state.jump)[:, 1]
@@ -436,9 +415,7 @@ def simulate(parameters: Parameters, spacing: float = 2.0,
     # post-slip Coulomb function: total effective traction is the in-situ
     # prestress (which already carries the Biot pore term on the normal) plus
     # the solved incremental traction, read on the fault facets themselves
-    total = driver.per_facet(
-        driver.prestress + driver.tractions(state.solution["stress"])
-    )
+    total = solver.fault_tractions(state)
     coulomb = np.abs(total[:, 1]) + parameters.friction * total[:, 0]
 
     yy, ss = y[order], slip[order]
@@ -449,7 +426,7 @@ def simulate(parameters: Parameters, spacing: float = 2.0,
     pw = ContactDriver(mesh, fault, SignoriniCoulomb(friction=parameters.friction),
                        prestress=None, mu=parameters.shear_modulus, lam=lam,
                        enforcement="pointwise")
-    _, _, rhs_full = factory(None)  # cached
+    _, _, rhs_full = solver.mechanics(pressure)  # cached
     gap_pts = pw.gap(state.problem, state.solution, rhs=rhs_full)
     y_pts = np.concatenate([mesh.geometry.quadrature(1, int(f))[0][:, 1]
                             for f in fault])
@@ -468,7 +445,6 @@ def pre_slip_stress(parameters: Parameters, spacing: float = 2.0,
     """Fault stresses on the **locked** fault (Fig. 8): the plain continuum
     under the depletion load, no contact block, one direct solve."""
     from mimetika.contact import FrictionlessBilateral
-    from mimetika.solver.saddle import solve_saddle
 
     if built is None:
         mesh, fault, pressure = build(parameters, spacing)
@@ -476,11 +452,8 @@ def pre_slip_stress(parameters: Parameters, spacing: float = 2.0,
     else:
         mesh, fault, _, cache = built
         pressure = pressure_field(mesh, parameters)
-    problem, matrix, rhs = mechanics_factory(mesh, parameters, pressure,
-                                             cache)(None)
-    solution = problem.split(
-        solve_saddle(matrix, rhs, problem.block_sizes, method="direct")
-    )
+    solver = poromechanics_solver(mesh, parameters, cache=cache)
+    problem, solution, rhs = solver.locked_solution(pressure)
     lam = (2.0 * parameters.shear_modulus * parameters.poisson
            / (1.0 - 2.0 * parameters.poisson))
     driver = ContactDriver(mesh, fault, FrictionlessBilateral(),

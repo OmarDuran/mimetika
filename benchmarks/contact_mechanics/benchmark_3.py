@@ -44,7 +44,7 @@ from mimetika.contact import ContactDriver, SignoriniCoulomb
 from benchmarks.contact_mechanics.benchmark_2 import (
     build,
     insitu_prestress,
-    mechanics_factory,
+    poromechanics_solver,
     pressure_field,
     wide_parameters,
 )
@@ -125,7 +125,6 @@ def simulate(parameters: Parameters, law: SlipWeakening,
     pressure = pressure_field(mesh, parameters)
     lam = (2.0 * parameters.shear_modulus * parameters.poisson
            / (1.0 - 2.0 * parameters.poisson))
-    factory = mechanics_factory(mesh, parameters, pressure, cache)
     pre = insitu_prestress(mesh, fault, parameters, pressure)
 
     inner = SignoriniCoulomb(friction=law.static)
@@ -134,7 +133,8 @@ def simulate(parameters: Parameters, law: SlipWeakening,
         mu=parameters.shear_modulus, lam=lam,
         tolerance=1e-10, max_iterations=200,
     )
-    driver.prestress = driver.expand_to_points(pre)
+    solver = poromechanics_solver(mesh, parameters, cache=cache,
+                                  driver=driver)
     # inner solves are deliberately cold (state=None): with a warm ``g_prev``
     # the tangential driving becomes increment-based and near-threshold
     # facets flip slip direction on noise-scale increments, which loses the
@@ -148,11 +148,8 @@ def simulate(parameters: Parameters, law: SlipWeakening,
     for outer in range(600):
         if mu_pts is not None:
             inner.friction = mu_pts  # per-point array broadcasts in the law
-        state = driver.solve_step(factory, solver="newton",
-                                  reuse=cache.get("condensed"),
-                                  recover=False)  # the loop reads only slip
-        if state.condensed is not None:
-            cache["condensed"] = state.condensed
+        state = solver.step(pressure, prestress=pre,
+                            recover=False)  # the loop reads only slip
         slip_new = np.abs(driver.per_facet(state.jump)[:, 1])
         mu_new = driver.expand_to_points(np.maximum(
             law.dynamic,
@@ -172,8 +169,7 @@ def simulate(parameters: Parameters, law: SlipWeakening,
         last_change = change
         mu_pts = mu_new
     # one recovering solve for the fields the postprocessing reads
-    state = driver.solve_step(factory, solver="newton",
-                              reuse=cache.get("condensed"))
+    state = solver.step(pressure, prestress=pre)
     y = mesh.geometry.centroids(1)[np.asarray(fault, dtype=int)][:, 1]
     order = np.argsort(y)
     slip = driver.per_facet(state.jump)[:, 1]
@@ -186,7 +182,7 @@ def simulate(parameters: Parameters, law: SlipWeakening,
     pw = ContactDriver(mesh, fault, SignoriniCoulomb(friction=law.static),
                        prestress=None, mu=parameters.shear_modulus, lam=lam,
                        enforcement="pointwise")
-    _, _, rhs_full = factory(None)  # cached; the gap is the rows' residual
+    _, _, rhs_full = solver.mechanics(pressure)  # cached residual datum
     gap_pts = pw.gap(state.problem, state.solution, rhs=rhs_full)
     tot_pts = (pw.expand_to_points(pre)
                + pw.tractions(state.solution["stress"]))
