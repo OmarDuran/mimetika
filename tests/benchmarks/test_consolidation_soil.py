@@ -26,7 +26,7 @@ analytic side cannot quietly define the answer.
 import numpy as np
 import pytest
 
-from benchmarks.poroelasticity.terzaghi import (
+from benchmarks.poroelasticity.consolidation_soil import (
     TIME_FACTORS,
     Column,
     analytic_consolidation,

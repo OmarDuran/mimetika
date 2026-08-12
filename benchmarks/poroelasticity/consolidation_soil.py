@@ -1,10 +1,22 @@
-r"""Terzaghi's 1D consolidation column, in 2D and 3D, against the closed form.
+r"""Consolidation of a soil layer (Coussy Sect. 5.2.2) -- the Terzaghi problem.
 
-A saturated poroelastic column of height ``L`` is confined laterally, sealed on
-every face but the top, and loaded there at ``t = 0`` by a step compressive
-traction ``sigma_0``.  Because the fluid cannot escape instantaneously it carries
-the whole load at first; it then drains through the top and the load transfers to
-the skeleton.  The column settles as it does so.
+A saturated poroelastic layer of thickness ``h`` rests on a rigid impervious
+base; its upper surface is drained and loaded at ``t = 0`` by a step
+compressive traction ``sigma_0``.  Because the fluid cannot escape
+instantaneously it carries the whole load at first; it then drains through
+the surface and the load transfers to the skeleton.  The layer settles as it
+does so -- the celebrated consolidation problem of Terzaghi (1923), solved
+as Sect. 5.2.2 of Coussy, *Poromechanics* (Wiley, 2004).
+
+This benchmark reproduces **Coussy's Figure 5.3**: the normalized
+overpressure ``pbar`` against the normalized depth ``zbar = z/h`` measured
+from the drained surface, for ``tbar = c_f t / h^2`` in {0.001, 0.01, 0.1,
+0.25, 0.5, 1.0} (his Eq. 5.87), with the **early-time** similarity solution
+``pbar = erf(zbar / (2 sqrt(tbar)))`` (Eq. 5.83) dashed at ``tbar = 0.1``
+and ``0.25`` -- at 0.001 and 0.01 it cannot be distinguished from the exact
+series, exactly as the book notes.  The same figure is produced for both
+cell families (cartesian, simplex), each with the 2D and 3D columns overlaid
+on the closed form.
 
 Why this problem and not a harder one
 -------------------------------------
@@ -72,9 +84,19 @@ from mimetika.mesh import (
     structured_tets,
     structured_triangles,
 )
+from mimetika.simulation import (
+    FlowBC,
+    MechanicsBC,
+    PoromechanicsSolver,
+    RKTimeStepping,
+)
 
-#: the six time factors of the assignment -- five decades of consolidation
-TIME_FACTORS = (1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1e0)
+#: the six time factors of Coussy's Figure 5.3
+TIME_FACTORS = (0.001, 0.01, 0.1, 0.25, 0.5, 1.0)
+
+#: the times at which the book dashes the early-time similarity solution --
+#: at 0.001 and 0.01 it coincides with the series to plotting accuracy
+EARLY_TIME_SHOWN = (0.1, 0.25)
 
 #: ``family -> (2D generator, 3D generator)``.  Both families must give the same
 #: answer, but they do not exercise the same code: on simplices the mimetic
@@ -198,6 +220,20 @@ def analytic_pressure(elevation, factor, terms: int | None = None) -> np.ndarray
     return (4.0 / np.pi) * (phase * (decay / odd)).sum(axis=1)
 
 
+def early_time_pressure(depth, factor) -> np.ndarray:
+    """Coussy Eq. 5.83: ``pbar = erf(zbar / (2 sqrt(tbar)))``.
+
+    The similarity solution of the half-space: at early times the diffusion
+    has not yet felt the sealed base, so the layer behaves as if
+    semi-infinite.  ``depth`` is ``zbar``, measured from the drained
+    surface.
+    """
+    from scipy.special import erf
+
+    return erf(np.asarray(depth, dtype=float)
+               / (2.0 * np.sqrt(float(factor))))
+
+
 def analytic_consolidation(factor, partition: float = 1.0, terms: int = 400):
     r"""Degree of consolidation ``U = w(t)/w_inf``, ending at 1.
 
@@ -278,9 +314,6 @@ def simulate(
     steps would either crawl through the tail or miss the whole early transient.
     """
     mesh, top, confined = build(column, dim, axial, lateral, family)
-    # the standard four-field formulation; pass poromechanics=PoroMechanics for
-    # the classic five-field system (the two agree to solver round-off)
-    poro = poromechanics(mesh, column.material())
     axis = dim - 1
 
     load = np.zeros((3, 3))
@@ -293,24 +326,31 @@ def simulate(
     targets = sorted(float(f) for f in factors)
     schedule = _schedule(targets, per_decade)
 
+    # the full poromechanics solver: solved flow, adaptive (geometric) time
+    # schedule, drained top (pressure natural), sealed everywhere else (flux
+    # essential).  ``poromechanics=PoroMechanics`` selects the classic
+    # five-field system; the four-field default agrees to solver round-off.
+    stepping = RKTimeStepping(schedule=[column.time(f) for f in schedule])
+    engine = PoromechanicsSolver(
+        mesh, column.material(),
+        flow="solved",
+        bc=MechanicsBC(dirichlet=zero, traction=applied,
+                       traction_facets=top, roller_facets=confined),
+        flow_bc=FlowBC(flux_facets=confined),
+        time=stepping,
+        poromechanics=poromechanics,
+        linear_solver="direct",
+    )
+    poro = engine.poro
+
     centroids = mesh.geometry.centroids(dim)
     elevation = centroids[:, axis] / column.height
     volume = mesh.geometry.measure(dim)
 
-    previous, now, profiles, settlement = None, 0.0, {}, {}
-    for factor in schedule:
-        step = column.time(factor) - now
-        solution = poro.solve(
-            dt=step,
-            dirichlet=zero,
-            traction=applied,
-            traction_facets=top,
-            roller_facets=confined,
-            no_flow=confined,
-            previous=previous,
-            **solver,
-        )
-        previous, now = solution, column.time(factor)
+    previous, profiles, settlement = None, {}, {}
+    for (t, step), factor in zip(stepping.steps(), schedule):
+        solution = engine.flow_step(previous=previous, dt=step, **solver)
+        previous = solution
         if factor in targets:
             profiles[factor] = _layers(elevation, solution["pressure"])
             settlement[factor] = _settlement(poro, solution, column, axis, volume)
@@ -387,52 +427,62 @@ CELL_NAMES = {"cart": ("quadrilaterals", "hexahedra"),
               "simplex": ("triangles", "tetrahedra")}
 
 
-def figure(column: Column, results, path: str = "terzaghi.png",
+#: where along each curve the ``tbar`` label sits (a depth per factor,
+#: spread like the book's)
+_LABEL_DEPTH = {0.001: 0.10, 0.01: 0.22, 0.1: 0.38, 0.25: 0.55,
+                0.5: 0.72, 1.0: 0.90}
+
+
+def figure(column: Column, results, path: str = "consolidation_soil.png",
            family: str = "cart") -> str:
-    """Isochrones and the consolidation curve, 2D and 3D over the closed form."""
+    """Coussy's Figure 5.3, with the 2D and 3D numerics over the closed form.
+
+    Normalized overpressure ``pbar`` against normalized depth ``zbar``
+    (downward, 0 at the drained surface); solid lines the exact series
+    (Eq. 5.87), dashed the early-time similarity solution (Eq. 5.83) at
+    ``tbar = 0.1, 0.25``; markers the mimetic columns.
+    """
     planar, solid = CELL_NAMES[family]
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, (left, right) = plt.subplots(1, 2, figsize=(12.5, 5.4))
-    colours = plt.cm.viridis(np.linspace(0.05, 0.9, len(TIME_FACTORS)))
-    markers = {2: ("o", "none"), 3: ("x", "full")}
+    fig, ax = plt.subplots(figsize=(7.2, 7.0))
+    markers = {2: "o", 3: "x"}
 
-    fine = np.linspace(0.0, 1.0, 400)
-    for colour, factor in zip(colours, TIME_FACTORS):
-        left.plot(analytic_pressure(fine, factor), fine, color=colour, lw=1.6,
-                  label=f"T = {factor:g}")
+    fine = np.linspace(0.0, 1.0, 400)  # zbar, from the drained surface
+    for factor in TIME_FACTORS:
+        pbar = analytic_pressure(1.0 - fine, factor)
+        ax.plot(pbar, fine, "k-", lw=1.2)
+        z_lab = _LABEL_DEPTH[factor]
+        p_lab = float(analytic_pressure(1.0 - z_lab, factor)[0])
+        ax.annotate(rf"$\bar t = {factor:g}$", (p_lab, z_lab),
+                    xytext=(p_lab + 0.03, z_lab - 0.015), fontsize=9)
+    for factor in EARLY_TIME_SHOWN:
+        ax.plot(early_time_pressure(fine, factor), fine, "k--", lw=1.0)
+
     for result in results:
-        marker, fill = markers[result["dim"]]
-        for colour, factor in zip(colours, TIME_FACTORS):
-            layers = result["profiles"][factor]
-            left.plot(layers[:, 1] / column.initial_pressure, layers[:, 0],
-                      marker, color=colour, ms=5, mfc="none" if fill == "none" else colour,
-                      lw=0, alpha=0.9)
-    left.set_xlabel(r"$p / p_0$")
-    left.set_ylabel(r"$z / L$   (0 = sealed base, 1 = drained top)")
-    left.set_title(f"Consolidation isochrones -- {family}\n"
-                   f"lines: analytic   o: 2D {planar}   x: 3D {solid}")
-    left.set_xlim(-0.02, 1.02)
-    left.set_ylim(0, 1)
-    left.grid(alpha=0.25)
-    left.legend(fontsize=8, loc="lower left")
+        marker = markers[result["dim"]]
+        thin = max(1, len(next(iter(result["profiles"].values()))) // 24)
+        for factor in TIME_FACTORS:
+            layers = result["profiles"][factor][::thin]
+            ax.plot(layers[:, 1] / column.initial_pressure,
+                    1.0 - layers[:, 0], marker, color="k", ms=4,
+                    mfc="none", mew=0.8, lw=0, alpha=0.85)
 
-    grid = np.geomspace(1e-6, 2.0, 300)
-    right.semilogx(grid, analytic_consolidation(grid, column.load_partition),
-                   "k-", lw=1.6, label="analytic")
-    for result in results:
-        marker, _ = markers[result["dim"]]
-        got = [result["settlement"][f] / column.final_settlement for f in TIME_FACTORS]
-        right.semilogx(TIME_FACTORS, got, marker, ms=8, lw=0,
-                       mfc="none", label=f"{result['dim']}D")
-    right.set_xlabel(r"time factor  $T = c_v t / L^2$")
-    right.set_ylabel(r"degree of consolidation  $U = w/w_\infty$")
-    right.set_title(f"Settlement -- {family}")
-    right.grid(alpha=0.25, which="both")
-    right.legend()
-
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(1.0, 0.0)  # depth increases downward, as in the book
+    ax.xaxis.set_ticks_position("top")
+    ax.xaxis.set_label_position("top")
+    ax.set_xlabel(r"$\bar p$")
+    ax.set_ylabel(r"$\bar z$")
+    ax.grid(alpha=0.2)
+    ax.set_title(
+        f"Consolidation of a soil layer -- Coussy Fig. 5.3 ({family})\n"
+        f"solid: exact series   dashed: early-time erf "
+        rf"($\bar t$ = 0.1, 0.25)   o: 2D {planar}   x: 3D {solid}",
+        fontsize=10, pad=28,
+    )
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
@@ -441,16 +491,17 @@ def figure(column: Column, results, path: str = "terzaghi.png",
 
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--axial", type=int, default=80)
+    parser.add_argument("--axial", type=int, default=160)
     parser.add_argument("--lateral", type=int, default=2)
-    parser.add_argument("--per-decade", type=int, default=16)
-    parser.add_argument("--prefix", default="benchmarks/poroelasticity/terzaghi")
+    parser.add_argument("--per-decade", type=int, default=32)
+    parser.add_argument("--prefix",
+                        default="benchmarks/poroelasticity/consolidation_soil")
     parser.add_argument("--dims", type=int, nargs="+", default=[2, 3])
     parser.add_argument("--families", nargs="+", default=sorted(FAMILIES))
     args = parser.parse_args(argv)
 
     column = Column()
-    print("Terzaghi column")
+    print("Consolidation of a soil layer (Coussy Sect. 5.2.2 -- Terzaghi)")
     print(f"  K_v = {column.oedometer_modulus:.4e} Pa    S = {column.storage:.4e} 1/Pa")
     print(f"  c_v = {column.consolidation_coefficient:.4e} m^2/s")
     print(f"  p_0 = {column.initial_pressure:.4e} Pa   "

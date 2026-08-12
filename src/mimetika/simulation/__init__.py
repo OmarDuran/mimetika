@@ -6,5 +6,7 @@ from mimetika.simulation.poromechanics import (
     PoromechanicsIC,
     PoromechanicsSolver,
 )
+from mimetika.simulation.timestepping import RKTimeStepping
 
-__all__ = ["FlowBC", "MechanicsBC", "PoromechanicsIC", "PoromechanicsSolver"]
+__all__ = ["FlowBC", "MechanicsBC", "PoromechanicsIC", "PoromechanicsSolver",
+           "RKTimeStepping"]

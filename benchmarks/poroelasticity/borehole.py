@@ -42,6 +42,12 @@ from mimetika.assembly.four_field import FourFieldPoroMechanics
 from mimetika.assembly.mixed import MixedSolution, boundary_facets
 from mimetika.materials import Material
 from mimetika.mesh.mesh import Mesh
+from mimetika.simulation import (
+    FlowBC,
+    MechanicsBC,
+    PoromechanicsSolver,
+    RKTimeStepping,
+)
 
 # -- problem data (mu, lam are the 3D Lame parameters; plane strain) ----------
 A_R, R_OUT = 1.0, 40.0
@@ -261,7 +267,6 @@ def run(h_in, h_out, n_steps, T_end, report_at, vtk=None, dim=2,
         permeability=1.0,
         viscosity=1.0,
     )
-    problem = FourFieldPoroMechanics(mesh, material)  # DeRham defaults
 
     # boundary classification by facet centroid
     fc = mesh.geometry.centroids(d - 1)
@@ -291,6 +296,26 @@ def run(h_in, h_out, n_steps, T_end, report_at, vtk=None, dim=2,
         r = np.linalg.norm(np.atleast_2d(x)[:, :2], axis=1)
         return np.where(r < rmid, P1, P0)
 
+    dt = (T_end * A_R**2 / CF) / n_steps
+
+    # the full poromechanics solver on its constant-dt fast path: the matrix
+    # and every boundary datum are constant in time, so the first flow_step
+    # assembles and factorizes ONCE and every later step is a
+    # back-substitution plus the previous-state update of the pressure rows
+    import time
+
+    engine = PoromechanicsSolver(
+        mesh, material,
+        flow="solved",
+        bc=MechanicsBC(traction=traction, traction_facets=inner + outer,
+                       roller_facets=sym),
+        flow_bc=FlowBC(flux_facets=sym, pressure=pressure_bc),
+        time=RKTimeStepping(dt=dt),
+        poromechanics=FourFieldPoroMechanics,  # DeRham defaults
+        linear_solver="direct",
+    )
+    problem = engine.poro
+
     # initial state compatible with the plane-strain closure (u_z = 0):
     # in-plane -w, and the confined vertical stress szz0 = 2 lam eps2 - b p0
     # (the change fields still match Coussy exactly, by linearity)
@@ -304,32 +329,7 @@ def run(h_in, h_out, n_steps, T_end, report_at, vtk=None, dim=2,
         {"stress": init_stress, "pressure": np.full(n_tri, P0)}
     )
 
-    dt = (T_end * A_R**2 / CF) / n_steps
-
-    # the matrix and every boundary datum are constant in time: assemble and
-    # factorize ONCE; per step only the previous-state block of the rhs (the
-    # pressure rows, untouched by the essential constraints) changes
-    import time
-
-    import scipy.sparse as sp
-    import scipy.sparse.linalg as spla
-
     t0 = time.perf_counter()
-    S, rhs, _ = problem.assemble(
-        dt=dt,
-        traction=traction,
-        traction_facets=inner + outer,
-        roller_facets=sym,
-        no_flow=sym,
-        pressure_bc=pressure_bc,
-        previous=prev,
-    )
-    lu = spla.splu(S.tocsc())
-    coupling = (
-        sp.diags(problem.material.pressure_coupling(d)) @ problem.trace_operator()
-    )
-    storage = sp.diags(problem.material.storage(d) * mesh.geometry.measure(d))
-    print(f"assembly + factorization: {time.perf_counter() - t0:.1f}s")
 
     series = None
     if vtk is not None:
@@ -359,19 +359,16 @@ def run(h_in, h_out, n_steps, T_end, report_at, vtk=None, dim=2,
         series.write(0.0, bulk=_initial_fields(prev, n_tri))
 
     t0 = time.perf_counter()
-    prev_block = problem._previous_terms(prev, coupling, storage)
     T, results = 0.0, {}
     for _ in range(n_steps):
-        sol = _split_six(problem, lu.solve(rhs))
+        sol = engine.flow_step(previous=prev)  # fast path: one factorization
+        prev = sol
         T += dt * CF / A_R**2
         for Tr in report_at:
             if abs(T - Tr) < 0.5 * dt * CF / A_R**2 and Tr not in results:
                 results[Tr] = sol
         if series is not None:
             series.write(T, bulk=fields(sol))
-        new_block = problem._previous_terms(sol, coupling, storage)
-        rhs[-problem.n_cells :] += new_block - prev_block
-        prev_block = new_block
     print(f"{n_steps} steps: {time.perf_counter() - t0:.1f}s")
     if series is not None:
         print(f"wrote {series.collection} ({n_steps + 1} timesteps)")
