@@ -178,6 +178,25 @@ def simulate(parameters: Parameters, law: SlipWeakening,
     order = np.argsort(y)
     slip = driver.per_facet(state.jump)[:, 1]
     converged = converged and float(np.abs(slip).max()) < 50 * law.critical
+
+    # resolved fault profile: the stress space carries BDM_1 facet moments,
+    # so traction and jump vary *linearly* along every facet -- twice the
+    # information of a facet average (and of a collocated FV on the same
+    # mesh).  Read both at the two facet Gauss points.
+    pw = ContactDriver(mesh, fault, SignoriniCoulomb(friction=law.static),
+                       prestress=None, mu=parameters.shear_modulus, lam=lam,
+                       enforcement="pointwise")
+    _, _, rhs_full = factory(None)  # cached; the gap is the rows' residual
+    gap_pts = pw.gap(state.problem, state.solution, rhs=rhs_full)
+    tot_pts = (pw.expand_to_points(pre)
+               + pw.tractions(state.solution["stress"]))
+    y_pts = np.concatenate([mesh.geometry.quadrature(1, int(f))[0][:, 1]
+                            for f in fault])
+    slip_pts = np.abs(gap_pts[:, 1])
+    mu_p = np.maximum(law.dynamic, law.static
+                      - (law.static - law.dynamic) * slip_pts / law.critical)
+    sc_pts = np.abs(tot_pts[:, 1]) + mu_p * tot_pts[:, 0]
+    op = np.argsort(y_pts)
     # post-slip Coulomb function with the slip-weakening coefficient (Fig. 14
     # left): total effective traction = in-situ prestress + solved increment
     total = driver.per_facet(
@@ -190,6 +209,8 @@ def simulate(parameters: Parameters, law: SlipWeakening,
     coulomb = np.abs(total[:, 1]) + mu_fac * total[:, 0]
     return {
         "y": y[order], "slip": slip[order], "coulomb": coulomb[order],
+        "y_pts": y_pts[op], "slip_pts": slip_pts[op],
+        "coulomb_pts": sc_pts[op],
         "state": state, "built": built, "mu": mu_pts,
         "converged": converged,
         "peak": float(np.abs(slip).max()),
@@ -204,6 +225,10 @@ def main() -> None:
     parser.add_argument("--start", type=float, default=-16.5)
     parser.add_argument("--stop", type=float, default=-19.0)
     parser.add_argument("--step", type=float, default=0.25)
+    parser.add_argument("--refine", type=float, default=0.02,
+                        help="bisect the nucleation bracket down to this "
+                             "width in MPa (0 disables); Fig. 14 is drawn "
+                             "at the deepest converged level")
     parser.add_argument("--mu-s", type=float, default=0.52)
     parser.add_argument("--mu-d", type=float, default=0.20)
     parser.add_argument("--delta-c", type=float, default=0.02)
@@ -238,9 +263,29 @@ def main() -> None:
         last = (level, res)
         mu0 = res["mu"]  # continue the friction field along the branch
 
+    if nucleated is not None and last is not None and arguments.refine > 0:
+        # bisect toward the fold: each probe rides the cached factorization,
+        # and the deepest converged state is the honest pre-nucleation one
+        lo, hi = nucleated, last[0]
+        mu0 = last[1]["mu"]
+        while hi - lo > arguments.refine + 1e-12:
+            mid = 0.5 * (lo + hi)
+            stage = replace(parameters, depletion=mid * 1e6)
+            res = simulate(stage, law, spacing=arguments.spacing, built=built,
+                           mu0=mu0)
+            status = ("converged" if res["converged"] else "NO EQUILIBRIUM")
+            print(f"  p = {mid:8.3f} MPa   peak |slip| = "
+                  f"{res['peak'] * 1e3:7.3f} mm   {status}   (bisection)")
+            if res["converged"]:
+                hi, last, mu0 = mid, (mid, res), res["mu"]
+                profiles.append((mid, res["y"], np.abs(res["slip"])))
+            else:
+                lo = mid
+        nucleated = lo
+
     if nucleated is not None:
-        upper = f"{last[0]:.2f}" if last is not None else f"> {nucleated:.2f}"
-        print(f"\n  nucleation bracketed: p* in ({nucleated:.2f}, {upper}) MPa")
+        upper = f"{last[0]:.3f}" if last is not None else f"> {nucleated:.3f}"
+        print(f"\n  nucleation bracketed: p* in ({nucleated:.3f}, {upper}) MPa")
         print("  (paper: -17.41 MPa semi-analytical, -17.27 MPa DARTS; on "
               "coarse fault spacings p* shifts to the mesh-dependent slip "
               "onset -- see the docstring)")
@@ -250,7 +295,7 @@ def main() -> None:
     ref = reference_pre_nucleation()
     if ref is not None and last is not None:
         yr, dr = ref
-        ours = np.interp(yr, last[1]["y"], np.abs(last[1]["slip"]))
+        ours = np.interp(yr, last[1]["y_pts"], last[1]["slip_pts"])
         sel = np.abs(yr) <= 100.0
         rms = np.sqrt(np.mean((ours[sel] - np.abs(dr[sel])) ** 2))
         print(f"\n  last equilibrium (p = {last[0]:.2f} MPa) vs 4TU Fig. 14 "
@@ -275,10 +320,14 @@ def main() -> None:
         level, res = last
         fig, (left_ax, right_ax) = plt.subplots(1, 2, figsize=(9.0, 6.0),
                                                 sharey=True)
-        sel = (res["y"] >= 60.0) & (res["y"] <= 80.0)
-        left_ax.plot(res["coulomb"][sel] / 1e6, res["y"][sel], lw=1.5,
+        # the law constrains the facet-*mean* Coulomb stress, so that is the
+        # enforced quantity to plot; the slip is a kinematic field whose
+        # per-facet linear (BDM) variation is genuine resolution
+        selc = (res["y"] >= 60.0) & (res["y"] <= 80.0)
+        left_ax.plot(res["coulomb"][selc] / 1e6, res["y"][selc], lw=1.5,
                      label="mimetic-AFW-BDM")
-        right_ax.plot(np.abs(res["slip"][sel]) * 1e3, res["y"][sel], lw=1.5)
+        sel = (res["y_pts"] >= 60.0) & (res["y_pts"] <= 80.0)
+        right_ax.plot(res["slip_pts"][sel] * 1e3, res["y_pts"][sel], lw=1.5)
         if REFERENCE_DATA.exists():
             rl = load_reference("14 left")
             rr = load_reference("14 right")

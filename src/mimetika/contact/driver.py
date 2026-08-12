@@ -285,7 +285,9 @@ class ContactDriver:
         x = np.concatenate([solution[k] for k in solution.blocks])
         r = problem.constitutive_rows(contact=False) @ x
         if rhs is not None:
-            r = r - np.asarray(rhs, dtype=float)
+            # the constitutive rows are the leading (stress) block; a full
+            # system rhs is accepted and sliced accordingly
+            r = r - np.asarray(rhs, dtype=float)[: len(r)]
         out = []
         for f in self.facets:
             coeffs = -r[self.ndf * int(f) : self.ndf * (int(f) + 1)].reshape(
