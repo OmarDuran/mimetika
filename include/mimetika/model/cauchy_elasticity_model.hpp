@@ -8,8 +8,10 @@
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/model/boundary_conditions.hpp"
 #include "mimetika/model/compositions/elasticity.hpp"
+#include "mimetika/physics/boundary_terms.hpp"
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/solver/linear.hpp"
+#include "mimetika/solver/petsc.hpp"
 
 // CAUCHY ELASTICITY, STATED AS DATA -- the poroelastic model with the flow
 // taken out, and the smallest problem that exercises the stress space alone.
@@ -111,6 +113,7 @@ class CauchyElasticityModel {
   // how many cells needed a stabilization: zero on a simplex mesh for either
   // realization, and that is the construction rather than a coincidence
   std::size_t n_stabilized() const { return stress_.n_stabilized(); }
+  const exokal::hodge::StressOperators& stress_operators() const { return stress_; }
 
   void build() {
     const graphos::Complex& c = mesh_->topology();
@@ -122,6 +125,16 @@ class CauchyElasticityModel {
                                                     derham ? &geometry_ : nullptr);
     ctx_.provide("stress_operators", stress_);
 
+    displacement_data_ = BoundaryVectorData(static_cast<std::size_t>(c.count(dim_ - 1)));
+    for (const auto& d : displacement_facets_) {
+      displacement_data_.set_affine(d.facets, d.constant, d.gradient);
+    }
+    ctx_.provide("boundary_displacement", displacement_data_);
+
+    reservoir_data_ = CellData(static_cast<std::size_t>(c.count(dim_)));
+    for (const auto& r : reservoir_) reservoir_data_.set(r.cells, r.pressure);
+    ctx_.provide("reservoir_pressure", reservoir_data_);
+
     // THE SPACE FOLLOWS THE STAR: d^2 traction moments per facet for both of
     // these, read off the operators rather than restated, so the layout and the
     // product cannot drift apart.
@@ -130,6 +143,16 @@ class CauchyElasticityModel {
     sim_ = std::make_unique<Simulation>(
         physics::Catalogue::instance().build("linear_elasticity", o),
         std::vector<StratumSpec>{StratumSpec{"ambient", &c, dim_, 0}}, ctx_);
+    // the natural displacement datum, attached only when one is actually given
+    if (!displacement_facets_.empty()) {
+      sim_->model().add("prescribed_displacement", exokal::forms::On::all(), {});
+    }
+    if (!reservoir_.empty()) {
+      exokal::forms::Params rp;
+      rp.set("biot", biot_);
+      rp.set("volumetric_compliance", volumetric_compliance_);
+      sim_->model().add("reservoir_pressurization", exokal::forms::On::all(), rp);
+    }
 
     // the conditions resolve against the space, which is what gives each of
     // them its dofs, and the strong ones then hand their forms to the
@@ -137,6 +160,25 @@ class CauchyElasticityModel {
     const auto& sp = sim_->epoch().stratum(0).space();
     mechanics_.resolve(*mesh_, dim_, sp);
     mechanics_.impose(sim_->constraints());
+
+    // the prescribed fracture traction, registered with a placeholder value:
+    // the STRUCTURE is what freeze_constraints needs, and the values move later
+    {
+      const auto& ms = sp.map(sp.index_of("s_0"));
+      const auto s_base = static_cast<std::size_t>(sp.offset(sp.index_of("s_0")));
+      const int nb = stress_.moments_per_facet();
+      for (const Index f : prescribed_) {
+        for (int b = 0; b < nb; ++b) {
+          for (int k = 0; k < dim_; ++k) {
+            const auto d = static_cast<Index>(
+                s_base + static_cast<std::size_t>(ms.global(dim_ - 1, f, b, k)));
+            prescribed_forms_.push_back(sim_->constraints().size());
+            prescribed_dofs_.push_back(static_cast<std::size_t>(d));
+            sim_->constraints().pin(d, 0.0);
+          }
+        }
+      }
+    }
     sim_->freeze_constraints();
 
     exokal::forms::TripletSink jac(sim_->n_dofs());
@@ -157,9 +199,224 @@ class CauchyElasticityModel {
                     : -r[i];
     }
 
+    // ONE FACTORIZATION for every later evaluation of S
+    solver_.factorize(system_);
+    work_.assign(sim_->n_dofs(), 0.0);
     s_offset_ = static_cast<std::size_t>(sp.offset(sp.index_of("s_0")));
     u_offset_ = static_cast<std::size_t>(sp.offset(sp.index_of("u_0")));
     n_cells_ = static_cast<std::size_t>(c.count(dim_));
+  }
+
+  // THE TRACE OPERATOR: the displacement jump across an INTERIOR facet, as the
+  // adjoint of the divergence and the asymmetry.
+  //
+  //     [| D^T u + A^T gamma |]_f = (D^T u + A^T gamma)_f^+ - (...)_f^-
+  //
+  // and the right-hand side is not two evaluations and a subtraction. D maps
+  // facet tractions to cell vectors, so its adjoint maps cell displacements
+  // back onto facets carrying each cell's OUTWARD incidence on the facet; the
+  // two cofaces of an interior facet therefore enter with opposite signs and the
+  // ASSEMBLED ROW IS THE DIFFERENCE. The jump falls out of the adjoint for free,
+  // and the same holds for A and the rotation, which supplies the rigid-rotation
+  // part of the displacement field the facet sees.
+  //
+  // What is returned is the FULL constitutive row of the UNFRACTURED system,
+  //
+  //     jump_f = -( M sigma - D^T u - A^T gamma )_f ,
+  //
+  // in the ambient traction-moment components of facet f. The M sigma term is
+  // not optional and the bonded case is the proof: on an interior facet with no
+  // fracture the displacement is continuous, the two cofaces' boundary terms
+  // cancel, and this residual vanishes -- which is exactly the statement
+  // [[u]] = 0. Dropping M sigma leaves 4e-2 there on a unit column instead of
+  // round-off, so the adjoint terms alone are a jump only in the sense of
+  // naming which operators carry the sign structure, not as a formula.
+  //
+  // Three properties, each load bearing:
+  //
+  //   * IT IS LINEAR in the state, so it applies even where that row has been
+  //     REPLACED by a contact constraint. The equation is gone; the functional
+  //     it expressed is not.
+  //   * IT MUST BE THE UNFRACTURED ROW. Where a constraint replaced it, the
+  //     fractured residual is zero at the solution, whereas THIS residual is
+  //     precisely the jump it exists to extract.
+  //   * NO Gram^{-1}. A traction degree of freedom IS a moment
+  //     m = int_f (sigma n) b, so recovering its pointwise values needs
+  //     Gram^{-1} m. The jump term int_f [[u]].(tau n) is paired AGAINST that
+  //     moment -- writing (tau n) = sum_b phi_b b_b gives m = Gram phi -- so the
+  //     pairing already carries a Gram^{-1} and what emerges are the expansion
+  //     COEFFICIENTS of the jump. A second inversion divides by |f| and the slip
+  //     then grows like 1/h under refinement: a mesh-dependent answer.
+  //
+  // It is a property of the DISCRETIZATION and not of contact, which is why it
+  // lives here: any consumer wanting relative motion across a facet -- a
+  // fracture, a material interface, a post-processing -- wants this functional.
+  // PoroelasticModel carries the same method with the Biot term added.
+  std::vector<double> trace(Index facet, const std::vector<double>& z) const {
+    const graphos::Complex& c = mesh_->topology();
+    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& ms = sp.map(sp.index_of("s_0"));
+    const auto& mu = sp.map(sp.index_of("u_0"));
+    const auto& mg = sp.map(sp.index_of("g_0"));
+    const auto u_off = static_cast<std::size_t>(sp.offset(sp.index_of("u_0")));
+    const auto g_off = static_cast<std::size_t>(sp.offset(sp.index_of("g_0")));
+
+    const int nb = stress_.moments_per_facet();
+    const std::size_t ndf = static_cast<std::size_t>(dim_) * static_cast<std::size_t>(nb);
+    std::vector<double> row(ndf, 0.0);
+
+    // BOTH COFACES, each contributing through its own local operators. The
+    // outward incidence is already inside Dv and As -- StressOperators put it
+    // there when it converted to the canonical basis -- so summing the two
+    // sides IS the jump, with no sign applied here.
+    const graphos::CoboundaryOperator cob = graphos::coboundary(c, dim_ - 1);
+    const auto b = static_cast<std::size_t>(cob.offsets[static_cast<std::size_t>(facet)]);
+    const auto e = static_cast<std::size_t>(cob.offsets[static_cast<std::size_t>(facet) + 1]);
+    for (std::size_t m = b; m < e; ++m) {
+      const Index cell = cob.indices[m];
+      const auto& op = stress_.cell(cell);
+      // where this facet's block sits within the cell's stress operators
+      std::size_t slot = 0;
+      bool found = false;
+      for (std::size_t i = 0; i < op.faces.size(); ++i) {
+        if (op.faces[i] == facet) { slot = i; found = true; break; }
+      }
+      if (!found) throw std::runtime_error("trace: the facet is not a face of its coface");
+
+      const std::size_t nu = op.Dv.rows(), ng = op.As.rows();
+      const std::size_t D = op.M.rows();
+      for (std::size_t k = 0; k < ndf; ++k) {
+        // the local stress index of (this facet, component/basis k), in the
+        // ProductSpace order the operators were permuted into
+        const std::size_t local = slot * ndf + k;
+        double acc = 0.0;
+        // M sigma, over EVERY facet of this cell: the compliance couples the
+        // fracture facet to the cell's other faces
+        for (std::size_t j = 0; j < D; ++j) {
+          // within a facet block the ProductSpace orders the COMPONENT fastest
+          // -- b * d + k -- which is the order StressOperators permuted its
+          // operators into, so the moment and the component split out of the
+          // local index rather than being passed whole
+          const std::size_t jf = j / ndf, jk = j % ndf;
+          const int moment = static_cast<int>(jk) / dim_;
+          const int comp = static_cast<int>(jk) % dim_;
+          acc += op.M(local, j) *
+                 z[s_offset_ + static_cast<std::size_t>(
+                                   ms.global(dim_ - 1, op.faces[jf], moment, comp))];
+        }
+        for (std::size_t j = 0; j < nu; ++j) {
+          acc -= op.Dv(j, local) *
+                 z[u_off + static_cast<std::size_t>(mu.global(dim_, cell, 0, static_cast<int>(j)))];
+        }
+        for (std::size_t j = 0; j < ng; ++j) {
+          acc -= op.As(j, local) *
+                 z[g_off + static_cast<std::size_t>(mg.global(dim_, cell, 0, static_cast<int>(j)))];
+        }
+        row[k] += acc;
+      }
+    }
+    // THE SIGN IS FIXED BY THE COMPRESSED CASE, not by the bonded one. The
+    // residual vanishes wherever the material is continuous, and zero has no
+    // sign, so the bonded identity cannot distinguish g from -g. What does:
+    // prescribe a ZERO traction on a fault under compressive boundary
+    // displacement and the two halves must OVERLAP, so the gap has to come out
+    // NEGATIVE there. With the opposite convention the solver reads that as an
+    // open fault, settles in one iteration carrying no load, and reports a
+    // converged answer satisfying g >= 0, t <= 0 and g t = 0 -- formally
+    // Signorini, and the wrong branch of it.
+    //
+    // The same choice is what makes the outer iteration contract. Measured on a
+    // compressed column, dg/dt = -0.16 in this convention, and the Uzawa
+    // multiplier |1 + r dg/dt| is below one exactly when that slope is
+    // negative; with the sign the other way no augmentation converges. The
+    // physics and the contraction agree, which is the check that they are both
+    // right.
+    for (double& v : row) v = -v;
+    return row;
+  }
+
+  // ---- the affine solution operator ------------------------------------
+  //
+  // PRESCRIBE THE TRACTION on a set of facets, as an essential condition: in
+  // the mixed form sigma|_f IS a degree of freedom, so "the fracture carries
+  // this traction" is a Dirichlet condition on the unknown and not a penalty.
+  // Registered BEFORE build(), because it changes which equations the system
+  // has; the VALUES may then move freely, which is what the outer iteration
+  // needs.
+  void prescribe_traction(std::vector<Index> facets) { prescribed_ = std::move(facets); }
+
+  // RESERVOIR PRESSURIZATION: a pore-pressure change on a set of cells, entering
+  // the mechanics as a LOAD.
+  //
+  // The benchmarks do not solve the flow -- the pressure is data and only the
+  // mechanical response is computed -- so the Biot coupling contributes
+  // alpha T^T p to the right-hand side and there is no pressure unknown. The
+  // coefficient and the operator are the ones the coupled solver uses, so the
+  // two agree exactly where both are posed.
+  void pressurize(const std::vector<Index>& cells, double pressure, double biot = 1.0,
+                  double volumetric_compliance = 1.0) {
+    reservoir_.push_back({cells, pressure});
+    biot_ = biot;
+    volumetric_compliance_ = volumetric_compliance;
+  }
+
+  // PRESCRIBE A DISPLACEMENT on a set of boundary facets: u = a + B (x - x_E).
+  //
+  // NATURAL, not essential. In the Hellinger-Reissner form the interior
+  // displacement enters the stress row as -D^T u, so on a boundary facet a
+  // prescribed displacement takes its place in the right-hand side -- there is
+  // no displacement degree of freedom on a facet to constrain. The affine datum
+  // is EXACT: both integrals it needs are already in the stress operators'
+  // facet moments, so no boundary quadrature enters and a linear displacement
+  // is reproduced rather than approximated.
+  //
+  // It is also what makes a fracture spanning the whole domain well posed. Under
+  // pure traction data each side of such a fracture carries a rigid-body null
+  // mode and equilibrium alone fixes the fault traction; with the displacement
+  // prescribed there is no null mode and the traction is genuinely an unknown
+  // for a contact law to determine.
+  void prescribe_displacement(const std::vector<Index>& facets,
+                              const std::array<double, 3>& constant,
+                              const std::array<double, 9>& gradient = {}) {
+    displacement_facets_.push_back({facets, constant, gradient});
+  }
+  const std::vector<Index>& prescribed_traction() const { return prescribed_; }
+
+  // S : m -> z(m), the solution of the mixed problem on the affine subspace
+  // { z : sigma|_F = m }.
+  //
+  //     A_CC z_C = b_C - A_CF m ,   z_F = m .
+  //
+  // A_CC DOES NOT DEPEND ON m -- prescribing removes the same rows and columns
+  // whatever the values are -- so the operator is factorized once and every
+  // later evaluation is a back-substitution against a moved right-hand side.
+  // That is the whole reason contact can iterate without touching the global
+  // system more than once.
+  //
+  // `moments` runs facet-major over prescribed_traction(), d * nb entries each,
+  // in the ProductSpace order (component fastest).
+  const std::vector<double>& solution_operator(const std::vector<double>& moments) const {
+    const std::size_t ndf = static_cast<std::size_t>(dim_) *
+                            static_cast<std::size_t>(stress_.moments_per_facet());
+    if (moments.size() != prescribed_.size() * ndf) {
+      throw std::invalid_argument("solution_operator: one traction moment block per facet");
+    }
+    auto& constraints = const_cast<Simulation&>(*sim_).constraints();
+    for (std::size_t i = 0; i < prescribed_.size(); ++i) {
+      for (std::size_t k = 0; k < ndf; ++k) {
+        constraints.set_value(prescribed_forms_[i * ndf + k], moments[i * ndf + k]);
+      }
+    }
+    // only the prescribed rows move: the load is unchanged, so the residual
+    // never has to be reassembled
+    for (std::size_t i = 0; i < prescribed_.size(); ++i) {
+      for (std::size_t k = 0; k < ndf; ++k) {
+        const auto d = prescribed_dofs_[i * ndf + k];
+        rhs_[d] = constraints.scale_at(d) * moments[i * ndf + k];
+      }
+    }
+    solver_.solve(rhs_, work_);
+    return work_;
   }
 
   void accept(std::vector<double> x) { state_ = std::move(x); }
@@ -182,6 +439,88 @@ class CauchyElasticityModel {
     const auto& mu = sp.map(sp.index_of("u_0"));
     return -state_[u_offset_ + static_cast<std::size_t>(mu.global(dim_, cell, 0, axis))] /
            exokal::measure(*mesh_, dim_, cell);
+  }
+
+  // THE CELL-AVERAGE STRESS TENSOR, reconstructed from the facet tractions the
+  // space already carries.
+  //
+  //     |E| sigma_ij = int_{dE} (sigma n_out)_i (x - x_E)_j
+  //
+  // which is the divergence theorem applied to sigma_ik d_k (x - x_E)_j, and it
+  // is EXACT for a constant stress: the leading facet moment is int_f (sigma n)
+  // because the chart has chi_0 = 1, and the remaining factor comes out of the
+  // integral. So a mixed method whose stress is piecewise constant reproduces it
+  // to round-off, and one whose stress varies is sampled at the facet centroids
+  // -- second order, not first, because the moment is the facet MEAN.
+  //
+  // EXPANDING ABOUT THE CELL CENTROID IS NOT COSMETIC. The alternative, using x
+  // itself, differs by x_{E,j} times the net force on the cell -- zero only when
+  // the cell is in equilibrium with no body load. Under a reservoir
+  // pressurization it is not, and the difference is the whole depletion signal.
+  //
+  // The result is symmetrized. Symmetry of the stress is imposed WEAKLY in this
+  // formulation -- that is what the rotation multiplier gamma is for -- so the
+  // raw reconstruction carries an antisymmetric part of the size of the
+  // discretization error, and reporting it as stress would be reporting that
+  // error as physics.
+  std::array<double, 9> cell_stress(Index cell) const {
+    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& ms = sp.map(sp.index_of("s_0"));
+    const auto& op = stress_.cell(cell);
+    const exokal::Point xE = exokal::centroid(*mesh_, dim_, cell);
+    const double volume = exokal::measure(*mesh_, dim_, cell);
+
+    std::array<double, 9> raw{};
+    for (const Index f : op.faces) {
+      const FacetFrame fr = FacetFrame::of(*mesh_, dim_, cell, f);
+      const exokal::Point xf = exokal::centroid(*mesh_, dim_ - 1, f);
+      for (int i = 0; i < dim_; ++i) {
+        // the leading moment is int_f (sigma n) against the CANONICAL normal;
+        // the incidence turns it outward from this cell
+        const double t =
+            fr.incidence *
+            state_[s_offset_ + static_cast<std::size_t>(ms.global(dim_ - 1, f, 0, i))];
+        for (int j = 0; j < dim_; ++j) {
+          raw[static_cast<std::size_t>(i * 3 + j)] +=
+              t * (xf[static_cast<std::size_t>(j)] - xE[static_cast<std::size_t>(j)]);
+        }
+      }
+    }
+    std::array<double, 9> out{};
+    for (int i = 0; i < dim_; ++i) {
+      for (int j = 0; j < dim_; ++j) {
+        out[static_cast<std::size_t>(i * 3 + j)] =
+            0.5 *
+            (raw[static_cast<std::size_t>(i * 3 + j)] + raw[static_cast<std::size_t>(j * 3 + i)]) /
+            volume;
+      }
+    }
+    return out;
+  }
+
+  // THE TRACTION ON ANY FACET, interior or boundary, in ambient components and
+  // against the facet's CANONICAL normal.
+  //
+  // In Hellinger-Reissner the facet traction moments ARE primary unknowns, so
+  // this is the value on the plane itself rather than a cell-centred stress
+  // sampled half a cell away -- which matters most exactly where it is read from
+  // a fault, since no amount of refinement along the plane fixes an error
+  // across it.
+  //
+  // It takes no coface, and that is the difference from `normal_traction`: the
+  // orientation asked for is the canonical one, which a facet owns by itself,
+  // so an INTERIOR facet is a legitimate argument. Going through a coface to
+  // find a frame is a boundary accessor and fails on a fault.
+  std::array<double, 3> facet_traction(Index facet) const {
+    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& ms = sp.map(sp.index_of("s_0"));
+    const double area = exokal::measure(*mesh_, dim_ - 1, facet);
+    std::array<double, 3> t{};
+    for (int k = 0; k < dim_; ++k) {
+      t[static_cast<std::size_t>(k)] =
+          state_[s_offset_ + static_cast<std::size_t>(ms.global(dim_ - 1, facet, 0, k))] / area;
+    }
+    return t;
   }
 
   // THE NORMAL TRACTION on a facet, read through the same form a condition
@@ -225,7 +564,26 @@ class CauchyElasticityModel {
   exokal::forms::TermContext ctx_;
   std::unique_ptr<Simulation> sim_;
   solver::SparseSystem system_;
-  std::vector<double> rhs_, state_;
+  mutable std::vector<double> rhs_;
+  std::vector<double> state_;
+  mutable std::vector<double> work_;
+  mutable solver::PetscSolver solver_;
+  struct DisplacementDatum {
+    std::vector<Index> facets;
+    std::array<double, 3> constant{};
+    std::array<double, 9> gradient{};
+  };
+  struct Reservoir {
+    std::vector<Index> cells;
+    double pressure{0.0};
+  };
+  std::vector<Reservoir> reservoir_;
+  CellData reservoir_data_{0};
+  double biot_{1.0}, volumetric_compliance_{1.0};
+  std::vector<DisplacementDatum> displacement_facets_;
+  BoundaryVectorData displacement_data_{0};
+  std::vector<Index> prescribed_;
+  std::vector<std::size_t> prescribed_forms_, prescribed_dofs_;
   std::size_t s_offset_{0}, u_offset_{0}, n_cells_{0};
 };
 

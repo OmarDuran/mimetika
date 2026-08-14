@@ -93,6 +93,22 @@ class Constraints {
   bool empty() const { return forms_.empty(); }
   const std::vector<Form>& forms() const { return forms_; }
 
+  // MOVE A FORM'S VALUE, leaving its structure alone.
+  //
+  // This is the affine decomposition made operational. finalize() assigns each
+  // form the equation it replaces by partial pivoting on the COEFFICIENTS, and
+  // the assembled operator depends on the dofs and the coefficients alone; the
+  // value enters only the right-hand side. So a caller that solves the same
+  // problem repeatedly with a different datum -- an outer iteration on a
+  // prescribed traction, which is what contact is -- moves the value here and
+  // keeps the factorization. Changing dofs or coefficients would need
+  // finalize() again, and constrain() marks that by clearing the final flag;
+  // this deliberately does not.
+  void set_value(std::size_t form, double value) {
+    if (form >= forms_.size()) throw std::out_of_range("Constraints::set_value: form index");
+    forms_[form].value = value;
+  }
+
   // ASSIGN EACH FORM THE EQUATION IT REPLACES, and build the lookups an
   // assembly needs. The leading dof is the unclaimed one with the largest
   // coefficient -- partial pivoting, and for the orthonormal facet frames the

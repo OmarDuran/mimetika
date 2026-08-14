@@ -396,6 +396,25 @@ class BoundaryData {
 // Affine rather than constant because that is what a patch test needs: a mixed
 // method of this family reproduces linear displacement fields exactly, and the
 // only way to see that is to prescribe one.
+// A SCALAR PER CELL: a reservoir is a region at a changed pressure, and zero
+// outside it. The facet-indexed holders above are about boundaries; this one is
+// about a body load.
+class CellData {
+ public:
+  CellData() = default;
+  explicit CellData(std::size_t n_cells) : value_(n_cells, 0.0) {}
+
+  void set(const std::vector<Index>& cells, double v) {
+    for (const Index e : cells) value_[static_cast<std::size_t>(e)] = v;
+  }
+  void set_all(double v) { std::fill(value_.begin(), value_.end(), v); }
+  double at(Index e) const { return value_[static_cast<std::size_t>(e)]; }
+  std::size_t size() const { return value_.size(); }
+
+ private:
+  std::vector<double> value_;
+};
+
 class BoundaryVectorData {
  public:
   explicit BoundaryVectorData(std::size_t n_facets)

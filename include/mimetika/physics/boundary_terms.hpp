@@ -115,20 +115,38 @@ class PrescribedDisplacement {
     const std::size_t slot = st.support_slot[0];
     if (slot >= c.moment.size()) return;
     const exokal::numerics::Dense& mom = c.moment[slot];
+    const exokal::numerics::Dense& gram = c.facet_gram[slot];
 
-    // d components against d facet basis functions: the moment tensor carries
-    // its own shape, so nothing here has to know the dimension
+    // THE DATUM IS A FUNCTION AND MUST BE EXPANDED, not merely integrated.
+    //
+    // A traction degree of freedom IS a moment, m_b = int_f (sigma n) chi_b, so
+    // the row it leads pairs against the EXPANSION COEFFICIENTS of whatever
+    // stands opposite. The prescribed displacement is given as a function, so
+    // what belongs here is Gram^{-1} int_f u chi_b and not the raw moment: the
+    // two differ by |f|, and using the moment makes the boundary datum grow
+    // with the facet size -- a patch test then fails by an amount that looks
+    // like a discretization error and is not.
+    //
+    // It is the mirror image of the trace, where NO inverse belongs because the
+    // residual already emerges in coefficient form. Same Gram, opposite
+    // direction, and getting either backwards scales by |f|.
     const std::size_t nb = mom.rows();
     const std::size_t nc = mom.cols() - 1;
     for (std::size_t k = 0; k < nc; ++k) {
       for (std::size_t b = 0; b < nb; ++b) {
-        double v = data_->constant_at(st.support, k) * mom(b, 0);
+        // int_f u_k chi_b, from the moments the operators already hold
+        double moment = data_->constant_at(st.support, k) * mom(b, 0);
         for (std::size_t cc = 0; cc < nc; ++cc) {
-          v += data_->gradient_at(st.support, k, cc) * c.scale * mom(b, cc + 1);
+          moment += data_->gradient_at(st.support, k, cc) * c.scale * mom(b, cc + 1);
         }
-        // the ProductSpace orders component fastest within a facet
+        // expand it: the chart is L^2-orthonormal, so the Gram is diagonal and
+        // this is one division -- but it is READ rather than assumed, so the
+        // term stays correct if the chart is ever changed
+        const double coeff = moment / gram(b, b);
+        // and it replaces -D^T u in the stress row, with the facet's own
+        // incidence for the side it is seen from
         const std::size_t i = S.begin + slot * nb * nc + b * nc + k;
-        if (i < S.end) r[i] += v;
+        if (i < S.end) r[i] -= st.incidence[0] * coeff;
       }
     }
   }
@@ -140,5 +158,61 @@ class PrescribedDisplacement {
 
 inline const exokal::forms::RegisterTerm<PrescribedDisplacement>
     register_prescribed_displacement{"prescribed_displacement", Coupling::boundary, {"s"}};
+
+// RESERVOIR PRESSURIZATION AS A LOAD ON THE MECHANICS ALONE.
+//
+// A depletion or injection benchmark does not solve the flow: the pore pressure
+// change is GIVEN, cell by cell, and only the mechanical response to it is
+// computed. That is how Novikov et al. (2024) pose every one of their induced
+// fault-slip cases, and it is not an approximation of poromechanics -- it is a
+// different problem, in which p is data.
+//
+// The term is therefore the Biot coupling with the pressure moved to the
+// right-hand side. In the coupled system the stress row carries
+//
+//     eps = C^{-1} sigma + (alpha / dK) p I ,
+//
+// contributed as alpha * T^T p with T the discrete trace; with p known, the
+// same product is a load and the pressure row does not exist at all. So the
+// coefficient, the operator and the sign are the ones BiotCouplingCell already
+// uses -- deliberately, because a benchmark that agreed with the coupled solver
+// only up to a factor would be worse than useless.
+//
+// The datum is per CELL, which is what a reservoir is: a region of cells at a
+// changed pressure, zero outside it.
+class ReservoirPressurization {
+ public:
+  ReservoirPressurization() = default;
+  ReservoirPressurization(const Params& p, const TermContext& ctx)
+      : ops_(&ctx.require<exokal::hodge::StressOperators>("stress_operators")),
+        data_(&ctx.require<CellData>("reservoir_pressure")),
+        alpha_(p.get("biot", 1.0) * p.get("volumetric_compliance", 1.0)) {}
+
+  static constexpr std::size_t kS = 0;
+
+  std::vector<std::string> fields() const { return {"s"}; }
+
+  template <class T>
+  void operator()(const Stencil& st, const std::vector<T>& a, std::vector<T>& r) const {
+    (void)a;
+    const double p = data_->at(st.support);
+    if (p == 0.0) return;  // outside the reservoir: nothing to add
+    const auto& S = st.field(kS);
+    const auto& c = ops_->cell(st.support);
+    const std::size_t D = S.end - S.begin;
+    for (std::size_t i = 0; i < D; ++i) {
+      r[S.begin + i] += alpha_ * c.T(0, i) * p;
+    }
+  }
+
+ private:
+  const exokal::hodge::StressOperators* ops_{nullptr};
+  const CellData* data_{nullptr};
+  double alpha_{1.0};
+};
+
+inline const exokal::forms::RegisterTerm<ReservoirPressurization>
+    register_reservoir_pressurization{"reservoir_pressurization",
+                                      exokal::forms::Coupling::closure, {"s"}};
 
 }  // namespace mimetika::physics::terms
