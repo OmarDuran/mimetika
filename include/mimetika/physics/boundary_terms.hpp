@@ -6,6 +6,7 @@
 #include "exokal/ad/axpy.hpp"
 #include "exokal/forms/term.hpp"
 #include "exokal/hodge/stress_operators.hpp"
+#include "exokal/hodge/flux_hodge.hpp"
 #include "mimetika/model/boundary.hpp"
 
 // THE NATURAL BOUNDARY TERMS: the datum for the quantity a mixed form does
@@ -35,7 +36,8 @@ class PrescribedPressure {
  public:
   PrescribedPressure() = default;
   PrescribedPressure(const Params&, const TermContext& ctx)
-      : data_(&ctx.require<BoundaryData>("boundary_pressure")) {}
+      : data_(&ctx.require<BoundaryData>("boundary_pressure")),
+        moments_(ctx.require<exokal::hodge::FluxHodge>("flux_hodge").moments_per_facet()) {}
 
   static constexpr std::size_t kQ = 0;
 
@@ -47,17 +49,32 @@ class PrescribedPressure {
     if (st.n_cofacets != 1) return;           // not on the boundary after all
     if (!data_->applies(st.support)) return;  // free: the homogeneous case
 
+    // d MOMENTS PER FACET, not one. `q.begin + slot` is the lowest-order
+    // indexing -- one flux per facet -- and on the de Rham space it addresses
+    // an unrelated unknown. The datum is uniform over the facet, so it lands
+    // entirely on the CONSTANT moment and the higher ones take nothing, which
+    // is what "uniform" means discretely.
     const auto& q = st.field(kQ);
     const std::size_t slot = st.support_slot[0];
-    const std::size_t i = q.begin + slot;
+    const std::size_t i = q.begin + slot * static_cast<std::size_t>(moments_);
     if (i >= q.end) return;
     // the same shape the interior -div^T p has, with the datum in place of
-    // the missing neighbour, and the facet's own incidence for the sign
-    r[i] += st.view.signs[i] * data_->at(st.support);
+    // the missing neighbour, and the facet's own incidence for the sign.
+    //
+    // THE INCIDENCE, not `view.signs`. The latter is a LOCAL array parallel to
+    // view.dofs, indexed 0..n_local; `i` here is a GLOBAL degree of freedom, so
+    // indexing it with `i` reads an unrelated entry or runs off the end. The
+    // boundary coefficient of this facet in its one cofacet is what the
+    // interior term carries, and st.incidence[0] is exactly that.
+    //
+    // Terzaghi never caught it: its only natural pressure datum is a drained
+    // face at p = 0, and zero times a wrong sign is still zero.
+    r[i] += st.incidence[0] * data_->at(st.support);
   }
 
  private:
   const BoundaryData* data_{nullptr};
+  int moments_{1};
 };
 
 inline const exokal::forms::RegisterTerm<PrescribedPressure> register_prescribed_pressure{
@@ -99,14 +116,18 @@ class PrescribedDisplacement {
     if (slot >= c.moment.size()) return;
     const exokal::numerics::Dense& mom = c.moment[slot];
 
-    for (std::size_t k = 0; k < 3; ++k) {
-      for (std::size_t b = 0; b < 3; ++b) {
+    // d components against d facet basis functions: the moment tensor carries
+    // its own shape, so nothing here has to know the dimension
+    const std::size_t nb = mom.rows();
+    const std::size_t nc = mom.cols() - 1;
+    for (std::size_t k = 0; k < nc; ++k) {
+      for (std::size_t b = 0; b < nb; ++b) {
         double v = data_->constant_at(st.support, k) * mom(b, 0);
-        for (std::size_t cc = 0; cc < 3; ++cc) {
+        for (std::size_t cc = 0; cc < nc; ++cc) {
           v += data_->gradient_at(st.support, k, cc) * c.scale * mom(b, cc + 1);
         }
         // the ProductSpace orders component fastest within a facet
-        const std::size_t i = S.begin + slot * 9 + b * 3 + k;
+        const std::size_t i = S.begin + slot * nb * nc + b * nc + k;
         if (i < S.end) r[i] += v;
       }
     }

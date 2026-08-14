@@ -1,0 +1,325 @@
+#pragma once
+
+#include <array>
+#include <cmath>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "mimetika/model/boundary.hpp"
+#include "mimetika/model/constraints.hpp"
+
+// BOUNDARY CONDITIONS, ONE PHYSICS AT A TIME.
+//
+// Poromechanics is two physics coupled, and their boundary conditions are
+// separate descriptions. A face of a domain may be traction-loaded and sealed,
+// or roller-supported and drained, or loaded and drained -- the mechanical and
+// the hydraulic sets do not have to coincide and in a real problem they do not.
+// Holding one list of conditions with a tag saying which physics each belongs
+// to makes that accidental; holding two makes it structural.
+//
+//     MechanicsBoundary   acts on the stress field       s
+//     FlowBoundary        acts on the flux and pressure  q, p
+//
+// A CONDITION IS THREE THINGS, and a consumer needs all three:
+//
+//     the PARAMETERS   the numbers it carries -- a stress tensor, a datum
+//     the FORM         the linear functional it imposes on the unknowns
+//     the DOFS         which unknowns it reaches, and the facets they came from
+//
+// Keeping the dofs is what makes a condition an object rather than a side
+// effect. A driver reads the traction back off the wall it prescribed it on; a
+// transient datum is updated in place without re-deriving the numbering; a
+// diagnostic asks which unknowns a condition actually touched. None of that is
+// possible if the dofs are computed, pushed into a constraint set, and
+// forgotten.
+
+namespace mimetika {
+
+// One facet's worth of a condition: the functional, and where it came from.
+struct FacetForm {
+  Index facet{0};
+  std::vector<Index> dofs;
+  std::vector<double> coeff;
+  double value{0.0};
+};
+
+// The base every condition shares. `resolve` is what turns parameters plus a
+// facet set into forms, and it needs the space because a form is a statement
+// about unknowns.
+class BoundaryCondition {
+ public:
+  virtual ~BoundaryCondition() = default;
+
+  virtual std::string name() const = 0;
+  // STRONG conditions replace equations; NATURAL ones are data a term reads.
+  // Which is which follows from the mixed form and not from the caller: the
+  // quantity carried as an unknown is imposed strongly.
+  virtual bool strong() const = 0;
+  virtual void resolve(const exokal::Mesh& mesh, int cell_dim,
+                       const exokal::spaces::ProductSpace& space, Index offset) = 0;
+
+  const std::vector<Index>& facets() const { return facets_; }
+  const std::vector<FacetForm>& forms() const { return forms_; }
+
+  // every unknown this condition reaches, once each
+  std::vector<Index> dofs() const {
+    std::vector<Index> out;
+    for (const FacetForm& f : forms_) {
+      for (const Index d : f.dofs) {
+        bool seen = false;
+        for (const Index e : out) seen = seen || e == d;
+        if (!seen) out.push_back(d);
+      }
+    }
+    return out;
+  }
+
+  // hand the forms to the constraint set, for the strong ones
+  void impose(Constraints& c) const {
+    if (!strong()) return;
+    for (const FacetForm& f : forms_) c.constrain(f.dofs, f.coeff, f.value);
+  }
+
+ protected:
+  std::vector<Index> facets_;
+  std::vector<FacetForm> forms_;
+};
+
+// ------------------------------------------------------------- mechanics
+
+// sigma n = g, from a STRESS TENSOR rather than a traction vector: the caller
+// never has to know which way a facet's canonical normal points, and a vector
+// assembled against the wrong one is silently sign-flipped.
+class TractionBC final : public BoundaryCondition {
+ public:
+  TractionBC(std::vector<Index> facets, std::array<double, 9> stress)
+      : stress_(stress) {
+    facets_ = std::move(facets);
+  }
+  std::string name() const override { return "traction"; }
+  bool strong() const override { return true; }
+
+  const std::array<double, 9>& stress() const { return stress_; }
+
+  void resolve(const exokal::Mesh& mesh, int cell_dim,
+               const exokal::spaces::ProductSpace& space, Index offset) override {
+    forms_.clear();
+    for (const Index f : facets_) {
+      const FacetFrame fr = FacetFrame::of(mesh, cell_dim, cofacet_of(mesh, cell_dim, f), f);
+      const FacetDofs d = facet_dofs(space, field_, cell_dim, f, offset);
+      for (int k = 0; k < cell_dim; ++k) {
+        double t = 0.0;
+        for (int j = 0; j < cell_dim; ++j) {
+          t += stress_[static_cast<std::size_t>(k * 3 + j)] * fr.normal[static_cast<std::size_t>(j)];
+        }
+        // a uniform traction lands entirely on the constant moment, scaled by
+        // the measure it is integrated against; the higher moments are zero
+        for (int b = 0; b < d.moments; ++b) {
+          forms_.push_back(FacetForm{f, {d.at(k, b)}, {1.0}, b == 0 ? t * fr.measure : 0.0});
+        }
+      }
+    }
+  }
+
+ private:
+  std::array<double, 9> stress_;
+  std::string field_{"s_0"};
+};
+
+// t_a . (sigma n) = 0 on every tangent: FREE SLIP, the strong half of a roller.
+// The vanishing NORMAL DISPLACEMENT is the natural half and is imposed by
+// leaving the normal traction free, so that its own equation reads u.n = 0.
+class FreeSlipBC final : public BoundaryCondition {
+ public:
+  explicit FreeSlipBC(std::vector<Index> facets) { facets_ = std::move(facets); }
+  std::string name() const override { return "free slip"; }
+  bool strong() const override { return true; }
+
+  void resolve(const exokal::Mesh& mesh, int cell_dim,
+               const exokal::spaces::ProductSpace& space, Index offset) override {
+    forms_.clear();
+    for (const Index f : facets_) {
+      const FacetFrame fr = FacetFrame::of(mesh, cell_dim, cofacet_of(mesh, cell_dim, f), f);
+      const FacetDofs d = facet_dofs(space, field_, cell_dim, f, offset);
+      for (int a = 0; a < fr.n_tangents; ++a) {
+        const Point& t = fr.tangent[static_cast<std::size_t>(a)];
+        for (int b = 0; b < d.moments; ++b) {
+          std::vector<Index> dofs;
+          std::vector<double> coeff;
+          for (int k = 0; k < d.components; ++k) {
+            if (t[static_cast<std::size_t>(k)] == 0.0) continue;
+            dofs.push_back(d.at(k, b));
+            coeff.push_back(t[static_cast<std::size_t>(k)]);
+          }
+          if (!dofs.empty()) forms_.push_back(FacetForm{f, std::move(dofs), std::move(coeff), 0.0});
+        }
+      }
+    }
+  }
+
+ private:
+  std::string field_{"s_0"};
+};
+
+// ------------------------------------------------------------------ flow
+
+// q . n = g on a scalar facet field. Zero is a sealed facet.
+class NormalFluxBC final : public BoundaryCondition {
+ public:
+  NormalFluxBC(std::vector<Index> facets, double value = 0.0) : value_(value) {
+    facets_ = std::move(facets);
+  }
+  std::string name() const override { return "normal flux"; }
+  bool strong() const override { return true; }
+  double value() const { return value_; }
+
+  void resolve(const exokal::Mesh& mesh, int cell_dim,
+               const exokal::spaces::ProductSpace& space, Index offset) override {
+    forms_.clear();
+    for (const Index f : facets_) {
+      const FacetFrame fr = FacetFrame::of(mesh, cell_dim, cofacet_of(mesh, cell_dim, f), f);
+      const FacetDofs d = facet_dofs(space, field_, cell_dim, f, offset);
+      for (int b = 0; b < d.moments; ++b) {
+        for (int k = 0; k < d.components; ++k) {
+          forms_.push_back(
+              FacetForm{f, {d.at(k, b)}, {1.0}, b == 0 ? value_ * fr.measure : 0.0});
+        }
+      }
+    }
+  }
+
+ private:
+  double value_;
+  std::string field_{"q_0"};
+};
+
+// p = g on the facet: NATURAL in the mixed form, so it is data a term reads
+// rather than an equation replaced. It still resolves its dofs -- the flux
+// moments the datum will reach -- because a caller asking "which unknowns does
+// this condition touch" deserves the same answer whichever kind it is.
+class PressureBC final : public BoundaryCondition {
+ public:
+  PressureBC(std::vector<Index> facets, double value) : value_(value) {
+    facets_ = std::move(facets);
+  }
+  std::string name() const override { return "pressure"; }
+  bool strong() const override { return false; }
+  double value() const { return value_; }
+
+  // THE DATUM AS IT ENTERS THE ROW, and that is the value itself.
+  //
+  // It goes into the FLUX row, against -B^T p, whose entries are the incidence
+  // and not the measure -- the flux unknown is already the measure-weighted
+  // moment int_f (q.n) chi, so the pairing carries no further factor. Scaling
+  // the datum by the measure imposes the condition at a strength that varies
+  // facet by facet on a graded mesh, which is exactly the error a steady
+  // Darcy annulus exposes and a uniform column never can.
+  void fill(BoundaryData& data, const exokal::Mesh& mesh, int cell_dim) const {
+    (void)mesh;
+    (void)cell_dim;
+    for (const Index f : facets_) data.set({f}, value_);
+  }
+
+  void resolve(const exokal::Mesh& mesh, int cell_dim,
+               const exokal::spaces::ProductSpace& space, Index offset) override {
+    forms_.clear();
+    for (const Index f : facets_) {
+      const FacetDofs d = facet_dofs(space, field_, cell_dim, f, offset);
+      // the datum reaches the constant moment of the flux on this facet
+      forms_.push_back(FacetForm{f, {d.at(0, 0)}, {1.0}, value_});
+    }
+    (void)mesh;
+  }
+
+ private:
+  double value_;
+  std::string field_{"q_0"};
+};
+
+// a (q.n) + b p_E = g: a Robin condition, one form over TWO fields. This is
+// what forces the constraint layer to take forms rather than values -- no
+// amount of per-dof pinning expresses a condition that couples a facet unknown
+// to a cell unknown.
+class RobinBC final : public BoundaryCondition {
+ public:
+  RobinBC(std::vector<Index> facets, double a, double b, double g) : a_(a), b_(b), g_(g) {
+    facets_ = std::move(facets);
+  }
+  std::string name() const override { return "robin"; }
+  bool strong() const override { return true; }
+
+  void resolve(const exokal::Mesh& mesh, int cell_dim,
+               const exokal::spaces::ProductSpace& space, Index offset) override {
+    forms_.clear();
+    const std::size_t ci = space.index_of(cell_field_);
+    const exokal::spaces::DofMap& cmap = space.map(ci);
+    for (const Index f : facets_) {
+      const Index cell = cofacet_of(mesh, cell_dim, f);
+      const FacetFrame fr = FacetFrame::of(mesh, cell_dim, cell, f);
+      const FacetDofs d = facet_dofs(space, field_, cell_dim, f, offset);
+      const Index p = space.offset(ci) + cmap.global(cell_dim, cell, 0, 0) + offset;
+      for (int b = 0; b < d.moments; ++b) {
+        for (int k = 0; k < d.components; ++k) {
+          if (b == 0) {
+            forms_.push_back(FacetForm{f, {d.at(k, b), p}, {a_, b_}, g_ * fr.measure});
+          } else {
+            forms_.push_back(FacetForm{f, {d.at(k, b)}, {a_}, 0.0});
+          }
+        }
+      }
+    }
+  }
+
+ private:
+  double a_, b_, g_;
+  std::string field_{"q_0"}, cell_field_{"p_0"};
+};
+
+// ------------------------------------------------------- one set per physics
+
+class BoundarySet {
+ public:
+  template <class C, class... Args>
+  C& emplace(Args&&... args) {
+    auto c = std::make_unique<C>(std::forward<Args>(args)...);
+    C& ref = *c;
+    conditions_.push_back(std::move(c));
+    return ref;
+  }
+
+  std::size_t size() const { return conditions_.size(); }
+  const BoundaryCondition& at(std::size_t i) const { return *conditions_[i]; }
+
+  void resolve(const exokal::Mesh& mesh, int cell_dim,
+               const exokal::spaces::ProductSpace& space, Index offset = 0) {
+    for (auto& c : conditions_) c->resolve(mesh, cell_dim, space, offset);
+  }
+
+  void impose(Constraints& c) const {
+    for (const auto& bc : conditions_) bc->impose(c);
+  }
+
+  // the natural pressure data of this set, if any
+  bool fill_pressure(BoundaryData& data, const exokal::Mesh& mesh, int cell_dim) const {
+    bool any = false;
+    for (const auto& bc : conditions_) {
+      if (const auto* p = dynamic_cast<const PressureBC*>(bc.get())) {
+        p->fill(data, mesh, cell_dim);
+        any = true;
+      }
+    }
+    return any;
+  }
+
+ private:
+  std::vector<std::unique_ptr<BoundaryCondition>> conditions_;
+};
+
+// Named for what they are, so a driver reads as the problem does.
+using MechanicsBoundary = BoundarySet;
+using FlowBoundary = BoundarySet;
+
+}  // namespace mimetika

@@ -69,16 +69,24 @@ class MixedElasticityCell {
     // StressOperators permutes them once when it builds them, so the index
     // here is the index, and the inner loop is a straight contiguous walk of
     // one row of M rather than D gathers through a divide-and-modulus.
+    // the DIMENSION comes from the operators, not from a constant. A
+    // displacement has d components and a rotation d(d-1)/2 -- three in three
+    // dimensions and ONE in two, where skew(2) is a line.
+    const std::size_t nu = c.Dv.rows();
+    const std::size_t ng = c.As.rows();
     for (std::size_t i = 0; i < D; ++i) {
       const std::size_t ri = S.begin + i;
       // M sigma
       for (std::size_t j = 0; j < D; ++j) {
         exokal::axpy(r[ri], c.M(i, j), a[S.begin + j]);
       }
-      // -D^T u and -A^T gamma, with their adjoints in the other two rows
-      for (std::size_t k = 0; k < 3; ++k) {
+      // -D^T u, with its adjoint in the displacement row
+      for (std::size_t k = 0; k < nu; ++k) {
         exokal::axpy(r[ri], -c.Dv(k, i), a[U.begin + k]);
         exokal::axpy(r[U.begin + k], c.Dv(k, i), a[ri]);
+      }
+      // -A^T gamma, with its adjoint in the rotation row
+      for (std::size_t k = 0; k < ng; ++k) {
         exokal::axpy(r[ri], -c.As(k, i), a[G.begin + k]);
         exokal::axpy(r[G.begin + k], c.As(k, i), a[ri]);
       }

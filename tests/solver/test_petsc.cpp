@@ -82,7 +82,7 @@ MIMETIKA_TEST(the_direct_solver_handles_a_saddle_point) {
 MIMETIKA_TEST(the_assembled_poroelastic_system_solves) {
   const auto m = mimetika_test::hex_grid(2);
   const graphos::Complex& c = m.topology();
-  const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(m, 1.0, 1.0);
+  const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(m, 3, 1.0, 1.0);
   const exokal::hodge::FluxHodge hodge = exokal::hodge::FluxHodge::build(
       m, exokal::constitutive::Coefficient::uniform(1.0),
       exokal::hodge::FluxHodge::Realization::derham);
@@ -95,10 +95,10 @@ MIMETIKA_TEST(the_assembled_poroelastic_system_solves) {
   const auto& sp = sim.epoch().stratum(0).space();
   const auto bottom = mimetika::FacetSelector::where(m, 3, mimetika::FacetSelector::at(2, 0.0));
   const auto top = mimetika::FacetSelector::where(m, 3, mimetika::FacetSelector::at(2, 2.0));
-  mimetika::pin_facets(sim.constraints(), sp, "s_0", 3, bottom);
-  mimetika::pin_facet_traction(sim.constraints(), sp, "s_0", 3, m, top,{0,0,0, 0,0,0, 0,0,-1.0});
-  mimetika::pin_facets(sim.constraints(), sp, "q_0", 3, bottom);
-  mimetika::pin_facets(sim.constraints(), sp, "q_0", 3, top);
+  mimetika::impose_traction(sim.constraints(), sp, "s_0", 3, m, bottom, std::array<double, 9>{});
+  mimetika::impose_traction(sim.constraints(), sp, "s_0", 3, m, top,{0,0,0, 0,0,0, 0,0,-1.0});
+  mimetika::impose_normal_flux(sim.constraints(), sp, "q_0", 3, m, bottom);
+  mimetika::impose_normal_flux(sim.constraints(), sp, "q_0", 3, m, top);
   sim.freeze_constraints();
 
   exokal::forms::TripletSink jac(sim.n_dofs());

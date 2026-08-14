@@ -16,7 +16,7 @@ endforeach()
 
 # tests that need a solver, built only when there is one
 if(MIMETIKA_USE_PETSC)
-  foreach(t solver/test_petsc)
+  foreach(t solver/test_petsc model/test_dimensions)
     string(REPLACE "/" "." name ${t})
     add_executable(${name} ${t}.cpp)
     target_link_libraries(${name} PRIVATE mimetika::mimetika mimetika_petsc)

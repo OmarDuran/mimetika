@@ -85,7 +85,7 @@ MIMETIKA_TEST(the_poroelastic_system_is_a_saddle_point_with_adjoint_couplings) {
   const auto m = mimetika_test::hex_grid(2);
   const graphos::Complex& c = m.topology();
 
-  const StressOperators ops = StressOperators::build(m, 1.0, 1.0);
+  const StressOperators ops = StressOperators::build(m, 3, 1.0, 1.0);
   CHECK(ops.size() == static_cast<std::size_t>(c.count(3)));
   // WHETHER A CELL STABILIZES IS A PROPERTY OF THE SPACE, not of the cell.
   // The default de Rham realization reconstructs each stress row on the
@@ -95,7 +95,7 @@ MIMETIKA_TEST(the_poroelastic_system_is_a_saddle_point_with_adjoint_couplings) {
   // moments a hexahedron does not determine, so there every cell stabilizes.
   CHECK(ops.n_stabilized() == 0);
   const StressOperators afw =
-      StressOperators::build(m, 1.0, 1.0, StressOperators::Realization::afw);
+      StressOperators::build(m, 3, 1.0, 1.0, StressOperators::Realization::afw);
   CHECK(afw.n_stabilized() == afw.size());
 
   const exokal::hodge::FluxHodge hodge = exokal::hodge::FluxHodge::build(

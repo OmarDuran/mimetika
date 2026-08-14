@@ -98,7 +98,7 @@ int main(int argc, char** argv) {
   const exokal::hodge::DeRhamGeometryCache selection =
       exokal::hodge::DeRhamGeometryCache::build(m);
   const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(
-      m, mu, lam, exokal::hodge::StressOperators::Realization::derham, &selection);
+      m, 3, mu, lam, exokal::hodge::StressOperators::Realization::derham, &selection);
   const exokal::hodge::FluxHodge hodge = exokal::hodge::FluxHodge::build(
       m, exokal::constitutive::Coefficient::uniform(perm),
       exokal::hodge::FluxHodge::Realization::derham, &selection);
@@ -125,10 +125,10 @@ int main(int argc, char** argv) {
       }
     }
   }
-  pin_facet_traction(sim.constraints(), sp, "s_0", 3, m, top,
+  impose_traction(sim.constraints(), sp, "s_0", 3, m, top,
                      {0, 0, 0, 0, 0, 0, 0, 0, -load});
-  pin_facet_roller(sim.constraints(), sp, "s_0", 3, m, confined);
-  pin_facets(sim.constraints(), sp, "q_0", 3, confined);
+  impose_free_slip(sim.constraints(), sp, "s_0", 3, m, confined);
+  impose_normal_flux(sim.constraints(), sp, "q_0", 3, m, confined);
   sim.freeze_constraints();
 
   io::export_system(out, sim);

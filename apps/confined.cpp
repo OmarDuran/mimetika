@@ -37,11 +37,47 @@ using graphos::Index;
 
 namespace {
 
-exokal::Mesh column(int n, double h, double width) {
+// A ROTATION, so the same problem can be posed on a mesh with no facet aligned
+// to an axis. Nothing about confined compression changes under it -- the
+// undrained pressure is a scalar -- so any answer that moves is a boundary
+// condition that was secretly about the axes rather than about the facets.
+struct Rot {
+  double a[3][3];
+  static Rot of(double yaw, double pitch) {
+    const double cy = std::cos(yaw), sy = std::sin(yaw);
+    const double cp = std::cos(pitch), sp = std::sin(pitch);
+    Rot r{{{cy, -sy * cp, sy * sp}, {sy, cy * cp, -cy * sp}, {0.0, sp, cp}}};
+    return r;
+  }
+  exokal::Mesh::Point operator()(const exokal::Mesh::Point& x) const {
+    return {a[0][0] * x[0] + a[0][1] * x[1] + a[0][2] * x[2],
+            a[1][0] * x[0] + a[1][1] * x[1] + a[1][2] * x[2],
+            a[2][0] * x[0] + a[2][1] * x[1] + a[2][2] * x[2]};
+  }
+  // R S R^T, the applied stress carried into the rotated frame
+  std::array<double, 9> conjugate(const std::array<double, 9>& s) const {
+    std::array<double, 9> out{};
+    for (int i = 0; i < 3; ++i) {
+      for (int j = 0; j < 3; ++j) {
+        double v = 0.0;
+        for (int k = 0; k < 3; ++k) {
+          for (int l = 0; l < 3; ++l) v += a[i][k] * s[k * 3 + l] * a[j][l];
+        }
+        out[i * 3 + j] = v;
+      }
+    }
+    return out;
+  }
+};
+
+exokal::Mesh column(int n, double h, double width, const Rot* rot = nullptr) {
   std::vector<exokal::Mesh::Point> pts;
   for (int k = 0; k <= n; ++k) {
     for (int j = 0; j <= 1; ++j) {
-      for (int i = 0; i <= 1; ++i) pts.push_back({i * width, j * width, k * h / n});
+      for (int i = 0; i <= 1; ++i) {
+        const exokal::Mesh::Point x{i * width, j * width, k * h / n};
+        pts.push_back(rot != nullptr ? (*rot)(x) : x);
+      }
     }
   }
   static constexpr int faces[6][4] = {{0, 2, 3, 1}, {4, 5, 7, 6}, {0, 1, 5, 4},
@@ -74,13 +110,15 @@ int main(int argc, char** argv) {
   // of the poroelastic coupling there is, because the mechanics answer is
   // already known to be exact and every remaining degree of freedom is fixed.
   const bool undrained = argc > 2 && std::string(argv[2]) == "undrained";
+  const bool rotated = argc > 3 && std::string(argv[3]) == "rotated";
+  const Rot rot = Rot::of(0.7, 0.4);
   const double h = 1.0, width = 1.0, mu = 1.0, lam = 1.0, load = 1.0;
   const double alpha = 1.0, inv_M = 0.0, perm = 1.0, dt = 1.0e-6;
   const double nu_ = lam / (2.0 * (lam + mu));
   const double inv_mod = (1.0 - 2.0 * nu_) / (2.0 * mu * (1.0 - 2.0 * nu_ + 3.0 * nu_));
   const double storage = 3.0 * alpha * alpha * inv_mod + inv_M;
 
-  const exokal::Mesh m = column(n, h, width);
+  const exokal::Mesh m = column(n, h, width, rotated ? &rot : nullptr);
   const graphos::Complex& c = m.topology();
   // ONE de Rham SELECTION FOR BOTH PRODUCTS. The stress operators and the flux
   // Hodge each need a de Rham product on every cell, with different material
@@ -88,7 +126,7 @@ int main(int argc, char** argv) {
   // half and it does not depend on the material.
   const exokal::hodge::DeRhamGeometryCache geo = exokal::hodge::DeRhamGeometryCache::build(m);
   const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(
-      m, mu, lam, exokal::hodge::StressOperators::Realization::derham, &geo);
+      m, 3, mu, lam, exokal::hodge::StressOperators::Realization::derham, &geo);
   exokal::forms::TermContext ctx;
   ctx.provide("stress_operators", ops);
 
@@ -106,23 +144,27 @@ int main(int argc, char** argv) {
                  {StratumSpec{"ambient", &c, 3, 0}}, ctx);
   const auto& sp = sim.epoch().stratum(0).space();
 
-  std::vector<Index> confined = FacetSelector::where(m, 3, FacetSelector::at(2, 0.0));
-  for (const double v : {0.0, width}) {
-    for (const int axis : {0, 1}) {
-      for (const Index f : FacetSelector::where(m, 3, FacetSelector::at(axis, v))) {
-        confined.push_back(f);
-      }
-    }
+  // THE LOADED FACET AND THE REST, selected by where they are in the ORIGINAL
+  // geometry and then carried through the rotation, so the two runs pose
+  // literally the same problem on two different meshes.
+  const exokal::Mesh::Point up = rotated ? rot(exokal::Mesh::Point{0.0, 0.0, 1.0})
+                                         : exokal::Mesh::Point{0.0, 0.0, 1.0};
+  const auto height_of = [&](const exokal::Mesh::Point& x) {
+    return x[0] * up[0] + x[1] * up[1] + x[2] * up[2];
+  };
+  std::vector<Index> loaded, confined;
+  for (const Index f : boundary_facets(c, 3)) {
+    (std::abs(height_of(exokal::centroid(m, 2, f)) - h) < 1e-9 ? loaded : confined).push_back(f);
   }
-  pin_facet_traction(sim.constraints(), sp, "s_0", 3, m,
-                     FacetSelector::where(m, 3, FacetSelector::at(2, h)),
-                     {0, 0, 0, 0, 0, 0, 0, 0, -load});
-  pin_facet_roller(sim.constraints(), sp, "s_0", 3, m, confined);
+  const std::array<double, 9> applied{0, 0, 0, 0, 0, 0, 0, 0, -load};
+  impose_traction(sim.constraints(), sp, "s_0", 3, m, loaded,
+                  rotated ? rot.conjugate(applied) : applied);
+  impose_free_slip(sim.constraints(), sp, "s_0", 3, m, confined);
   if (undrained) {
     // sealed EVERYWHERE, the top included: nothing drains, so nothing moves
     std::vector<Index> all;
     for (const Index f : boundary_facets(c, 3)) all.push_back(f);
-    pin_facets(sim.constraints(), sp, "q_0", 3, all);
+    impose_normal_flux(sim.constraints(), sp, "q_0", 3, m, all);
   }
   sim.freeze_constraints();
 
@@ -134,7 +176,7 @@ int main(int argc, char** argv) {
     // the constrained equation is written with the scale of the row it
     // replaced, so its datum carries the same factor
     if (sim.constraints().pinned(d)) {
-      b[d] = sim.constraints().scale_at(d) * sim.constraints().value_at(d);
+      b[d] = sim.constraints().scale_at(d) * sim.constraints().rhs_at(d);
     }
   }
   solver::PetscSolver petsc;

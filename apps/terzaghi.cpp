@@ -104,7 +104,7 @@ int main(int argc, char** argv) {
   // half and it does not depend on the material.
   const exokal::hodge::DeRhamGeometryCache geo = exokal::hodge::DeRhamGeometryCache::build(m);
   const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(
-      m, mu, lam, exokal::hodge::StressOperators::Realization::derham, &geo);
+      m, 3, mu, lam, exokal::hodge::StressOperators::Realization::derham, &geo);
   std::printf("column: %lld cells, %zu stabilized\n", (long long)c.count(3), ops.n_stabilized());
 
   // the oedometric modulus, which sets the consolidation coefficient
@@ -162,7 +162,7 @@ int main(int argc, char** argv) {
 
   // the loaded face: a uniaxial compressive stress, formed against each
   // facet's canonical normal so the sign is never the caller's problem
-  pin_facet_traction(sim.constraints(), sp, "s_0", 3, m, top,
+  impose_traction(sim.constraints(), sp, "s_0", 3, m, top,
                      {0, 0, 0, 0, 0, 0, 0, 0, -load});
   // rollers on EVERYTHING ELSE -- base and sides alike. Each facet pins the
   // two components tangential to its own normal, which is what a roller is;
@@ -170,10 +170,10 @@ int main(int argc, char** argv) {
   // the column bulge.
   std::vector<Index> confined = base;
   confined.insert(confined.end(), sides.begin(), sides.end());
-  pin_facet_roller(sim.constraints(), sp, "s_0", 3, m, confined);
+  impose_free_slip(sim.constraints(), sp, "s_0", 3, m, confined);
   // sealed on the same set; the drained top needs no condition at all,
   // because a drained face at zero pressure is the homogeneous natural one
-  pin_facets(sim.constraints(), sp, "q_0", 3, confined);
+  impose_normal_flux(sim.constraints(), sp, "q_0", 3, m, confined);
   sim.freeze_constraints();
   std::printf("pinned %zu of %zu dofs\n", sim.constraints().size(), sim.n_dofs());
 
@@ -240,7 +240,7 @@ int main(int argc, char** argv) {
       // the constrained equation is written with the scale of the row it
     // replaced, so its datum carries the same factor
     if (sim.constraints().pinned(d)) {
-      b[d] = sim.constraints().scale_at(d) * sim.constraints().value_at(d);
+      b[d] = sim.constraints().scale_at(d) * sim.constraints().rhs_at(d);
     }
     }
     const auto rep = petsc.solve(A, b, y_new);

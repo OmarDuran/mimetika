@@ -110,7 +110,7 @@ int main(int argc, char** argv) {
     const double t_select = since(t);
 
     const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(
-        m, mu, lam, exokal::hodge::StressOperators::Realization::derham, &geo);
+        m, 3, mu, lam, exokal::hodge::StressOperators::Realization::derham, &geo);
     const double t_stress = since(t);
 
     const exokal::hodge::FluxHodge hodge = exokal::hodge::FluxHodge::build(
@@ -139,11 +139,11 @@ int main(int argc, char** argv) {
         }
       }
     }
-    pin_facet_traction(sim.constraints(), sp, "s_0", 3, m,
+    impose_traction(sim.constraints(), sp, "s_0", 3, m,
                        FacetSelector::where(m, 3, FacetSelector::at(2, h)),
                        {0, 0, 0, 0, 0, 0, 0, 0, -load});
-    pin_facet_roller(sim.constraints(), sp, "s_0", 3, m, confined);
-    pin_facets(sim.constraints(), sp, "q_0", 3, confined);
+    impose_free_slip(sim.constraints(), sp, "s_0", 3, m, confined);
+    impose_normal_flux(sim.constraints(), sp, "q_0", 3, m, confined);
     sim.freeze_constraints();
     const double t_constr = since(t);
 

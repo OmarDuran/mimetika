@@ -82,6 +82,12 @@ class Simulation {
 
   const StratifiedEpoch& epoch() const { return epoch_; }
   const Model& model() const { return model_; }
+  // MUTABLE UNTIL THE CONSTRAINTS ARE FROZEN. A composition declares the
+  // physics; a PROBLEM may still need a boundary term the physics cannot know
+  // about -- a prescribed pressure applies to the borehole and not to the
+  // column, and it is a property of the configuration rather than of the
+  // model. Adding it here keeps that distinction where it belongs.
+  Model& model() { return model_; }
   std::size_t n_dofs() const { return state_.size(); }
 
   std::vector<double>& state() { return state_; }
@@ -171,13 +177,20 @@ class Simulation {
     sink.row.resize(w);
     sink.col.resize(w);
     sink.value.resize(w);
+    // THE ROW IS THE FORM. A one-term form gives back a single scaled diagonal,
+    // which is the familiar substitution; a normal traction on a facet whose
+    // normal is not an axis gives d entries in that row, which is the same
+    // statement written where it is actually true.
     for (std::size_t d = 0; d < state_.size(); ++d) {
       if (!constraints_.pinned(d)) continue;
       const double s = constraints_.scale_at(d);
-      sink.row.push_back(static_cast<Index>(d));
-      sink.col.push_back(static_cast<Index>(d));
-      sink.value.push_back(s);
-      sink.residual[d] = s * (state_[d] - constraints_.value_at(d));
+      const Constraints::Form& f = constraints_.form_at(d);
+      for (std::size_t j = 0; j < f.dofs.size(); ++j) {
+        sink.row.push_back(static_cast<Index>(d));
+        sink.col.push_back(f.dofs[j]);
+        sink.value.push_back(s * f.coeff[j]);
+      }
+      sink.residual[d] = s * (Constraints::evaluate(f, state_) - f.value);
     }
   }
 

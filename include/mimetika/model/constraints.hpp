@@ -8,53 +8,56 @@
 
 #include "exokal/forms/model.hpp"
 
-// ESSENTIAL CONSTRAINTS: degrees of freedom whose value is imposed rather
-// than solved for.
+// ESSENTIAL CONSTRAINTS, as LINEAR FORMS on the degrees of freedom.
 //
-// Terzaghi's column is the smallest problem that needs all of them at once —
-// rollers on the sides and base pin the normal displacement, sealed faces pin
-// the normal flux, and get either wrong and the column stops being
-// one-dimensional. They are not physics: pinning a degree of freedom is a
-// statement about the discrete system, so it lives beside the model rather
-// than inside a package.
+//     sum_j a_j x_{d_j} = g
 //
-// SUBSTITUTION, NOT PENALTY. A constrained row is replaced by x_i = g_i:
-// the residual becomes the discrepancy, the Jacobian row becomes the
-// identity, and the action of the tangent along a direction is the direction
-// itself. That keeps the constraint EXACT — a penalty would leave an error
-// scaling with the penalty parameter, and a benchmark checked against a
-// closed form would then be measuring the penalty rather than the
-// discretization.
+// A single pinned unknown is the one-term case, and it is not the general one.
+// In a mixed method a boundary condition is a statement about a QUANTITY, and
+// the quantity is a form on the facet's unknowns rather than one of them:
 //
-// The column of a constrained unknown is left alone. That makes the system
-// unsymmetric, which is deliberate: eliminating the column requires moving
-// its contribution into the right-hand side, and doing that in a matrix-free
-// setting means an extra operator apply per assembly. Keeping the column
-// costs a solver that cannot assume symmetry and nothing else.
+//     n . (sigma n) = g      the normal traction   sum_k n_k x_{f,k,b}
+//     t . (sigma n) = 0      no shear              sum_k t_k x_{f,k,b}
+//     q . n = 0              a sealed facet        x_{f,b}
+//     a (q.n) + b p = c      a Robin condition, coupling a facet to a cell
 //
-// THE CONSTRAINT ROW CARRIES THE SCALE OF THE EQUATION IT REPLACES.
+// Only on an axis-aligned facet does the first collapse to pinning a single
+// component. On a borehole wall it does not, and a code that can only pin
+// components either refuses the mesh or silently imposes a different
+// condition. Carrying the form is what makes the same statement mean the same
+// thing on any mesh in any dimension.
 //
-// x_i = g_i and s x_i = s g_i are the same constraint for any s != 0, so the
+// SUBSTITUTION, NOT PENALTY. The form replaces the equation of ONE of the
+// unknowns it involves -- its LEADING dof, chosen by largest coefficient, as a
+// pivot is chosen. The residual becomes the discrepancy of the form, the
+// tangent's row becomes the form itself, and the action of the tangent along a
+// direction is the form applied to the direction. The constraint is then EXACT:
+// a penalty would leave an error scaling with the penalty parameter, and a
+// benchmark checked against a closed form would be measuring the penalty
+// rather than the discretization.
+//
+// The columns of the constrained unknowns are left alone. That makes the
+// system unsymmetric, which is deliberate: eliminating them means moving their
+// contribution into the right-hand side, and in a matrix-free setting that is
+// an extra operator apply per assembly.
+//
+// THE ROW CARRIES THE SCALE OF THE EQUATION IT REPLACES.
+//
+// The form and any nonzero multiple of it are the same constraint, so the
 // scale is free and the solution does not depend on it. It is not free for the
-// FACTORIZATION. The row that gets replaced is a constitutive relation and it
-// carries that relation's factors:
+// FACTORIZATION. The replaced row is a constitutive relation carrying that
+// relation's factors -- a traction moment has A_ii ~ 1/(2 mu), around 1e-9 for
+// rock; a flux moment has A_ii ~ 1/(k dt), which can be 1e14 for a small step.
+// A unit-scaled row sits many orders of magnitude away from everything around
+// it: the system is exactly as well posed, but a direct factorization pivots
+// on the wrong entries and reports a zero pivot somewhere else entirely (MUMPS
+// returns DIVERGED_PC_FAILED on a problem with a perfectly good solution).
 //
-//     a traction moment    A_ii ~ 1/(2 mu)      1e-9 for rock
-//     a normal flux moment A_ii ~ 1/(k dt)      1e14 for a small step
+// It must be the same scale on all three paths, and then
 //
-// Writing s = 1 into such a row puts it many orders of magnitude away from
-// everything around it. The system stays exactly as well posed as before, but
-// a direct factorization pivots on the wrong entries and reports a zero pivot
-// somewhere else entirely -- MUMPS returns DIVERGED_PC_FAILED, on a problem
-// with a perfectly good solution. Taking s from the diagonal the terms wrote
-// on that row keeps the replaced equation in scale with the rest.
+//     s a^T dx = -s (a^T x - g)   =>   a^T (x + dx) = g
 //
-// It has to be the same s on all three paths. The residual becomes
-// s (x_i - g_i) and the tangent's action s v_i, so
-//
-//     s dx_i = -s (x_i - g_i)   =>   x_i + dx_i = g_i
-//
-// exactly, and a Krylov method sees one consistent operator.
+// exactly, whatever s is, and a Krylov method sees one consistent operator.
 
 namespace mimetika {
 
@@ -62,62 +65,136 @@ using exokal::forms::Index;
 
 class Constraints {
  public:
-  // Pin one degree of freedom of the global numbering.
-  void pin(Index dof, double value) {
-    dofs_.push_back(dof);
-    values_.push_back(value);
-    sorted_ = false;
+  // A LINEAR FORM over the global numbering, and the value it takes.
+  struct Form {
+    std::vector<Index> dofs;
+    std::vector<double> coeff;
+    double value{0.0};
+  };
+
+  // The general case.
+  void constrain(std::vector<Index> dofs, std::vector<double> coeff, double value) {
+    if (dofs.empty() || dofs.size() != coeff.size()) {
+      throw std::invalid_argument("Constraints::constrain: a form needs matching dofs and "
+                                  "coefficients, and at least one term");
+    }
+    forms_.push_back(Form{std::move(dofs), std::move(coeff), value});
+    final_ = false;
   }
+
+  // The one-term case, which is what a sealed facet or a clamped moment is.
+  void pin(Index dof, double value) { constrain({dof}, {1.0}, value); }
 
   void pin_all(const std::vector<Index>& dofs, double value) {
     for (const Index d : dofs) pin(d, value);
   }
 
-  std::size_t size() const { return dofs_.size(); }
-  bool empty() const { return dofs_.empty(); }
+  std::size_t size() const { return forms_.size(); }
+  bool empty() const { return forms_.empty(); }
+  const std::vector<Form>& forms() const { return forms_; }
 
-  // A membership mask over the global numbering, built once. An assembly
-  // touches every row, so asking "is this pinned" must be a lookup rather
-  // than a search.
+  // ASSIGN EACH FORM THE EQUATION IT REPLACES, and build the lookups an
+  // assembly needs. The leading dof is the unclaimed one with the largest
+  // coefficient -- partial pivoting, and for the orthonormal facet frames the
+  // boundary forms are written in it always succeeds. Two forms that want the
+  // same single unknown are a genuine conflict and are refused; the ambiguous
+  // middle, where a form is left with nothing to lead, is refused too rather
+  // than silently dropped.
   void finalize(std::size_t n_dofs) {
     mask_.assign(n_dofs, 0);
-    value_of_.assign(n_dofs, 0.0);
+    leader_of_.assign(n_dofs, -1);
     scale_.clear();
     scaled_ = false;
-    for (std::size_t k = 0; k < dofs_.size(); ++k) {
-      const auto d = static_cast<std::size_t>(dofs_[k]);
-      if (d >= n_dofs) throw std::out_of_range("Constraints: dof outside the numbering");
-      if (mask_[d] != 0 && value_of_[d] != values_[k]) {
-        throw std::invalid_argument("Constraints: dof " + std::to_string(dofs_[k]) +
-                                    " pinned to two different values");
+
+    // strongest form first, so a form with only one usable unknown is not
+    // starved by one that had a choice
+    std::vector<std::size_t> order(forms_.size());
+    for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+      return peak(forms_[a]) > peak(forms_[b]);
+    });
+
+    for (const std::size_t fi : order) {
+      const Form& f = forms_[fi];
+      std::size_t best = f.dofs.size();
+      double best_c = 0.0;
+      for (std::size_t j = 0; j < f.dofs.size(); ++j) {
+        const auto d = static_cast<std::size_t>(f.dofs[j]);
+        if (d >= n_dofs) throw std::out_of_range("Constraints: dof outside the numbering");
+        if (mask_[d] != 0) continue;  // already leads another form
+        if (std::abs(f.coeff[j]) > best_c) {
+          best_c = std::abs(f.coeff[j]);
+          best = j;
+        }
       }
+      if (best == f.dofs.size() || best_c <= 0.0) {
+        // THE SAME CONDITION TWICE IS REDUNDANT, NOT A CONFLICT. Two facet sets
+        // that overlap, or a driver that names a facet in two selections, both
+        // produce a form already imposed; dropping it is right and refusing it
+        // would make selections order-dependent. A form asking for the same
+        // unknowns with a DIFFERENT equation is a genuine contradiction and is
+        // still refused.
+        bool redundant = false;
+        for (const Index dj : f.dofs) {
+          const auto d = static_cast<std::size_t>(dj);
+          if (mask_[d] == 0 || leader_of_[d] < 0) continue;
+          if (same_equation(forms_[static_cast<std::size_t>(leader_of_[d])], f)) {
+            redundant = true;
+            break;
+          }
+        }
+        if (redundant) continue;
+        throw std::invalid_argument(
+            "Constraints: a form has no unknown left to impose it on; two conditions "
+            "constrain the same degrees of freedom with different equations");
+      }
+      const auto d = static_cast<std::size_t>(f.dofs[best]);
       mask_[d] = 1;
-      value_of_[d] = values_[k];
+      leader_of_[d] = static_cast<long long>(fi);
+      lead_index_.resize(forms_.size(), 0);
+      lead_index_[fi] = best;
     }
-    sorted_ = true;
+    final_ = true;
   }
 
   bool pinned(std::size_t d) const { return d < mask_.size() && mask_[d] != 0; }
-  double value_at(std::size_t d) const { return value_of_[d]; }
   const std::vector<char>& mask() const { return mask_; }
 
-  // The scale each constrained equation is written with, taken from the
-  // diagonal of the row it replaces. Unity until it is measured, which is what
-  // an unconstrained or unassembled system reduces to.
+  // The form led by a constrained dof, and which of its terms that dof is.
+  const Form& form_at(std::size_t d) const { return forms_[index_at(d)]; }
+  std::size_t lead_term_at(std::size_t d) const { return lead_index_[index_at(d)]; }
+
+  // THE RIGHT-HAND SIDE of the form a dof leads: what a driver assembling
+  // A x = b directly must place in that row, since the row itself is s a^T.
+  double rhs_at(std::size_t d) const { return form_at(d).value; }
+
+  // A one-term form's value, which is the solution's value at that dof.
+  // Refused on a genuine form, where "the value of dof d" is not a thing that
+  // exists -- only the form has a value.
+  double value_at(std::size_t d) const {
+    const Form& f = form_at(d);
+    if (f.dofs.size() != 1) {
+      throw std::invalid_argument(
+          "Constraints::value_at: dof " + std::to_string(d) +
+          " leads a multi-term form; use form_at() and impose the form itself");
+    }
+    return f.value / f.coeff[0];
+  }
+
+  // ---- the scale of each replaced equation ------------------------------
+
   double scale_at(std::size_t d) const { return scale_.empty() ? 1.0 : scale_[d]; }
-  const std::vector<double>& scales() const { return scale_; }
   bool scaled() const { return scaled_; }
 
-  // MEASURED LAZILY, AND SO const. The scale is not part of what the
-  // constraint MEANS — x_i = g_i holds whatever it is multiplied by — it is a
+  // MEASURED LAZILY, AND SO const. The scale is not part of what the constraint
+  // MEANS -- the form holds whatever it is multiplied by -- it is a
   // representation chosen to keep the replaced row in scale with the matrix
   // around it. It can therefore be read off the first tangent that gets
-  // assembled rather than paid for with an assembly of its own, and a
-  // `const` operator is allowed to fill it in on the way past.
+  // assembled rather than paid for with an assembly of its own.
   //
   // Rows the terms left empty have no scale of their own and fall back to the
-  // mean of the rest, so a degree of freedom no equation reached does not
-  // become the pivot the factorization trips on.
+  // mean of the rest, so an unknown no equation reached does not become the
+  // pivot the factorization trips on.
   void set_scales(const std::vector<double>& diagonal) const {
     require_final();
     if (diagonal.size() != mask_.size()) {
@@ -140,44 +217,98 @@ class Constraints {
     scaled_ = true;
   }
 
-  // Put the constrained values into a state vector, so the very first
-  // residual is already consistent with them.
+  // ---- the three paths --------------------------------------------------
+
+  // A STARTING POINT consistent with the forms: solve each for its leading
+  // unknown, holding the others. It is only a starting point -- the constraint
+  // is made exact by the step, not by this -- but it costs nothing and it
+  // makes the very first residual small.
   void apply_to_state(std::vector<double>& x) const {
     require_final();
     for (std::size_t d = 0; d < mask_.size(); ++d) {
-      if (mask_[d] != 0) x[d] = value_of_[d];
+      if (mask_[d] == 0) continue;
+      const Form& f = form_at(d);
+      const std::size_t lead = lead_term_at(d);
+      double rest = 0.0;
+      for (std::size_t j = 0; j < f.dofs.size(); ++j) {
+        if (j != lead) rest += f.coeff[j] * x[static_cast<std::size_t>(f.dofs[j])];
+      }
+      x[d] = (f.value - rest) / f.coeff[lead];
     }
   }
 
-  // r_i <- s_i (x_i - g_i) on constrained rows.
+  // r_lead <- s (a^T x - g)
   void apply_to_residual(const std::vector<double>& x, std::vector<double>& r) const {
     require_final();
     for (std::size_t d = 0; d < mask_.size(); ++d) {
-      if (mask_[d] != 0) r[d] = scale_at(d) * (x[d] - value_of_[d]);
+      if (mask_[d] == 0) continue;
+      r[d] = scale_at(d) * (evaluate(form_at(d), x) - form_at(d).value);
     }
   }
 
-  // The tangent's action: a constrained row sees only its own direction, with
-  // the same scale its row of the assembled tangent carries.
+  // y_lead <- s a^T v: the form applied to the direction, which is what the
+  // tangent's row does to it
   void apply_to_action(const std::vector<double>& v, std::vector<double>& y) const {
     require_final();
     for (std::size_t d = 0; d < mask_.size(); ++d) {
-      if (mask_[d] != 0) y[d] = scale_at(d) * v[d];
+      if (mask_[d] == 0) continue;
+      y[d] = scale_at(d) * evaluate(form_at(d), v);
     }
   }
 
- private:
-  void require_final() const {
-    if (!sorted_) throw std::logic_error("Constraints: finalize() before use");
+  static double evaluate(const Form& f, const std::vector<double>& x) {
+    double acc = 0.0;
+    for (std::size_t j = 0; j < f.dofs.size(); ++j) {
+      acc += f.coeff[j] * x[static_cast<std::size_t>(f.dofs[j])];
+    }
+    return acc;
   }
 
-  std::vector<Index> dofs_;
-  std::vector<double> values_;
+ private:
+  // The same equation up to a nonzero multiple: a x = g and (c a) x = (c g)
+  // constrain identically, so they are compared after normalizing by the peak
+  // coefficient rather than entry by entry.
+  static bool same_equation(const Form& a, const Form& b) {
+    if (a.dofs.size() != b.dofs.size()) return false;
+    const double pa = peak(a), pb = peak(b);
+    if (!(pa > 0.0) || !(pb > 0.0)) return false;
+    double sign = 0.0;
+    for (std::size_t j = 0; j < a.dofs.size(); ++j) {
+      if (a.dofs[j] != b.dofs[j]) return false;
+      const double ca = a.coeff[j] / pa, cb = b.coeff[j] / pb;
+      if (sign == 0.0 && std::abs(ca) > 1e-12) sign = (ca * cb >= 0.0) ? 1.0 : -1.0;
+      if (std::abs(ca - (sign == 0.0 ? 1.0 : sign) * cb) > 1e-12) return false;
+    }
+    const double s = sign == 0.0 ? 1.0 : sign;
+    return std::abs(a.value / pa - s * b.value / pb) <= 1e-12 * (1.0 + std::abs(a.value / pa));
+  }
+
+  static double peak(const Form& f) {
+    double m = 0.0;
+    for (const double c : f.coeff) m = std::max(m, std::abs(c));
+    return m;
+  }
+
+  std::size_t index_at(std::size_t d) const {
+    require_final();
+    if (d >= leader_of_.size() || leader_of_[d] < 0) {
+      throw std::invalid_argument("Constraints: dof " + std::to_string(d) +
+                                  " does not lead a form");
+    }
+    return static_cast<std::size_t>(leader_of_[d]);
+  }
+
+  void require_final() const {
+    if (!final_) throw std::logic_error("Constraints: finalize() before use");
+  }
+
+  std::vector<Form> forms_;
   std::vector<char> mask_;
-  std::vector<double> value_of_;
+  std::vector<long long> leader_of_;   // dof -> form it leads, or -1
+  std::vector<std::size_t> lead_index_;  // form -> which of its terms leads
   mutable std::vector<double> scale_;
   mutable bool scaled_{false};
-  bool sorted_{false};
+  bool final_{false};
 };
 
 }  // namespace mimetika

@@ -17,6 +17,12 @@ if(MIMETIKA_USE_PETSC)
   add_executable(mimetika-confined confined.cpp)
   target_link_libraries(mimetika-confined PRIVATE mimetika::mimetika mimetika_petsc)
 
+  add_executable(mimetika-darcy-annulus darcy_annulus.cpp)
+  target_link_libraries(mimetika-darcy-annulus PRIVATE mimetika::mimetika mimetika_petsc)
+
+  add_executable(mimetika-poroelastic poroelastic.cpp)
+  target_link_libraries(mimetika-poroelastic PRIVATE mimetika::mimetika mimetika_petsc)
+
   add_executable(mimetika-terzaghi terzaghi.cpp)
   target_link_libraries(mimetika-terzaghi PRIVATE mimetika::mimetika mimetika_petsc)
 endif()

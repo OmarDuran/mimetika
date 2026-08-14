@@ -56,7 +56,7 @@ MIMETIKA_TEST(a_sealed_face_pins_the_flux_and_nothing_else) {
   const auto& sp = sim.epoch().stratum(0).space();
 
   const auto sides = FacetSelector::where(m, 3, FacetSelector::at(0, 0.0));
-  mimetika::pin_facets(sim.constraints(), sp, "q_0", 3, sides);
+  mimetika::impose_normal_flux(sim.constraints(), sp, "q_0", 3, m, sides);
   // d moments per facet in the de Rham flow space: sealing a face pins the
   // net flow AND the way it is distributed across the face, which is what
   // "no flow through it" means when the flux is not constant on a facet
@@ -145,7 +145,7 @@ MIMETIKA_TEST(a_homogeneous_natural_condition_costs_nothing) {
 MIMETIKA_TEST(a_prescribed_displacement_is_natural_and_free_when_homogeneous) {
   const auto m = mimetika_test::hex_grid(2);
   const graphos::Complex& c = m.topology();
-  const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(m, 1.0, 1.0);
+  const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(m, 3, 1.0, 1.0);
   const auto n_facets = static_cast<std::size_t>(c.count(2));
   const auto top = FacetSelector::where(m, 3, FacetSelector::at(2, 2.0));
   CHECK(!top.empty());
@@ -204,7 +204,7 @@ MIMETIKA_TEST(a_prescribed_displacement_is_natural_and_free_when_homogeneous) {
 MIMETIKA_TEST(an_affine_displacement_datum_reaches_the_higher_moments) {
   const auto m = mimetika_test::hex_grid(2);
   const graphos::Complex& c = m.topology();
-  const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(m, 1.0, 1.0);
+  const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(m, 3, 1.0, 1.0);
   const auto n_facets = static_cast<std::size_t>(c.count(2));
   const auto top = FacetSelector::where(m, 3, FacetSelector::at(2, 2.0));
 
