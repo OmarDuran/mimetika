@@ -125,7 +125,11 @@ int main(int argc, char** argv) {
   const auto A = solver::SparseSystem::from(jac);
   std::vector<double> b(sim.n_dofs(), 0.0), x;
   for (std::size_t d = 0; d < sim.n_dofs(); ++d) {
-    if (sim.constraints().pinned(d)) b[d] = sim.constraints().value_at(d);
+    // the constrained equation is written with the scale of the row it
+    // replaced, so its datum carries the same factor
+    if (sim.constraints().pinned(d)) {
+      b[d] = sim.constraints().scale_at(d) * sim.constraints().value_at(d);
+    }
   }
   solver::PetscSolver petsc;
   const auto rep = petsc.solve(A, b, x);

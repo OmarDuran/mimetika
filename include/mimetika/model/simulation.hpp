@@ -94,6 +94,21 @@ class Simulation {
   void freeze_constraints() {
     constraints_.finalize(state_.size());
     constraints_.apply_to_state(state_);
+    // and MEASURE THE SCALE of each equation that is about to be replaced.
+    // One unconstrained assembly is enough: what is wanted is the diagonal the
+    // terms write, which is the constitutive factor of that row and does not
+    // depend on the state for a linear model. Doing it here rather than per
+    // assembly is what lets the residual, the tangent and the tangent's action
+    // agree on one scale without any of them re-deriving it.
+    exokal::forms::TripletSink probe(state_.size());
+    model_.assemble(epoch_, state_, probe, ws_);
+    std::vector<double> diagonal(state_.size(), 0.0);
+    for (std::size_t k = 0; k < probe.nnz(); ++k) {
+      if (probe.row[k] == probe.col[k]) {
+        diagonal[static_cast<std::size_t>(probe.row[k])] += probe.value[k];
+      }
+    }
+    constraints_.set_scales(diagonal);
   }
 
   // ---- the three operators, from one form source ------------------------
@@ -125,7 +140,8 @@ class Simulation {
 
  private:
   // Substitution on the assembled triplets: drop what the terms wrote on a
-  // constrained row, then write the identity there.
+  // constrained row, then write the constraint there, scaled by the diagonal
+  // of the equation it replaces (see Constraints).
   void filter_constrained_rows(exokal::forms::TripletSink& sink) const {
     std::size_t w = 0;
     for (std::size_t k = 0; k < sink.row.size(); ++k) {
@@ -140,10 +156,11 @@ class Simulation {
     sink.value.resize(w);
     for (std::size_t d = 0; d < state_.size(); ++d) {
       if (!constraints_.pinned(d)) continue;
+      const double s = constraints_.scale_at(d);
       sink.row.push_back(static_cast<Index>(d));
       sink.col.push_back(static_cast<Index>(d));
-      sink.value.push_back(1.0);
-      sink.residual[d] = state_[d] - constraints_.value_at(d);
+      sink.value.push_back(s);
+      sink.residual[d] = s * (state_[d] - constraints_.value_at(d));
     }
   }
 

@@ -106,15 +106,23 @@ MIMETIKA_TEST(essential_constraints_hold_on_every_path) {
   sim.residual(r);
   for (const auto d : pinned) CHECK(near(r[static_cast<std::size_t>(d)], 0.0, 1e-14));
 
-  // perturb a constrained entry: the residual is now exactly the discrepancy,
-  // not a penalty times it
+  // perturb a constrained entry: the residual is exactly the discrepancy times
+  // the scale the constrained equation is written with, not a penalty times it.
+  // The scale is free -- it is the same equation for any nonzero multiple --
+  // and it is chosen to match the row the constraint replaced so that a direct
+  // factorization is not asked to pivot across twenty orders of magnitude.
+  const double s0 = sim.constraints().scale_at(0);
+  CHECK(s0 > 0.0);
   sim.state()[0] += 0.375;
   sim.residual(r);
-  CHECK(near(r[0], 0.375, 1e-14));
+  CHECK(near(r[0], s0 * 0.375, 1e-14 * std::max(1.0, s0)));
+  // and what the scale must NOT change: the step lands on the datum exactly,
+  // since s dx = -s (x - g) gives x + dx = g whatever s is
+  CHECK(near(sim.state()[0] - r[0] / s0, 0.25 * 0.0, 1e-14));
   sim.state()[0] -= 0.375;
 
-  // the Jacobian row of a constrained unknown is the identity, and nothing
-  // the terms wrote on it survives
+  // the Jacobian row of a constrained unknown is a single diagonal entry, and
+  // nothing the terms wrote on it survives
   exokal::forms::TripletSink jac(sim.n_dofs());
   sim.jacobian(jac);
   for (const auto d : pinned) {
@@ -126,7 +134,8 @@ MIMETIKA_TEST(essential_constraints_hold_on_every_path) {
       if (jac.col[k] == d) diag = jac.value[k];
     }
     CHECK(entries == 1);
-    CHECK(diag == 1.0);
+    CHECK(diag == sim.constraints().scale_at(static_cast<std::size_t>(d)));
+    CHECK(diag > 0.0);
   }
 
   // and the action agrees with that Jacobian, constrained rows included —
@@ -141,7 +150,9 @@ MIMETIKA_TEST(essential_constraints_hold_on_every_path) {
   }
   for (std::size_t i = 0; i < sim.n_dofs(); ++i) CHECK(near(y[i], expect[i], 1e-10));
   for (const auto d : pinned) {
-    CHECK(near(y[static_cast<std::size_t>(d)], v[static_cast<std::size_t>(d)], 1e-14));
+    const auto i = static_cast<std::size_t>(d);
+    CHECK(near(y[i], sim.constraints().scale_at(i) * v[i],
+               1e-14 * std::max(1.0, sim.constraints().scale_at(i))));
   }
 }
 

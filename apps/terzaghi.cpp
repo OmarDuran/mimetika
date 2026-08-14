@@ -124,7 +124,7 @@ int main(int argc, char** argv) {
   std::printf("K_oed = %.6f, c_v = %.6f, nu = %.6f\n", K_oed, c_v, nu);
   std::printf("volumetric compliance = %.6f, storage S = %.6f\n", inv_mod, storage);
 
-  const double dt = 1.0e-4 * h * h / c_v;
+  const double dt = (argc > 3 ? std::atof(argv[3]) : 1.0e-4) * h * h / c_v;
   const exokal::hodge::FluxHodge hodge = exokal::hodge::FluxHodge::build(
       m, exokal::constitutive::Coefficient::uniform(perm),
       exokal::hodge::FluxHodge::Realization::derham);
@@ -231,7 +231,11 @@ int main(int argc, char** argv) {
       b[static_cast<std::size_t>(A.row[k])] += A.value[k] * y[static_cast<std::size_t>(A.col[k])];
     }
     for (std::size_t d = 0; d < sim.n_dofs(); ++d) {
-      if (sim.constraints().pinned(d)) b[d] = sim.constraints().value_at(d);
+      // the constrained equation is written with the scale of the row it
+    // replaced, so its datum carries the same factor
+    if (sim.constraints().pinned(d)) {
+      b[d] = sim.constraints().scale_at(d) * sim.constraints().value_at(d);
+    }
     }
     const auto rep = petsc.solve(A, b, y_new);
     if (!rep.converged) {

@@ -146,6 +146,38 @@ MIMETIKA_TEST(the_poroelastic_system_is_a_saddle_point_with_adjoint_couplings) {
   }
   CHECK(worst < 1e-10);
 
+  // AND THE SIGNS, which adjointness-in-magnitude cannot see. The two
+  // couplings of a poroelastic system are not the same kind of object:
+  //
+  //   (s,p)  the BIOT coupling, a constitutive symmetry. Both blocks are
+  //          second derivatives of one free energy, so A_ij = +A_ji.
+  //   (q,p)  the DARCY pair, adjoint differential operators, which exokal
+  //          writes antisymmetrically as [M, -B^T; +B, 0]: A_ij = -A_ji.
+  //
+  // Giving the Biot block the Darcy convention leaves every structural
+  // property here intact and every magnitude unchanged, and makes the
+  // undrained response wrong -- p = 5 sigma_0/13 instead of sigma_0/alpha on
+  // a confined column at mu = lam = alpha = 1. Nothing short of checking the
+  // sign, or solving a problem with a known answer, detects it.
+  const auto [q0, q1] = blk("q_0");
+  const auto pairing = [&](std::size_t a0, std::size_t a1, std::size_t b0, std::size_t b1,
+                           double want) {
+    double err = 0.0, mag = 0.0;
+    for (std::size_t i = a0; i < a1; ++i) {
+      for (std::size_t j = b0; j < b1; ++j) {
+        err = std::max(err, std::abs(A[i * n + j] - want * A[j * n + i]));
+        mag = std::max(mag, std::abs(A[i * n + j]));
+      }
+    }
+    return std::pair<double, double>{err, mag};
+  };
+  const auto [biot_err, biot_mag] = pairing(s0, s1, p0, p1, +1.0);
+  CHECK(biot_mag > 1e-12);  // the block must exist before its sign means anything
+  CHECK(biot_err < 1e-10);
+  const auto [darcy_err, darcy_mag] = pairing(q0, q1, p0, p1, -1.0);
+  CHECK(darcy_mag > 1e-12);
+  CHECK(darcy_err < 1e-10);
+
   // and the multiplier blocks are empty: no (u,u), no (g,g), no (u,g)
   const auto empty = [&](std::size_t a0, std::size_t a1, std::size_t b0, std::size_t b1) {
     double w = 0.0;
@@ -159,18 +191,13 @@ MIMETIKA_TEST(the_poroelastic_system_is_a_saddle_point_with_adjoint_couplings) {
   CHECK(empty(u0, u1, g0, g1) == 0.0);
   CHECK(empty(u0, u1, p0, p1) == 0.0);  // the Biot coupling goes through the STRESS
 
-  // the Biot coupling is present, and it is the NEGATIVE transpose: the pore
-  // pressure enters the momentum balance exactly as the volumetric response
-  // enters the mass balance, from one coefficient
+  // the Biot coupling is present, and it is the PLAIN transpose: the pore
+  // pressure enters the constitutive relation exactly as the volumetric
+  // response enters the mass balance, from one coefficient and with one sign.
+  // Its symmetry is checked above, with the Darcy pair's antisymmetry beside
+  // it so the two conventions cannot be confused for each other again.
   CHECK(empty(s0, s1, p0, p1) > 1e-9);
   CHECK(empty(p0, p1, s0, s1) > 1e-9);
-  double anti = 0.0;
-  for (std::size_t i = s0; i < s1; ++i) {
-    for (std::size_t j = p0; j < p1; ++j) {
-      anti = std::max(anti, std::abs(A[i * n + j] + A[j * n + i]));
-    }
-  }
-  CHECK(anti < 1e-12);
 
   // and so are the mechanics couplings, in the same convention
   double anti_u = 0.0;
