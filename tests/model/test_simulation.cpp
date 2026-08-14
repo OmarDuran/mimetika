@@ -30,7 +30,7 @@ MIMETIKA_TEST(the_simulation_produces_residual_jacobian_and_action) {
   const auto m = mimetika_test::hex_grid(3);
   const graphos::Complex& c = m.topology();
   const FluxHodge hodge =
-      FluxHodge::build(m, Coefficient::uniform(1.0), FluxHodge::Realization::stabilized);
+      FluxHodge::build(m, Coefficient::uniform(1.0), FluxHodge::Realization::derham);
   exokal::forms::TermContext ctx;
   ctx.provide("flux_hodge", hodge);
 
@@ -81,7 +81,7 @@ MIMETIKA_TEST(essential_constraints_hold_on_every_path) {
   const auto m = mimetika_test::hex_grid(3);
   const graphos::Complex& c = m.topology();
   const FluxHodge hodge =
-      FluxHodge::build(m, Coefficient::uniform(1.0), FluxHodge::Realization::stabilized);
+      FluxHodge::build(m, Coefficient::uniform(1.0), FluxHodge::Realization::derham);
   exokal::forms::TermContext ctx;
   ctx.provide("flux_hodge", hodge);
 

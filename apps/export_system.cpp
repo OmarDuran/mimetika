@@ -59,7 +59,7 @@ int main(int argc, char** argv) {
   const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(m, 1.0, 1.0);
   const exokal::hodge::FluxHodge hodge = exokal::hodge::FluxHodge::build(
       m, exokal::constitutive::Coefficient::uniform(1.0),
-      exokal::hodge::FluxHodge::Realization::stabilized);
+      exokal::hodge::FluxHodge::Realization::derham);
   exokal::forms::TermContext ctx;
   ctx.provide("stress_operators", ops);
   ctx.provide("flux_hodge", hodge);
@@ -77,7 +77,7 @@ int main(int argc, char** argv) {
   const auto top = FacetSelector::where(m, 3, FacetSelector::at(2, 1.0));
   if (sp.has("s_0")) {
     pin_facets(sim.constraints(), sp, "s_0", 3, bottom);
-    pin_facet_load(sim.constraints(), sp, "s_0", 3, top, {0.0, 0.0, -1.0});
+    pin_facet_traction(sim.constraints(), sp, "s_0", 3, m, top,{0,0,0, 0,0,0, 0,0,-1.0});
   }
   if (sp.has("q_0")) {
     pin_facets(sim.constraints(), sp, "q_0", 3, bottom);

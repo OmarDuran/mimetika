@@ -37,6 +37,11 @@ struct FlowOptions {
   // Which registered Darcy term to attach. The mobility model is a
   // compile-time choice of the application, not of the library.
   std::string darcy_term{"mixed_darcy_cell"};
+  // The mobility multiplying the Hodge: M(lambda) = M(1)/lambda. A transient
+  // step sets it to dt, which rescales the flux to the volume that crosses a
+  // facet during the step and is what makes backward Euler need no
+  // time-stepping machinery at all.
+  double mobility{1.0};
 };
 
 class Flow final : public Package {
@@ -59,7 +64,11 @@ class Flow final : public Package {
     // the flux is a cochain on the facets, the pressure one per cell: the
     // lowest-order mixed pair, and the layouts that make the first row an
     // (n−1, n−1) pairing and the second an (n, n−1) one
-    r.fields.push_back({at("q"), DofLayout::cochain(dim, dim - 1)});
+    // d MOMENTS PER FACET, not one. The flux space must match the stress
+    // space it is coupled to: this is the BDM_1 / de Rham flow space, and
+    // the lowest-order one-flux-per-facet product is a different
+    // discretization rather than a coarser version of the same one.
+    r.fields.push_back({at("q"), DofLayout::moments(dim, dim - 1, dim)});
     r.fields.push_back({at("p"), DofLayout::cell_wise(dim)});
     if (opt_.thermal) r.fields.push_back({at("h"), DofLayout::cell_wise(dim)});
     for (std::size_t a = 0; a < opt_.components; ++a) {
@@ -84,7 +93,7 @@ class Flow final : public Package {
   void attach(exokal::forms::Model& model,
               const exokal::forms::TermContext& ctx) const override {
     (void)ctx;  // the term reads its own data from the context by name
-    model.add(opt_.darcy_term, exokal::forms::On::all());
+    model.add(opt_.darcy_term, exokal::forms::On::all(), {{"mobility", opt_.mobility}});
   }
 
   const FlowOptions& options() const { return opt_; }

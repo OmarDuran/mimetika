@@ -80,7 +80,7 @@ MIMETIKA_TEST(a_composed_flow_model_assembles) {
   // hexahedra are polytopes, so the stabilized product is the realization
   // that applies; the RT_0 one is unisolvent only on simplices
   const FluxHodge hodge =
-      FluxHodge::build(m, Coefficient::uniform(1.0), FluxHodge::Realization::stabilized);
+      FluxHodge::build(m, Coefficient::uniform(1.0), FluxHodge::Realization::derham);
   exokal::forms::TermContext ctx;
   ctx.provide("flux_hodge", hodge);
 

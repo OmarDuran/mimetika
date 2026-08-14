@@ -28,6 +28,12 @@ struct ModelOptions {
   std::size_t components{1};
   bool thermal{false};
   std::string discretization{"mimetic"};
+  // the transient step, when there is one: the Darcy mobility and the
+  // inverse Biot modulus
+  double mobility{1.0};
+  double storage{0.0};                // S in the mass balance
+  double volumetric_compliance{1.0};  // (1-2nu)/(2mu(1-2nu+d nu))
+  double biot{1.0};
 };
 
 struct ModelEntry {

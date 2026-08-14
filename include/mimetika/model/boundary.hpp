@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <stdexcept>
 #include <cmath>
 #include <functional>
 #include <string>
@@ -132,20 +133,72 @@ inline void pin_facet_components(Constraints& c, const exokal::spaces::ProductSp
   }
 }
 
-// A uniform applied load: the constant moment of each component carries it,
-// the higher moments are zero. `load` is the traction per component, already
-// scaled by the facet measure the moment is taken against.
-inline void pin_facet_load(Constraints& c, const exokal::spaces::ProductSpace& space,
-                           const std::string& field, int cell_dim,
-                           const std::vector<Index>& facets, const std::vector<double>& load,
-                           Index offset = 0) {
+// AN APPLIED TRACTION, from the STRESS TENSOR rather than a traction vector.
+//
+// The traction is a degree of freedom here, so prescribing it is essential —
+// and its value is sigma n taken against the CANONICAL facet normal, the one
+// the space numbers its unknowns in. Passing a tensor rather than a vector is
+// what makes that safe: the caller never has to know which way a given
+// facet's normal points, and a vector assembled against the wrong normal is
+// silently sign-flipped, which is a failure no assertion downstream would
+// catch.
+//
+// The moments follow: the facet basis is the constant and two centred
+// coordinates, so a uniform traction lands entirely on the constant moment,
+// scaled by the facet measure it is integrated against, and the higher
+// moments are exactly zero.
+inline void pin_facet_traction(Constraints& c, const exokal::spaces::ProductSpace& space,
+                               const std::string& field, int cell_dim, const exokal::Mesh& mesh,
+                               const std::vector<Index>& facets,
+                               const std::array<double, 9>& stress, Index offset = 0) {
   for (const Index f : facets) {
+    const exokal::Mesh::Point av = exokal::face_area_vector(mesh, f);
+    const double area = std::sqrt(av[0] * av[0] + av[1] * av[1] + av[2] * av[2]);
+    const exokal::Mesh::Point n{av[0] / area, av[1] / area, av[2] / area};  // canonical
+    std::array<double, 3> t{0.0, 0.0, 0.0};
+    for (std::size_t k = 0; k < 3; ++k) {
+      for (std::size_t j = 0; j < 3; ++j) t[k] += stress[k * 3 + j] * n[j];
+    }
     const FacetDofs d = facet_dofs(space, field, cell_dim, f);
     for (std::size_t i = 0; i < d.dofs.size(); ++i) {
-      const double v = d.moment[i] == 0
-                           ? load[static_cast<std::size_t>(d.component[i])]
-                           : 0.0;
+      const double v =
+          d.moment[i] == 0 ? t[static_cast<std::size_t>(d.component[i])] * area : 0.0;
       c.pin(d.dofs[i] + offset, v);
+    }
+  }
+}
+
+// A ROLLER: the normal displacement is held and the slip is free.
+//
+// In Hellinger-Reissner those land on OPPOSITE sides. The displacement is
+// natural and rides along in the boundary datum — homogeneous here, so it
+// costs nothing — while the vanishing SHEAR TRACTION is essential and is what
+// gets pinned: every basis function of each TANGENTIAL component, the ones
+// with k != the facet's normal axis.
+//
+// Restricted to axis-aligned facets, and deliberately so. For a general
+// normal the shear components are a rotation of the stored ones rather than a
+// subset of them, so pinning them would mean a change of basis on the facet
+// block; refusing is far better than silently applying the wrong constraint,
+// which is a roller that lets the column bulge.
+inline void pin_facet_roller(Constraints& c, const exokal::spaces::ProductSpace& space,
+                             const std::string& field, int cell_dim, const exokal::Mesh& mesh,
+                             const std::vector<Index>& facets, Index offset = 0) {
+  for (const Index f : facets) {
+    const exokal::Mesh::Point av = exokal::face_area_vector(mesh, f);
+    const double area = std::sqrt(av[0] * av[0] + av[1] * av[1] + av[2] * av[2]);
+    std::size_t axis = 0;
+    for (std::size_t k = 1; k < 3; ++k) {
+      if (std::abs(av[k]) > std::abs(av[axis])) axis = k;
+    }
+    if (std::abs(std::abs(av[axis]) / area - 1.0) > 1e-10) {
+      throw std::invalid_argument(
+          "pin_facet_roller: facet " + std::to_string(f) +
+          " is not axis aligned; a roller there needs a rotated facet basis");
+    }
+    const FacetDofs d = facet_dofs(space, field, cell_dim, f);
+    for (std::size_t i = 0; i < d.dofs.size(); ++i) {
+      if (static_cast<std::size_t>(d.component[i]) != axis) c.pin(d.dofs[i] + offset, 0.0);
     }
   }
 }

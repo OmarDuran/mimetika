@@ -47,7 +47,7 @@ MIMETIKA_TEST(a_sealed_face_pins_the_flux_and_nothing_else) {
   const graphos::Complex& c = m.topology();
   const exokal::hodge::FluxHodge h = exokal::hodge::FluxHodge::build(
       m, exokal::constitutive::Coefficient::uniform(1.0),
-      exokal::hodge::FluxHodge::Realization::stabilized);
+      exokal::hodge::FluxHodge::Realization::derham);
   exokal::forms::TermContext ctx;
   ctx.provide("flux_hodge", h);
 
@@ -57,7 +57,10 @@ MIMETIKA_TEST(a_sealed_face_pins_the_flux_and_nothing_else) {
 
   const auto sides = FacetSelector::where(m, 3, FacetSelector::at(0, 0.0));
   mimetika::pin_facets(sim.constraints(), sp, "q_0", 3, sides);
-  CHECK(sim.constraints().size() == sides.size());  // one flux dof per facet
+  // d moments per facet in the de Rham flow space: sealing a face pins the
+  // net flow AND the way it is distributed across the face, which is what
+  // "no flow through it" means when the flux is not constant on a facet
+  CHECK(sim.constraints().size() == 3 * sides.size());
   sim.freeze_constraints();
 
   // the pinned dofs are flux dofs, and no pressure dof was touched
@@ -81,7 +84,7 @@ MIMETIKA_TEST(a_homogeneous_natural_condition_costs_nothing) {
   const graphos::Complex& c = m.topology();
   const exokal::hodge::FluxHodge h = exokal::hodge::FluxHodge::build(
       m, exokal::constitutive::Coefficient::uniform(1.0),
-      exokal::hodge::FluxHodge::Realization::stabilized);
+      exokal::hodge::FluxHodge::Realization::derham);
 
   const auto comp = Catalogue::instance().build("single_phase_flow", {});
   const auto n_facets = static_cast<std::size_t>(c.count(2));
@@ -119,7 +122,8 @@ MIMETIKA_TEST(a_homogeneous_natural_condition_costs_nothing) {
   for (std::size_t i = 0; i < plain.size(); ++i) {
     if (std::abs(with_load[i] - plain[i]) > 1e-12) ++moved;
   }
-  CHECK(moved == top.size());  // one flux dof per loaded facet
+  // the datum pairs with the CONSTANT moment of each loaded facet
+  CHECK(moved == top.size());
 
   // and it scales with the datum, as a linear term must
   const auto run_scaled = [&](double v) {

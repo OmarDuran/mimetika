@@ -87,11 +87,20 @@ MIMETIKA_TEST(the_poroelastic_system_is_a_saddle_point_with_adjoint_couplings) {
 
   const StressOperators ops = StressOperators::build(m, 1.0, 1.0);
   CHECK(ops.size() == static_cast<std::size_t>(c.count(3)));
-  CHECK(ops.n_stabilized() == ops.size());  // hexahedra: every cell stabilizes
+  // WHETHER A CELL STABILIZES IS A PROPERTY OF THE SPACE, not of the cell.
+  // The default de Rham realization reconstructs each stress row on the
+  // enriched scalar space, so its N is square and unisolvent and there is
+  // nothing left for a stabilization to see -- on hexahedra as on simplices.
+  // The AFW realization reconstructs on the full linear tensor space, whose
+  // moments a hexahedron does not determine, so there every cell stabilizes.
+  CHECK(ops.n_stabilized() == 0);
+  const StressOperators afw =
+      StressOperators::build(m, 1.0, 1.0, StressOperators::Realization::afw);
+  CHECK(afw.n_stabilized() == afw.size());
 
   const exokal::hodge::FluxHodge hodge = exokal::hodge::FluxHodge::build(
       m, exokal::constitutive::Coefficient::uniform(1.0),
-      exokal::hodge::FluxHodge::Realization::stabilized);
+      exokal::hodge::FluxHodge::Realization::derham);
   exokal::forms::TermContext ctx;
   ctx.provide("stress_operators", ops);
   ctx.provide("flux_hodge", hodge);

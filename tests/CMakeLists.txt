@@ -13,3 +13,13 @@ foreach(t ${MIMETIKA_UNIT_TESTS})
   target_link_libraries(${name} PRIVATE mimetika::mimetika)
   add_test(NAME ${name} COMMAND ${name})
 endforeach()
+
+# tests that need a solver, built only when there is one
+if(MIMETIKA_USE_PETSC)
+  foreach(t solver/test_petsc)
+    string(REPLACE "/" "." name ${t})
+    add_executable(${name} ${t}.cpp)
+    target_link_libraries(${name} PRIVATE mimetika::mimetika mimetika_petsc)
+    add_test(NAME ${name} COMMAND ${name})
+  endforeach()
+endif()
