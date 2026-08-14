@@ -6,7 +6,7 @@
 // Nothing below chooses a discretization, a term or a package. Both problems
 // are the `consolidation` model of the catalogue -- Biot poroelasticity on the
 // mimetic-AFW-BDM de Rham spaces -- and they differ only in what a
-// PoroelasticProblem carries: a domain, five material numbers, an initial
+// PoroelasticModel carries: a domain, five material numbers, an initial
 // state and a list of boundary forms.
 //
 // The borehole is the one that could not have been written before the boundary
@@ -22,7 +22,7 @@
 #include <string>
 #include <vector>
 
-#include "mimetika/model/poroelastic_problem.hpp"
+#include "mimetika/model/poroelastic_model.hpp"
 #include "mimetika/solver/petsc.hpp"
 
 using namespace mimetika;
@@ -185,8 +185,8 @@ std::array<double, 9> isotropic(double s, int d) {
 }
 
 // march a built problem, reporting at the requested time factors
-void march(PoroelasticProblem& prob, const std::vector<double>& report_at, double t_scale,
-           const std::function<void(double, const PoroelasticProblem&)>& report) {
+void march(PoroelasticModel& prob, const std::vector<double>& report_at, double t_scale,
+           const std::function<void(double, const PoroelasticModel&)>& report) {
   // BIND ONCE: the tangent is constant for a linear model at constant dt, so
   // the factorization is paid one time and every step is a back-substitution
   solver::PetscSolver petsc;
@@ -235,7 +235,7 @@ int main(int argc, char** argv) {
                                        mat.biot * mat.biot / mat.oedometer_modulus());
     const double dt = 1.0e-4 * h * h / c_v;
 
-    PoroelasticProblem prob(m, dim, mat, dt);
+    PoroelasticModel prob(m, dim, mat, dt);
     std::vector<Index> loaded, confined;
     for (const Index f : boundary_facets(c, dim)) {
       const auto x = exokal::centroid(m, dim - 1, f);
@@ -258,7 +258,7 @@ int main(int argc, char** argv) {
     std::FILE* out = std::fopen(argc > 5 ? argv[5] : "consolidation.txt", "w");
     std::fprintf(out, "# consolidation %dD %s c_v=%g\n# factor zbar pbar\n", dim, fam.c_str(),
                  c_v);
-    march(prob, factors, h * h / c_v, [&](double T, const PoroelasticProblem& p) {
+    march(prob, factors, h * h / c_v, [&](double T, const PoroelasticModel& p) {
       // the deepest cell, found rather than guessed at: a triangle's centroid
       // and a quadrilateral's sit at different heights in the same column
       double deep = 0.0, zmin = 1e300;
@@ -285,7 +285,7 @@ int main(int argc, char** argv) {
     const double cf = mat.diffusivity();
     const double dt = (argc > 7 ? std::atof(argv[7]) : 0.002) * a * a / cf;
 
-    PoroelasticProblem prob(m, dim, mat, dt);
+    PoroelasticModel prob(m, dim, mat, dt);
     std::vector<Index> sym, wall, far;
     const double rmid = 0.5 * (a + R);
     for (const Index f : boundary_facets(c, dim)) {
@@ -324,7 +324,7 @@ int main(int argc, char** argv) {
     std::FILE* out = std::fopen(argc > 6 ? argv[6] : "borehole.txt", "w");
     std::fprintf(out, "# borehole %dD %s a=%g R=%g c_f=%g\n# T r pbar\n", dim, fam.c_str(), a, R,
                  cf);
-    march(prob, factors, a * a / cf, [&](double T, const PoroelasticProblem& p) {
+    march(prob, factors, a * a / cf, [&](double T, const PoroelasticModel& p) {
       double pw = 0.0, rw = 1e300;
       for (Index e = 0; e < c.count(dim); ++e) {
         const auto x = exokal::centroid(m, dim, e);

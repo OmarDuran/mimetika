@@ -6,9 +6,9 @@
 #include "exokal/constitutive/coefficient.hpp"
 #include "exokal/hodge/flux_hodge.hpp"
 #include "mimetika/model/simulation.hpp"
-#include "mimetika/models/single_phase_flow.hpp"
+#include "mimetika/model/compositions/single_phase_flow.hpp"
 #include "exokal/hodge/stress_operators.hpp"
-#include "mimetika/models/poroelasticity.hpp"
+#include "mimetika/model/compositions/poroelasticity.hpp"
 #include "mimetika/physics/boundary_terms.hpp"
 
 using exokal::forms::Index;

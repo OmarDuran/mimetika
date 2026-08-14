@@ -68,9 +68,16 @@ inline exokal::Mesh extrude(std::vector<Point> plane,
         std::sort(v.begin(), v.end());
         const Index a = at(v[0], L), b = at(v[1], L), c = at(v[2], L);
         const Index A = at(v[0], L + 1), B = at(v[1], L + 1), C = at(v[2], L + 1);
-        out.push_back({a, b, c, C});
-        out.push_back({a, b, B, C});
-        out.push_back({a, A, B, C});
+        // NO WINDING FIXUP HERE. A subdivision that tiles may still hand back
+        // cells wound the other way -- the Freudenthal cut of a cube
+        // alternates -- and it does not matter: exokal::Mesh orients what it is
+        // given, coherently and then globally, so a generator states the
+        // subdivision and nothing else.
+        for (std::vector<Index> q : {std::vector<Index>{a, b, c, C},
+                                     std::vector<Index>{a, b, B, C},
+                                     std::vector<Index>{a, A, B, C}}) {
+          out.push_back(std::move(q));
+        }
       }
     }
     return exokal::Mesh::from_simplices(3, std::move(pts), out);

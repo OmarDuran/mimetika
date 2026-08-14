@@ -6,7 +6,7 @@
 #include "mimetika/physics/poro_coupling.hpp"
 #include "mimetika/physics/storage.hpp"
 
-namespace mimetika::models {
+namespace mimetika::compositions {
 
 inline const physics::RegisterModel linear_elasticity{
     "linear_elasticity", "Weakly-symmetric mixed elasticity (Hellinger-Reissner)",
@@ -23,7 +23,7 @@ inline const physics::RegisterModel poroelasticity{
     "poroelasticity", "Single-phase flow coupled to linear elasticity (Biot)",
     [](const physics::ModelOptions& o) {
       physics::Composition c;
-      c.emplace<physics::Flow>(physics::FlowOptions{0, o.thermal, "mixed_darcy_cell"});
+      c.emplace<physics::Flow>(physics::FlowOptions{0, o.thermal, "mixed_darcy_cell", 1.0, o.flux_moments});
       c.emplace<physics::Mechanics>();
       c.emplace<physics::PoroCoupling>();
       return c;
@@ -36,7 +36,7 @@ inline const physics::RegisterModel consolidation{
     [](const physics::ModelOptions& o) {
       physics::Composition c;
       c.emplace<physics::Flow>(
-          physics::FlowOptions{0, o.thermal, "mixed_darcy_cell", o.mobility});
+          physics::FlowOptions{0, o.thermal, "mixed_darcy_cell", o.mobility, o.flux_moments});
       c.emplace<physics::Mechanics>();
       c.emplace<physics::PoroCoupling>(
           physics::PoroCouplingOptions{o.biot, o.volumetric_compliance});
@@ -44,4 +44,4 @@ inline const physics::RegisterModel consolidation{
       return c;
     }};
 
-}  // namespace mimetika::models
+}  // namespace mimetika::compositions

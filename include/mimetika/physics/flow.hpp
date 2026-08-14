@@ -42,6 +42,16 @@ struct FlowOptions {
   // facet during the step and is what makes backward Euler need no
   // time-stepping machinery at all.
   double mobility{1.0};
+  // MOMENTS PER FACET OF THE FLUX SPACE. Zero means d, the de Rham/BDM_1
+  // layout. One is the lowest-order single-flux-per-facet space -- RT_0 in its
+  // de Rham realization, or the stabilized polytopal product.
+  //
+  // The package does not choose it and does not know which inner product will
+  // be built: it lays out a space, and the layout has to match whatever star
+  // lands on it. The driver derives both from ONE realization so they cannot
+  // disagree -- a mismatch here is not a wrong answer, it is a space of the
+  // wrong size, and every index downstream is off.
+  int flux_moments{0};
 };
 
 class Flow final : public Package {
@@ -64,11 +74,14 @@ class Flow final : public Package {
     // the flux is a cochain on the facets, the pressure one per cell: the
     // lowest-order mixed pair, and the layouts that make the first row an
     // (n−1, n−1) pairing and the second an (n, n−1) one
-    // d MOMENTS PER FACET, not one. The flux space must match the stress
-    // space it is coupled to: this is the BDM_1 / de Rham flow space, and
-    // the lowest-order one-flux-per-facet product is a different
-    // discretization rather than a coarser version of the same one.
-    r.fields.push_back({at("q"), DofLayout::moments(dim, dim - 1, dim)});
+    // THE MOMENT COUNT COMES FROM THE REALIZATION. d of them is the BDM_1 /
+    // de Rham space, which is what a coupled poroelastic model needs because
+    // the stress space it pairs with has d^2; one is RT_0 or the stabilized
+    // polytopal product. These are DIFFERENT discretizations, not a finer and
+    // a coarser version of one, so the choice belongs to whoever states the
+    // model rather than to this package.
+    r.fields.push_back(
+        {at("q"), DofLayout::moments(dim, dim - 1, opt_.flux_moments > 0 ? opt_.flux_moments : dim)});
     r.fields.push_back({at("p"), DofLayout::cell_wise(dim)});
     if (opt_.thermal) r.fields.push_back({at("h"), DofLayout::cell_wise(dim)});
     for (std::size_t a = 0; a < opt_.components; ++a) {

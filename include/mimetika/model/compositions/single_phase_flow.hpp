@@ -6,13 +6,13 @@
 // CATALOGUE ENTRIES. Each is a composition and nothing else — the budget
 // is a few lines, and exceeding it means a package is missing.
 
-namespace mimetika::models {
+namespace mimetika::compositions {
 
 inline const physics::RegisterModel single_phase_flow{
     "single_phase_flow", "Darcy flow of one phase, mixed form",
     [](const physics::ModelOptions& o) {
       physics::Composition c;
-      c.emplace<physics::Flow>(physics::FlowOptions{0, o.thermal, "mixed_darcy_cell"});
+      c.emplace<physics::Flow>(physics::FlowOptions{0, o.thermal, "mixed_darcy_cell", 1.0, o.flux_moments});
       return c;
     }};
 
@@ -23,8 +23,9 @@ inline const physics::RegisterModel compositional_flow{
     [](const physics::ModelOptions& o) {
       physics::Composition c;
       c.emplace<physics::Flow>(
-          physics::FlowOptions{o.components, o.thermal, "mixed_darcy_cell_fluid"});
+          physics::FlowOptions{o.components, o.thermal, "mixed_darcy_cell_fluid", 1.0,
+                               o.flux_moments});
       return c;
     }};
 
-}  // namespace mimetika::models
+}  // namespace mimetika::compositions

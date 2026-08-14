@@ -6,8 +6,8 @@
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/io/system_export.hpp"
 #include "mimetika/model/boundary.hpp"
-#include "mimetika/models/poroelasticity.hpp"
-#include "mimetika/models/single_phase_flow.hpp"
+#include "mimetika/model/compositions/poroelasticity.hpp"
+#include "mimetika/model/compositions/single_phase_flow.hpp"
 
 // Assemble a named model on a small box and write the system out for the
 // Python to solve. This is the seam during the port: the C++ assembles, the

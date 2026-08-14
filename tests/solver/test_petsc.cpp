@@ -8,8 +8,8 @@
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/model/boundary.hpp"
 #include "mimetika/model/simulation.hpp"
-#include "mimetika/models/poroelasticity.hpp"
-#include "mimetika/models/single_phase_flow.hpp"
+#include "mimetika/model/compositions/poroelasticity.hpp"
+#include "mimetika/model/compositions/single_phase_flow.hpp"
 #include "mimetika/solver/petsc.hpp"
 
 using mimetika::Simulation;

@@ -14,7 +14,7 @@
 #include "mimetika/model/boundary_conditions.hpp"
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/solver/linear.hpp"
-#include "mimetika/models/poroelasticity.hpp"
+#include "mimetika/model/compositions/poroelasticity.hpp"
 #include "mimetika/physics/boundary_terms.hpp"
 
 // A POROELASTIC PROBLEM, STATED AS DATA.
@@ -88,9 +88,9 @@ struct PoroelasticMaterial {
 // a face may be traction-loaded and sealed, or roller-supported and drained,
 // and the mechanical and hydraulic sets need not coincide.
 
-class PoroelasticProblem {
+class PoroelasticModel {
  public:
-  PoroelasticProblem(const exokal::Mesh& mesh, int cell_dim, PoroelasticMaterial material,
+  PoroelasticModel(const exokal::Mesh& mesh, int cell_dim, PoroelasticMaterial material,
                      double dt)
       : mesh_(&mesh), dim_(cell_dim), material_(material), dt_(dt) {}
 

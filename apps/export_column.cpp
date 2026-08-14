@@ -28,7 +28,7 @@
 #include "mimetika/io/system_export.hpp"
 #include "mimetika/model/boundary.hpp"
 #include "mimetika/model/simulation.hpp"
-#include "mimetika/models/poroelasticity.hpp"
+#include "mimetika/model/compositions/poroelasticity.hpp"
 
 using namespace mimetika;
 using graphos::Index;

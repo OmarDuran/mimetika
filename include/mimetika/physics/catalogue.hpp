@@ -34,6 +34,8 @@ struct ModelOptions {
   double storage{0.0};                // S in the mass balance
   double volumetric_compliance{1.0};  // (1-2nu)/(2mu(1-2nu+d nu))
   double biot{1.0};
+  // moments per facet of the flux space; 0 means d (de Rham / BDM_1)
+  int flux_moments{0};
 };
 
 struct ModelEntry {

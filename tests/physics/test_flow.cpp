@@ -6,7 +6,7 @@
 #include "exokal/constitutive/coefficient.hpp"
 #include "exokal/forms/epoch.hpp"
 #include "exokal/hodge/flux_hodge.hpp"
-#include "mimetika/models/single_phase_flow.hpp"
+#include "mimetika/model/compositions/single_phase_flow.hpp"
 
 using exokal::constitutive::Coefficient;
 using exokal::hodge::FluxHodge;
