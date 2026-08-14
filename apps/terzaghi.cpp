@@ -98,7 +98,13 @@ int main(int argc, char** argv) {
   const exokal::Mesh m = column(n, h, width);
   const graphos::Complex& c = m.topology();
 
-  const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(m, mu, lam);
+  // ONE de Rham SELECTION FOR BOTH PRODUCTS. The stress operators and the flux
+  // Hodge each need a de Rham product on every cell, with different material
+  // tensors but the SAME reconstruction space; the selection is the expensive
+  // half and it does not depend on the material.
+  const exokal::hodge::DeRhamGeometryCache geo = exokal::hodge::DeRhamGeometryCache::build(m);
+  const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(
+      m, mu, lam, exokal::hodge::StressOperators::Realization::derham, &geo);
   std::printf("column: %lld cells, %zu stabilized\n", (long long)c.count(3), ops.n_stabilized());
 
   // the oedometric modulus, which sets the consolidation coefficient
@@ -127,7 +133,7 @@ int main(int argc, char** argv) {
   const double dt = (argc > 3 ? std::atof(argv[3]) : 1.0e-4) * h * h / c_v;
   const exokal::hodge::FluxHodge hodge = exokal::hodge::FluxHodge::build(
       m, exokal::constitutive::Coefficient::uniform(perm),
-      exokal::hodge::FluxHodge::Realization::derham);
+      exokal::hodge::FluxHodge::Realization::derham, &geo);
 
   exokal::forms::TermContext ctx;
   ctx.provide("stress_operators", ops);

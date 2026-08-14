@@ -94,26 +94,12 @@ class Simulation {
   void freeze_constraints() {
     constraints_.finalize(state_.size());
     constraints_.apply_to_state(state_);
-    // and MEASURE THE SCALE of each equation that is about to be replaced.
-    // One unconstrained assembly is enough: what is wanted is the diagonal the
-    // terms write, which is the constitutive factor of that row and does not
-    // depend on the state for a linear model. Doing it here rather than per
-    // assembly is what lets the residual, the tangent and the tangent's action
-    // agree on one scale without any of them re-deriving it.
-    exokal::forms::TripletSink probe(state_.size());
-    model_.assemble(epoch_, state_, probe, ws_);
-    std::vector<double> diagonal(state_.size(), 0.0);
-    for (std::size_t k = 0; k < probe.nnz(); ++k) {
-      if (probe.row[k] == probe.col[k]) {
-        diagonal[static_cast<std::size_t>(probe.row[k])] += probe.value[k];
-      }
-    }
-    constraints_.set_scales(diagonal);
   }
 
   // ---- the three operators, from one form source ------------------------
 
   void residual(std::vector<double>& r) const {
+    if (!constraints_.empty()) ensure_scales();
     r.assign(state_.size(), 0.0);
     exokal::forms::ResidualSink sink(r);
     model_.assemble(epoch_, state_, sink, ws_);
@@ -126,12 +112,17 @@ class Simulation {
   void jacobian(exokal::forms::TripletSink& sink) const {
     model_.assemble(epoch_, state_, sink, ws_);
     if (constraints_.empty()) return;
+    // the scale of each constrained equation is the diagonal of the row about
+    // to be replaced, and it is sitting in this very sink -- so it is read off
+    // here rather than paid for with an assembly of its own
+    if (!constraints_.scaled()) measure_scales(sink);
     filter_constrained_rows(sink);
   }
 
   // y = J(x) v, matrix-free.
   void apply(const std::vector<double>& v, std::vector<double>& y) const {
     if (v.size() != state_.size()) throw std::invalid_argument("Simulation::apply: size");
+    if (!constraints_.empty()) ensure_scales();
     y.assign(state_.size(), 0.0);
     exokal::forms::ActionSink sink(v, y);
     model_.assemble(epoch_, state_, sink, ws_);
@@ -139,6 +130,32 @@ class Simulation {
   }
 
  private:
+  // THE SCALE, MEASURED FROM AN ASSEMBLED TANGENT.
+  //
+  // What is wanted is the diagonal the terms write on each constrained row:
+  // the constitutive factor of the equation being replaced, which for a linear
+  // model does not move with the state.
+  void measure_scales(const exokal::forms::TripletSink& sink) const {
+    std::vector<double> diagonal(state_.size(), 0.0);
+    for (std::size_t k = 0; k < sink.nnz(); ++k) {
+      if (sink.row[k] == sink.col[k]) {
+        diagonal[static_cast<std::size_t>(sink.row[k])] += sink.value[k];
+      }
+    }
+    constraints_.set_scales(diagonal);
+  }
+
+  // A residual or a tangent-action asked for BEFORE any tangent has nothing to
+  // read the scale from, so it assembles one. That is the only path that pays
+  // for it, and a consumer that assembles a tangent first — which is every
+  // solver — never reaches this.
+  void ensure_scales() const {
+    if (constraints_.scaled()) return;
+    exokal::forms::TripletSink probe(state_.size());
+    model_.assemble(epoch_, state_, probe, ws_);
+    measure_scales(probe);
+  }
+
   // Substitution on the assembled triplets: drop what the terms wrote on a
   // constrained row, then write the constraint there, scaled by the diagonal
   // of the equation it replaces (see Constraints).

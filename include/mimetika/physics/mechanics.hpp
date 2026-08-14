@@ -65,26 +65,15 @@ class MixedElasticityCell {
                                   "disagree on the degree-of-freedom count");
     }
 
-    // A ProductSpace orders component fastest; the operators are written
-    // component-then-basis. The permutation is applied here, once, rather
-    // than silently at every index.
-    const auto dof = [D](std::size_t k, std::size_t b, std::size_t facet_dofs) {
-      (void)facet_dofs;
-      (void)D;
-      return k * 3 + b;  // operator order
-    };
-    const auto local = [](std::size_t facet, std::size_t k, std::size_t b) {
-      return facet * 9 + b * 3 + k;  // ProductSpace order: component fastest
-    };
-
+    // The operators arrive in the ProductSpace's own degree-of-freedom order:
+    // StressOperators permutes them once when it builds them, so the index
+    // here is the index, and the inner loop is a straight contiguous walk of
+    // one row of M rather than D gathers through a divide-and-modulus.
     for (std::size_t i = 0; i < D; ++i) {
-      const std::size_t fi = i / 9, ki = (i % 9) / 3, bi = i % 3;
-      const std::size_t ri = S.begin + local(fi, ki, bi);
-      (void)dof;
+      const std::size_t ri = S.begin + i;
       // M sigma
       for (std::size_t j = 0; j < D; ++j) {
-        const std::size_t fj = j / 9, kj = (j % 9) / 3, bj = j % 3;
-        exokal::axpy(r[ri], c.M(i, j), a[S.begin + local(fj, kj, bj)]);
+        exokal::axpy(r[ri], c.M(i, j), a[S.begin + j]);
       }
       // -D^T u and -A^T gamma, with their adjoints in the other two rows
       for (std::size_t k = 0; k < 3; ++k) {

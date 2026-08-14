@@ -63,8 +63,7 @@ class BiotCouplingCell {
     const std::size_t D = S.end - S.begin;
 
     for (std::size_t i = 0; i < D; ++i) {
-      const std::size_t fi = i / 9, ki = (i % 9) / 3, bi = i % 3;
-      const std::size_t ri = S.begin + fi * 9 + bi * 3 + ki;  // to ProductSpace order
+      const std::size_t ri = S.begin + i;  // already in ProductSpace order
       // THE SAME SIGN ON BOTH ROWS. The Biot coupling is a CONSTITUTIVE
       // symmetry, not a differential adjoint: both terms are second
       // derivatives of one free energy, so the block is symmetric and

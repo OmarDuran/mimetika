@@ -82,6 +82,8 @@ class Constraints {
   void finalize(std::size_t n_dofs) {
     mask_.assign(n_dofs, 0);
     value_of_.assign(n_dofs, 0.0);
+    scale_.clear();
+    scaled_ = false;
     for (std::size_t k = 0; k < dofs_.size(); ++k) {
       const auto d = static_cast<std::size_t>(dofs_[k]);
       if (d >= n_dofs) throw std::out_of_range("Constraints: dof outside the numbering");
@@ -104,11 +106,19 @@ class Constraints {
   // an unconstrained or unassembled system reduces to.
   double scale_at(std::size_t d) const { return scale_.empty() ? 1.0 : scale_[d]; }
   const std::vector<double>& scales() const { return scale_; }
+  bool scaled() const { return scaled_; }
 
+  // MEASURED LAZILY, AND SO const. The scale is not part of what the
+  // constraint MEANS — x_i = g_i holds whatever it is multiplied by — it is a
+  // representation chosen to keep the replaced row in scale with the matrix
+  // around it. It can therefore be read off the first tangent that gets
+  // assembled rather than paid for with an assembly of its own, and a
+  // `const` operator is allowed to fill it in on the way past.
+  //
   // Rows the terms left empty have no scale of their own and fall back to the
   // mean of the rest, so a degree of freedom no equation reached does not
   // become the pivot the factorization trips on.
-  void set_scales(const std::vector<double>& diagonal) {
+  void set_scales(const std::vector<double>& diagonal) const {
     require_final();
     if (diagonal.size() != mask_.size()) {
       throw std::invalid_argument("Constraints::set_scales: size");
@@ -127,6 +137,7 @@ class Constraints {
       if (mask_[d] == 0) continue;
       scale_[d] = std::abs(diagonal[d]) > 0.0 ? std::abs(diagonal[d]) : reference;
     }
+    scaled_ = true;
   }
 
   // Put the constrained values into a state vector, so the very first
@@ -164,7 +175,8 @@ class Constraints {
   std::vector<double> values_;
   std::vector<char> mask_;
   std::vector<double> value_of_;
-  std::vector<double> scale_;
+  mutable std::vector<double> scale_;
+  mutable bool scaled_{false};
   bool sorted_{false};
 };
 
