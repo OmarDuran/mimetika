@@ -4,11 +4,11 @@
 #include "../mesh_fixtures.hpp"
 #include "../mimetika_test.hpp"
 #include "exokal/constitutive/coefficient.hpp"
-#include "exokal/hodge/flux_hodge.hpp"
+#include "exokal/hodge/flux_operators.hpp"
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/model/compositions/single_phase_flow.hpp"
 #include "exokal/hodge/stress_operators.hpp"
-#include "mimetika/model/compositions/poroelasticity.hpp"
+#include "mimetika/model/compositions/elasticity.hpp"
 #include "mimetika/physics/boundary_terms.hpp"
 
 using exokal::forms::Index;
@@ -45,11 +45,11 @@ MIMETIKA_TEST(the_boundary_facets_are_the_ones_with_a_single_cofacet) {
 MIMETIKA_TEST(a_sealed_face_pins_the_flux_and_nothing_else) {
   const auto m = mimetika_test::hex_grid(3);
   const graphos::Complex& c = m.topology();
-  const exokal::hodge::FluxHodge h = exokal::hodge::FluxHodge::build(
+  const exokal::hodge::FluxOperators h = exokal::hodge::FluxOperators::build(
       m, exokal::constitutive::Coefficient::uniform(1.0),
-      exokal::hodge::FluxHodge::Realization::derham);
+      exokal::hodge::FluxOperators::Realization::derham_bdm);
   exokal::forms::TermContext ctx;
-  ctx.provide("flux_hodge", h);
+  ctx.provide("flux_operators", h);
 
   const auto comp = Catalogue::instance().build("single_phase_flow", {});
   Simulation sim(comp, {StratumSpec{"ambient", &c, 3, 0}}, ctx);
@@ -82,9 +82,9 @@ MIMETIKA_TEST(a_sealed_face_pins_the_flux_and_nothing_else) {
 MIMETIKA_TEST(a_homogeneous_natural_condition_costs_nothing) {
   const auto m = mimetika_test::hex_grid(3);
   const graphos::Complex& c = m.topology();
-  const exokal::hodge::FluxHodge h = exokal::hodge::FluxHodge::build(
+  const exokal::hodge::FluxOperators h = exokal::hodge::FluxOperators::build(
       m, exokal::constitutive::Coefficient::uniform(1.0),
-      exokal::hodge::FluxHodge::Realization::derham);
+      exokal::hodge::FluxOperators::Realization::derham_bdm);
 
   const auto comp = Catalogue::instance().build("single_phase_flow", {});
   const auto n_facets = static_cast<std::size_t>(c.count(2));
@@ -96,7 +96,7 @@ MIMETIKA_TEST(a_homogeneous_natural_condition_costs_nothing) {
 
   const auto run = [&](const BoundaryData& bd, bool with_term) {
     exokal::forms::TermContext ctx;
-    ctx.provide("flux_hodge", h);
+    ctx.provide("flux_operators", h);
     ctx.provide("boundary_pressure", bd);
     Simulation sim(comp, {StratumSpec{"ambient", &c, 3, 0}}, ctx);
     for (std::size_t i = 0; i < sim.n_dofs(); ++i) sim.state()[i] = 0.3;

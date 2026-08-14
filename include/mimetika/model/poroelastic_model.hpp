@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "exokal/constitutive/coefficient.hpp"
-#include "exokal/hodge/flux_hodge.hpp"
+#include "exokal/hodge/flux_operators.hpp"
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/model/boundary.hpp"
 #include "mimetika/model/boundary_conditions.hpp"
@@ -90,9 +90,47 @@ struct PoroelasticMaterial {
 
 class PoroelasticModel {
  public:
-  PoroelasticModel(const exokal::Mesh& mesh, int cell_dim, PoroelasticMaterial material,
-                     double dt)
-      : mesh_(&mesh), dim_(cell_dim), material_(material), dt_(dt) {}
+  // WHICH SCALAR DE RHAM LAYER THE WHOLE MODEL STANDS ON -- one choice, not
+  // two, and that is the mathematics rather than a convenience.
+  //
+  // A stress space is d copies of a flux space plus a rank-one trace, and the
+  // Biot coupling pairs the discrete trace of the stress against the pressure
+  // of the SAME cell. Copying BDM for the stress while giving the flux RT would
+  // pair a traction that varies over a facet with a flux that does not, on
+  // either side of every interior facet: not de Rham compatible, and not a
+  // discretization of anything. So the layer is chosen once and both spaces
+  // follow it.
+  //
+  //   bdm             d moments per facet: flux d per facet, stress d^2, both
+  //                   de Rham -- derham_bdm under derham_afw. The
+  //                   mimetic-AFW-BDM formulation. Any cell type, either
+  //                   dimension.
+  //   bdm_stabilized  the SAME layout and the same flux, with the stress star
+  //                   realized as stabilized_afw: the full linear tensor
+  //                   reconstruction, stabilized on ker(N^T) where a polytope
+  //                   leaves one. On a simplex mesh it coincides with `bdm`
+  //                   cell by cell, since the stabilization vanishes and both
+  //                   reduce to the conforming AFW element.
+  //   rt              one per facet: flux 1, stress d. d copies of the minimal
+  //                   de Rham pair; sound as a product, and NOT an element --
+  //                   its weak-symmetry inf-sup degenerates (see
+  //                   test_dimensions).
+  enum class Layer { bdm, bdm_stabilized, rt };
+
+  PoroelasticModel(const exokal::Mesh& mesh, int cell_dim, PoroelasticMaterial material, double dt,
+                   Layer layer = Layer::bdm)
+      : mesh_(&mesh), dim_(cell_dim), material_(material), dt_(dt), layer_(layer) {}
+
+  Layer layer() const { return layer_; }
+  const char* layer_name() const {
+    switch (layer_) {
+      case Layer::bdm: return "bdm";
+      case Layer::bdm_stabilized: return "bdm_stabilized";
+      case Layer::rt: return "rt";
+    }
+    return "?";
+  }
+  int moments_per_facet() const { return layer_ == Layer::rt ? 1 : dim_; }
 
   MechanicsBoundary& mechanics() { return mechanics_; }
   FlowBoundary& flow() { return flow_; }
@@ -113,20 +151,30 @@ class PoroelasticModel {
   void build() {
     const graphos::Complex& c = mesh_->topology();
     // ONE de Rham selection for both products; it does not know the material
-    geometry_ = exokal::hodge::DeRhamGeometryCache::build(*mesh_, dim_);
+    const bool bdm = layer_ != Layer::rt;  // both bdm layers share the layout and the flux
+    // the K-independent mode selection, shared by the de Rham flux and the
+    // derham_afw stress; the stabilized stress builds without it
+    if (bdm) geometry_ = exokal::hodge::DeRhamGeometryCache::build(*mesh_, dim_);
+    const auto stress_how = layer_ == Layer::bdm
+                                ? exokal::hodge::StressOperators::Realization::derham_afw
+                                : (layer_ == Layer::bdm_stabilized
+                                       ? exokal::hodge::StressOperators::Realization::stabilized_afw
+                                       : exokal::hodge::StressOperators::Realization::derham_afw_rt);
     stress_ = exokal::hodge::StressOperators::build(
-        *mesh_, dim_, material_.shear, material_.lame,
-        exokal::hodge::StressOperators::Realization::derham, &geometry_);
+        *mesh_, dim_, material_.shear, material_.lame, stress_how,
+        layer_ == Layer::bdm ? &geometry_ : nullptr);
     // BACKWARD EULER WITHOUT STEPPING MACHINERY: the flux over a step is
     // q~ = dt q, which is the Darcy mobility set to dt
-    flux_ = exokal::hodge::FluxHodge::build(
+    flux_ = exokal::hodge::FluxOperators::build(
         *mesh_, dim_, exokal::constitutive::Coefficient::uniform(material_.mobility),
-        exokal::hodge::FluxHodge::Realization::derham, &geometry_);
+        bdm ? exokal::hodge::FluxOperators::Realization::derham_bdm
+            : exokal::hodge::FluxOperators::Realization::derham_rt,
+        bdm ? &geometry_ : nullptr);
     pressure_data_ = BoundaryData(static_cast<std::size_t>(c.count(dim_ - 1)));
     const bool any_pressure = flow_.fill_pressure(pressure_data_, *mesh_, dim_);
 
     ctx_.provide("stress_operators", stress_);
-    ctx_.provide("flux_hodge", flux_);
+    ctx_.provide("flux_operators", flux_);
     ctx_.provide("boundary_pressure", pressure_data_);
 
     physics::ModelOptions o;
@@ -134,6 +182,10 @@ class PoroelasticModel {
     o.storage = material_.storage(dim_);
     o.volumetric_compliance = material_.volumetric_compliance(dim_);
     o.biot = material_.biot;
+    // ONE layer, both layouts: the space and the star cannot disagree because
+    // neither is stated independently of the other
+    o.flux_moments = moments_per_facet();
+    o.traction_moments = moments_per_facet();
     sim_ = std::make_unique<Simulation>(
         physics::Catalogue::instance().build("consolidation", o),
         std::vector<StratumSpec>{StratumSpec{"ambient", &c, dim_, 0}}, ctx_);
@@ -236,6 +288,7 @@ class PoroelasticModel {
   int dim_;
   PoroelasticMaterial material_;
   double dt_;
+  Layer layer_{Layer::bdm};
   MechanicsBoundary mechanics_;
   FlowBoundary flow_;
   std::array<double, 9> sigma0_{};
@@ -243,7 +296,7 @@ class PoroelasticModel {
 
   exokal::hodge::DeRhamGeometryCache geometry_;
   exokal::hodge::StressOperators stress_;
-  exokal::hodge::FluxHodge flux_;
+  exokal::hodge::FluxOperators flux_;
   BoundaryData pressure_data_{0};
   exokal::forms::TermContext ctx_;
   std::unique_ptr<Simulation> sim_;

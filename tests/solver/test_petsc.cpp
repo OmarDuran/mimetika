@@ -4,7 +4,7 @@
 #include "../mesh_fixtures.hpp"
 #include "../mimetika_test.hpp"
 #include "exokal/constitutive/coefficient.hpp"
-#include "exokal/hodge/flux_hodge.hpp"
+#include "exokal/hodge/flux_operators.hpp"
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/model/boundary.hpp"
 #include "mimetika/model/simulation.hpp"
@@ -83,12 +83,12 @@ MIMETIKA_TEST(the_assembled_poroelastic_system_solves) {
   const auto m = mimetika_test::hex_grid(2);
   const graphos::Complex& c = m.topology();
   const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(m, 3, 1.0, 1.0);
-  const exokal::hodge::FluxHodge hodge = exokal::hodge::FluxHodge::build(
+  const exokal::hodge::FluxOperators hodge = exokal::hodge::FluxOperators::build(
       m, exokal::constitutive::Coefficient::uniform(1.0),
-      exokal::hodge::FluxHodge::Realization::derham);
+      exokal::hodge::FluxOperators::Realization::derham_bdm);
   exokal::forms::TermContext ctx;
   ctx.provide("stress_operators", ops);
-  ctx.provide("flux_hodge", hodge);
+  ctx.provide("flux_operators", hodge);
 
   Simulation sim(Catalogue::instance().build("poroelasticity", {}),
                  {StratumSpec{"ambient", &c, 3, 0}}, ctx);

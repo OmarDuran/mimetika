@@ -214,6 +214,12 @@ void march(PoroelasticModel& prob, const std::vector<double>& report_at, double 
 
 int main(int argc, char** argv) {
   const std::string which = argc > 1 ? argv[1] : "consolidation";
+  // an optional trailing realization flag: `stabilized` selects the
+  // stabilized_afw stress star on the same bdm flux pairing
+  PoroelasticModel::Layer layer = PoroelasticModel::Layer::bdm;
+  for (int a = 1; a < argc; ++a) {
+    if (std::string(argv[a]) == "stabilized") layer = PoroelasticModel::Layer::bdm_stabilized;
+  }
   const int dim = argc > 2 ? std::atoi(argv[2]) : 3;
   const std::string fam = argc > 3 ? argv[3] : "cart";
   const Family family = fam == "simplex" ? Family::simplex : Family::cartesian;
@@ -235,7 +241,7 @@ int main(int argc, char** argv) {
                                        mat.biot * mat.biot / mat.oedometer_modulus());
     const double dt = 1.0e-4 * h * h / c_v;
 
-    PoroelasticModel prob(m, dim, mat, dt);
+    PoroelasticModel prob(m, dim, mat, dt, layer);
     std::vector<Index> loaded, confined;
     for (const Index f : boundary_facets(c, dim)) {
       const auto x = exokal::centroid(m, dim - 1, f);
@@ -285,7 +291,7 @@ int main(int argc, char** argv) {
     const double cf = mat.diffusivity();
     const double dt = (argc > 7 ? std::atof(argv[7]) : 0.002) * a * a / cf;
 
-    PoroelasticModel prob(m, dim, mat, dt);
+    PoroelasticModel prob(m, dim, mat, dt, layer);
     std::vector<Index> sym, wall, far;
     const double rmid = 0.5 * (a + R);
     for (const Index f : boundary_facets(c, dim)) {

@@ -25,7 +25,7 @@
 #include <vector>
 
 #include "exokal/constitutive/coefficient.hpp"
-#include "exokal/hodge/flux_hodge.hpp"
+#include "exokal/hodge/flux_operators.hpp"
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/model/boundary.hpp"
 #include "mimetika/model/simulation.hpp"
@@ -110,17 +110,17 @@ int main(int argc, char** argv) {
     const double t_select = since(t);
 
     const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(
-        m, 3, mu, lam, exokal::hodge::StressOperators::Realization::derham, &geo);
+        m, 3, mu, lam, exokal::hodge::StressOperators::Realization::derham_afw, &geo);
     const double t_stress = since(t);
 
-    const exokal::hodge::FluxHodge hodge = exokal::hodge::FluxHodge::build(
+    const exokal::hodge::FluxOperators hodge = exokal::hodge::FluxOperators::build(
         m, exokal::constitutive::Coefficient::uniform(perm),
-        exokal::hodge::FluxHodge::Realization::derham, &geo);
+        exokal::hodge::FluxOperators::Realization::derham_bdm, &geo);
     const double t_flux = since(t);
 
     exokal::forms::TermContext ctx;
     ctx.provide("stress_operators", ops);
-    ctx.provide("flux_hodge", hodge);
+    ctx.provide("flux_operators", hodge);
     physics::ModelOptions o;
     o.mobility = dt;
     o.storage = storage;

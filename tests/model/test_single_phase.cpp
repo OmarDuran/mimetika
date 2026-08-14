@@ -32,12 +32,14 @@
 //               enrichment; on a polytope the moments are completed with
 //               div-free curl modes. Any cell, either dimension.
 //   derham_rt   one flux per facet: RT_0, the minimal de Rham pair, whose
-//               radial mode x - x_E is what lets div reach P_0 at all. Four
-//               modes against four fluxes is the whole argument, so it is
-//               SIMPLICES IN SPACE only and refuses the rest rather than
-//               stabilizing them.
-//   stabilized  one flux per facet on any polytope: consistency plus a
-//               stabilization, so not a de Rham construction. Space only.
+//               radial mode x - x_E is what lets div reach P_0 at all. d+1
+//               modes against d+1 fluxes is the whole argument, so it is
+//               SIMPLICES only -- triangle or tetrahedron -- and refuses the
+//               rest rather than stabilizing them.
+//   stabilized  one flux per facet on any polytope, in either dimension:
+//               consistency plus a stabilization sized to trace(M1)/(d+2),
+//               which is the scale at which it IS the conforming RT_0 element
+//               on a simplex (exokal hodge.test_rt_equivalence, vs basix).
 //
 // What they share is CONSISTENCY -- every one of them reproduces a constant
 // flux exactly -- and that is what the column asserts of all three. Where they
@@ -61,7 +63,7 @@ using Realization = mimetika::SinglePhaseModel::Realization;
 Outcome run(const exokal::Mesh& m, int dim, const std::vector<Index>& high,
             const std::vector<Index>& low, const std::vector<Index>& sealed, double p_high,
             double p_low, const std::function<double(const exokal::Mesh::Point&)>& exact,
-            Realization how = Realization::derham) {
+            Realization how = Realization::derham_bdm) {
   SinglePhaseModel prob(m, dim, 1.0, how);
   prob.flow().emplace<mimetika::NormalFluxBC>(sealed);
   prob.flow().emplace<mimetika::PressureBC>(high, p_high);
@@ -88,7 +90,7 @@ Outcome run(const exokal::Mesh& m, int dim, const std::vector<Index>& high,
 }
 
 // the facet sets of a column: the two ends, and everything else sealed
-Outcome column_case(int n, int dim, Family family, Realization how = Realization::derham) {
+Outcome column_case(int n, int dim, Family family, Realization how = Realization::derham_bdm) {
   const double h = 1.0, p_hi = 2.0, p_lo = 1.0;
   const exokal::Mesh m = mimetika::mesh::column(n, dim, family, h);
   const graphos::Complex& c = m.topology();
@@ -114,7 +116,7 @@ Outcome column_case(int n, int dim, Family family, Realization how = Realization
 
 // the facet sets of a quarter annulus: the two radii, symmetry planes sealed
 Outcome annulus_case(int nr, int nt, int dim, Family family,
-                     Realization how = Realization::derham) {
+                     Realization how = Realization::derham_bdm) {
   const double a = 1.0, b = 10.0, hz = 1.0, p_a = 2.0, p_b = 1.0;
   const exokal::Mesh m = mimetika::mesh::annulus(nr, nt, dim, family, a, b, hz);
   const graphos::Complex& c = m.topology();
@@ -143,14 +145,14 @@ Outcome annulus_case(int nr, int nt, int dim, Family family,
 
 const Family kFamilies[] = {Family::cartesian, Family::simplex, Family::prism};
 
-const Realization kProducts[] = {Realization::derham, Realization::derham_rt,
-                                 Realization::stabilized};
+const Realization kProducts[] = {Realization::derham_bdm, Realization::derham_rt,
+                                 Realization::stabilized_rt};
 
 const char* product_name(Realization r) {
   switch (r) {
-    case Realization::derham: return "derham";
+    case Realization::derham_bdm: return "derham_bdm";
     case Realization::derham_rt: return "derham_rt";
-    case Realization::stabilized: return "stabilized";
+    case Realization::stabilized_rt: return "stabilized_rt";
   }
   return "?";
 }
@@ -161,9 +163,12 @@ const char* product_name(Realization r) {
 // wrong answer.
 bool supported(Realization r, int dim, Family f) {
   switch (r) {
-    case Realization::derham: return true;
-    case Realization::derham_rt: return dim == 3 && f == Family::simplex;
-    case Realization::stabilized: return dim == 3;
+    case Realization::derham_bdm: return true;
+    // RT_0's unisolvence argument is d+1 modes against d+1 facets: a simplex,
+    // in either dimension
+    case Realization::derham_rt: return f == Family::simplex && !(dim == 3 && f == Family::prism);
+    // the stabilized construction is polytopal in both dimensions
+    case Realization::stabilized_rt: return true;
   }
   return false;
 }
@@ -214,52 +219,49 @@ MIMETIKA_TEST(the_annulus_reproduces_dupuit) {
   }
 }
 
-// ---- THE CATALOGUE OF INNER PRODUCTS --------------------------------------
-//
-// The equations are one thing and the discrete Hodge is another, and the model
-// is stated so the second can be swapped without touching the first. Two of
-// exokal's flux realizations are de Rham constructions and they are DIFFERENT
-// spaces, not a fine and a coarse version of one:
-//
-//   derham      d moments per facet -- BDM_1 on a simplex, no enrichment
-//   derham_rt   one flux per facet -- RT_0, minimal, simplices in space only
-//
-// Both must reproduce a linear pressure exactly, because both contain the
-// constant fields; that is the de Rham property and not a resolution. If a
-// realization is exact here it is the space working, and if it is not, no
-// refinement would save it.
-MIMETIKA_TEST(rt_and_bdm_both_reproduce_the_linear_solution) {
-  const Outcome bdm = column_case(6, 3, Family::simplex, Realization::derham);
+// ---- HOW THE THREE PRODUCTS DIFFER ----------------------------------------
+
+// THE SPACES ARE NOT THE SAME SIZE, which is the concrete content of "different
+// discretizations". d moments per facet against one: on the same tetrahedral
+// column the de Rham/BDM space carries 330 unknowns where the two lowest-order
+// products carry 134, and all three are exact on a linear pressure.
+MIMETIKA_TEST(the_products_lay_out_different_spaces) {
+  const Outcome bdm = column_case(6, 3, Family::simplex, Realization::derham_bdm);
   const Outcome rt = column_case(6, 3, Family::simplex, Realization::derham_rt);
-  std::printf("  column 3D simplex  BDM %5zu dofs  max %.2e     RT %5zu dofs  max %.2e\n",
-              bdm.dofs, bdm.max_err, rt.dofs, rt.max_err);
-  CHECK(bdm.max_err < 1e-10);
-  CHECK(rt.max_err < 1e-10);
-  // and they are genuinely different spaces: d moments per facet against one
+  const Outcome mfd = column_case(6, 3, Family::simplex, Realization::stabilized_rt);
+  std::printf("  3D simplex column   derham %zu   derham_rt %zu   stabilized %zu dofs\n", bdm.dofs,
+              rt.dofs, mfd.dofs);
   CHECK(rt.dofs < bdm.dofs);
+  CHECK(mfd.dofs == rt.dofs);  // both are one flux per facet
 }
 
-// AND BOTH CONVERGE ON THE PROFILE THAT IS NOT IN EITHER. Dupuit is the radial
-// harmonic; neither space contains it, so both approximate it and both must
-// improve with refinement. RT carries a third of the flux unknowns, so it is
-// expected to be the coarser of the two at equal cell count -- which is a
-// statement about the space, and worth seeing rather than assuming.
-MIMETIKA_TEST(rt_and_bdm_both_converge_on_dupuit) {
-  for (const Realization how : {Realization::derham, Realization::derham_rt}) {
-    const Outcome coarse = annulus_case(8, 4, 3, Family::simplex, how);
-    const Outcome fine = annulus_case(16, 8, 3, Family::simplex, how);
-    std::printf("  annulus 3D simplex %-10s %6zu -> %6zu dofs   max %.2e -> %.2e\n",
-                how == Realization::derham ? "BDM" : "RT", coarse.dofs, fine.dofs,
-                coarse.max_err, fine.max_err);
-    CHECK(coarse.max_err < 5e-2);
-    CHECK(fine.rms_err < coarse.rms_err);
+// RT AND THE STABILIZED PRODUCT RETURN THE SAME SOLVED FIELD ON A SIMPLEX --
+// and they are NOT the same operator, which is the more interesting half.
+//
+// exokal measures the operators against basix (hodge.test_rt_equivalence):
+// derham_rt IS the conforming RT_0 element, while the stabilized product
+// reconstructs on the CONSTANTS ALONE -- three modes against four facet fluxes
+// -- and carries a one-dimensional stabilization. Their matrices differ by
+// about 3%.
+//
+// Yet the pressures agree to round-off, and that is worth pinning rather than
+// explaining away: both spaces contain the constants, so both are consistent,
+// and on this problem the stabilization does not reach the cell pressures. It
+// is also the reason a model-level comparison must never be used to conclude
+// two operators are the same -- this test would have said so, and it would have
+// been wrong. That conclusion belongs to the exokal test, against a conforming
+// element.
+MIMETIKA_TEST(rt_and_the_stabilized_product_coincide_on_a_simplex) {
+  for (const int nr : {8, 16}) {
+    const Outcome rt = annulus_case(nr, nr / 2, 3, Family::simplex, Realization::derham_rt);
+    const Outcome mfd = annulus_case(nr, nr / 2, 3, Family::simplex, Realization::stabilized_rt);
+    std::printf("  annulus %4zu cells   RT max %.6e   MFD max %.6e   |diff| %.2e\n", rt.cells,
+                rt.max_err, mfd.max_err, std::abs(rt.max_err - mfd.max_err));
+    CHECK(std::abs(rt.max_err - mfd.max_err) < 1e-12);
+    CHECK(std::abs(rt.rms_err - mfd.rms_err) < 1e-12);
   }
 }
 
-// RT_0 REFUSES WHAT IT IS NOT UNISOLVENT ON rather than stabilizing it. Four
-// facets is the whole of its argument -- four modes against four fluxes -- so a
-// hexahedron is not a coarser case but a different one, and saying so is the
-// correct behaviour.
 // EVERY UNCLAIMED CONFIGURATION RAISES. A product that is not unisolvent on a
 // cell must say so: RT_0's whole argument is four modes against four facet
 // fluxes, so a hexahedron is a different case and not a coarser one, and the

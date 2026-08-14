@@ -5,11 +5,11 @@
 #include "../mimetika_test.hpp"
 #include "exokal/constitutive/coefficient.hpp"
 #include "exokal/forms/epoch.hpp"
-#include "exokal/hodge/flux_hodge.hpp"
+#include "exokal/hodge/flux_operators.hpp"
 #include "mimetika/model/compositions/single_phase_flow.hpp"
 
 using exokal::constitutive::Coefficient;
-using exokal::hodge::FluxHodge;
+using exokal::hodge::FluxOperators;
 using mimetika::physics::Catalogue;
 using mimetika::physics::Composition;
 using mimetika::physics::ModelOptions;
@@ -79,10 +79,10 @@ MIMETIKA_TEST(a_composed_flow_model_assembles) {
   // the closures the driver owns and the terms merely read
   // hexahedra are polytopes, so the stabilized product is the realization
   // that applies; the RT_0 one is unisolvent only on simplices
-  const FluxHodge hodge =
-      FluxHodge::build(m, Coefficient::uniform(1.0), FluxHodge::Realization::derham);
+  const FluxOperators hodge =
+      FluxOperators::build(m, Coefficient::uniform(1.0), FluxOperators::Realization::derham_bdm);
   exokal::forms::TermContext ctx;
-  ctx.provide("flux_hodge", hodge);
+  ctx.provide("flux_operators", hodge);
 
   exokal::forms::StratifiedEpoch se;
   se.add("top", 0, exokal::forms::Epoch(c, std::move(space), 3));

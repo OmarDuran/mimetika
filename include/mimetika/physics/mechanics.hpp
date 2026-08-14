@@ -104,6 +104,16 @@ inline const exokal::forms::RegisterTerm<MixedElasticityCell> register_mixed_ela
 
 struct MechanicsOptions {
   std::string term{"mixed_elasticity_cell"};
+  // TRACTION MOMENTS PER FACET PER COMPONENT. Zero means d, which is the
+  // mimetic-AFW space: d copies of the mimetic-BDM, so d^2 per facet -- the
+  // traction vector AND its d-1 in-facet linear variations. One is d copies of
+  // the mimetic-RT instead: a single CONSTANT traction vector per facet, d per
+  // facet and nothing more.
+  //
+  // The package does not choose it. It lays out a space, and the layout has to
+  // match whatever star lands on it; the driver derives both from one
+  // realization so they cannot disagree.
+  int traction_moments{0};
 };
 
 class Mechanics final : public Package {
@@ -116,10 +126,16 @@ class Mechanics final : public Package {
   Requirements requirements(int dim, int codim = 0) const override {
     const auto at = [codim](std::string_view b) { return exokal::forms::field_at(b, codim); };
     Requirements r;
-    // the stress carries the facet P_1 basis in each of d components, so
-    // d^2 per facet; the displacement and the rotation are cell-wise, the
-    // rotation with d(d-1)/2 components
-    r.fields.push_back({at("s"), DofLayout::moments(dim, dim - 1, dim, dim)});
+    // the stress carries part of the facet P_1 basis in each of d components:
+    // all d of it for the BDM layer, so d^2 per facet, or the constant alone
+    // for the RT layer, so d. The displacement and the rotation are cell-wise,
+    // the rotation with d(d-1)/2 components -- and those do not move, because
+    // the rigid rotations of a cell are the same however the traction on its
+    // facets is measured.
+    r.fields.push_back(
+        {at("s"),
+         DofLayout::moments(dim, dim - 1, opt_.traction_moments > 0 ? opt_.traction_moments : dim,
+                            dim)});
     r.fields.push_back({at("u"), DofLayout::cell_wise(dim, 1, dim)});
     r.fields.push_back({at("g"), DofLayout::cell_wise(dim, 1, dim * (dim - 1) / 2)});
     r.provides = {"displacement", "momentum_balance", "stress"};

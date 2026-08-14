@@ -36,6 +36,8 @@ struct ModelOptions {
   double biot{1.0};
   // moments per facet of the flux space; 0 means d (de Rham / BDM_1)
   int flux_moments{0};
+  // traction moments per facet per component of the stress space; 0 means d
+  int traction_moments{0};
 };
 
 struct ModelEntry {

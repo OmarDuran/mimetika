@@ -4,7 +4,7 @@
 #include "../mesh_fixtures.hpp"
 #include "../mimetika_test.hpp"
 #include "exokal/constitutive/coefficient.hpp"
-#include "exokal/hodge/flux_hodge.hpp"
+#include "exokal/hodge/flux_operators.hpp"
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/model/compositions/poroelasticity.hpp"
@@ -95,15 +95,15 @@ MIMETIKA_TEST(the_poroelastic_system_is_a_saddle_point_with_adjoint_couplings) {
   // moments a hexahedron does not determine, so there every cell stabilizes.
   CHECK(ops.n_stabilized() == 0);
   const StressOperators afw =
-      StressOperators::build(m, 3, 1.0, 1.0, StressOperators::Realization::afw);
+      StressOperators::build(m, 3, 1.0, 1.0, StressOperators::Realization::stabilized_afw);
   CHECK(afw.n_stabilized() == afw.size());
 
-  const exokal::hodge::FluxHodge hodge = exokal::hodge::FluxHodge::build(
+  const exokal::hodge::FluxOperators hodge = exokal::hodge::FluxOperators::build(
       m, exokal::constitutive::Coefficient::uniform(1.0),
-      exokal::hodge::FluxHodge::Realization::derham);
+      exokal::hodge::FluxOperators::Realization::derham_bdm);
   exokal::forms::TermContext ctx;
   ctx.provide("stress_operators", ops);
-  ctx.provide("flux_hodge", hodge);
+  ctx.provide("flux_operators", hodge);
 
   const Composition poro = Catalogue::instance().build("poroelasticity", {});
   Simulation sim(poro, {StratumSpec{"ambient", &c, 3, 0}}, ctx);

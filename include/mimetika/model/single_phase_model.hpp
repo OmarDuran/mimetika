@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "exokal/constitutive/coefficient.hpp"
-#include "exokal/hodge/flux_hodge.hpp"
+#include "exokal/hodge/flux_operators.hpp"
 #include "mimetika/model/boundary_conditions.hpp"
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/model/compositions/single_phase_flow.hpp"
@@ -54,16 +54,16 @@ class SinglePhaseModel {
   // The realization decides the SPACE as well as the star, and the two must
   // agree on moments per facet or every index after the first facet is wrong.
   // So both are derived from this one field and neither is stated twice.
-  using Realization = exokal::hodge::FluxHodge::Realization;
+  using Realization = exokal::hodge::FluxOperators::Realization;
 
   SinglePhaseModel(const exokal::Mesh& mesh, int cell_dim, double mobility = 1.0,
-                   Realization how = Realization::derham)
+                   Realization how = Realization::derham_bdm)
       : mesh_(&mesh), dim_(cell_dim), mobility_(mobility), how_(how) {}
 
   Realization realization() const { return how_; }
-  const char* realization_name() const { return exokal::hodge::FluxHodge::name(how_); }
+  const char* realization_name() const { return exokal::hodge::FluxOperators::name(how_); }
   int moments_per_facet() const {
-    return exokal::hodge::FluxHodge::moments_per_facet(how_, dim_);
+    return exokal::hodge::FluxOperators::moments_per_facet(how_, dim_);
   }
 
   FlowBoundary& flow() { return flow_; }
@@ -77,16 +77,16 @@ class SinglePhaseModel {
   void build() {
     const graphos::Complex& c = mesh_->topology();
     // the K-independent mode selection, and only the P_1 realization needs it
-    if (how_ == Realization::derham) {
+    if (how_ == Realization::derham_bdm) {
       geometry_ = exokal::hodge::DeRhamGeometryCache::build(*mesh_, dim_);
     }
-    flux_ = exokal::hodge::FluxHodge::build(
+    flux_ = exokal::hodge::FluxOperators::build(
         *mesh_, dim_, exokal::constitutive::Coefficient::uniform(mobility_),
-        how_, how_ == Realization::derham ? &geometry_ : nullptr);
+        how_, how_ == Realization::derham_bdm ? &geometry_ : nullptr);
     pressure_data_ = BoundaryData(static_cast<std::size_t>(c.count(dim_ - 1)));
     const bool any_pressure = flow_.fill_pressure(pressure_data_, *mesh_, dim_);
 
-    ctx_.provide("flux_hodge", flux_);
+    ctx_.provide("flux_operators", flux_);
     ctx_.provide("boundary_pressure", pressure_data_);
 
     physics::ModelOptions o;
@@ -135,7 +135,7 @@ class SinglePhaseModel {
   FlowBoundary flow_;
 
   exokal::hodge::DeRhamGeometryCache geometry_;
-  exokal::hodge::FluxHodge flux_;
+  exokal::hodge::FluxOperators flux_;
   BoundaryData pressure_data_{0};
   exokal::forms::TermContext ctx_;
   std::unique_ptr<Simulation> sim_;

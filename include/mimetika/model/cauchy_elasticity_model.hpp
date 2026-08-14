@@ -7,7 +7,7 @@
 
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/model/boundary_conditions.hpp"
-#include "mimetika/model/compositions/poroelasticity.hpp"
+#include "mimetika/model/compositions/elasticity.hpp"
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/solver/linear.hpp"
 

@@ -6,7 +6,7 @@
 #include "exokal/ad/axpy.hpp"
 #include "exokal/forms/term.hpp"
 #include "exokal/hodge/stress_operators.hpp"
-#include "exokal/hodge/flux_hodge.hpp"
+#include "exokal/hodge/flux_operators.hpp"
 #include "mimetika/model/boundary.hpp"
 
 // THE NATURAL BOUNDARY TERMS: the datum for the quantity a mixed form does
@@ -37,7 +37,7 @@ class PrescribedPressure {
   PrescribedPressure() = default;
   PrescribedPressure(const Params&, const TermContext& ctx)
       : data_(&ctx.require<BoundaryData>("boundary_pressure")),
-        moments_(ctx.require<exokal::hodge::FluxHodge>("flux_hodge").moments_per_facet()) {}
+        moments_(ctx.require<exokal::hodge::FluxOperators>("flux_operators").moments_per_facet()) {}
 
   static constexpr std::size_t kQ = 0;
 
