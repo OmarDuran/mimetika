@@ -121,7 +121,6 @@ class CauchyElasticityModel {
     // the K-independent mode selection, which only the de Rham product has
     const bool derham = how_ == Realization::derham_afw;
     if (derham) geometry_ = exokal::hodge::DeRhamGeometryCache::build(*mesh_, dim_);
-    std::fprintf(stderr, "   <b> stress_operators\n");
     stress_ = exokal::hodge::StressOperators::build(*mesh_, dim_, material_.shear,
                                                     material_.lame, how_,
                                                     derham ? &geometry_ : nullptr);
@@ -142,7 +141,6 @@ class CauchyElasticityModel {
     // product cannot drift apart.
     physics::ModelOptions o;
     o.traction_moments = stress_.moments_per_facet();
-    std::fprintf(stderr, "   <b> simulation\n");
     sim_ = std::make_unique<Simulation>(
         physics::Catalogue::instance().build("linear_elasticity", o),
         std::vector<StratumSpec>{StratumSpec{"ambient", &c, dim_, 0}}, ctx_);
@@ -182,10 +180,8 @@ class CauchyElasticityModel {
         }
       }
     }
-    std::fprintf(stderr, "   <b> freeze\n");
     sim_->freeze_constraints();
 
-    std::fprintf(stderr, "   <b> assemble %zu dofs\n", sim_->n_dofs());
     exokal::forms::TripletSink jac(sim_->n_dofs());
     sim_->jacobian(jac);
     system_ = solver::SparseSystem::from(jac);
@@ -205,7 +201,6 @@ class CauchyElasticityModel {
     }
 
     // ONE FACTORIZATION for every later evaluation of S
-    std::fprintf(stderr, "   <b> factorize nnz=%zu\n", system_.value.size());
     solver_.factorize(system_);
     load_ready_ = true;
     work_.assign(sim_->n_dofs(), 0.0);

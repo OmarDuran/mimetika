@@ -1,0 +1,17 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=3.0"]
+build-backend = "scikit_build_core.build"
+
+# The compiled interface to the mimetika C++ application. Deliberately NOT
+# named `mimetika`: that name belongs to the pure-Python reference
+# implementation in ../src, and the two must be importable side by side so a
+# disagreement between them is a test failure rather than an import order.
+[project]
+name = "mimetika-cxx"
+version = "0.1.0"
+description = "Python interface to the mimetika C++ application"
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]

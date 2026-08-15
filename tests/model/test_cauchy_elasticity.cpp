@@ -306,7 +306,7 @@ MIMETIKA_TEST(the_two_products_are_one_element_on_a_simplex_mesh) {
 // derham_rt IS REFUSED AT CONSTRUCTION. It is a sound inner product and not an
 // element -- one constant traction vector per facet cannot control the rigid
 // rotations across a mesh -- so the model declines it rather than assembling a
-// singular saddle point. See test_dimensions for the measurement behind this.
+// singular saddle point. See test_confined_compression for the measurement behind this.
 MIMETIKA_TEST(the_model_refuses_the_realization_that_is_not_an_element) {
   const exokal::Mesh m = mimetika::mesh::column(2, 3, Family::simplex);
   bool refused = false;

@@ -66,4 +66,11 @@ if(MIMETIKA_BUILD_TESTS)
   add_subdirectory(tests)
 endif()
 
+# The Python interface to this application. Off by default: it fetches
+# pybind11, and the C++ build must not need a network to succeed.
+option(MIMETIKA_BUILD_PYTHON "Build the Python bindings" OFF)
+if(MIMETIKA_BUILD_PYTHON)
+  add_subdirectory(python)
+endif()
+
 add_subdirectory(apps)
