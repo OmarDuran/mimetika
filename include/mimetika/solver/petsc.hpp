@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdlib>
+
 #include <algorithm>
 #include <petscksp.h>
 
@@ -71,7 +73,26 @@ class PetscSolver final : public LinearSolver {
   // `type` selects the factorization package; MUMPS is the default because
   // these systems are indefinite. An empty prefix means the KSP also reads
   // command-line options, so an iterative method can be selected at run time.
-  explicit PetscSolver(std::string factorization = "mumps", std::string prefix = "")
+  // SUPERLU BY DEFAULT, NOT MUMPS.
+  //
+  // The mixed form is an INDEFINITE SADDLE POINT: the multiplier blocks put
+  // structural zeros on the diagonal, so a factorization lives or dies on its
+  // pivoting. MUMPS sizes its working array from a symbolic estimate, and
+  // delayed pivots on a saddle point overrun that array -- it SEGVs inside the
+  // factorization, on a well-posed system, returning no error at all. Raising
+  // ICNTL(14) to 200% does not rescue it. That is what cost benchmark 3 its
+  // first working run.
+  //
+  // SuperLU is an UNSYMMETRIC supernodal factorization with genuine partial
+  // pivoting: it allocates as it goes, so there is no estimate to overrun, and
+  // it makes no assumption about the sign structure of the diagonal. It is the
+  // right default for this class of system; at these sizes the cost difference
+  // is not what decides anything.
+  //
+  // The choice stays a constructor argument, and MIMETIKA_FACTOR overrides it
+  // at run time, so a solver can be swapped without a rebuild when one of them
+  // misbehaves -- which is exactly how this was diagnosed.
+  explicit PetscSolver(std::string factorization = "superlu", std::string prefix = "")
       : factor_(std::move(factorization)), prefix_(std::move(prefix)) {
     PetscSession::instance();
   }
@@ -173,6 +194,25 @@ class PetscSolver final : public LinearSolver {
     if (!factor_.empty() && factor_ != "petsc") {
       check(PCFactorSetMatSolverType(pc, factor_.c_str()), "PCFactorSetMatSolverType");
     }
+    // MUMPS WORKSPACE HEADROOM, and it is not a tuning knob here.
+    //
+    // MUMPS sizes its working array from a symbolic estimate. On an INDEFINITE
+    // saddle point -- which every mixed form is, with structural zeros on the
+    // diagonal of the multiplier blocks -- delayed pivots make the real fill
+    // far exceed that estimate, and MUMPS then writes past the array rather
+    // than reporting a shortage: a SEGV inside the factorization, on a system
+    // that is perfectly well posed. The default headroom (ICNTL(14), ~20%) is
+    // enough for the small cases and not for a 90k-dof fault mesh.
+    //
+    // Set on the global options database as strings so this compiles whether or
+    // not PETSc was built with the MUMPS headers exposed; PETSc ignores an
+    // option no solver claims.
+    PetscOptionsSetValue(nullptr, "-mat_mumps_icntl_14", "200");
+    if (std::getenv("MIMETIKA_FACTOR") != nullptr) {
+      PetscOptionsSetValue(nullptr, "-pc_factor_mat_solver_type", std::getenv("MIMETIKA_FACTOR"));
+    }
+    PetscOptionsSetValue(nullptr, "-mat_mumps_icntl_24", "1");  // detect null pivots
+
     if (!prefix_.empty()) {
       check(KSPSetOptionsPrefix(ksp, prefix_.c_str()), "KSPSetOptionsPrefix");
     }

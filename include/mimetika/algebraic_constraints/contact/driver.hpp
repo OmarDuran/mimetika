@@ -196,14 +196,55 @@ class ContactDriver {
     fp.tolerance = options_.tolerance;
     fp.max_iterations = law_->has_linear_compliance() ? 1 : options_.max_iterations;
 
+    return solve_step_condensed(nullptr, previous, dt);
+  }
+
+  // THE CONDENSATION IS REUSABLE, and hoisting it out is the difference between
+  // a feasible outer iteration and an infeasible one.
+  //
+  // Ghat and g_0 depend on the MECHANICS alone -- the matrix, the load, the
+  // prescribed facets. They do not depend on the law, on its coefficients, or
+  // on x. So an outer loop that only changes the projection (a frozen friction
+  // coefficient, a load-stepped multiplier) can condense ONCE and then run
+  // entirely inside the small dense system: each further step is a matvec and a
+  // projection, not n_points * dim + 1 global back-substitutions.
+  CondensedMap condensed() const { return condense(*mechanics_); }
+
+  ContactState solve_step_condensed(const CondensedMap* cond,
+                                    const ContactState* previous = nullptr,
+                                    double dt = 0.0) const {
+    const ContactState state = previous != nullptr ? *previous : initial_state();
+
+    ContactMap map(*mechanics_, *law_, augmentation_);
+    if (!prestress_.empty()) map.set_prestress(prestress_);
+
+    FixedPointOptions fp;
+    fp.relaxation = options_.relaxation;
+    fp.tolerance = options_.tolerance;
+    fp.max_iterations = law_->has_linear_compliance() ? 1 : options_.max_iterations;
+
     FixedPointResult res;
     if (options_.solver == DriverOptions::Solver::newton) {
       // one factorization is already done; this is n_points * dim + 1
       // back-substitutions, after which the iteration is dense and small
-      const CondensedMap cond = condense(*mechanics_);
-      res = newton(map, cond, fp, &state.traction, &state.internal, &state.jump, dt);
+      const CondensedMap built = cond == nullptr ? condense(*mechanics_) : CondensedMap{};
+      res = newton(map, cond != nullptr ? *cond : built, fp, &state.traction, &state.internal,
+                   &state.jump, dt);
+      // THE RECOVERY SOLVE ONLY RUNS ON A FINITE ITERATE.
+      //
+      // `newton` stops on a non-finite iterate but leaves it in `res.x` -- that
+      // IS the report of divergence. Feeding it onward puts a NaN right-hand
+      // side into the factorization, and a direct solver does not return an
+      // error for that: MUMPS segfaults, and PETSc's signal handler reports a
+      // crash where the real event was a diverged contact iteration.
+      bool finite_x = true;
+      for (const Vec3& v : res.x) {
+        for (int k = 0; k < dim(); ++k) {
+          finite_x = finite_x && std::isfinite(v[static_cast<std::size_t>(k)]);
+        }
+      }
       // the condensed iteration never formed the global state, so form it once
-      if (!res.x.empty()) {
+      if (finite_x && !res.x.empty()) {
         std::vector<double> moments;
         mechanics_->to_moments(res.x, moments);
         mechanics_->solution_operator(moments, res.solution);

@@ -14,6 +14,7 @@
 #include "mimetika/model/cauchy_elasticity_model.hpp"
 #include "mimetika/solver/petsc.hpp"
 #include <fstream>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <string>
@@ -234,16 +235,23 @@ std::unique_ptr<CauchyElasticityModel> make_model(const Setup& s, const Paramete
   for (const Index f : mimetika::boundary_facets(c, dim)) {
     (std::abs(exokal::centroid(s.mesh, 1, f)[1] - 0.5) < 1e-9 ? top : rollers).push_back(f);
   }
+  std::fprintf(stderr, "  [mk] ctor (mu=%g lam=%g, %zu top, %zu rollers)\n", q.shear_modulus,
+               q.lame(), top.size(), rollers.size());
   auto model = std::make_unique<CauchyElasticityModel>(
       s.mesh, dim, ElasticMaterial{q.shear_modulus, q.lame()});
   model->mechanics().emplace<mimetika::TractionBC>(top, std::array<double, 9>{});
   model->mechanics().emplace<mimetika::FreeSlipBC>(rollers);
+  std::fprintf(stderr, "  [mk] bcs done; pressurize %zu cells dp=%g\n", s.depleted.size(),
+               q.depletion);
   model->pressurize(s.depleted, q.depletion, q.biot, q.volumetric_compliance(dim));
   // BEFORE build(): prescribing changes which equations the system has. The
   // LOCKED fault does not prescribe at all -- it is the plain continuous medium
   // under the depletion load, which is what Fig. 8 plots.
+  std::fprintf(stderr, "  [mk] prescribe %zu (%d)\n", s.fault.size(), (int)prescribe_fault);
   if (prescribe_fault) model->prescribe_traction(s.fault);
+  std::fprintf(stderr, "  [mk] build()\n");
   model->build();
+  std::fprintf(stderr, "  [mk] built, %zu dofs\n", model->simulation().n_dofs());
   return model;
 }
 
@@ -339,6 +347,13 @@ PreSlip pre_slip(const Setup& s, const Parameters& p, double depletion) {
 
 struct Slipped {
   ContactState state;
+
+  // the signed tangential jump in metres, which is what pair_average filters
+  std::vector<double> state_jump_tangential(double length) const {
+    std::vector<double> out;
+    for (const Vec3& g : state.jump) out.push_back(g[1] * length);
+    return out;
+  }
   std::vector<double> slip, normal, shear, excess;
   int iterations{0};
   bool converged{false};
@@ -405,8 +420,11 @@ Slipped simulate(const Setup& s, const Parameters& p, double depletion,
   const int dim = 2;
   Parameters q = p;
   q.depletion = depletion;
+  std::fprintf(stderr, "[sim] make_model\n");
   const std::unique_ptr<CauchyElasticityModel> model = make_model(s, q);
+  std::fprintf(stderr, "[sim] fracture\n");
   const Fracture fr(s.mesh, dim, s.fault, model->stress_operators().moments_per_facet());
+  std::fprintf(stderr, "[sim] mech\n");
   const CauchyContactMechanics mech(*model, fr);
 
   DriverOptions opt;
@@ -421,7 +439,10 @@ Slipped simulate(const Setup& s, const Parameters& p, double depletion,
                        opt);
   const std::vector<Vec3> pre = insitu_prestress(s, p, fr, depletion);
   driver.set_prestress(pre);
+  std::fprintf(stderr, "[sim] solve_step\n");
   const ContactState state = driver.solve_step(warm);
+  std::fprintf(stderr, "[sim] solved, conv=%d sol=%zu\n", (int)state.converged,
+               state.solution.size());
   Slipped out;
   out.state = state;
   out.iterations = state.iterations;
@@ -435,6 +456,20 @@ Slipped simulate(const Setup& s, const Parameters& p, double depletion,
   // are what the mechanics actually solved with, and it is the latter the
   // reference reports. Fig. 8 reaches 0.4 MPa against the dataset on precisely
   // this path, through the same accessor, on the locked problem.
+  // A DIVERGED STEP HAS NO SOLUTION TO READ. The driver leaves it empty rather
+  // than pushing a non-finite iterate through the factorization, so there is
+  // nothing on the facets -- and for benchmark 3 that is not an error but the
+  // measurement: the level past the fold is the one that has no equilibrium.
+  if (state.solution.empty()) {
+    out.slip.assign(s.fault.size(), 0.0);
+    out.normal.assign(s.fault.size(), 0.0);
+    out.shear.assign(s.fault.size(), 0.0);
+    out.excess.assign(s.fault.size(), 0.0);
+    out.converged = false;
+    out.peak = std::numeric_limits<double>::infinity();  // past the fold
+    return out;
+  }
+
   model->accept(state.solution);
   for (std::size_t i = 0; i < s.fault.size(); ++i) {
     const std::array<double, 3> t = model->facet_traction(s.fault[i]);
@@ -521,6 +556,108 @@ inline Slipped simulate_ramped(const Setup& s, const Parameters& p, double deple
     have = true;
   }
   return r;
+}
+
+
+// -- PREPARE ONCE, SOLVE MANY ---------------------------------------------------
+//
+// The coupling the benchmarks need, and the one the Python has: the mechanics is
+// built ONCE for a mesh and a material, and a sweep then moves only the load and
+// the contact iterate over it.
+//
+//   the MATRIX depends on the mesh, the moduli, and which facets are prescribed
+//   the LOAD depends on the depletion
+//   the CONTACT ITERATE depends on neither
+//
+// So one construction, one assembly, one factorization, one condensation --
+// and after that a depletion sweep is a right-hand side per level and a dense
+// projection per outer iteration. Rebuilding the model per solve, which is what
+// this file did before, re-ran all four on every step of an outer loop that a
+// slip-weakening branch tracker runs hundreds of times.
+struct Prepared {
+  std::unique_ptr<CauchyElasticityModel> model;
+  std::unique_ptr<Fracture> fracture;
+  std::unique_ptr<CauchyContactMechanics> mechanics;
+  double mu{1.0}, lam{1.0};
+
+  // GHAT AND g_0 DEPEND ON THE MECHANICS, NOT ON THE LAW OR THE ITERATE, so an
+  // outer loop that only changes the friction coefficient reuses them. Building
+  // them costs n_points * dim + 1 global back-substitutions -- 751 here -- and
+  // doing that once per outer iteration rather than once per LEVEL is the
+  // difference between a sweep that finishes and one that does not.
+  std::unique_ptr<mimetika::contact::CondensedMap> condensed;
+  double condensed_at{1.0};  // the depletion Ghat/g_0 were built at
+};
+
+inline Prepared prepare(const Setup& s, const Parameters& p) {
+  Prepared out;
+  out.model = make_model(s, p);  // built at p.depletion; set_depletion moves it
+  out.fracture = std::make_unique<Fracture>(s.mesh, 2, s.fault,
+                                            out.model->stress_operators().moments_per_facet());
+  out.mechanics = std::make_unique<CauchyContactMechanics>(*out.model, *out.fracture);
+  out.mu = p.shear_modulus / s.unit;
+  out.lam = 2.0 * out.mu * p.poisson / (1.0 - 2.0 * p.poisson);
+  return out;
+}
+
+// One level of the sweep on an already-prepared mechanics: the load moves, the
+// factorization does not.
+inline Slipped solve_on(Prepared& prep, const Setup& s, const Parameters& p, double depletion,
+                        const mimetika::contact::ContactLaw& law,
+                        const ContactState* warm = nullptr) {
+  const int dim = 2;
+  prep.model->set_depletion(depletion / s.unit);
+
+  DriverOptions opt;
+  opt.relaxation = 1.0;
+  opt.tolerance = 1e-10;
+  opt.max_iterations = 400;
+  opt.solver = DriverOptions::Solver::newton;
+  ContactDriver driver(*prep.mechanics, law,
+                       mimetika::contact::default_augmentation(s.mesh, dim, s.fault, prep.mu,
+                                                               prep.lam),
+                       opt);
+  const std::vector<Vec3> pre = insitu_prestress(s, p, *prep.fracture, depletion);
+  driver.set_prestress(pre);
+
+  // the condensation is per LEVEL: rebuild only when the load moved
+  if (prep.condensed == nullptr || prep.condensed_at != depletion) {
+    prep.condensed =
+        std::make_unique<mimetika::contact::CondensedMap>(driver.condensed());
+    prep.condensed_at = depletion;
+  }
+  const ContactState state = driver.solve_step_condensed(prep.condensed.get(), warm);
+  Slipped out;
+  out.state = state;
+  out.iterations = state.iterations;
+  out.converged = state.converged;
+  if (state.solution.empty()) {
+    out.slip.assign(s.fault.size(), 0.0);
+    out.normal.assign(s.fault.size(), 0.0);
+    out.shear.assign(s.fault.size(), 0.0);
+    out.excess.assign(s.fault.size(), 0.0);
+    out.converged = false;
+    out.peak = std::numeric_limits<double>::infinity();
+    return out;
+  }
+  prep.model->accept(state.solution);
+  for (std::size_t i = 0; i < s.fault.size(); ++i) {
+    const std::array<double, 3> t = prep.model->facet_traction(s.fault[i]);
+    const auto& frame = prep.fracture->frame(i);
+    double dn = 0.0, dt = 0.0;
+    for (int k = 0; k < dim; ++k) {
+      dn += frame.normal[static_cast<std::size_t>(k)] * t[static_cast<std::size_t>(k)];
+      dt += frame.tangent[0][static_cast<std::size_t>(k)] * t[static_cast<std::size_t>(k)];
+    }
+    const double tn = (dn + pre[i][0]) * s.unit;
+    const double tt = (dt + pre[i][1]) * s.unit;
+    out.slip.push_back(std::abs(state.jump[i][1]) * s.length);
+    out.normal.push_back(tn);
+    out.shear.push_back(tt);
+    out.excess.push_back(std::abs(tt) + p.friction * tn);
+    out.peak = std::max(out.peak, out.slip.back());
+  }
+  return out;
 }
 
 }  // namespace novikov

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdio>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -120,6 +121,7 @@ class CauchyElasticityModel {
     // the K-independent mode selection, which only the de Rham product has
     const bool derham = how_ == Realization::derham_afw;
     if (derham) geometry_ = exokal::hodge::DeRhamGeometryCache::build(*mesh_, dim_);
+    std::fprintf(stderr, "   <b> stress_operators\n");
     stress_ = exokal::hodge::StressOperators::build(*mesh_, dim_, material_.shear,
                                                     material_.lame, how_,
                                                     derham ? &geometry_ : nullptr);
@@ -140,6 +142,7 @@ class CauchyElasticityModel {
     // product cannot drift apart.
     physics::ModelOptions o;
     o.traction_moments = stress_.moments_per_facet();
+    std::fprintf(stderr, "   <b> simulation\n");
     sim_ = std::make_unique<Simulation>(
         physics::Catalogue::instance().build("linear_elasticity", o),
         std::vector<StratumSpec>{StratumSpec{"ambient", &c, dim_, 0}}, ctx_);
@@ -179,8 +182,10 @@ class CauchyElasticityModel {
         }
       }
     }
+    std::fprintf(stderr, "   <b> freeze\n");
     sim_->freeze_constraints();
 
+    std::fprintf(stderr, "   <b> assemble %zu dofs\n", sim_->n_dofs());
     exokal::forms::TripletSink jac(sim_->n_dofs());
     sim_->jacobian(jac);
     system_ = solver::SparseSystem::from(jac);
@@ -200,11 +205,45 @@ class CauchyElasticityModel {
     }
 
     // ONE FACTORIZATION for every later evaluation of S
+    std::fprintf(stderr, "   <b> factorize nnz=%zu\n", system_.value.size());
     solver_.factorize(system_);
+    load_ready_ = true;
     work_.assign(sim_->n_dofs(), 0.0);
     s_offset_ = static_cast<std::size_t>(sp.offset(sp.index_of("s_0")));
     u_offset_ = static_cast<std::size_t>(sp.offset(sp.index_of("u_0")));
     n_cells_ = static_cast<std::size_t>(c.count(dim_));
+  }
+
+  // MOVE THE LOAD WITHOUT REFACTORIZING.
+  //
+  // THE SYSTEM MATRIX NEVER DEPENDS ON THE PRESSURE. A depletion is a load: it
+  // enters the stress row as alpha T^T p and touches the right-hand side alone,
+  // while the matrix is fixed by the mesh, the moduli and which facets are
+  // prescribed. So a sweep over depletion levels -- which is what benchmarks 2
+  // and 3 are -- needs ONE factorization, not one per level.
+  //
+  // Rebuilding the model per level is not merely slow. It re-runs the whole
+  // construction and a direct factorization of a large system on every step of
+  // an outer iteration, which for a slip-weakening branch tracker is hundreds
+  // of times per benchmark. The Python reference caches exactly this and says
+  // so: "the system matrix never depends on the pressure; on a cache hit only
+  // the right-hand side is rebuilt".
+  void set_depletion(double pressure) {
+    if (!load_ready_) throw std::logic_error("set_depletion: call build() first");
+    for (Reservoir& r : reservoir_) r.pressure = pressure;
+    reservoir_data_ = CellData(n_cells_);
+    for (const auto& r : reservoir_) reservoir_data_.set(r.cells, r.pressure);
+    ctx_.provide("reservoir_pressure", reservoir_data_);
+
+    // the residual at the zero state IS minus the load, and only it moved
+    std::vector<double> r(sim_->n_dofs(), 0.0);
+    sim_->state().assign(sim_->n_dofs(), 0.0);
+    sim_->residual(r);
+    for (std::size_t i = 0; i < sim_->n_dofs(); ++i) {
+      rhs_[i] = sim_->constraints().pinned(i)
+                    ? sim_->constraints().scale_at(i) * sim_->constraints().rhs_at(i)
+                    : -r[i];
+    }
   }
 
   // THE TRACE OPERATOR: the displacement jump across an INTERIOR facet, as the
@@ -585,6 +624,7 @@ class CauchyElasticityModel {
   std::vector<Index> prescribed_;
   std::vector<std::size_t> prescribed_forms_, prescribed_dofs_;
   std::size_t s_offset_{0}, u_offset_{0}, n_cells_{0};
+  bool load_ready_{false};
 };
 
 }  // namespace mimetika
