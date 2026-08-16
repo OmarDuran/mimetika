@@ -3,6 +3,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "exokal/forms/assemble.hpp"
@@ -43,7 +44,42 @@ struct SparseSystem {
     out.row = s.row;
     out.col = s.col;
     out.value = s.value;
+    out.add_structural_diagonal();
     return out;
+  }
+
+  // THE SAME, WITHOUT THE SECOND COPY. The triplets of a large assembly are
+  // gigabytes -- a 22k-cell polyhedral mesh emits about 10^8 of them -- and
+  // copying them doubles the peak for the duration. The sink is spent
+  // afterwards either way, so a caller that will not reuse it hands over its
+  // storage instead.
+  static SparseSystem from(exokal::forms::TripletSink&& s) {
+    SparseSystem out;
+    out.n = s.residual.size();
+    out.row = std::move(s.row);
+    out.col = std::move(s.col);
+    out.value = std::move(s.value);
+    out.add_structural_diagonal();
+    return out;
+  }
+
+  // THE DIAGONAL, STRUCTURALLY PRESENT, zero or not.
+  //
+  // The multiplier block of a mixed form has no diagonal entry at all -- the
+  // (p, p) block is empty, not small -- and a factorization that indexes the
+  // diagonal refuses such a matrix outright, while a fieldsplit cannot address
+  // a block it cannot find. Carrying it as a triplet rather than inserting it
+  // into the assembled matrix is what lets the whole matrix be built in one
+  // bulk pass. One entry per row, and it changes no product.
+  void add_structural_diagonal() {
+    row.reserve(row.size() + n);
+    col.reserve(col.size() + n);
+    value.reserve(value.size() + n);
+    for (std::size_t i = 0; i < n; ++i) {
+      row.push_back(static_cast<Index>(i));
+      col.push_back(static_cast<Index>(i));
+      value.push_back(0.0);
+    }
   }
 };
 

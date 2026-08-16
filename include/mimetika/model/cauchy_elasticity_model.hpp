@@ -7,12 +7,12 @@
 #include <vector>
 
 #include "exokal/hodge/stress_operators.hpp"
+#include "mimetika/linear_solver/linear.hpp"
+#include "mimetika/linear_solver/petsc.hpp"
 #include "mimetika/model/boundary_conditions.hpp"
 #include "mimetika/model/compositions/elasticity.hpp"
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/physics/boundary_terms.hpp"
-#include "mimetika/linear_solver/linear.hpp"
-#include "mimetika/linear_solver/petsc.hpp"
 
 // CAUCHY ELASTICITY, STATED AS DATA -- the poroelastic model with the flow
 // taken out, and the smallest problem that exercises the stress space alone.
@@ -180,9 +180,29 @@ class CauchyElasticityModel {
     }
     sim_->freeze_constraints();
 
+    // RESERVE BEFORE ASSEMBLING, and hand the storage over afterwards.
+    //
+    // The triplets are the largest object this model ever holds: every cell
+    // emits a dense block over its own unknowns, so the count is the sum of
+    // their squares -- of order 10^8 on a mesh of tens of thousands of
+    // polyhedra. Growing three vectors to that reallocates about twenty-five
+    // times, and each reallocation copies everything already written; the
+    // transient peak is several times the final size. The count is known here
+    // in closed form, so it is asked for once.
     exokal::forms::TripletSink jac(sim_->n_dofs());
+    // n_cells_ is not set until later in this function, so the count comes from
+    // the mesh: reading it too early reserved nothing at all, and the three
+    // vectors then grew to 10^8 entries by doubling.
+    std::size_t nnz = 0;
+    const Index n_cells = mesh_->topology().count(dim_);
+    for (Index e = 0; e < n_cells; ++e) {
+      const std::size_t d = stress_.cell(e).M.rows() + stress_.cell(e).Dv.rows() +
+                            stress_.cell(e).As.rows();
+      nnz += d * d;
+    }
+    jac.reserve(nnz);
     sim_->jacobian(jac);
-    system_ = solver::SparseSystem::from(jac);
+    system_ = solver::SparseSystem::from(std::move(jac));
 
     // THE LOAD. Everything the terms contribute that does not depend on the
     // unknowns is a load, and the residual at the zero state is exactly minus

@@ -497,14 +497,28 @@ PYBIND11_MODULE(_core, m) {
   // ---- how the linear system is solved -------------------------------------
   py::class_<mimetika::solver::SolverOptions>(m, "SolverOptions")
       .def(py::init([](std::string method, std::string factorization, std::string preconditioner,
-                       double rtol, double atol, int max_iterations) {
-             return mimetika::solver::SolverOptions{
-                 std::move(method), std::move(factorization), std::move(preconditioner), rtol, atol,
-                 max_iterations};
+                       std::string riesz_block_pc, int riesz_block_its, double riesz_block_rtol,
+                       int riesz_exact_limit, double rtol, double atol, int max_iterations) {
+             return mimetika::solver::SolverOptions{std::move(method),
+                                                    std::move(factorization),
+                                                    std::move(preconditioner),
+                                                    std::move(riesz_block_pc),
+                                                    riesz_block_its,
+                                                    riesz_block_rtol,
+                                                    riesz_exact_limit,
+                                                    rtol,
+                                                    atol,
+                                                    max_iterations};
            }),
            py::arg("method") = "direct", py::arg("factorization") = "superlu",
-           py::arg("preconditioner") = "lu", py::arg("rtol") = 1e-10, py::arg("atol") = 1e-50,
-           py::arg("max_iterations") = 1000)
+           py::arg("preconditioner") = "lu", py::arg("riesz_block_pc") = "",
+           py::arg("riesz_block_its") = -1, py::arg("riesz_block_rtol") = 1e-4,
+           py::arg("riesz_exact_limit") = 50000, py::arg("rtol") = 1e-10,
+           py::arg("atol") = 1e-50, py::arg("max_iterations") = 1000)
+      .def_readwrite("riesz_block_pc", &mimetika::solver::SolverOptions::riesz_block_pc)
+      .def_readwrite("riesz_block_its", &mimetika::solver::SolverOptions::riesz_block_its)
+      .def_readwrite("riesz_block_rtol", &mimetika::solver::SolverOptions::riesz_block_rtol)
+      .def_readwrite("riesz_exact_limit", &mimetika::solver::SolverOptions::riesz_exact_limit)
       .def_readwrite("method", &mimetika::solver::SolverOptions::method)
       .def_readwrite("factorization", &mimetika::solver::SolverOptions::factorization)
       .def_readwrite("preconditioner", &mimetika::solver::SolverOptions::preconditioner)

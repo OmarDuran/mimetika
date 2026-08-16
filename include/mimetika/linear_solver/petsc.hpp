@@ -3,7 +3,9 @@
 #include <petscksp.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -165,6 +167,32 @@ struct SolverOptions {
   std::string factorization{"superlu"};
   // the PC type: "lu", "ilu", "jacobi", "none", "fieldsplit", ...
   std::string preconditioner{"lu"};
+  // HOW THE RIESZ BLOCKS ARE INVERTED. The first factor is SPD but LARGE -- it
+  // is most of the unknowns -- so a complete factorization of it costs about
+  // what a direct solve of the whole system costs, in time and in fill. That is
+  // exact and it does not scale.
+  //
+  // An approximate inverse is still a Riesz map as long as it is spectrally
+  // equivalent to the block: the iteration count rises by a constant and stops
+  // depending on the mesh. "gamg" is algebraic multigrid, which is the
+  // scalable choice; "lu" is the exact one, for small problems and for
+  // checking that an approximation is what changed an answer.
+  std::string riesz_block_pc{};
+  // How the first factor is inverted, and it is a MEMORY decision.
+  //
+  //   0   exact: a complete factorization. 21 iterations flat, and fill that
+  //       grows with the block -- 450 MB at 33k unknowns, extrapolating to
+  //       tens of gigabytes on a mesh of tens of thousands of polyhedra.
+  //   >0  that many preconditioned CG steps instead. 25-28 iterations, so the
+  //       outer count barely moves, and NO FILL: 46 MB at the same size. The
+  //       outer method must then be flexible, which is applied automatically.
+  //   -1  choose: exact while the block is small enough to factor, inexact
+  //       above it. The threshold is where the fill stops being affordable
+  //       rather than where the method changes character.
+  int riesz_block_its{-1};
+  double riesz_block_rtol{1e-4};
+  // first-factor unknowns above which the exact solve is refused
+  int riesz_exact_limit{50000};
   double rtol{1e-10};
   double atol{1e-50};
   int max_iterations{1000};
@@ -225,6 +253,7 @@ class PetscSolver final : public LinearSolver {
   void factorize(const SparseSystem& A) {
     release();
     n_ = static_cast<PetscInt>(A.n);
+    bound_ = &A;  // build_riesz reads the triplets, so bind before the KSP
     build_matrix(A);
     build_ksp();
     check(VecCreateSeq(PETSC_COMM_SELF, n_, &rhs_), "VecCreate");
@@ -280,109 +309,138 @@ class PetscSolver final : public LinearSolver {
           "one index set per factor and L2 weights for every factor after the first");
     }
 
+    // A FACTOR IS A CONTIGUOUS RUN, and saying so is not a micro-optimization:
+    // a general index set makes MatCreateSubMatrix search for every row it is
+    // asked for, and on a block of several hundred thousand that search is the
+    // whole cost of building the preconditioner -- minutes, against the second
+    // the extraction itself takes from a stride.
     std::vector<IS> sets(nf, nullptr);
     for (std::size_t b = 0; b < nf; ++b) {
-      check(ISCreateGeneral(PETSC_COMM_SELF, static_cast<PetscInt>(norm_.factors[b].size()),
-                            norm_.factors[b].data(), PETSC_COPY_VALUES, &sets[b]),
-            "ISCreateGeneral");
-    }
-
-    // FACTOR 0: the material form, plus one term per constraint that binds it.
-    //
-    //     A00 + sum_f B_f^T diag(w_f) B_f ,   B_f = A(factor f rows, factor 0 cols)
-    //
-    // For flow the sum has one term, the divergence. For AFW elasticity it has
-    // two: the divergence and the ALGEBRAIC symmetry constraint whose
-    // multiplier is the rotation. Both are constraints on the stress and both
-    // must be controlled, or the operator is unbounded in the directions the
-    // missing one spans.
-    Mat A00 = nullptr;
-    check(MatCreateSubMatrix(M_, sets[0], sets[0], MAT_INITIAL_MATRIX, &A00), "sub(0,0)");
-    // ONLY THE DIFFERENTIAL CONSTRAINT enters the first factor's norm. AFW's
-    // inf-sup is proved with ||sigma||^2 = (A sigma, sigma) + ||div sigma||^2:
-    // skw is bounded L^2 -> L^2, so its multiplier is already controlled by the
-    // material term and the algebraic constraint contributes no graph term.
-    // A factor whose weights are empty is such a multiplier.
-    for (std::size_t f = 1; f < nf; ++f) {
-      if (!norm_.carries_graph_term(f)) continue;
-      const auto& w = norm_.l2_weight[f - 1];
-      Mat B = nullptr, BtB = nullptr;
-      check(MatCreateSubMatrix(M_, sets[f], sets[0], MAT_INITIAL_MATRIX, &B), "constraint block");
-      // B^T diag(w) B, obtained by scaling the rows of B by sqrt(w)
-      Vec root = nullptr;
-      check(VecCreateSeq(PETSC_COMM_SELF, static_cast<PetscInt>(w.size()), &root), "VecCreateSeq");
-      for (std::size_t i = 0; i < w.size(); ++i) {
-        // B^T W^{-1} B, by scaling the rows of B with W^{-1/2}
-        check(VecSetValue(root, static_cast<PetscInt>(i), 1.0 / std::sqrt(w[i]), INSERT_VALUES),
-              "VecSetValue");
-      }
-      check(VecAssemblyBegin(root), "VecAssembly");
-      check(VecAssemblyEnd(root), "VecAssembly");
-      check(MatDiagonalScale(B, root, nullptr), "row scale");
-      VecDestroy(&root);
-      check(MatTransposeMatMult(B, B, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &BtB), "constraint term");
-      check(MatAXPY(A00, 1.0, BtB, DIFFERENT_NONZERO_PATTERN), "A00 += constraint term");
-      MatDestroy(&B);
-      MatDestroy(&BtB);
-    }
-
-    // scatter it, and the L2 mass of every later factor, into a preconditioner
-    // matrix of full size
-    const auto& first = norm_.factors[0];
-    std::vector<PetscInt> per_row(static_cast<std::size_t>(n_), 1);
-    for (std::size_t i = 0; i < first.size(); ++i) {
-      PetscInt ncols = 0;
-      const PetscInt* cols = nullptr;
-      check(MatGetRow(A00, static_cast<PetscInt>(i), &ncols, &cols, nullptr), "MatGetRow");
-      per_row[static_cast<std::size_t>(first[i])] = ncols;
-      check(MatRestoreRow(A00, static_cast<PetscInt>(i), &ncols, &cols, nullptr), "MatRestoreRow");
-    }
-    Mat P = nullptr;
-    check(MatCreate(PETSC_COMM_SELF, &P), "MatCreate(P)");
-    check(MatSetType(P, MATSEQAIJ), "MatSetType(P)");
-    check(MatSetSizes(P, n_, n_, n_, n_), "MatSetSizes(P)");
-    check(MatSeqAIJSetPreallocation(P, 0, per_row.data()), "preallocate(P)");
-    for (std::size_t i = 0; i < first.size(); ++i) {
-      PetscInt ncols = 0;
-      const PetscInt* cols = nullptr;
-      const PetscScalar* vals = nullptr;
-      check(MatGetRow(A00, static_cast<PetscInt>(i), &ncols, &cols, &vals), "MatGetRow");
-      const PetscInt gi = first[i];
-      for (PetscInt k = 0; k < ncols; ++k) {
-        const PetscInt gj = first[static_cast<std::size_t>(cols[k])];
-        check(MatSetValues(P, 1, &gi, 1, &gj, &vals[k], INSERT_VALUES), "P(factor 0)");
-      }
-      check(MatRestoreRow(A00, static_cast<PetscInt>(i), &ncols, &cols, &vals), "MatRestoreRow");
-    }
-    MatDestroy(&A00);
-    // FACTORS 1..: plain L2, diagonal because a cell unknown is its value
-    for (std::size_t b = 1; b < nf; ++b) {
       const auto& idx = norm_.factors[b];
-      const auto& w = norm_.l2_weight[b - 1];
-      if (w.size() != idx.size()) {
-        throw std::invalid_argument("PetscSolver: L2 weights do not match their factor");
+      const auto m = static_cast<PetscInt>(idx.size());
+      bool contiguous = !idx.empty();
+      for (std::size_t k = 1; k < idx.size() && contiguous; ++k) {
+        contiguous = idx[k] == idx[k - 1] + 1;
       }
-      for (std::size_t i = 0; i < idx.size(); ++i) {
-        const PetscInt gi = idx[i];
-        check(MatSetValues(P, 1, &gi, 1, &gi, &w[i], INSERT_VALUES), "P(L2 factor)");
+      if (contiguous) {
+        check(ISCreateStride(PETSC_COMM_SELF, m, idx.front(), 1, &sets[b]), "ISCreateStride");
+      } else {
+        check(ISCreateGeneral(PETSC_COMM_SELF, m, idx.data(), PETSC_COPY_VALUES, &sets[b]),
+              "ISCreateGeneral");
+        check(ISSort(sets[b]), "ISSort");
       }
     }
-    check(MatAssemblyBegin(P, MAT_FINAL_ASSEMBLY), "assembly(P)");
-    check(MatAssemblyEnd(P, MAT_FINAL_ASSEMBLY), "assembly(P)");
 
-    // the constrained rows, given the row A gives them
-    if (!norm_.pinned.empty()) {
-      check(MatZeroRowsColumns(P, static_cast<PetscInt>(norm_.pinned.size()), norm_.pinned.data(),
-                               1.0, nullptr, nullptr),
-            "MatZeroRowsColumns(P)");
-      for (std::size_t k = 0; k < norm_.pinned.size(); ++k) {
-        const PetscInt i = norm_.pinned[k];
-        const double d = k < norm_.pinned_diagonal.size() ? norm_.pinned_diagonal[k] : 1.0;
-        check(MatSetValues(P, 1, &i, 1, &i, &d, INSERT_VALUES), "P(pinned)");
+    // P, BUILT FROM THE TRIPLETS IN ONE PASS.
+    //
+    // Every block of P is already present in the assembly, so none of it needs
+    // to be extracted or multiplied out:
+    //
+    //   material   the (0,0) entries of A, taken as they stand
+    //   graph      B^T W^-1 B, and B is one ROW of A per multiplier. A row has
+    //              only as many entries as the cell has facets, so the outer
+    //              product of a row with itself is a handful of entries and the
+    //              whole term is a single pass -- no sparse matrix product, and
+    //              no matrix the size of the first factor to hold its result.
+    //   L2         the multiplier diagonal, W
+    //
+    // Doing it through MatCreateSubMatrix and MatTransposeMatMult instead costs
+    // an extraction of a block that is most of the operator and a product whose
+    // intermediate is larger again: on a mesh of tens of thousands of polyhedra
+    // that is the whole time to reach a solve, and gigabytes that this pass
+    // never allocates.
+    const SparseSystem& A = *bound_;
+    std::vector<int> factor_of(static_cast<std::size_t>(n_), -1);
+    std::vector<double> weight(static_cast<std::size_t>(n_), 0.0);
+    for (std::size_t f = 0; f < nf; ++f) {
+      const auto& idx = norm_.factors[f];
+      for (std::size_t k = 0; k < idx.size(); ++k) {
+        factor_of[static_cast<std::size_t>(idx[k])] = static_cast<int>(f);
+        if (f >= 1) weight[static_cast<std::size_t>(idx[k])] = norm_.l2_weight[f - 1][k];
       }
-      check(MatAssemblyBegin(P, MAT_FINAL_ASSEMBLY), "assembly(P)");
-      check(MatAssemblyEnd(P, MAT_FINAL_ASSEMBLY), "assembly(P)");
     }
+    std::vector<char> is_pinned(static_cast<std::size_t>(n_), 0);
+    for (const int i : norm_.pinned) is_pinned[static_cast<std::size_t>(i)] = 1;
+
+    // the rows of the constraint blocks, gathered. Only the multiplier rows are
+    // kept, and each holds a few entries, so this is a small fraction of A.
+    std::vector<Index> b_begin(static_cast<std::size_t>(n_) + 1, 0);
+    for (std::size_t k = 0; k < A.nnz(); ++k) {
+      const auto i = static_cast<std::size_t>(A.row[k]);
+      if (factor_of[i] >= 1 && norm_.carries_graph_term(static_cast<std::size_t>(factor_of[i])) &&
+          factor_of[static_cast<std::size_t>(A.col[k])] == 0) {
+        ++b_begin[i + 1];
+      }
+    }
+    for (std::size_t i = 0; i < static_cast<std::size_t>(n_); ++i) b_begin[i + 1] += b_begin[i];
+    std::vector<Index> b_col(static_cast<std::size_t>(b_begin.back()));
+    std::vector<double> b_val(b_col.size());
+    {
+      std::vector<Index> at(b_begin.begin(), b_begin.end() - 1);
+      for (std::size_t k = 0; k < A.nnz(); ++k) {
+        const auto i = static_cast<std::size_t>(A.row[k]);
+        if (factor_of[i] >= 1 && norm_.carries_graph_term(static_cast<std::size_t>(factor_of[i])) &&
+            factor_of[static_cast<std::size_t>(A.col[k])] == 0) {
+          const auto slot = static_cast<std::size_t>(at[i]++);
+          b_col[slot] = A.col[k];
+          b_val[slot] = A.value[k];
+        }
+      }
+    }
+
+    std::vector<Index> p_row, p_col;
+    std::vector<double> p_val;
+    const auto emit = [&](Index i, Index j, double v) {
+      if (is_pinned[static_cast<std::size_t>(i)] || is_pinned[static_cast<std::size_t>(j)]) return;
+      p_row.push_back(i);
+      p_col.push_back(j);
+      p_val.push_back(v);
+    };
+    // material: the (0,0) entries of A
+    for (std::size_t k = 0; k < A.nnz(); ++k) {
+      if (factor_of[static_cast<std::size_t>(A.row[k])] == 0 &&
+          factor_of[static_cast<std::size_t>(A.col[k])] == 0) {
+        emit(A.row[k], A.col[k], A.value[k]);
+      }
+    }
+    // graph: B^T W^-1 B, row by row
+    for (std::size_t i = 0; i < static_cast<std::size_t>(n_); ++i) {
+      const auto b = static_cast<std::size_t>(b_begin[i]);
+      const auto e = static_cast<std::size_t>(b_begin[i + 1]);
+      if (e == b) continue;
+      const double inv_w = 1.0 / weight[i];
+      for (std::size_t a = b; a < e; ++a) {
+        for (std::size_t c = b; c < e; ++c) {
+          emit(b_col[a], b_col[c], b_val[a] * b_val[c] * inv_w);
+        }
+      }
+    }
+    b_col = std::vector<Index>();
+    b_val = std::vector<double>();
+    b_begin = std::vector<Index>();
+    // L2 mass of every factor after the first, and the constrained rows the row
+    // A gave them
+    for (std::size_t i = 0; i < static_cast<std::size_t>(n_); ++i) {
+      if (factor_of[i] >= 1 && !is_pinned[i]) {
+        emit(static_cast<Index>(i), static_cast<Index>(i), weight[i]);
+      }
+    }
+    for (std::size_t k = 0; k < norm_.pinned.size(); ++k) {
+      const Index i = norm_.pinned[k];
+      p_row.push_back(i);
+      p_col.push_back(i);
+      p_val.push_back(k < norm_.pinned_diagonal.size() ? norm_.pinned_diagonal[k] : 1.0);
+    }
+
+    Mat P = assemble(p_row, p_col, p_val, n_);
+    p_row = std::vector<Index>();
+    p_col = std::vector<Index>();
+    p_val = std::vector<double>();
+    // P IS SYMMETRIC POSITIVE DEFINITE BY CONSTRUCTION -- a material inner
+    // product plus B^T W^-1 B plus positive diagonals -- and saying so lets a
+    // Cholesky be taken of its blocks: half the fill of an LU.
+    check(MatSetOption(P, MAT_SYMMETRIC, PETSC_TRUE), "MatSetOption(symmetric)");
+    check(MatSetOption(P, MAT_SPD, PETSC_TRUE), "MatSetOption(spd)");
 
     check(KSPSetOperators(ksp, M_, P), "KSPSetOperators(A, P)");
     check(PCSetType(pc, PCFIELDSPLIT), "PCSetType(fieldsplit)");
@@ -391,74 +449,114 @@ class PetscSolver final : public LinearSolver {
     }
     check(PCFieldSplitSetType(pc, PC_COMPOSITE_ADDITIVE), "PCFieldSplitSetType");
 
-    // each factor is inverted exactly: factor 0 is SPD, the L2 factors are
-    // diagonal. Anything cheaper is a different preconditioner and no longer
-    // the Riesz map.
-    check(PCSetUp(pc), "PCSetUp(fieldsplit)");
-    PetscInt n_split = 0;
-    KSP* sub = nullptr;
-    check(PCFieldSplitGetSubKSP(pc, &n_split, &sub), "PCFieldSplitGetSubKSP");
-    for (PetscInt b = 0; b < n_split; ++b) {
-      PC sub_pc = nullptr;
-      check(KSPSetType(sub[b], KSPPREONLY), "sub KSPSetType");
-      check(KSPGetPC(sub[b], &sub_pc), "sub KSPGetPC");
-      check(PCSetType(sub_pc, b == 0 ? PCLU : PCJACOBI), "sub PCSetType");
+    // exact or not, decided on the size of the block being inverted: the fill
+    // of a complete factorization is what stops this scaling, not its speed
+    const auto n0 = static_cast<int>(norm_.factors[0].size());
+    const bool inexact_block = opts_.riesz_block_its > 0 ||
+                               (opts_.riesz_block_its < 0 && n0 > opts_.riesz_exact_limit);
+    const int block_its = opts_.riesz_block_its > 0 ? opts_.riesz_block_its : 200;
+    const std::string b0_pc =
+        !opts_.riesz_block_pc.empty() ? opts_.riesz_block_pc : (inexact_block ? "icc" : "lu");
+    // an inner Krylov makes the preconditioner a VARYING operator, which only a
+    // flexible outer method may use; applying it under plain gmres is a silent
+    // wrong answer, so the promotion happens here rather than in the caller
+    if (inexact_block) check(KSPSetType(ksp, KSPFGMRES), "KSPSetType(fgmres)");
+
+    // THE SUB-SOLVERS ARE SET THROUGH THE OPTIONS DATABASE, before setup.
+    //
+    // PCFieldSplitGetSubKSP requires the PC to be set up, and setting it up is
+    // what performs the factorizations -- with whatever sub-solver the split
+    // defaults to. Reaching in afterwards to change the type therefore changes
+    // nothing that has already been paid for: the default LU of the first
+    // factor is taken first, which is the entire cost being avoided. Naming
+    // them by prefix leaves the choice in place when the setup happens.
+    const std::string p0 = prefix_ + "fieldsplit_0_";
+    const std::string p1 = prefix_ + "fieldsplit_1_";
+    const auto set = [](const std::string& key, const std::string& value) {
+      PetscOptionsSetValue(nullptr, ("-" + key).c_str(), value.c_str());
+    };
+    if (inexact_block) {
+      set(p0 + "ksp_type", "cg");
+      set(p0 + "ksp_max_it", std::to_string(block_its));
+      set(p0 + "ksp_rtol", std::to_string(opts_.riesz_block_rtol));
+      set(p0 + "pc_type", b0_pc);
+    } else {
+      set(p0 + "ksp_type", "preonly");
+      set(p0 + "pc_type", b0_pc);
+      if ((b0_pc == "lu" || b0_pc == "cholesky") && !opts_.factorization.empty() &&
+          opts_.factorization != "petsc") {
+        set(p0 + "pc_factor_mat_solver_type", opts_.factorization);
+      }
     }
-    PetscFree(sub);
+    // the L2 factors are DIAGONAL, so Jacobi inverts them exactly and anything
+    // heavier is wasted
+    set(p1 + "ksp_type", "preonly");
+    set(p1 + "pc_type", "jacobi");
 
     riesz_.push_back(P);
     for (IS& s : sets) ISDestroy(&s);
   }
 
-  void build_matrix(const SparseSystem& A) {
-    const PetscInt n = n_;
+  // A MATRIX FROM TRIPLETS, one call per row rather than one per entry.
+  //
+  // Handing PETSc one triplet at a time costs a search of the row for every
+  // entry, and an assembly of tens of thousands of polyhedra emits of order
+  // 10^8 of them. Grouping by row first -- a counting sort, one pass to count
+  // and one to place -- turns that into one call per row, and PETSc sums the
+  // duplicates inside each call as before. The scratch is scoped so it is
+  // returned before anything else is allocated.
+  static Mat assemble(const std::vector<Index>& row, const std::vector<Index>& col,
+                      const std::vector<double>& val, PetscInt n) {
+    const auto rows = static_cast<std::size_t>(n);
+    const std::size_t nnz = val.size();
 
-    // Count per row first: preallocating is the difference between assembling
-    // in seconds and in minutes, and PETSc will not tell you which one you
-    // chose.
-    std::vector<PetscInt> per_row(A.n, 0);
-    for (std::size_t k = 0; k < A.nnz(); ++k) ++per_row[static_cast<std::size_t>(A.row[k])];
-    // TRIPLETS, NOT NONZEROS. An assembly emits one triplet per contribution
-    // and PETSc sums the duplicates, so a row's triplet count is an upper
-    // bound on its nonzero count -- and on a small mesh it can exceed the
-    // matrix dimension, which PETSc rejects outright. Clamping asks for the
-    // most a row could possibly hold, which is exactly what a preallocation
-    // hint is for.
-    for (PetscInt& c : per_row) c = std::min(c, n);
-    for (PetscInt i = 0; i < n; ++i) ++per_row[static_cast<std::size_t>(i)];  // the diagonal
-    for (PetscInt& c : per_row) c = std::min(c, n);
+    std::vector<PetscInt> begin(rows + 1, 0);
+    for (std::size_t k = 0; k < nnz; ++k) ++begin[static_cast<std::size_t>(row[k]) + 1];
+    std::vector<PetscInt> per_row(rows, 0);
+    for (std::size_t i = 0; i < rows; ++i) {
+      // TRIPLETS, NOT NONZEROS: a row's triplet count is an upper bound on its
+      // nonzero count, and on a small mesh it can exceed the dimension, which
+      // PETSc rejects outright
+      per_row[i] = std::min(begin[i + 1], n);
+      begin[i + 1] += begin[i];
+    }
 
     Mat M = nullptr;
     check(MatCreate(PETSC_COMM_SELF, &M), "MatCreate");
     check(MatSetType(M, MATSEQAIJ), "MatSetType");
     check(MatSetSizes(M, n, n, n, n), "MatSetSizes");
     check(MatSeqAIJSetPreallocation(M, 0, per_row.data()), "preallocate");
-    // duplicate triplets are summed, which is what an assembly produces
     check(MatSetOption(M, MAT_NEW_NONZERO_ALLOCATION_ERR, PETSC_FALSE), "MatSetOption");
     // an explicitly stored zero is structure, not noise, and must survive
     check(MatSetOption(M, MAT_IGNORE_ZERO_ENTRIES, PETSC_FALSE), "MatSetOption");
-    // THE DIAGONAL IS MADE STRUCTURALLY PRESENT, zero or not.
-    //
-    // The multiplier block of a mixed form has no diagonal entry at all: the
-    // (p, p) block is empty, not small. A factorization that indexes the
-    // diagonal then refuses the matrix outright -- PETSc's ILU reports
-    // "Matrix is missing diagonal entries" -- and a fieldsplit cannot extract
-    // a block it cannot address. An explicit zero costs one entry per row and
-    // changes no product.
-    const double zero = 0.0;
-    for (PetscInt i = 0; i < n; ++i) {
-      check(MatSetValues(M, 1, &i, 1, &i, &zero, ADD_VALUES), "MatSetValues");
+    per_row = std::vector<PetscInt>();
+
+    {
+      std::vector<PetscInt> at(begin.begin(), begin.end() - 1);
+      std::vector<PetscInt> cols(nnz);
+      std::vector<PetscScalar> vals(nnz);
+      for (std::size_t k = 0; k < nnz; ++k) {
+        const auto slot = static_cast<std::size_t>(at[static_cast<std::size_t>(row[k])]++);
+        cols[slot] = static_cast<PetscInt>(col[k]);
+        vals[slot] = val[k];
+      }
+      at = std::vector<PetscInt>();
+      for (PetscInt i = 0; i < n; ++i) {
+        const auto b = static_cast<std::size_t>(begin[static_cast<std::size_t>(i)]);
+        const auto e = static_cast<std::size_t>(begin[static_cast<std::size_t>(i) + 1]);
+        if (e == b) continue;
+        check(MatSetValues(M, 1, &i, static_cast<PetscInt>(e - b), cols.data() + b,
+                           vals.data() + b, ADD_VALUES),
+              "MatSetValues");
+      }
     }
-    for (std::size_t k = 0; k < A.nnz(); ++k) {
-      const auto i = static_cast<PetscInt>(A.row[k]);
-      const auto j = static_cast<PetscInt>(A.col[k]);
-      check(MatSetValues(M, 1, &i, 1, &j, &A.value[k], ADD_VALUES), "MatSetValues");
-    }
+
     check(MatAssemblyBegin(M, MAT_FINAL_ASSEMBLY), "assembly");
     check(MatAssemblyEnd(M, MAT_FINAL_ASSEMBLY), "assembly");
-
-    M_ = M;
+    return M;
   }
+
+  void build_matrix(const SparseSystem& A) { M_ = assemble(A.row, A.col, A.value, n_); }
 
   void build_ksp() {
     KSP ksp = nullptr;
