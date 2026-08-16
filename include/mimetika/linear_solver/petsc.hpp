@@ -473,8 +473,14 @@ class PetscSolver final : public LinearSolver {
     check(KSPGetPC(ksp, &pc), "KSPGetPC");
     // "riesz" is this layer's name, not a PETSc type: it resolves to a
     // fieldsplit whose blocks are the Riesz map, set up below.
+    // "exact" is a DIAGNOSTIC: P = A, factorized. It preconditions perfectly,
+    // so a Krylov method must converge in one iteration -- which is what makes
+    // it a test of the Pmat wiring rather than of any preconditioner. If this
+    // takes more than one step, KSPSetOperators(ksp, Amat, Pmat) is not
+    // reaching the solver and nothing built on top of it can be trusted.
+    const bool exact = !opts_.direct() && opts_.preconditioner == "exact";
     const bool riesz = !opts_.direct() && opts_.preconditioner == "riesz";
-    const std::string pc_type = opts_.direct()
+    const std::string pc_type = (opts_.direct() || exact)
                                     ? std::string(PCLU)
                                     : (riesz ? std::string(PCFIELDSPLIT) : opts_.preconditioner);
     check(PCSetType(pc, pc_type.c_str()), "PCSetType");
@@ -492,6 +498,12 @@ class PetscSolver final : public LinearSolver {
       check(KSPSetTolerances(ksp, opts_.rtol, opts_.atol, PETSC_DEFAULT,
                              static_cast<PetscInt>(opts_.max_iterations)),
             "KSPSetTolerances");
+    }
+    if (exact) {
+      Mat P = nullptr;
+      check(MatDuplicate(M_, MAT_COPY_VALUES, &P), "MatDuplicate(P=A)");
+      check(KSPSetOperators(ksp, M_, P), "KSPSetOperators(A, P=A)");
+      riesz_.push_back(P);
     }
     if (riesz) build_riesz(ksp, pc);
     // MUMPS WORKSPACE HEADROOM, and it is not a tuning knob here.
