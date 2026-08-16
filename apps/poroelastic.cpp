@@ -78,8 +78,8 @@ exokal::Mesh extrude(const std::vector<exokal::Mesh::Point>& plane,
   std::vector<std::vector<std::vector<Index>>> cells;
   for (const auto& f : faces) {
     const Index a = f[0], b = f[1], c = f[2], d = f[3];
-    cells.push_back({{lo(a), lo(d), lo(c), lo(b)},   // bottom, inward cycle
-                     {hi(a), hi(b), hi(c), hi(d)},   // top
+    cells.push_back({{lo(a), lo(d), lo(c), lo(b)},  // bottom, inward cycle
+                     {hi(a), hi(b), hi(c), hi(d)},  // top
                      {lo(a), lo(b), hi(b), hi(a)},
                      {lo(b), lo(c), hi(c), hi(b)},
                      {lo(c), lo(d), hi(d), hi(c)},
@@ -90,7 +90,7 @@ exokal::Mesh extrude(const std::vector<exokal::Mesh::Point>& plane,
 
 // A COLUMN: one cell across, n tall. Terzaghi's domain.
 exokal::Mesh column(int n, int dim, Family family, double h, double width) {
-  std::vector<exokal::Mesh::Point> plane;   // the cross-section, in x-y
+  std::vector<exokal::Mesh::Point> plane;  // the cross-section, in x-y
   std::vector<std::vector<Index>> faces;
   if (dim == 2) {
     // a strip of width `width`, n cells tall: the axis is y
@@ -237,8 +237,8 @@ int main(int argc, char** argv) {
     const exokal::Mesh m = column(n, dim, family, h, width);
     const graphos::Complex& c = m.topology();
     // the uniaxial clock, which is a property of the material and not of d
-    const double c_v = mat.mobility / (mat.inverse_biot_modulus +
-                                       mat.biot * mat.biot / mat.oedometer_modulus());
+    const double c_v =
+        mat.mobility / (mat.inverse_biot_modulus + mat.biot * mat.biot / mat.oedometer_modulus());
     const double dt = 1.0e-4 * h * h / c_v;
 
     PoroelasticModel prob(m, dim, mat, dt, layer);
@@ -262,8 +262,7 @@ int main(int argc, char** argv) {
                 prob.simulation().n_dofs(), c_v);
     const std::vector<double> factors = {0.001, 0.01, 0.1, 0.25, 0.5, 1.0};
     std::FILE* out = std::fopen(argc > 5 ? argv[5] : "consolidation.txt", "w");
-    std::fprintf(out, "# consolidation %dD %s c_v=%g\n# factor zbar pbar\n", dim, fam.c_str(),
-                 c_v);
+    std::fprintf(out, "# consolidation %dD %s c_v=%g\n# factor zbar pbar\n", dim, fam.c_str(), c_v);
     march(prob, factors, h * h / c_v, [&](double T, const PoroelasticModel& p) {
       // the deepest cell, found rather than guessed at: a triangle's centroid
       // and a quadrilateral's sit at different heights in the same column
@@ -271,7 +270,10 @@ int main(int argc, char** argv) {
       for (Index e = 0; e < c.count(dim); ++e) {
         const double z = exokal::centroid(m, dim, e)[static_cast<std::size_t>(axis)];
         std::fprintf(out, "%g %.10g %.10g\n", T, (h - z) / h, p.cell_pressure(e));
-        if (z < zmin) { zmin = z; deep = p.cell_pressure(e); }
+        if (z < zmin) {
+          zmin = z;
+          deep = p.cell_pressure(e);
+        }
       }
       std::printf("  T = %-6g  p(base) = %+.6f\n", T, deep);
     });
@@ -322,8 +324,8 @@ int main(int argc, char** argv) {
     prob.initial_pressure(p0);
     prob.build();
 
-    std::printf("borehole %dD %s: %lld cells, %zu dofs, c_f=%.6f, wall %zu far %zu sym %zu\n",
-                dim, family == Family::simplex ? "simplex" : "cartesian", (long long)c.count(dim),
+    std::printf("borehole %dD %s: %lld cells, %zu dofs, c_f=%.6f, wall %zu far %zu sym %zu\n", dim,
+                family == Family::simplex ? "simplex" : "cartesian", (long long)c.count(dim),
                 prob.simulation().n_dofs(), cf, wall.size(), far.size(), sym.size());
 
     const std::vector<double> factors = {0.1, 0.4, 0.8};
@@ -336,7 +338,10 @@ int main(int argc, char** argv) {
         const auto x = exokal::centroid(m, dim, e);
         const double r = std::sqrt(x[0] * x[0] + x[1] * x[1]);
         std::fprintf(out, "%g %.10g %.10g\n", T, r, (p.cell_pressure(e) - p0) / (p1 - p0));
-        if (r < rw) { rw = r; pw = (p.cell_pressure(e) - p0) / (p1 - p0); }
+        if (r < rw) {
+          rw = r;
+          pw = (p.cell_pressure(e) - p0) / (p1 - p0);
+        }
       }
       std::printf("  T = %-6g  pbar(wall) = %+.6f\n", T, pw);
     });

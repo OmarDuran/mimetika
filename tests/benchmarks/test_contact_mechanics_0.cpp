@@ -1,8 +1,8 @@
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <utility>
-#include <cstdio>
 #include <vector>
 
 #include "../mimetika_test.hpp"
@@ -87,16 +87,14 @@ struct Response {
 // D ~ h^{d-1}, a ratio of h, and the same solve is exact to eleven digits at
 // n = 96. Strain is dimensionless and comes back unchanged; the stresses are
 // multiplied by G on the way out, so the caller sees pascals throughout.
-Response depletion_response(const Parameters& p, int n, Realization how,
-                            bool clamp_sides = false) {
+Response depletion_response(const Parameters& p, int n, Realization how, bool clamp_sides = false) {
   const int dim = 2;
   const double unit = p.shear_modulus;
   Parameters s = p;  // the same problem, stated in units of G
   s.shear_modulus = p.shear_modulus / unit;
   s.depletion = p.depletion / unit;
 
-  const exokal::Mesh mesh = mimetika::mesh::box({n, n, 1}, dim, Family::cartesian,
-                                                {1.0, 1.0, 1.0});
+  const exokal::Mesh mesh = mimetika::mesh::box({n, n, 1}, dim, Family::cartesian, {1.0, 1.0, 1.0});
   const graphos::Complex& c = mesh.topology();
 
   std::vector<Index> top, sides, cells;
@@ -105,8 +103,7 @@ Response depletion_response(const Parameters& p, int n, Realization how,
   }
   for (Index e = 0; e < c.count(dim); ++e) cells.push_back(e);
 
-  CauchyElasticityModel model(
-      mesh, dim, ElasticMaterial{s.shear_modulus, s.lame()}, how);
+  CauchyElasticityModel model(mesh, dim, ElasticMaterial{s.shear_modulus, s.lame()}, how);
   model.mechanics().emplace<mimetika::TractionBC>(top, std::array<double, 9>{});
   if (clamp_sides) {
     model.prescribe_displacement(sides, {0.0, 0.0, 0.0});
@@ -185,10 +182,12 @@ Field finite_reservoir(const Parameters& p, int nx, int ny,
   s.shear_modulus = p.shear_modulus / unit;
   s.depletion = p.depletion / unit;
 
-  Field out{mimetika::mesh::box({nx, ny, 1}, dim, Family::cartesian,
-                                {p.width / L, p.height / L, 1.0},
-                                {-p.width / (2 * L), -p.height / (2 * L), 0.0}),
-            {}, {}, {}};
+  Field out{
+      mimetika::mesh::box({nx, ny, 1}, dim, Family::cartesian, {p.width / L, p.height / L, 1.0},
+                          {-p.width / (2 * L), -p.height / (2 * L), 0.0}),
+      {},
+      {},
+      {}};
   const graphos::Complex& c = out.mesh.topology();
 
   std::vector<Index> top, rest, depleted;
@@ -252,10 +251,9 @@ Profile combined_stress_profile(const Parameters& p, int nx, int ny, double dip,
     }
     // the increment plus the in-situ state, as a row-major 2x2
     const std::array<double, 4> insitu = p.stress_tensor(yi);
-    const std::array<double, 4> total = {f.stress[best][0] + insitu[0],
-                                         f.stress[best][1] + insitu[1],
-                                         f.stress[best][3] + insitu[2],
-                                         f.stress[best][4] + insitu[3]};
+    const std::array<double, 4> total = {
+        f.stress[best][0] + insitu[0], f.stress[best][1] + insitu[1], f.stress[best][3] + insitu[2],
+        f.stress[best][4] + insitu[3]};
     out.y.push_back(yi);
     out.normal.push_back(Parameters::contract(n, total, n));
     out.shear.push_back(Parameters::contract(t, total, n));
@@ -283,10 +281,11 @@ MIMETIKA_TEST(the_in_situ_profiles_match_the_paper) {
     bool magnitude;
   };
   // eqs. (17)-(19): (intercept [Pa], gradient [Pa/m]), y measured upwards
-  const Row published[5] = {
-      {"sigma_yy", -82.60e6, 23.60e3, false},  {"sigma_xx", -57.05e6, 16.30e3, false},
-      {"pressure", 35.00e6, -10.06e3, false},  {"sigma_normal_70", -60.04e6, 17.15e3, false},
-      {"sigma_shear_70", 8.21e6, -2.35e3, true}};
+  const Row published[5] = {{"sigma_yy", -82.60e6, 23.60e3, false},
+                            {"sigma_xx", -57.05e6, 16.30e3, false},
+                            {"pressure", 35.00e6, -10.06e3, false},
+                            {"sigma_normal_70", -60.04e6, 17.15e3, false},
+                            {"sigma_shear_70", 8.21e6, -2.35e3, true}};
 
   std::vector<std::vector<double>> fields(5);
   for (const double yi : y) {
@@ -308,8 +307,8 @@ MIMETIKA_TEST(the_in_situ_profiles_match_the_paper) {
       want_i = std::abs(want_i);
       want_g = std::abs(want_g);
     }
-    std::printf("    %-16s %+9.2f (%+7.2f)   %+8.2f (%+7.2f)\n", published[k].name,
-                intercept / 1e6, want_i / 1e6, gradient / 1e3, want_g / 1e3);
+    std::printf("    %-16s %+9.2f (%+7.2f)   %+8.2f (%+7.2f)\n", published[k].name, intercept / 1e6,
+                want_i / 1e6, gradient / 1e3, want_g / 1e3);
     CHECK(close(intercept, want_i, 5e-3));
     CHECK(close(gradient, want_g, 5e-3));
   }
@@ -404,8 +403,8 @@ MIMETIKA_TEST(the_depletion_response_is_the_uniaxial_closed_form) {
   for (const Realization how : {Realization::derham_afw, Realization::stabilized_afw}) {
     const Response r = depletion_response(p, 6, how);
     std::printf("  %-16s eps_yy %+.8e (%+.8e)   Dh %+.4f m (%.2f)\n",
-                exokal::hodge::StressOperators::name(how), r.vertical_strain,
-                p.vertical_strain(), r.compaction, p.compaction());
+                exokal::hodge::StressOperators::name(how), r.vertical_strain, p.vertical_strain(),
+                r.compaction, p.compaction());
     std::printf("  %-16s Dsigma'_xx %+.6e (%+.6e)   Dsigma_xx %+.6e (%+.6e)\n", "",
                 r.sigma_xx_effective, p.horizontal_effective_increment(), r.sigma_xx_total,
                 p.horizontal_total_increment());
@@ -529,8 +528,9 @@ MIMETIKA_TEST(the_profile_steps_at_the_reservoir_boundary) {
   std::sort(jumps.begin(), jumps.end());
   const auto& a = jumps[jumps.size() - 1];
   const auto& b = jumps[jumps.size() - 2];
-  std::printf("  the two largest steps: %.2f MPa at |y| = %.1f m, %.2f MPa at %.1f m (h/2 = %.1f)\n",
-              a.first / 1e6, a.second, b.first / 1e6, b.second, half);
+  std::printf(
+      "  the two largest steps: %.2f MPa at |y| = %.1f m, %.2f MPa at %.1f m (h/2 = %.1f)\n",
+      a.first / 1e6, a.second, b.first / 1e6, b.second, half);
   CHECK(std::abs(a.second - half) < 1.5 * p.height / 120);
   CHECK(std::abs(b.second - half) < 1.5 * p.height / 120);
   CHECK(a.first > 10e6);  // a real step, over 10 MPa
@@ -557,8 +557,8 @@ MIMETIKA_TEST(the_reservoir_is_less_compressive_than_the_seal) {
   }
   std::printf("  inside mean %+.2f MPa   outside mean %+.2f MPa\n", in_sum / ni / 1e6,
               out_sum / no / 1e6);
-  CHECK(in_max < 0.0 && out_max < 0.0);              // both compressive
-  CHECK(in_sum / ni > out_sum / no + 10e6);          // by more than 10 MPa
+  CHECK(in_max < 0.0 && out_max < 0.0);      // both compressive
+  CHECK(in_sum / ni > out_sum / no + 10e6);  // by more than 10 MPa
 }
 
 // |Sigma_par| RISES FROM ~8 TO ~14 MPa, which is what drives fault reactivation
@@ -597,8 +597,8 @@ MIMETIKA_TEST(the_profile_matches_the_analytic_curve_to_round_off) {
     worst_n = std::max(worst_n, std::abs(f.normal[i] - want[0]));
     worst_s = std::max(worst_s, std::abs(f.shear[i] - want[1]));
   }
-  std::printf("  worst deviation from the analytic curve: %.3e Pa normal, %.3e Pa shear\n",
-              worst_n, worst_s);
+  std::printf("  worst deviation from the analytic curve: %.3e Pa normal, %.3e Pa shear\n", worst_n,
+              worst_s);
   CHECK(worst_n < 1.0);
   CHECK(worst_s < 1.0);
 }
@@ -626,8 +626,8 @@ MIMETIKA_TEST(an_aligned_grid_is_accepted_and_depletes_exactly_the_band) {
     std::size_t depleted = 0;
     for (const double v : f.pressure) depleted += (v != 0.0) ? 1 : 0;
     // exactly the cells inside the band, no half-counted row at either edge
-    const auto want = static_cast<std::size_t>(
-        4 * std::llround(p.reservoir_height() / (p.height / ny)));
+    const auto want =
+        static_cast<std::size_t>(4 * std::llround(p.reservoir_height() / (p.height / ny)));
     std::printf("  ny %3d   %zu depleted cells (%zu)\n", ny, depleted, want);
     CHECK(depleted == want);
   }

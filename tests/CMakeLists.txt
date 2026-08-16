@@ -2,6 +2,9 @@
 set(MIMETIKA_UNIT_TESTS
   physics/test_package
   physics/test_flow
+  physics/test_darcy_term
+  physics/test_immiscible
+  physics/test_upwind
   model/test_simulation
   model/test_poroelasticity
   model/test_boundary

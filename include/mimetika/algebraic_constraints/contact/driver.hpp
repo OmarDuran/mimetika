@@ -47,10 +47,10 @@ namespace mimetika::contact {
 
 // Everything carried from one step to the next.
 struct ContactState {
-  std::vector<Vec3> traction;   // the multiplier, in facet-frame values
-  std::vector<State> internal;  // law state per enforcement point
-  std::vector<Vec3> jump;       // facet-frame jump at the enforcement points
-  std::vector<double> solution; // the mechanics solution of the last evaluation
+  std::vector<Vec3> traction;    // the multiplier, in facet-frame values
+  std::vector<State> internal;   // law state per enforcement point
+  std::vector<Vec3> jump;        // facet-frame jump at the enforcement points
+  std::vector<double> solution;  // the mechanics solution of the last evaluation
   int iterations{0};
   bool converged{true};
 
@@ -150,7 +150,9 @@ class ContactDriver {
 
   ContactDriver(const ContactMechanics& mechanics, const ContactLaw& law,
                 std::vector<double> augmentation, DriverOptions options = {})
-      : mechanics_(&mechanics), law_(&law), options_(options),
+      : mechanics_(&mechanics),
+        law_(&law),
+        options_(options),
         augmentation_(std::move(augmentation)) {
     if (augmentation_.size() != mechanics.n_points()) {
       throw std::invalid_argument("ContactDriver: one augmentation per enforcement point");
@@ -211,8 +213,7 @@ class ContactDriver {
   CondensedMap condensed() const { return condense(*mechanics_); }
 
   ContactState solve_step_condensed(const CondensedMap* cond,
-                                    const ContactState* previous = nullptr,
-                                    double dt = 0.0) const {
+                                    const ContactState* previous = nullptr, double dt = 0.0) const {
     const ContactState state = previous != nullptr ? *previous : initial_state();
 
     ContactMap map(*mechanics_, *law_, augmentation_);

@@ -192,7 +192,10 @@ MIMETIKA_TEST(the_compliance_term_is_not_optional) {
 
   Index face = -1;
   for (Index f = 0; f < c.count(dim - 1); ++f) {
-    if (std::abs(exokal::centroid(m, dim - 1, f)[2] - 0.5) < 1e-9) { face = f; break; }
+    if (std::abs(exokal::centroid(m, dim - 1, f)[2] - 0.5) < 1e-9) {
+      face = f;
+      break;
+    }
   }
   CHECK(face >= 0);
 
@@ -203,15 +206,18 @@ MIMETIKA_TEST(the_compliance_term_is_not_optional) {
     const Index cell = cob.indices[mm];
     const auto& op = model.stress_operators().cell(cell);
     std::size_t slot = 0;
-    for (std::size_t i = 0; i < op.faces.size(); ++i) if (op.faces[i] == face) slot = i;
+    for (std::size_t i = 0; i < op.faces.size(); ++i)
+      if (op.faces[i] == face) slot = i;
     const std::size_t local = slot * ndf + 2;  // moment 0, normal component
     for (std::size_t j = 0; j < op.Dv.rows(); ++j) {
-      adjoint_only -= op.Dv(j, local) *
-                      z[u_off + static_cast<std::size_t>(mu.global(dim, cell, 0, static_cast<int>(j)))];
+      adjoint_only -=
+          op.Dv(j, local) *
+          z[u_off + static_cast<std::size_t>(mu.global(dim, cell, 0, static_cast<int>(j)))];
     }
     for (std::size_t j = 0; j < op.As.rows(); ++j) {
-      adjoint_only -= op.As(j, local) *
-                      z[g_off + static_cast<std::size_t>(mg.global(dim, cell, 0, static_cast<int>(j)))];
+      adjoint_only -=
+          op.As(j, local) *
+          z[g_off + static_cast<std::size_t>(mg.global(dim, cell, 0, static_cast<int>(j)))];
     }
   }
   const double full = model.trace(face, z)[2];

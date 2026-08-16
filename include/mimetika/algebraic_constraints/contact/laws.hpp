@@ -167,12 +167,12 @@ Tangent differentiate(const Law& law, const Vec3& trial, const State& state, int
   for (std::size_t k = 0; k < n; ++k) x[k] = seed[k];
 
   State scratch = state;
-  const VecN<ad::Local> t =
-      law.template project_at<ad::Local>(x, scratch, dim, g, g_prev, dt);
+  const VecN<ad::Local> t = law.template project_at<ad::Local>(x, scratch, dim, g, g_prev, dt);
 
   Tangent J;
   for (int i = 0; i < dim; ++i) {
-    for (int j = 0; j < dim; ++j) J(i, j) = t[static_cast<std::size_t>(i)].d(static_cast<std::size_t>(j));
+    for (int j = 0; j < dim; ++j)
+      J(i, j) = t[static_cast<std::size_t>(i)].d(static_cast<std::size_t>(j));
   }
   return J;
 }
@@ -180,14 +180,14 @@ Tangent differentiate(const Law& law, const Vec3& trial, const State& state, int
 // The two virtual entry points, generated from the one templated body. A law
 // writes `project_at` and then this line; there is no second place for the
 // projection and its derivative to disagree.
-#define MIMETIKA_CONTACT_PROJECTION                                                       \
-  Vec3 project(const Vec3& trial, State& state, int dim, const Vec3* g = nullptr,         \
-               const Vec3* g_prev = nullptr, double dt = 0.0) const override {            \
-    return project_at<double>(trial, state, dim, g, g_prev, dt);                          \
-  }                                                                                       \
+#define MIMETIKA_CONTACT_PROJECTION                                                        \
+  Vec3 project(const Vec3& trial, State& state, int dim, const Vec3* g = nullptr,          \
+               const Vec3* g_prev = nullptr, double dt = 0.0) const override {             \
+    return project_at<double>(trial, state, dim, g, g_prev, dt);                           \
+  }                                                                                        \
   Tangent tangent(const Vec3& trial, const State& state, int dim, const Vec3* g = nullptr, \
-                  const Vec3* g_prev = nullptr, double dt = 0.0) const override {         \
-    return ::mimetika::contact::differentiate(*this, trial, state, dim, g, g_prev, dt);   \
+                  const Vec3* g_prev = nullptr, double dt = 0.0) const override {          \
+    return ::mimetika::contact::differentiate(*this, trial, state, dim, g, g_prev, dt);    \
   }
 
 class ContactLaw {
@@ -235,9 +235,8 @@ class ContactLaw {
   // is: a law must supply its projection, and nothing else. A law that takes
   // the default pays the accuracy of a difference quotient near the
   // nonsmooth branches, which is exactly where a contact law lives.
-  virtual Tangent tangent(const Vec3& trial, const State& state, int dim,
-                          const Vec3* g = nullptr, const Vec3* g_prev = nullptr,
-                          double dt = 0.0) const {
+  virtual Tangent tangent(const Vec3& trial, const State& state, int dim, const Vec3* g = nullptr,
+                          const Vec3* g_prev = nullptr, double dt = 0.0) const {
     const double h = 1e-6 * std::max(1.0, std::abs(trial[0]) + trial.shear_norm(dim));
     Tangent J;
     for (int j = 0; j < dim; ++j) {
@@ -374,8 +373,8 @@ class SignoriniCoulomb : public ContactLaw {
   // the previous one and the time increment -- because that is what the family
   // spans: slip weakening reads the jump, rate-and-state reads the RATE, and
   // neither should have to restate the projection to get at it.
-  virtual double friction_at(const State& /*state*/, const Vec3* /*g*/,
-                             const Vec3* /*g_prev*/, double /*dt*/, int /*dim*/) const {
+  virtual double friction_at(const State& /*state*/, const Vec3* /*g*/, const Vec3* /*g_prev*/,
+                             double /*dt*/, int /*dim*/) const {
     return friction_;
   }
 
@@ -435,8 +434,7 @@ class SignoriniCoulomb : public ContactLaw {
 // committed.
 class SlipWeakening final : public SignoriniCoulomb {
  public:
-  SlipWeakening(double mu_static, double mu_dynamic, double critical_slip,
-                double cohesion = 0.0)
+  SlipWeakening(double mu_static, double mu_dynamic, double critical_slip, double cohesion = 0.0)
       : SignoriniCoulomb(mu_static, cohesion),
         static_(mu_static),
         dynamic_(mu_dynamic),
@@ -513,8 +511,9 @@ class RateAndStateFriction final : public SignoriniCoulomb {
       throw std::invalid_argument("RateAndStateFriction: Dc, V0 and Vmin must be positive");
     }
     if (!(theta0_ > 0.0)) {
-      throw std::invalid_argument("RateAndStateFriction: theta0 must be positive -- the "
-                                  "coefficient carries log(theta)");
+      throw std::invalid_argument(
+          "RateAndStateFriction: theta0 must be positive -- the "
+          "coefficient carries log(theta)");
     }
   }
 
@@ -543,8 +542,7 @@ class RateAndStateFriction final : public SignoriniCoulomb {
     if (g == nullptr || g_prev == nullptr || dt == 0.0) return v_min_;
     double acc = 0.0;
     for (int k = 1; k < dim; ++k) {
-      const double d =
-          (*g)[static_cast<std::size_t>(k)] - (*g_prev)[static_cast<std::size_t>(k)];
+      const double d = (*g)[static_cast<std::size_t>(k)] - (*g_prev)[static_cast<std::size_t>(k)];
       acc += d * d;
     }
     return std::max(std::sqrt(acc) / std::abs(dt), v_min_);
@@ -566,8 +564,7 @@ class RateAndStateFriction final : public SignoriniCoulomb {
     if (g != nullptr && g_prev != nullptr) {
       double acc = 0.0;
       for (int k = 1; k < dim; ++k) {
-        const double d =
-            (*g)[static_cast<std::size_t>(k)] - (*g_prev)[static_cast<std::size_t>(k)];
+        const double d = (*g)[static_cast<std::size_t>(k)] - (*g_prev)[static_cast<std::size_t>(k)];
         acc += d * d;
       }
       state[0] += std::sqrt(acc);
@@ -650,14 +647,14 @@ class AssociativeMohrCoulomb final : public SignoriniCoulomb {
 
     // the four active sets, each in closed form
     T cn[4], cr[4];
-    cn[0] = tn;                                       // the trial itself
+    cn[0] = tn;  // the trial itself
     cr[0] = rho;
     const T lam = (rho + mu * tn - c) / (eps_t_ + mu * mu * eps_n_);
-    cn[1] = tn - lam * (mu * eps_n_);                 // the lateral cone face
+    cn[1] = tn - lam * (mu * eps_n_);  // the lateral cone face
     cr[1] = rho - lam * eps_t_;
-    cn[2] = T(0.0);                                   // the truncation disc
+    cn[2] = T(0.0);  // the truncation disc
     cr[2] = min(rho, T(c));
-    cn[3] = min(tn, T(0.0));                          // the axis
+    cn[3] = min(tn, T(0.0));  // the axis
     cr[3] = T(0.0);
 
     // THE BRANCH IS CHOSEN BY THE VALUES, and only by the values: nearest

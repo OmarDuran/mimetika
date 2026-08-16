@@ -210,7 +210,7 @@ MIMETIKA_TEST(the_friction_coefficient_weakens_linearly_then_saturates) {
   CHECK(near(law.friction_at(s, nullptr, nullptr, 0.0, 3), 0.36));
   s[0] = 0.02;  // exactly d_c: fully weakened
   CHECK(near(law.friction_at(s, nullptr, nullptr, 0.0, 3), 0.20));
-  s[0] = 1.0;   // far beyond: saturated, never below mu_d
+  s[0] = 1.0;  // far beyond: saturated, never below mu_d
   CHECK(near(law.friction_at(s, nullptr, nullptr, 0.0, 3), 0.20));
 }
 

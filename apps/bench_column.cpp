@@ -24,12 +24,12 @@
 #include <string>
 #include <vector>
 
-#include "exokal/constitutive/coefficient.hpp"
+#include "exokal/hodge/coefficient.hpp"
 #include "exokal/hodge/flux_operators.hpp"
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/model/boundary.hpp"
-#include "mimetika/model/simulation.hpp"
 #include "mimetika/model/compositions/poroelasticity.hpp"
+#include "mimetika/model/simulation.hpp"
 
 using namespace mimetika;
 using graphos::Index;
@@ -51,7 +51,8 @@ exokal::Mesh column(int n, double h, double width) {
     for (const auto& f : faces) {
       std::vector<Index> cyc;
       for (const int l : f) {
-        cyc.push_back(static_cast<Index>(((k + ((l >> 2) & 1)) * 2 + ((l >> 1) & 1)) * 2 + (l & 1)));
+        cyc.push_back(
+            static_cast<Index>(((k + ((l >> 2) & 1)) * 2 + ((l >> 1) & 1)) * 2 + (l & 1)));
       }
       cell.push_back(std::move(cyc));
     }
@@ -88,8 +89,8 @@ int main(int argc, char** argv) {
   // the first two grow with the facet count and the last three with the cell
   // count -- different slopes in the same table
   static const char* kFields[] = {"s_0", "u_0", "g_0", "q_0", "p_0"};
-  std::printf("%7s %8s %8s %8s %8s %8s %9s %11s | %8s %8s %8s %8s %8s %8s %8s %9s\n", "cells", "s", "u",
-              "g", "q", "p", "total", "nnz", "mesh", "select", "stress", "flux", "number",
+  std::printf("%7s %8s %8s %8s %8s %8s %9s %11s | %8s %8s %8s %8s %8s %8s %8s %9s\n", "cells", "s",
+              "u", "g", "q", "p", "total", "nnz", "mesh", "select", "stress", "flux", "number",
               "constr", "tangent", "TOTAL");
   std::printf("%7s %8s %8s %8s %8s %8s %9s %11s | %8s %8s %8s %8s %8s %8s %8s %9s\n", "", "dofs",
               "dofs", "dofs", "dofs", "dofs", "dofs", "", "ms", "ms", "ms", "ms", "ms", "ms", "ms",
@@ -103,9 +104,9 @@ int main(int argc, char** argv) {
     const double t_mesh = since(t);
 
     // ONE de Rham SELECTION FOR BOTH PRODUCTS. The stress operators and the flux
-  // Hodge each need a de Rham product on every cell, with different material
-  // tensors but the SAME reconstruction space; the selection is the expensive
-  // half and it does not depend on the material.
+    // Hodge each need a de Rham product on every cell, with different material
+    // tensors but the SAME reconstruction space; the selection is the expensive
+    // half and it does not depend on the material.
     const exokal::hodge::DeRhamGeometryCache geo = exokal::hodge::DeRhamGeometryCache::build(m);
     const double t_select = since(t);
 
@@ -114,7 +115,7 @@ int main(int argc, char** argv) {
     const double t_stress = since(t);
 
     const exokal::hodge::FluxOperators hodge = exokal::hodge::FluxOperators::build(
-        m, exokal::constitutive::Coefficient::uniform(perm),
+        m, exokal::hodge::Coefficient::uniform(perm),
         exokal::hodge::FluxOperators::Realization::derham_bdm, &geo);
     const double t_flux = since(t);
 
@@ -140,8 +141,8 @@ int main(int argc, char** argv) {
       }
     }
     impose_traction(sim.constraints(), sp, "s_0", 3, m,
-                       FacetSelector::where(m, 3, FacetSelector::at(2, h)),
-                       {0, 0, 0, 0, 0, 0, 0, 0, -load});
+                    FacetSelector::where(m, 3, FacetSelector::at(2, h)),
+                    {0, 0, 0, 0, 0, 0, 0, 0, -load});
     impose_free_slip(sim.constraints(), sp, "s_0", 3, m, confined);
     impose_normal_flux(sim.constraints(), sp, "q_0", 3, m, confined);
     sim.freeze_constraints();
@@ -152,8 +153,7 @@ int main(int argc, char** argv) {
     const double t_tangent = since(t);
 
     const auto cells = static_cast<double>(c.count(3));
-    const double total =
-        t_mesh + t_select + t_stress + t_flux + t_number + t_constr + t_tangent;
+    const double total = t_mesh + t_select + t_stress + t_flux + t_number + t_constr + t_tangent;
     std::printf("%7.0f", cells);
     for (const char* f : kFields) {
       std::printf(" %8zu", static_cast<std::size_t>(sp.map(sp.index_of(f)).size()));
@@ -161,13 +161,13 @@ int main(int argc, char** argv) {
     std::printf(" %9zu %11zu | %8.2f %8.2f %8.2f %8.2f %8.2f %8.2f %8.2f %9.2f\n", sim.n_dofs(),
                 jac.nnz(), t_mesh * 1e3, t_select * 1e3, t_stress * 1e3, t_flux * 1e3,
                 t_number * 1e3, t_constr * 1e3, t_tangent * 1e3, total * 1e3);
-    per_cell.push_back({cells, t_mesh, t_select, t_stress, t_flux, t_number, t_constr,
-                        t_tangent, total});
+    per_cell.push_back(
+        {cells, t_mesh, t_select, t_stress, t_flux, t_number, t_constr, t_tangent, total});
   }
 
   std::printf("\nper cell (microseconds) -- a flat column is linear in the cell count\n");
-  std::printf("%8s %9s %9s %9s %9s %9s %9s %9s %9s\n", "cells", "mesh", "select", "stress",
-              "flux", "number", "constr", "tangent", "TOTAL");
+  std::printf("%8s %9s %9s %9s %9s %9s %9s %9s %9s\n", "cells", "mesh", "select", "stress", "flux",
+              "number", "constr", "tangent", "TOTAL");
   for (const auto& row : per_cell) {
     std::printf("%8.0f", row[0]);
     for (std::size_t k = 1; k < row.size(); ++k) std::printf(" %9.3f", row[k] / row[0] * 1e6);

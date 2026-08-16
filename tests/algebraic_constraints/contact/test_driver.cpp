@@ -64,7 +64,8 @@ class SpringMechanics final : public ContactMechanics {
 
   void to_moments(const std::vector<Vec3>& x, std::vector<double>& m) const override {
     m.assign(3, 0.0);
-    for (int k = 0; k < dim_; ++k) m[static_cast<std::size_t>(k)] = x[0][static_cast<std::size_t>(k)];
+    for (int k = 0; k < dim_; ++k)
+      m[static_cast<std::size_t>(k)] = x[0][static_cast<std::size_t>(k)];
   }
 
   void solution_operator(const std::vector<double>& m, std::vector<double>& z) const override {
@@ -186,7 +187,8 @@ MIMETIKA_TEST(tension_opens_the_fracture_with_zero_traction) {
 // COMPRESSION CLOSES WITHOUT INTERPENETRATION: the complementarity g_n t_n = 0
 // holds, with the traction taking exactly the value that shuts the gap.
 MIMETIKA_TEST(compression_closes_without_interpenetration) {
-  const SpringMechanics mech(0.5, free_gap(-0.2), 1);  // a negative free gap: it would interpenetrate
+  const SpringMechanics mech(0.5, free_gap(-0.2),
+                             1);  // a negative free gap: it would interpenetrate
   const SignoriniCoulomb law(0.6);
   DriverOptions opt;
   opt.relaxation = 1.0;
@@ -195,8 +197,8 @@ MIMETIKA_TEST(compression_closes_without_interpenetration) {
   const ContactDriver d(mech, law, {1.0 / 0.5}, opt);
   const ContactState s = d.solve_step();
   CHECK(s.converged);
-  CHECK(s.traction[0][0] < 0.0);              // in compression
-  CHECK(near(s.jump[0][0], 0.0, 1e-9));       // and closed: no interpenetration
+  CHECK(s.traction[0][0] < 0.0);         // in compression
+  CHECK(near(s.jump[0][0], 0.0, 1e-9));  // and closed: no interpenetration
   // complementarity
   CHECK(std::abs(s.jump[0][0] * s.traction[0][0]) < 1e-9);
 }

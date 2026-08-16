@@ -50,9 +50,8 @@ namespace structured_detail {
 // valid, and it describes a domain riddled with internal boundary. Ordering the
 // triangle's vertices by GLOBAL INDEX before applying a fixed rule is what
 // makes two neighbours agree: they see the same two indices on the shared face.
-inline exokal::Mesh extrude(std::vector<Point> plane,
-                            const std::vector<std::vector<Index>>& cells, double h, int layers,
-                            Family family) {
+inline exokal::Mesh extrude(std::vector<Point> plane, const std::vector<std::vector<Index>>& cells,
+                            double h, int layers, Family family) {
   const auto n = static_cast<Index>(plane.size());
   std::vector<Point> pts;
   for (int L = 0; L <= layers; ++L) {
@@ -73,8 +72,7 @@ inline exokal::Mesh extrude(std::vector<Point> plane,
         // alternates -- and it does not matter: exokal::Mesh orients what it is
         // given, coherently and then globally, so a generator states the
         // subdivision and nothing else.
-        for (std::vector<Index> q : {std::vector<Index>{a, b, c, C},
-                                     std::vector<Index>{a, b, B, C},
+        for (std::vector<Index> q : {std::vector<Index>{a, b, c, C}, std::vector<Index>{a, b, B, C},
                                      std::vector<Index>{a, A, B, C}}) {
           out.push_back(std::move(q));
         }
@@ -90,7 +88,7 @@ inline exokal::Mesh extrude(std::vector<Point> plane,
       std::vector<std::vector<Index>> cell;
       std::vector<Index> bottom, top;
       for (std::size_t i = 0; i < k; ++i) {
-        bottom.push_back(at(f[k - 1 - i], L));   // reversed: the cycle faces down
+        bottom.push_back(at(f[k - 1 - i], L));  // reversed: the cycle faces down
         top.push_back(at(f[i], L + 1));
       }
       cell.push_back(std::move(bottom));
@@ -108,8 +106,7 @@ inline exokal::Mesh extrude(std::vector<Point> plane,
 }  // namespace structured_detail
 
 // A COLUMN of `n` cells along the last coordinate, unit cross-section.
-inline exokal::Mesh column(int n, int dim, Family family, double height = 1.0,
-                           double width = 1.0) {
+inline exokal::Mesh column(int n, int dim, Family family, double height = 1.0, double width = 1.0) {
   if (dim == 2) {
     // in the plane a prism over an interval is a quadrilateral
     const bool tri = family == Family::simplex;
@@ -218,8 +215,7 @@ namespace grading_detail {
 // A one-sided geometric fan would refine one interface and starve the other.
 // The weights are growth^min(i, n-1-i), which is symmetric, so both bounding
 // interfaces get the fine cells.
-inline std::vector<double> two_sided(double left, double right, double spacing,
-                                     double growth) {
+inline std::vector<double> two_sided(double left, double right, double spacing, double growth) {
   const double length = right - left;
   for (int count = 1; count < 4096; ++count) {
     std::vector<double> w(static_cast<std::size_t>(count));
@@ -317,8 +313,8 @@ inline exokal::Mesh tensor_product(const std::vector<double>& xs, const std::vec
 
 // A QUARTER ANNULUS from `a` to `b`, graded geometrically in the radius so the
 // cells are fine where the gradient is; in three dimensions, one layer of it.
-inline exokal::Mesh annulus(int nr, int nt, int dim, Family family, double a = 1.0,
-                            double b = 10.0, double height = 1.0, int layers = 1) {
+inline exokal::Mesh annulus(int nr, int nt, int dim, Family family, double a = 1.0, double b = 10.0,
+                            double height = 1.0, int layers = 1) {
   constexpr double pi = 3.14159265358979323846;
   std::vector<Point> plane;
   const auto vid = [nt](int i, int j) { return static_cast<Index>(i * (nt + 1) + j); };

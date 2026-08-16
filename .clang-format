@@ -1,0 +1,16 @@
+# Google is this codebase's style already: 2-space indent, left-attached
+# references (`const T& x` outnumbers `const T &x` here 937 to 1), and Google's
+# brace and wrapping rules. Two things are changed.
+#
+# ColumnLimit 100, not Google's 80. The code sits at p50=40, p90=78, p99=95, so
+# 80 would reflow the top tenth of every file for no gain while 100 covers all
+# but a short tail. A formatter that rewrites code nobody is editing buries
+# real diffs, which is the one thing it must not do.
+#
+# AllowShortCaseLabelsOnASingleLine, because the switches that map an enum to
+# its name are written as TABLES -- one case per line, case and result side by
+# side -- and Google's default breaks each into two lines, turning a readable
+# table into a column. That is a deliberate style, so the formatter yields.
+BasedOnStyle: Google
+ColumnLimit: 100
+AllowShortCaseLabelsOnASingleLine: true

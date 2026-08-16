@@ -107,11 +107,12 @@ Outcome column_case(int n, int dim, Family family, Realization how = Realization
     }
   }
   // p = p_lo at the base, p_hi at the top: linear in between
-  return run(m, dim, top, base, side, p_hi, p_lo,
-             [&](const exokal::Mesh::Point& x) {
-               return p_lo + (p_hi - p_lo) * x[static_cast<std::size_t>(axis)] / h;
-             },
-             how);
+  return run(
+      m, dim, top, base, side, p_hi, p_lo,
+      [&](const exokal::Mesh::Point& x) {
+        return p_lo + (p_hi - p_lo) * x[static_cast<std::size_t>(axis)] / h;
+      },
+      how);
 }
 
 // the facet sets of a quarter annulus: the two radii, symmetry planes sealed
@@ -135,12 +136,13 @@ Outcome annulus_case(int nr, int nt, int dim, Family family,
       outer.push_back(f);
     }
   }
-  return run(m, dim, inner, outer, sealed, p_a, p_b,
-             [&](const exokal::Mesh::Point& x) {
-               const double r = std::sqrt(x[0] * x[0] + x[1] * x[1]);
-               return p_a + (p_b - p_a) * std::log(r / a) / std::log(b / a);
-             },
-             how);
+  return run(
+      m, dim, inner, outer, sealed, p_a, p_b,
+      [&](const exokal::Mesh::Point& x) {
+        const double r = std::sqrt(x[0] * x[0] + x[1] * x[1]);
+        return p_a + (p_b - p_a) * std::log(r / a) / std::log(b / a);
+      },
+      how);
 }
 
 const Family kFamilies[] = {Family::cartesian, Family::simplex, Family::prism};
@@ -210,8 +212,8 @@ MIMETIKA_TEST(the_annulus_reproduces_dupuit) {
         const Outcome fine = annulus_case(16, 8, dim, f, r);
         std::printf(
             "  annulus %-10s %dD %-10s %5zu -> %5zu cells   max %.2e -> %.2e   rms %.2e -> %.2e\n",
-            product_name(r), dim, mimetika::mesh::name(f), coarse.cells, fine.cells,
-            coarse.max_err, fine.max_err, coarse.rms_err, fine.rms_err);
+            product_name(r), dim, mimetika::mesh::name(f), coarse.cells, fine.cells, coarse.max_err,
+            fine.max_err, coarse.rms_err, fine.rms_err);
         CHECK(coarse.max_err < 5e-2);
         CHECK(fine.rms_err < coarse.rms_err);  // refinement helps, so it is resolution
       }

@@ -9,10 +9,10 @@
 namespace mimetika::compositions {
 
 inline const physics::RegisterModel single_phase_flow{
-    "single_phase_flow", "Darcy flow of one phase, mixed form",
-    [](const physics::ModelOptions& o) {
+    "single_phase_flow", "Darcy flow of one phase, mixed form", [](const physics::ModelOptions& o) {
       physics::Composition c;
-      c.emplace<physics::Flow>(physics::FlowOptions{0, o.thermal, "mixed_darcy_cell", 1.0, o.flux_moments});
+      c.emplace<physics::Flow>(
+          physics::FlowOptions{0, o.thermal, "mixed_darcy_cell", 1.0, o.flux_moments});
       return c;
     }};
 
@@ -22,9 +22,8 @@ inline const physics::RegisterModel compositional_flow{
     "compositional_flow", "Darcy flow of a compositional mixture, mixed form",
     [](const physics::ModelOptions& o) {
       physics::Composition c;
-      c.emplace<physics::Flow>(
-          physics::FlowOptions{o.components, o.thermal, "mixed_darcy_cell_fluid", 1.0,
-                               o.flux_moments});
+      c.emplace<physics::Flow>(physics::FlowOptions{o.components, o.thermal,
+                                                    "mixed_darcy_cell_fluid", 1.0, o.flux_moments});
       return c;
     }};
 

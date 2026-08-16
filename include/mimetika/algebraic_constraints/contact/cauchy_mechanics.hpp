@@ -37,20 +37,22 @@ class CauchyContactMechanics final : public ContactMechanics {
   CauchyContactMechanics(const CauchyElasticityModel& model, Fracture fracture)
       : model_(&model), fracture_(std::move(fracture)) {
     if (fracture_.dim() != model.dim()) {
-      throw std::invalid_argument("CauchyContactMechanics: the fracture and the model disagree "
-                                  "on the dimension");
+      throw std::invalid_argument(
+          "CauchyContactMechanics: the fracture and the model disagree "
+          "on the dimension");
     }
     if (model.prescribed_traction().size() != fracture_.size()) {
-      throw std::invalid_argument(
-          "CauchyContactMechanics: the model was built prescribing " +
-          std::to_string(model.prescribed_traction().size()) + " facets and the fracture has " +
-          std::to_string(fracture_.size()) +
-          "; call prescribe_traction(fracture.facets()) BEFORE build()");
+      throw std::invalid_argument("CauchyContactMechanics: the model was built prescribing " +
+                                  std::to_string(model.prescribed_traction().size()) +
+                                  " facets and the fracture has " +
+                                  std::to_string(fracture_.size()) +
+                                  "; call prescribe_traction(fracture.facets()) BEFORE build()");
     }
     for (std::size_t i = 0; i < fracture_.size(); ++i) {
       if (model.prescribed_traction()[i] != fracture_.facets()[i]) {
-        throw std::invalid_argument("CauchyContactMechanics: the prescribed facets and the "
-                                    "fracture's facets are not in the same order");
+        throw std::invalid_argument(
+            "CauchyContactMechanics: the prescribed facets and the "
+            "fracture's facets are not in the same order");
       }
     }
     ndf_ = static_cast<std::size_t>(fracture_.dim()) *

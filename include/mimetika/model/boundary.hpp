@@ -237,8 +237,7 @@ inline void impose_component(Constraints& c, const exokal::spaces::ProductSpace&
                              const std::string& field, int cell_dim, const exokal::Mesh& mesh,
                              const std::vector<Index>& facets,
                              const std::function<Point(const FacetFrame&)>& direction,
-                             const std::function<double(const Point&)>& value,
-                             Index offset = 0) {
+                             const std::function<double(const Point&)>& value, Index offset = 0) {
   for (const Index f : facets) {
     const FacetFrame fr = FacetFrame::of(mesh, cell_dim, cofacet_of(mesh, cell_dim, f), f);
     const Point e = direction(fr);
@@ -262,8 +261,7 @@ inline void impose_component(Constraints& c, const exokal::spaces::ProductSpace&
 // field whose single component IS the normal one.
 inline void impose_normal(Constraints& c, const exokal::spaces::ProductSpace& space,
                           const std::string& field, int cell_dim, const exokal::Mesh& mesh,
-                          const std::vector<Index>& facets, double value = 0.0,
-                          Index offset = 0) {
+                          const std::vector<Index>& facets, double value = 0.0, Index offset = 0) {
   impose_component(
       c, space, field, cell_dim, mesh, facets, [](const FacetFrame& fr) { return fr.normal; },
       [value](const Point&) { return value; }, offset);
@@ -315,8 +313,8 @@ inline void impose_traction(Constraints& c, const exokal::spaces::ProductSpace& 
                             const std::string& field, int cell_dim, const exokal::Mesh& mesh,
                             const std::vector<Index>& facets, const std::array<double, 9>& stress,
                             Index offset = 0) {
-  impose_traction(c, space, field, cell_dim, mesh, facets,
-                  [stress](const Point&) { return stress; }, offset);
+  impose_traction(
+      c, space, field, cell_dim, mesh, facets, [stress](const Point&) { return stress; }, offset);
 }
 
 // q . n = value on a SCALAR facet field, whose one component is already the
@@ -340,9 +338,9 @@ inline void impose_normal_flux(Constraints& c, const exokal::spaces::ProductSpac
 // pressure of the cell behind it. One form, two fields -- which is exactly why
 // the constraint layer takes forms rather than values.
 inline void impose_robin(Constraints& c, const exokal::spaces::ProductSpace& space,
-                         const std::string& flux_field, const std::string& cell_field,
-                         int cell_dim, const exokal::Mesh& mesh, const std::vector<Index>& facets,
-                         double a, double b, double g, Index offset = 0) {
+                         const std::string& flux_field, const std::string& cell_field, int cell_dim,
+                         const exokal::Mesh& mesh, const std::vector<Index>& facets, double a,
+                         double b, double g, Index offset = 0) {
   const graphos::CoboundaryOperator cob = graphos::coboundary(mesh.topology(), cell_dim - 1);
   const std::size_t ci = space.index_of(cell_field);
   const exokal::spaces::DofMap& cmap = space.map(ci);

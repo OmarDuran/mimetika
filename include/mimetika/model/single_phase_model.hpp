@@ -5,11 +5,11 @@
 #include <string>
 #include <vector>
 
-#include "exokal/constitutive/coefficient.hpp"
+#include "exokal/hodge/coefficient.hpp"
 #include "exokal/hodge/flux_operators.hpp"
 #include "mimetika/model/boundary_conditions.hpp"
-#include "mimetika/model/simulation.hpp"
 #include "mimetika/model/compositions/single_phase_flow.hpp"
+#include "mimetika/model/simulation.hpp"
 #include "mimetika/physics/boundary_terms.hpp"
 #include "mimetika/solver/linear.hpp"
 
@@ -81,8 +81,8 @@ class SinglePhaseModel {
       geometry_ = exokal::hodge::DeRhamGeometryCache::build(*mesh_, dim_);
     }
     flux_ = exokal::hodge::FluxOperators::build(
-        *mesh_, dim_, exokal::constitutive::Coefficient::uniform(mobility_),
-        how_, how_ == Realization::derham_bdm ? &geometry_ : nullptr);
+        *mesh_, dim_, exokal::hodge::Coefficient::uniform(mobility_), how_,
+        how_ == Realization::derham_bdm ? &geometry_ : nullptr);
     pressure_data_ = BoundaryData(static_cast<std::size_t>(c.count(dim_ - 1)));
     const bool any_pressure = flow_.fill_pressure(pressure_data_, *mesh_, dim_);
 

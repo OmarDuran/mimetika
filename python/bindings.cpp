@@ -27,7 +27,7 @@
 #include <string>
 #include <vector>
 
-#include "exokal/constitutive/coefficient.hpp"
+#include "exokal/hodge/coefficient.hpp"
 #include "exokal/hodge/flux_operators.hpp"
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/mesh/structured.hpp"
@@ -64,8 +64,7 @@ py::array_t<double> to_array(const std::vector<double>& v) {
 // A dense block as a NumPy 2-D copy, so rank and norms are numpy's problem
 // rather than a hand-rolled Gauss-Jordan repeated in two languages.
 py::array_t<double> to_array(const exokal::numerics::Dense& A) {
-  py::array_t<double> out({static_cast<py::ssize_t>(A.rows()),
-                           static_cast<py::ssize_t>(A.cols())});
+  py::array_t<double> out({static_cast<py::ssize_t>(A.rows()), static_cast<py::ssize_t>(A.cols())});
   auto w = out.mutable_unchecked<2>();
   for (std::size_t i = 0; i < A.rows(); ++i) {
     for (std::size_t j = 0; j < A.cols(); ++j) {
@@ -191,9 +190,7 @@ class ElasticityProblem {
   double measure(int k, Index i) const { return exokal::measure(mesh_, k, i); }
 
  private:
-  const exokal::spaces::ProductSpace& space() const {
-    return sim_->epoch().stratum(0).space();
-  }
+  const exokal::spaces::ProductSpace& space() const { return sim_->epoch().stratum(0).space(); }
 
   // construction order is the lifetime contract: the mesh outlives the
   // operators, which outlive the context, which outlives the simulation
@@ -214,14 +211,14 @@ class ElasticityProblem {
 // composition that reads only one simply never asks for the other.
 class AssembledModel {
  public:
-  AssembledModel(exokal::Mesh mesh, int cell_dim, const std::string& model, double mu,
-                 double lam, StressOperators::Realization stress_how, double mobility,
+  AssembledModel(exokal::Mesh mesh, int cell_dim, const std::string& model, double mu, double lam,
+                 StressOperators::Realization stress_how, double mobility,
                  FluxOperators::Realization flux_how)
       : mesh_(std::move(mesh)), dim_(cell_dim) {
     geo_ = DeRhamGeometryCache::build(mesh_, cell_dim);
     stress_ = StressOperators::build(mesh_, cell_dim, mu, lam, stress_how, &geo_);
-    flux_ = FluxOperators::build(mesh_, exokal::constitutive::Coefficient::uniform(mobility),
-                                 flux_how);
+    flux_ =
+        FluxOperators::build(mesh_, exokal::hodge::Coefficient::uniform(mobility), flux_how);
     ctx_.provide("stress_operators", stress_);
     ctx_.provide("flux_operators", flux_);
     mimetika::physics::ModelOptions mo;
@@ -290,9 +287,7 @@ class AssembledModel {
   }
 
  private:
-  const exokal::spaces::ProductSpace& space() const {
-    return sim_->epoch().stratum(0).space();
-  }
+  const exokal::spaces::ProductSpace& space() const { return sim_->epoch().stratum(0).space(); }
 
   exokal::Mesh mesh_;
   int dim_;
@@ -340,14 +335,15 @@ PYBIND11_MODULE(_core, m) {
                   py::arg("cells"))
       .def_property_readonly("dim", &exokal::Mesh::dim)
       .def("count", &exokal::Mesh::count, py::arg("k"))
-      .def("__repr__", [](const exokal::Mesh& x) {
-        return "Mesh(dim=" + std::to_string(x.dim()) + ")";
-      });
+      .def("__repr__",
+           [](const exokal::Mesh& x) { return "Mesh(dim=" + std::to_string(x.dim()) + ")"; });
 
-  m.def("centroid", [](const exokal::Mesh& x, int k, Index i) { return exokal::centroid(x, k, i); },
-        py::arg("mesh"), py::arg("k"), py::arg("cell"));
-  m.def("measure", [](const exokal::Mesh& x, int k, Index i) { return exokal::measure(x, k, i); },
-        py::arg("mesh"), py::arg("k"), py::arg("cell"));
+  m.def(
+      "centroid", [](const exokal::Mesh& x, int k, Index i) { return exokal::centroid(x, k, i); },
+      py::arg("mesh"), py::arg("k"), py::arg("cell"));
+  m.def(
+      "measure", [](const exokal::Mesh& x, int k, Index i) { return exokal::measure(x, k, i); },
+      py::arg("mesh"), py::arg("k"), py::arg("cell"));
 
   // ---- the stress star -----------------------------------------------------
   py::enum_<StressOperators::Realization>(m, "StressRealization")
@@ -358,11 +354,12 @@ PYBIND11_MODULE(_core, m) {
   m.def("stress_realization_name", &StressOperators::name, py::arg("realization"));
 
   // the static overload: what the space would carry, without building anything
-  m.def("stress_moments_per_facet",
-        [](StressOperators::Realization r, int dim) {
-          return StressOperators::moments_per_facet(r, dim);
-        },
-        py::arg("realization"), py::arg("dim"));
+  m.def(
+      "stress_moments_per_facet",
+      [](StressOperators::Realization r, int dim) {
+        return StressOperators::moments_per_facet(r, dim);
+      },
+      py::arg("realization"), py::arg("dim"));
 
   // ---- the elasticity problem ---------------------------------------------
   py::class_<ElasticityProblem>(m, "ElasticityProblem")
@@ -403,17 +400,17 @@ PYBIND11_MODULE(_core, m) {
   m.def("annulus", &mimetika::mesh::annulus, py::arg("nr"), py::arg("nt"), py::arg("dim"),
         py::arg("family"), py::arg("a") = 1.0, py::arg("b") = 10.0, py::arg("height") = 1.0,
         py::arg("layers") = 1);
-  m.def("boundary_outward_normal",
-        [](const exokal::Mesh& x, int cell_dim, Index f) {
-          return exokal::boundary_outward_normal(x, cell_dim, f);
-        },
-        py::arg("mesh"), py::arg("cell_dim"), py::arg("facet"));
+  m.def(
+      "boundary_outward_normal",
+      [](const exokal::Mesh& x, int cell_dim, Index f) {
+        return exokal::boundary_outward_normal(x, cell_dim, f);
+      },
+      py::arg("mesh"), py::arg("cell_dim"), py::arg("facet"));
 
   // ---- the material --------------------------------------------------------
   py::class_<mimetika::ElasticMaterial>(m, "ElasticMaterial")
-      .def(py::init([](double shear, double lame) {
-             return mimetika::ElasticMaterial{shear, lame};
-           }),
+      .def(py::init(
+               [](double shear, double lame) { return mimetika::ElasticMaterial{shear, lame}; }),
            py::arg("shear") = 1.0, py::arg("lame") = 1.0)
       .def_static("from_young_poisson", &mimetika::ElasticMaterial::from_young_poisson,
                   py::arg("E"), py::arg("nu"))
@@ -434,17 +431,19 @@ PYBIND11_MODULE(_core, m) {
            py::arg("mesh"), py::arg("cell_dim"), py::arg("material"),
            py::arg("realization") = StressOperators::Realization::derham_afw,
            py::keep_alive<1, 2>())  // the mesh must outlive the model
-      .def("add_traction",
-           [](mimetika::CauchyElasticityModel& s, const std::vector<Index>& facets,
-              const std::array<double, 9>& stress) {
-             s.mechanics().emplace<mimetika::TractionBC>(facets, stress);
-           },
-           py::arg("facets"), py::arg("stress"))
-      .def("add_free_slip",
-           [](mimetika::CauchyElasticityModel& s, const std::vector<Index>& facets) {
-             s.mechanics().emplace<mimetika::FreeSlipBC>(facets);
-           },
-           py::arg("facets"))
+      .def(
+          "add_traction",
+          [](mimetika::CauchyElasticityModel& s, const std::vector<Index>& facets,
+             const std::array<double, 9>& stress) {
+            s.mechanics().emplace<mimetika::TractionBC>(facets, stress);
+          },
+          py::arg("facets"), py::arg("stress"))
+      .def(
+          "add_free_slip",
+          [](mimetika::CauchyElasticityModel& s, const std::vector<Index>& facets) {
+            s.mechanics().emplace<mimetika::FreeSlipBC>(facets);
+          },
+          py::arg("facets"))
       .def("solve", &solve_elasticity)
       .def_property_readonly("dim", &mimetika::CauchyElasticityModel::dim)
       .def_property_readonly("n_cells", &mimetika::CauchyElasticityModel::n_cells)
@@ -452,23 +451,20 @@ PYBIND11_MODULE(_core, m) {
       .def_property_readonly(
           "n_dofs",
           [](const mimetika::CauchyElasticityModel& s) { return s.simulation().n_dofs(); })
-      .def_property_readonly("realization_name",
-                             &mimetika::CauchyElasticityModel::realization_name)
-      .def("material", &mimetika::CauchyElasticityModel::material,
-           py::return_value_policy::copy)
+      .def_property_readonly("realization_name", &mimetika::CauchyElasticityModel::realization_name)
+      .def("material", &mimetika::CauchyElasticityModel::material, py::return_value_policy::copy)
       .def("displacement", &mimetika::CauchyElasticityModel::displacement, py::arg("cell"),
            py::arg("axis"))
-      .def("normal_traction", &mimetika::CauchyElasticityModel::normal_traction,
-           py::arg("facet"))
+      .def("normal_traction", &mimetika::CauchyElasticityModel::normal_traction, py::arg("facet"))
       .def("cell_stress", &mimetika::CauchyElasticityModel::cell_stress, py::arg("cell"))
-      .def("facet_traction", &mimetika::CauchyElasticityModel::facet_traction,
-           py::arg("facet"));
+      .def("facet_traction", &mimetika::CauchyElasticityModel::facet_traction, py::arg("facet"));
 
-  m.def("boundary_facets",
-        [](const exokal::Mesh& x, int cell_dim) {
-          return mimetika::boundary_facets(x.topology(), cell_dim);
-        },
-        py::arg("mesh"), py::arg("cell_dim"));
+  m.def(
+      "boundary_facets",
+      [](const exokal::Mesh& x, int cell_dim) {
+        return mimetika::boundary_facets(x.topology(), cell_dim);
+      },
+      py::arg("mesh"), py::arg("cell_dim"));
 
   // ---- the flux star and the single-phase model ---------------------------
   py::enum_<FluxOperators::Realization>(m, "FluxRealization")
@@ -483,25 +479,25 @@ PYBIND11_MODULE(_core, m) {
            py::arg("mesh"), py::arg("cell_dim"), py::arg("mobility") = 1.0,
            py::arg("realization") = FluxOperators::Realization::derham_bdm,
            py::keep_alive<1, 2>())  // the mesh must outlive the model
-      .def("add_normal_flux",
-           [](mimetika::SinglePhaseModel& s, const std::vector<Index>& facets) {
-             s.flow().emplace<mimetika::NormalFluxBC>(facets);
-           },
-           py::arg("facets"))
-      .def("add_pressure",
-           [](mimetika::SinglePhaseModel& s, const std::vector<Index>& facets, double value) {
-             s.flow().emplace<mimetika::PressureBC>(facets, value);
-           },
-           py::arg("facets"), py::arg("value"))
+      .def(
+          "add_normal_flux",
+          [](mimetika::SinglePhaseModel& s, const std::vector<Index>& facets) {
+            s.flow().emplace<mimetika::NormalFluxBC>(facets);
+          },
+          py::arg("facets"))
+      .def(
+          "add_pressure",
+          [](mimetika::SinglePhaseModel& s, const std::vector<Index>& facets, double value) {
+            s.flow().emplace<mimetika::PressureBC>(facets, value);
+          },
+          py::arg("facets"), py::arg("value"))
       .def("solve", &solve_single_phase)
       .def_property_readonly("dim", &mimetika::SinglePhaseModel::dim)
       .def_property_readonly("n_cells", &mimetika::SinglePhaseModel::n_cells)
       .def_property_readonly(
           "n_dofs", [](const mimetika::SinglePhaseModel& s) { return s.simulation().n_dofs(); })
-      .def_property_readonly("moments_per_facet",
-                             &mimetika::SinglePhaseModel::moments_per_facet)
-      .def_property_readonly("realization_name",
-                             &mimetika::SinglePhaseModel::realization_name)
+      .def_property_readonly("moments_per_facet", &mimetika::SinglePhaseModel::moments_per_facet)
+      .def_property_readonly("realization_name", &mimetika::SinglePhaseModel::realization_name)
       .def("cell_pressure", &mimetika::SinglePhaseModel::cell_pressure, py::arg("cell"));
 
   // ---- the assembled model, for the structural checks ---------------------
@@ -536,19 +532,22 @@ PYBIND11_MODULE(_core, m) {
   py::class_<exokal::spaces::ProductSpace>(m, "ProductSpace")
       .def_property_readonly("n_fields", &exokal::spaces::ProductSpace::n_fields)
       .def_property_readonly("size", &exokal::spaces::ProductSpace::size)
-      .def("has", [](const exokal::spaces::ProductSpace& s,
-                     const std::string& f) { return s.has(f); },
-           py::arg("field"))
-      .def("field_size",
-           [](const exokal::spaces::ProductSpace& s, const std::string& f) {
-             return static_cast<std::size_t>(s.map(s.index_of(f)).size());
-           },
-           py::arg("field"))
-      .def("field_degree",
-           [](const exokal::spaces::ProductSpace& s, const std::string& f) {
-             return s.map(s.index_of(f)).layout().degree();
-           },
-           py::arg("field"));
+      .def(
+          "has",
+          [](const exokal::spaces::ProductSpace& s, const std::string& f) { return s.has(f); },
+          py::arg("field"))
+      .def(
+          "field_size",
+          [](const exokal::spaces::ProductSpace& s, const std::string& f) {
+            return static_cast<std::size_t>(s.map(s.index_of(f)).size());
+          },
+          py::arg("field"))
+      .def(
+          "field_degree",
+          [](const exokal::spaces::ProductSpace& s, const std::string& f) {
+            return s.map(s.index_of(f)).layout().degree();
+          },
+          py::arg("field"));
 
   py::class_<mimetika::physics::Composition>(m, "Composition")
       .def(py::init<>())
@@ -558,38 +557,39 @@ PYBIND11_MODULE(_core, m) {
       .def("add_mechanics",
            [](mimetika::physics::Composition& s) { s.emplace<mimetika::physics::Mechanics>(); })
       .def("add_poro_coupling",
-           [](mimetika::physics::Composition& s) {
-             s.emplace<mimetika::physics::PoroCoupling>();
-           })
-      .def("validate",
-           [](const mimetika::physics::Composition& s, int dim) { s.validate(dim); },
-           py::arg("dim"))
-      .def("space",
-           [](const mimetika::physics::Composition& s, const exokal::Mesh& mesh, int cell_dim) {
-             return s.space(mesh.topology(), cell_dim);
-           },
-           py::arg("mesh"), py::arg("cell_dim"));
+           [](mimetika::physics::Composition& s) { s.emplace<mimetika::physics::PoroCoupling>(); })
+      .def(
+          "validate", [](const mimetika::physics::Composition& s, int dim) { s.validate(dim); },
+          py::arg("dim"))
+      .def(
+          "space",
+          [](const mimetika::physics::Composition& s, const exokal::Mesh& mesh, int cell_dim) {
+            return s.space(mesh.topology(), cell_dim);
+          },
+          py::arg("mesh"), py::arg("cell_dim"));
 
   // Composition owns unique_ptr packages, so it is move-only: it has to reach
   // Python through a holder rather than by value.
-  m.def("build_composition",
-        [](const std::string& name) {
-          return std::make_unique<mimetika::physics::Composition>(
-              Catalogue::instance().build(name, {}));
-        },
-        py::arg("model"));
+  m.def(
+      "build_composition",
+      [](const std::string& name) {
+        return std::make_unique<mimetika::physics::Composition>(
+            Catalogue::instance().build(name, {}));
+      },
+      py::arg("model"));
 
   // the stress star on its own, for the counts that are about the star rather
   // than about a model built on it
-  m.def("stress_operator_counts",
-        [](const exokal::Mesh& mesh, int cell_dim, double mu, double lam,
-           StressOperators::Realization how) {
-          DeRhamGeometryCache geo = DeRhamGeometryCache::build(mesh, cell_dim);
-          const StressOperators ops = StressOperators::build(mesh, cell_dim, mu, lam, how, &geo);
-          return py::make_tuple(ops.size(), ops.n_stabilized());
-        },
-        py::arg("mesh"), py::arg("cell_dim"), py::arg("mu") = 1.0, py::arg("lam") = 1.0,
-        py::arg("realization") = StressOperators::Realization::derham_afw);
+  m.def(
+      "stress_operator_counts",
+      [](const exokal::Mesh& mesh, int cell_dim, double mu, double lam,
+         StressOperators::Realization how) {
+        DeRhamGeometryCache geo = DeRhamGeometryCache::build(mesh, cell_dim);
+        const StressOperators ops = StressOperators::build(mesh, cell_dim, mu, lam, how, &geo);
+        return py::make_tuple(ops.size(), ops.n_stabilized());
+      },
+      py::arg("mesh"), py::arg("cell_dim"), py::arg("mu") = 1.0, py::arg("lam") = 1.0,
+      py::arg("realization") = StressOperators::Realization::derham_afw);
 
   m.def("catalogue_names", [] { return Catalogue::instance().names(); });
 }

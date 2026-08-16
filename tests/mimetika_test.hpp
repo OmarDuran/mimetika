@@ -35,28 +35,28 @@ inline int run_all() {
 
 }  // namespace mimetika_test
 
-#define MIMETIKA_TEST(name)                                          \
+#define MIMETIKA_TEST(name)                                         \
   static void name();                                               \
-  static ::mimetika_test::Registrar name##_registrar{#name, &name};  \
+  static ::mimetika_test::Registrar name##_registrar{#name, &name}; \
   static void name()
 
 #define CHECK(cond)                                                 \
   do {                                                              \
     if (!(cond)) {                                                  \
-      ++::mimetika_test::failures;                                   \
+      ++::mimetika_test::failures;                                  \
       std::printf("FAILED %s:%d: %s\n", __FILE__, __LINE__, #cond); \
     }                                                               \
   } while (0)
 
-#define CHECK_THROWS(expr)                                          \
-  do {                                                              \
-    bool mimetika_test_threw = false;                                \
-    try {                                                           \
-      (void)(expr);                                                 \
-    } catch (...) {                                                 \
-      mimetika_test_threw = true;                                    \
-    }                                                               \
-    CHECK(mimetika_test_threw);                                      \
+#define CHECK_THROWS(expr)            \
+  do {                                \
+    bool mimetika_test_threw = false; \
+    try {                             \
+      (void)(expr);                   \
+    } catch (...) {                   \
+      mimetika_test_threw = true;     \
+    }                                 \
+    CHECK(mimetika_test_threw);       \
   } while (0)
 
 #define MIMETIKA_TEST_MAIN() \

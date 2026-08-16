@@ -71,12 +71,11 @@ class ContactMechanics {
   // and A_CC does not depend on m, which is what makes S affine and lets an
   // implementation factorize once and back-substitute thereafter.
   virtual void solution_operator(const std::vector<double>& moments,
-                            std::vector<double>& z) const = 0;
+                                 std::vector<double>& z) const = 0;
 
   // facet-frame values at the enforcement points -> traction moments, the
   // linear map the pinning consumes
-  virtual void to_moments(const std::vector<Vec3>& x,
-                          std::vector<double>& moments) const = 0;
+  virtual void to_moments(const std::vector<Vec3>& x, std::vector<double>& moments) const = 0;
 
   // THE GAP, from a solution vector. It is the RESIDUAL of the replaced fault
   // rows, -(row . z - b_f), not `J z` alone: reading J z by itself imposes a
@@ -115,10 +114,10 @@ inline Vec3 driving_gap(const Vec3& gap, const Vec3* g_prev, int dim) {
 }
 
 struct MapEvaluation {
-  std::vector<Vec3> value;      // y = CD(x)
-  std::vector<Vec3> gap;        // g(x) at the enforcement points
-  std::vector<State> internal;  // law state after the projection
-  std::vector<double> solution; // the raw solution vector z of the pinned system
+  std::vector<Vec3> value;       // y = CD(x)
+  std::vector<Vec3> gap;         // g(x) at the enforcement points
+  std::vector<State> internal;   // law state after the projection
+  std::vector<double> solution;  // the raw solution vector z of the pinned system
 };
 
 // ---------------------------------------------------------------------------
@@ -421,8 +420,8 @@ inline FixedPointResult newton(const ContactMap& map, const CondensedMap& cond,
         for (std::size_t j = 0; j < size; ++j) {
           double acc = 0.0;
           for (int b = 0; b < d; ++b) {
-            acc += T(a, b) * trial_jacobian(
-                                 p * static_cast<std::size_t>(d) + static_cast<std::size_t>(b), j);
+            acc += T(a, b) *
+                   trial_jacobian(p * static_cast<std::size_t>(d) + static_cast<std::size_t>(b), j);
           }
           jac(row, j) = acc;
         }

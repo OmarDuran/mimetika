@@ -21,7 +21,8 @@ inline const physics::RegisterModel poroelasticity{
     "poroelasticity", "Single-phase flow coupled to linear elasticity (Biot)",
     [](const physics::ModelOptions& o) {
       physics::Composition c;
-      c.emplace<physics::Flow>(physics::FlowOptions{0, o.thermal, "mixed_darcy_cell", 1.0, o.flux_moments});
+      c.emplace<physics::Flow>(
+          physics::FlowOptions{0, o.thermal, "mixed_darcy_cell", 1.0, o.flux_moments});
       c.emplace<physics::Mechanics>(
           physics::MechanicsOptions{"mixed_elasticity_cell", o.traction_moments});
       c.emplace<physics::PoroCoupling>();

@@ -64,8 +64,7 @@ using graphos::Index;
 // drivers over disjoint facet sets.
 class Fracture {
  public:
-  Fracture(const exokal::Mesh& mesh, int cell_dim, std::vector<Index> facets,
-           int moments_per_facet)
+  Fracture(const exokal::Mesh& mesh, int cell_dim, std::vector<Index> facets, int moments_per_facet)
       : mesh_(&mesh), dim_(cell_dim), facets_(std::move(facets)), nb_(moments_per_facet) {
     if (facets_.empty()) throw std::invalid_argument("Fracture: no facets");
     if (nb_ < 1 || nb_ > dim_) {
@@ -79,8 +78,7 @@ class Fracture {
       const auto e = static_cast<std::size_t>(cob.offsets[static_cast<std::size_t>(f) + 1]);
       if (e - b != 2) {
         throw std::invalid_argument(
-            "Fracture: facet " + std::to_string(f) +
-            " has " + std::to_string(e - b) +
+            "Fracture: facet " + std::to_string(f) + " has " + std::to_string(e - b) +
             " cofaces; a fracture is INTERIOR -- a jump needs two sides, and a "
             "boundary facet has one");
       }
@@ -112,8 +110,7 @@ class Fracture {
     for (std::size_t k = 0; k < 3; ++k) {
       out[k] = v[0] * fr.normal[k];
       for (int a = 0; a < fr.n_tangents; ++a) {
-        out[k] += v[static_cast<std::size_t>(a + 1)] *
-                  fr.tangent[static_cast<std::size_t>(a)][k];
+        out[k] += v[static_cast<std::size_t>(a + 1)] * fr.tangent[static_cast<std::size_t>(a)][k];
       }
     }
     return out;

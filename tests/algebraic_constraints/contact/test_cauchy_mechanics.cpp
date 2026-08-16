@@ -87,7 +87,8 @@ Problem build(int n, int dim, Family family, double strain) {
   // the size of the gap being measured.
   const graphos::CoboundaryOperator cob = graphos::coboundary(c, dim - 1);
   for (const Index f : all) {
-    const Index cell = cob.indices[static_cast<std::size_t>(cob.offsets[static_cast<std::size_t>(f)])];
+    const Index cell =
+        cob.indices[static_cast<std::size_t>(cob.offsets[static_cast<std::size_t>(f)])];
     const auto xE = exokal::centroid(p.mesh, dim, cell);
     std::array<double, 3> a{};
     a[static_cast<std::size_t>(axis)] = strain * xE[static_cast<std::size_t>(axis)];
@@ -134,8 +135,7 @@ ContactState run(Problem& p, const Law& law, int dim) {
   opt.relaxation = 0.5;
   opt.tolerance = 1e-12;
   opt.max_iterations = 2000;
-  const ContactDriver d(mech, law,
-                        default_augmentation(p.mesh, dim, p.fault, kMu, kLam), opt);
+  const ContactDriver d(mech, law, default_augmentation(p.mesh, dim, p.fault, kMu, kLam), opt);
   return d.solve_step();
 }
 
@@ -168,12 +168,12 @@ MIMETIKA_TEST(compression_closes_at_the_exact_confined_stress) {
   const SignoriniCoulomb law(0.6);
   const ContactState s = run(p, law, 3);
   const double exact = (kLam + 2.0 * kMu) * strain;  // K_oed * eps
-  std::printf("  compression %3d iterations   t_n %+.8e   exact %+.8e   g_n %+.2e\n",
-              s.iterations, s.traction[0][0], exact, s.jump[0][0]);
+  std::printf("  compression %3d iterations   t_n %+.8e   exact %+.8e   g_n %+.2e\n", s.iterations,
+              s.traction[0][0], exact, s.jump[0][0]);
   CHECK(s.converged);
   for (std::size_t i = 0; i < s.traction.size(); ++i) {
-    CHECK(s.traction[i][0] < 0.0);                              // in compression
-    CHECK(std::abs(s.jump[i][0]) < 1e-8);                       // no interpenetration
+    CHECK(s.traction[i][0] < 0.0);         // in compression
+    CHECK(std::abs(s.jump[i][0]) < 1e-8);  // no interpenetration
     CHECK(std::abs(s.traction[i][0] - exact) < 1e-6 * std::abs(exact));
   }
 }
@@ -189,8 +189,8 @@ MIMETIKA_TEST(complementarity_holds_under_tension_compression_and_neither) {
     CHECK(s.converged);
     double worst = 0.0;
     for (std::size_t i = 0; i < s.traction.size(); ++i) {
-      CHECK(s.jump[i][0] > -1e-8);        // no interpenetration
-      CHECK(s.traction[i][0] < 1e-10);    // no tension
+      CHECK(s.jump[i][0] > -1e-8);      // no interpenetration
+      CHECK(s.traction[i][0] < 1e-10);  // no tension
       worst = std::max(worst, std::abs(s.jump[i][0] * s.traction[i][0]));
     }
     std::printf("  eps %+.3f   worst |g_n t_n| %.2e\n", strain, worst);
@@ -212,8 +212,8 @@ MIMETIKA_TEST(the_bilateral_law_holds_a_tensioned_fault_shut) {
               s.traction[0][0], s.jump[0][0]);
   CHECK(s.converged);
   for (std::size_t i = 0; i < s.traction.size(); ++i) {
-    CHECK(s.traction[i][0] > 0.0);            // carrying TENSION, and holding
-    CHECK(std::abs(s.jump[i][0]) < 1e-8);     // shut
+    CHECK(s.traction[i][0] > 0.0);                         // carrying TENSION, and holding
+    CHECK(std::abs(s.jump[i][0]) < 1e-8);                  // shut
     CHECK(std::abs(s.traction[i].shear_norm(3)) < 1e-10);  // and free to slide
   }
 }

@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <cstdlib>
+
 #include "../mimetika_test.hpp"
 #include "novikov_fault.hpp"
 
@@ -64,8 +65,8 @@ MIMETIKA_TEST(the_benchmark_three_law_is_the_published_one) {
   CHECK(std::abs(law.friction_at(fresh, nullptr, nullptr, 0.0, 2) - kMuStatic) < 1e-14);
   mimetika::contact::State half;
   half[0] = 0.5 * kCritical;
-  CHECK(std::abs(law.friction_at(half, nullptr, nullptr, 0.0, 2) -
-                 0.5 * (kMuStatic + kMuDynamic)) < 1e-14);
+  CHECK(std::abs(law.friction_at(half, nullptr, nullptr, 0.0, 2) - 0.5 * (kMuStatic + kMuDynamic)) <
+        1e-14);
   mimetika::contact::State past;
   past[0] = 10.0 * kCritical;
   CHECK(std::abs(law.friction_at(past, nullptr, nullptr, 0.0, 2) - kMuDynamic) < 1e-14);
@@ -172,8 +173,8 @@ MIMETIKA_TEST(the_stable_branch_is_followed_and_then_lost) {
 
       std::vector<double> mu_new(n);
       for (std::size_t i = 0; i < n; ++i) {
-        mu_new[i] = std::max(kMuDynamic,
-                             kMuStatic - (kMuStatic - kMuDynamic) * r.slip[i] / kCritical);
+        mu_new[i] =
+            std::max(kMuDynamic, kMuStatic - (kMuStatic - kMuDynamic) * r.slip[i] / kCritical);
       }
       double change = std::numeric_limits<double>::infinity();
       if (!mu_pts.empty()) {
@@ -239,8 +240,9 @@ MIMETIKA_TEST(the_stable_branch_is_followed_and_then_lost) {
 
   std::printf("  last equilibrium %.4f MPa   bracket (%.2f, %.2f]\n", last_stable / 1e6,
               nucleated / 1e6, last_stable / 1e6);
-  std::printf("  paper: p* = -17.41 MPa (semi-analytical), -17.27 (DARTS);"
-              " Python port -17.11\n");
+  std::printf(
+      "  paper: p* = -17.41 MPa (semi-analytical), -17.27 (DARTS);"
+      " Python port -17.11\n");
   CHECK(last_stable < 0.0);
   CHECK(nucleated < last_stable);
   CHECK(std::abs(last_stable / 1e6 + 17.4) < 1.5);
@@ -276,8 +278,8 @@ MIMETIKA_TEST(the_stable_branch_is_followed_and_then_lost) {
     sum += (best.slip[i] - want) * (best.slip[i] - want);
   }
   const double rms = std::sqrt(sum / std::max(1, compared));
-  std::printf("  Fig. 14: peaks %.3f / %.3f mm   rms %.3f mm   (%d points)\n",
-              1e3 * best.peak, 1e3 * ref_peak, 1e3 * rms, compared);
+  std::printf("  Fig. 14: peaks %.3f / %.3f mm   rms %.3f mm   (%d points)\n", 1e3 * best.peak,
+              1e3 * ref_peak, 1e3 * rms, compared);
   std::printf("  (different pressures -- the pre-nucleation STATE is what is comparable)\n");
   CHECK(compared > 50);
   CHECK(std::abs(best.peak - ref_peak) < 1.5e-3);  // peaks within 1.5 mm

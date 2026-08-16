@@ -45,19 +45,19 @@
 // itself encodes -- which hold pointwise and are not a matter of reference data.
 
 #include <string>
+
 #include "novikov_fault.hpp"
 
 using novikov::build;
+using novikov::close;
+using novikov::kDip;
 using novikov::patches;
 using novikov::pre_slip;
 using novikov::PreSlip;
 using novikov::Setup;
 using novikov::simulate;
 using novikov::Slipped;
-using novikov::close;
 using novikov::wide;
-using novikov::kDip;
-
 
 // THE FACET FRAMES ALONG THE FAULT MUST NOT FLIP.
 //
@@ -85,9 +85,9 @@ MIMETIKA_TEST(the_fault_facet_frames_do_not_flip) {
     if (i > 0 && last * F.normal[0] < 0.0) ++flips;
     last = F.normal[0];
     if (std::abs(s.y[i]) < 160.0) {
-      std::printf("   %9.1f   %+.4f %+.4f    %+.4f %+.4f    %+9.3f  %+9.3f\n", s.y[i],
-                  F.normal[0], F.normal[1], F.tangent[0][0], F.tangent[0][1],
-                  pre[i][0] * s.unit / 1e6, pre[i][1] * s.unit / 1e6);
+      std::printf("   %9.1f   %+.4f %+.4f    %+.4f %+.4f    %+9.3f  %+9.3f\n", s.y[i], F.normal[0],
+                  F.normal[1], F.tangent[0][0], F.tangent[0][1], pre[i][0] * s.unit / 1e6,
+                  pre[i][1] * s.unit / 1e6);
     }
   }
   std::printf("  NORMAL-DIRECTION FLIPS ALONG THE FAULT: %d of %zu facets\n", flips,
@@ -159,10 +159,10 @@ MIMETIKA_TEST(the_slip_is_symmetric_as_the_geometry_is) {
                   1e3 * std::abs(b), r.excess[i] / 1e6);
     }
   }
-  std::printf("  %d mirror pairs   worst |mismatch| %.4f mm on a %.4f mm peak (%.1f%%)"
-              "   SIGNED-SLIP DISAGREEMENTS: %d\n",
-              pairs, 1e3 * worst, 1e3 * peak, 100.0 * worst / std::max(peak, 1e-12),
-              sign_flips);
+  std::printf(
+      "  %d mirror pairs   worst |mismatch| %.4f mm on a %.4f mm peak (%.1f%%)"
+      "   SIGNED-SLIP DISAGREEMENTS: %d\n",
+      pairs, 1e3 * worst, 1e3 * peak, 100.0 * worst / std::max(peak, 1e-12), sign_flips);
   CHECK(pairs > 5);
   CHECK(worst < 0.15 * peak);
 }
@@ -205,10 +205,11 @@ MIMETIKA_TEST(the_geometry_is_a_shape_complex_with_the_fault_as_a_shared_boundar
   // which is smaller than the vertical-fault value by 6142 m^2 here. Asserting
   // the naive W (a + b) would be asserting benchmark 1's geometry.
   const double cot = 1.0 / std::tan(kDip * M_PI / 180.0);
-  const double want = p.width * p.reservoir_height() +
-                      cot * (p.fault_a * p.fault_a - p.fault_b * p.fault_b);
-  std::printf("  %lld cells, %zu fault facets   fault %.2f m (chord %.2f)   reservoir %.4e m^2 (%.4e)\n",
-              (long long)c.count(2), s.fault.size(), length, chord, reservoir, want);
+  const double want =
+      p.width * p.reservoir_height() + cot * (p.fault_a * p.fault_a - p.fault_b * p.fault_b);
+  std::printf(
+      "  %lld cells, %zu fault facets   fault %.2f m (chord %.2f)   reservoir %.4e m^2 (%.4e)\n",
+      (long long)c.count(2), s.fault.size(), length, chord, reservoir, want);
   CHECK(close(length, chord, 1e-9));
   CHECK(close(reservoir, want, 1e-9));
 }
@@ -281,11 +282,11 @@ MIMETIKA_TEST(the_coulomb_condition_holds_at_every_point_of_the_fault) {
   std::fprintf(stderr, "      y [m]    t_n [MPa]   t_t [MPa]   |t_t|+mu t_n [MPa]   slip [m]\n");
   for (std::size_t i = 0; i < s.fault.size(); ++i) {
     if (std::abs(s.y[i]) > 400.0) continue;
-    std::fprintf(stderr, "   %9.1f  %+10.3f  %+10.3f  %+14.4f  %12.6f\n", s.y[i],
-                 r.normal[i] / 1e6, r.shear[i] / 1e6, r.excess[i] / 1e6, r.slip[i]);
+    std::fprintf(stderr, "   %9.1f  %+10.3f  %+10.3f  %+14.4f  %12.6f\n", s.y[i], r.normal[i] / 1e6,
+                 r.shear[i] / 1e6, r.excess[i] / 1e6, r.slip[i]);
   }
-  CHECK(worst_tension < 0.0);                    // compressive everywhere
-  CHECK(worst_outside < 1e-6 * scale);           // and inside the cone everywhere
+  CHECK(worst_tension < 0.0);           // compressive everywhere
+  CHECK(worst_outside < 1e-6 * scale);  // and inside the cone everywhere
   CHECK(slipping > 0);
   // where it slips, it sits ON the cone
   CHECK(worst_complementarity < 1e-6 * scale);
@@ -354,10 +355,10 @@ MIMETIKA_TEST(the_initial_stresses_on_the_seventy_degree_line) {
   }
   const auto fit_n = mimetika::benchmarks::linear_fit(y, perp);
   const auto fit_t = mimetika::benchmarks::linear_fit(y, para);
-  std::printf("  sigma_perp   %+8.2f MPa %+8.2f kPa/m  (paper -60.04, +17.15)\n",
-              fit_n[0] / 1e6, fit_n[1] / 1e3);
-  std::printf("  sigma_para   %+8.2f MPa %+8.2f kPa/m  (paper   8.21,  -2.35)\n",
-              fit_t[0] / 1e6, fit_t[1] / 1e3);
+  std::printf("  sigma_perp   %+8.2f MPa %+8.2f kPa/m  (paper -60.04, +17.15)\n", fit_n[0] / 1e6,
+              fit_n[1] / 1e3);
+  std::printf("  sigma_para   %+8.2f MPa %+8.2f kPa/m  (paper   8.21,  -2.35)\n", fit_t[0] / 1e6,
+              fit_t[1] / 1e3);
   CHECK(close(fit_n[0], -60.04e6, 5e-3));
   CHECK(close(fit_n[1], 17.15e3, 5e-3));
   CHECK(close(std::abs(fit_t[0]), 8.21e6, 5e-3));
@@ -454,9 +455,10 @@ MIMETIKA_TEST(the_pre_slip_stresses_match_the_published_dataset) {
     worst_thr = std::max(worst_thr, std::abs(r.threshold[i] - want_thr));
     worst_c = std::max(worst_c, std::abs(r.coulomb[i] - (want_par - want_thr)));
   }
-  std::printf("  %d points   worst |dSigma_par| %.3f MPa   |dSigma_sl| %.3f MPa"
-              "   |dSigma_C| %.3f MPa\n",
-              compared, worst_par / 1e6, worst_thr / 1e6, worst_c / 1e6);
+  std::printf(
+      "  %d points   worst |dSigma_par| %.3f MPa   |dSigma_sl| %.3f MPa"
+      "   |dSigma_C| %.3f MPa\n",
+      compared, worst_par / 1e6, worst_thr / 1e6, worst_c / 1e6);
   CHECK(compared > 100);
   CHECK(worst_par < 2.0e6);
   CHECK(worst_thr < 2.0e6);
@@ -493,8 +495,7 @@ MIMETIKA_TEST(the_post_slip_coulomb_function_matches_the_published_dataset) {
       // iteration on a DIFFERENT admissible stick/slip partition -- converged,
       // Coulomb-satisfied, and not the reference's.
       const bool confined = width <= 4500.0;
-      const ContactState warm =
-          confined ? novikov::locked_start(s, p, level, law) : ContactState{};
+      const ContactState warm = confined ? novikov::locked_start(s, p, level, law) : ContactState{};
       const Slipped r = simulate(s, p, level, law, confined ? &warm : nullptr);
       CHECK(r.converged);
 
@@ -523,9 +524,10 @@ MIMETIKA_TEST(the_post_slip_coulomb_function_matches_the_published_dataset) {
       }
       const double rms = std::sqrt(sum / std::max(1, compared));
       const auto found = patches(s, r);
-      std::printf("  W %5.0f m  dp %5.1f MPa   %d pts, Sigma_C rms %.3f MPa"
-                  "   peak slip %6.2f mm   %zu patch(es)",
-                  width, level / 1e6, compared, rms / 1e6, 1e3 * r.peak, found.size());
+      std::printf(
+          "  W %5.0f m  dp %5.1f MPa   %d pts, Sigma_C rms %.3f MPa"
+          "   peak slip %6.2f mm   %zu patch(es)",
+          width, level / 1e6, compared, rms / 1e6, 1e3 * r.peak, found.size());
       for (const auto& [lo, hi] : found) std::printf("  [%+.0f,%+.0f]", lo, hi);
       std::printf("\n");
       CHECK(compared > 40);
@@ -574,8 +576,7 @@ MIMETIKA_TEST(the_slip_patches_merge_at_the_published_pressure) {
     (count_at(mid) == 1 ? merged : separate) = mid;
   }
   const double p_merge = 0.5 * (separate + merged);
-  std::printf("  merging pressure %.2f MPa   (4TU -26.87, Python port -26.9)\n",
-              p_merge / 1e6);
+  std::printf("  merging pressure %.2f MPa   (4TU -26.87, Python port -26.9)\n", p_merge / 1e6);
   CHECK(std::abs(p_merge / 1e6 + 26.87) < 1.0);
 }
 

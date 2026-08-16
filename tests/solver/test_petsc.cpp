@@ -3,13 +3,13 @@
 
 #include "../mesh_fixtures.hpp"
 #include "../mimetika_test.hpp"
-#include "exokal/constitutive/coefficient.hpp"
+#include "exokal/hodge/coefficient.hpp"
 #include "exokal/hodge/flux_operators.hpp"
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/model/boundary.hpp"
-#include "mimetika/model/simulation.hpp"
 #include "mimetika/model/compositions/poroelasticity.hpp"
 #include "mimetika/model/compositions/single_phase_flow.hpp"
+#include "mimetika/model/simulation.hpp"
 #include "mimetika/solver/petsc.hpp"
 
 using mimetika::Simulation;
@@ -40,7 +40,8 @@ MIMETIKA_TEST(the_direct_solver_solves_a_known_system) {
   const std::vector<double> x_exact = {1.0, -2.0, 3.0};
   std::vector<double> b(3, 0.0);
   for (std::size_t k = 0; k < A.nnz(); ++k) {
-    b[static_cast<std::size_t>(A.row[k])] += A.value[k] * x_exact[static_cast<std::size_t>(A.col[k])];
+    b[static_cast<std::size_t>(A.row[k])] +=
+        A.value[k] * x_exact[static_cast<std::size_t>(A.col[k])];
   }
 
   PetscSolver solver;
@@ -83,9 +84,9 @@ MIMETIKA_TEST(the_assembled_poroelastic_system_solves) {
   const auto m = mimetika_test::hex_grid(2);
   const graphos::Complex& c = m.topology();
   const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(m, 3, 1.0, 1.0);
-  const exokal::hodge::FluxOperators hodge = exokal::hodge::FluxOperators::build(
-      m, exokal::constitutive::Coefficient::uniform(1.0),
-      exokal::hodge::FluxOperators::Realization::derham_bdm);
+  const exokal::hodge::FluxOperators hodge =
+      exokal::hodge::FluxOperators::build(m, exokal::hodge::Coefficient::uniform(1.0),
+                                          exokal::hodge::FluxOperators::Realization::derham_bdm);
   exokal::forms::TermContext ctx;
   ctx.provide("stress_operators", ops);
   ctx.provide("flux_operators", hodge);
@@ -96,7 +97,8 @@ MIMETIKA_TEST(the_assembled_poroelastic_system_solves) {
   const auto bottom = mimetika::FacetSelector::where(m, 3, mimetika::FacetSelector::at(2, 0.0));
   const auto top = mimetika::FacetSelector::where(m, 3, mimetika::FacetSelector::at(2, 2.0));
   mimetika::impose_traction(sim.constraints(), sp, "s_0", 3, m, bottom, std::array<double, 9>{});
-  mimetika::impose_traction(sim.constraints(), sp, "s_0", 3, m, top,{0,0,0, 0,0,0, 0,0,-1.0});
+  mimetika::impose_traction(sim.constraints(), sp, "s_0", 3, m, top,
+                            {0, 0, 0, 0, 0, 0, 0, 0, -1.0});
   mimetika::impose_normal_flux(sim.constraints(), sp, "q_0", 3, m, bottom);
   mimetika::impose_normal_flux(sim.constraints(), sp, "q_0", 3, m, top);
   sim.freeze_constraints();

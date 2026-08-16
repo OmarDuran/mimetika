@@ -217,8 +217,8 @@ MIMETIKA_TEST(the_tangent_is_the_derivative_over_every_branch) {
         }
       }
     }
-    std::printf("  eps (%.2f, %.2f) c %.1f   |AD - central difference| %.2e\n", m.eps_n,
-                m.eps_t, m.cohesion, worst);
+    std::printf("  eps (%.2f, %.2f) c %.1f   |AD - central difference| %.2e\n", m.eps_n, m.eps_t,
+                m.cohesion, worst);
     CHECK(worst < 1e-6);
   }
 }
@@ -410,8 +410,8 @@ MIMETIKA_TEST(the_metric_selects_the_projection) {
   const Vec3 isotropic = project(AssociativeMohrCoulomb(kFriction, 0.0, 1.0, 1.0), t);
   const Vec3 stiff = project(AssociativeMohrCoulomb(kFriction, 0.0, 0.01, 1.0), t);
   const Vec3 partial = project(SignoriniCoulomb(kFriction), t);
-  std::printf("  isotropic t_n %+.6f   stiff-normal t_n %+.6f   partial t_n %+.6f\n",
-              isotropic[0], stiff[0], partial[0]);
+  std::printf("  isotropic t_n %+.6f   stiff-normal t_n %+.6f   partial t_n %+.6f\n", isotropic[0],
+              stiff[0], partial[0]);
   CHECK(std::abs(isotropic[0] - stiff[0]) > 1e-6);
   CHECK(std::abs(stiff[0] - partial[0]) < std::abs(isotropic[0] - partial[0]));
 }

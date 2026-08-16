@@ -75,8 +75,9 @@ class Constraints {
   // The general case.
   void constrain(std::vector<Index> dofs, std::vector<double> coeff, double value) {
     if (dofs.empty() || dofs.size() != coeff.size()) {
-      throw std::invalid_argument("Constraints::constrain: a form needs matching dofs and "
-                                  "coefficients, and at least one term");
+      throw std::invalid_argument(
+          "Constraints::constrain: a form needs matching dofs and "
+          "coefficients, and at least one term");
     }
     forms_.push_back(Form{std::move(dofs), std::move(coeff), value});
     final_ = false;
@@ -320,7 +321,7 @@ class Constraints {
 
   std::vector<Form> forms_;
   std::vector<char> mask_;
-  std::vector<long long> leader_of_;   // dof -> form it leads, or -1
+  std::vector<long long> leader_of_;     // dof -> form it leads, or -1
   std::vector<std::size_t> lead_index_;  // form -> which of its terms leads
   mutable std::vector<double> scale_;
   mutable bool scaled_{false};

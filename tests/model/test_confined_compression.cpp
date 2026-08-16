@@ -4,12 +4,12 @@
 #include <vector>
 
 #include "../mimetika_test.hpp"
-#include "exokal/constitutive/coefficient.hpp"
+#include "exokal/hodge/coefficient.hpp"
 #include "exokal/hodge/flux_operators.hpp"
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/model/boundary.hpp"
-#include "mimetika/model/simulation.hpp"
 #include "mimetika/model/compositions/elasticity.hpp"
+#include "mimetika/model/simulation.hpp"
 #include "mimetika/solver/petsc.hpp"
 
 // THE SAME PROBLEM IN EVERY DIMENSION AND EVERY CELL FAMILY.
@@ -81,8 +81,8 @@ exokal::Mesh cube(int n, bool simplex) {
   for (int k = 0; k <= n; ++k) {
     for (int j = 0; j <= n; ++j) {
       for (int i = 0; i <= n; ++i) {
-        p.push_back({static_cast<double>(i) / n, static_cast<double>(j) / n,
-                     static_cast<double>(k) / n});
+        p.push_back(
+            {static_cast<double>(i) / n, static_cast<double>(j) / n, static_cast<double>(k) / n});
       }
     }
   }
@@ -189,8 +189,7 @@ Result confined(const exokal::Mesh& m, int d,
   const bool bdm = how != StressOperators::Realization::derham_afw_rt;
   DeRhamGeometryCache geo;
   if (bdm) geo = DeRhamGeometryCache::build(m, d);
-  const StressOperators ops =
-      StressOperators::build(m, d, kMu, kLam, how, bdm ? &geo : nullptr);
+  const StressOperators ops = StressOperators::build(m, d, kMu, kLam, how, bdm ? &geo : nullptr);
   exokal::forms::TermContext ctx;
   ctx.provide("stress_operators", ops);
 
@@ -266,8 +265,7 @@ Result confined(const exokal::Mesh& m, int d,
   for (Index e = 0; e < c.count(d); ++e) {
     const double vol = exokal::measure(m, d, e);
     const double z = exokal::centroid(m, d, e)[static_cast<std::size_t>(axis)];
-    const double uz =
-        -x[u_off + static_cast<std::size_t>(mu_.global(d, e, 0, axis))] / vol;
+    const double uz = -x[u_off + static_cast<std::size_t>(mu_.global(d, e, 0, axis))] / vol;
     out.displacement = std::max(out.displacement, std::abs(uz - e_exact * z));
   }
   return out;
@@ -291,8 +289,8 @@ MIMETIKA_TEST(confined_compression_is_exact_in_every_dimension_and_family) {
 
   for (const Case& k : cases) {
     const Result r = confined(k.mesh, k.dim);
-    std::printf("  %-18s %6zu dofs   sigma_lat %.2e   u %.2e   stabilized %zu\n", k.name,
-                r.n_dofs, r.sigma_lateral, r.displacement, r.n_stabilized);
+    std::printf("  %-18s %6zu dofs   sigma_lat %.2e   u %.2e   stabilized %zu\n", k.name, r.n_dofs,
+                r.sigma_lateral, r.displacement, r.n_stabilized);
     // the de Rham realization is unisolvent by construction: nothing stabilizes
     CHECK(r.n_stabilized == k.expect_stabilized);
     // and the closed form is reproduced, not approximated
@@ -348,11 +346,10 @@ MIMETIKA_TEST(the_rt_layer_is_locally_sound_but_globally_unstable) {
   const DeRhamGeometryCache geo = DeRhamGeometryCache::build(m, 3);
 
   // -- local: both constraint blocks are surjective -------------------------
-  for (const auto how : {StressOperators::Realization::derham_afw,
-                         StressOperators::Realization::derham_afw_rt}) {
+  for (const auto how :
+       {StressOperators::Realization::derham_afw, StressOperators::Realization::derham_afw_rt}) {
     const bool bdm = how == StressOperators::Realization::derham_afw;
-    const StressOperators ops =
-        StressOperators::build(m, 3, kMu, kLam, how, bdm ? &geo : nullptr);
+    const StressOperators ops = StressOperators::build(m, 3, kMu, kLam, how, bdm ? &geo : nullptr);
     const auto B = constraint_block(ops, 0);
     std::printf("  %-10s local [Dv; As] %zux%zu   rank %d of %zu needed\n",
                 StressOperators::name(how), B.rows(), B.cols(), rank_of(B), B.rows());

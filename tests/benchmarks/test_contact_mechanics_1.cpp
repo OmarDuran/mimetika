@@ -1,9 +1,9 @@
 #include <algorithm>
-#include <memory>
-#include <utility>
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <memory>
+#include <utility>
 #include <vector>
 
 #include "../mimetika_test.hpp"
@@ -95,8 +95,7 @@ Parameters wide() {
 MIMETIKA_TEST(the_published_constants) {
   const Parameters p = wide();
   const double C = p.slip_stress_scale(), A = p.slip_stiffness();
-  std::printf("  C %.4e Pa (-2.95e6)   A %.4e Pa (1.2171e9)   C/A %.6f (-0.0024)\n", C, A,
-              C / A);
+  std::printf("  C %.4e Pa (-2.95e6)   A %.4e Pa (1.2171e9)   C/A %.6f (-0.0024)\n", C, A, C / A);
   CHECK(close(C, -2.95e6, 2e-3));
   CHECK(close(A, 1.2171e9, 1e-4));
   CHECK(close(C / A, -0.0024, 2e-2));
@@ -191,8 +190,8 @@ MIMETIKA_TEST(the_graded_mesh_puts_a_node_on_every_interface) {
   const double a = p.fault_a, b = p.fault_b;
   const std::vector<double> ys = mimetika::mesh::graded_coordinates(
       {-b, -a, a, b}, {-p.height / 2, p.height / 2}, 12.5, 1.35, 500.0);
-  const std::vector<double> xs = mimetika::mesh::graded_coordinates(
-      {0.0}, {-p.width / 2, p.width / 2}, 12.5, 1.35, 500.0);
+  const std::vector<double> xs =
+      mimetika::mesh::graded_coordinates({0.0}, {-p.width / 2, p.width / 2}, 12.5, 1.35, 500.0);
 
   for (const double want : {-b, -a, a, b}) {
     double best = 1e300;
@@ -207,17 +206,18 @@ MIMETIKA_TEST(the_graded_mesh_puts_a_node_on_every_interface) {
   // boundary, never the other way about
   CHECK(std::abs(ys.front() + p.height / 2) < 1e-9);
   CHECK(std::abs(ys.back() - p.height / 2) < 1e-9);
-  std::printf("  %zu x %zu nodes   finest dy %.3f m   coarsest %.1f m\n", xs.size(), ys.size(),
-              [&] {
-                double m = 1e300;
-                for (std::size_t i = 1; i < ys.size(); ++i) m = std::min(m, ys[i] - ys[i - 1]);
-                return m;
-              }(),
-              [&] {
-                double m = 0.0;
-                for (std::size_t i = 1; i < ys.size(); ++i) m = std::max(m, ys[i] - ys[i - 1]);
-                return m;
-              }());
+  std::printf(
+      "  %zu x %zu nodes   finest dy %.3f m   coarsest %.1f m\n", xs.size(), ys.size(),
+      [&] {
+        double m = 1e300;
+        for (std::size_t i = 1; i < ys.size(); ++i) m = std::min(m, ys[i] - ys[i - 1]);
+        return m;
+      }(),
+      [&] {
+        double m = 0.0;
+        for (std::size_t i = 1; i < ys.size(); ++i) m = std::max(m, ys[i] - ys[i - 1]);
+        return m;
+      }());
 }
 
 // -- the simulation --------------------------------------------------------------
@@ -233,8 +233,8 @@ namespace {
 // tractions in pascals.
 struct Setup {
   exokal::Mesh mesh;
-  std::vector<Index> fault;   // the x = 0 facets, ordered by y
-  std::vector<double> y;      // their centroids, in METRES
+  std::vector<Index> fault;  // the x = 0 facets, ordered by y
+  std::vector<double> y;     // their centroids, in METRES
   std::vector<Index> depleted;
   double unit{1.0}, length{1.0};
 };
@@ -295,8 +295,8 @@ std::unique_ptr<CauchyElasticityModel> make_model(const Setup& s, const Paramete
     (std::abs(exokal::centroid(s.mesh, 1, f)[1] - 0.5) < 1e-9 ? top : rollers).push_back(f);
   }
 
-  auto model = std::make_unique<CauchyElasticityModel>(
-      s.mesh, dim, ElasticMaterial{q.shear_modulus, q.lame()});
+  auto model = std::make_unique<CauchyElasticityModel>(s.mesh, dim,
+                                                       ElasticMaterial{q.shear_modulus, q.lame()});
   model->mechanics().emplace<mimetika::TractionBC>(top, std::array<double, 9>{});
   model->mechanics().emplace<mimetika::FreeSlipBC>(rollers);
   model->pressurize(s.depleted, q.depletion, q.biot, q.volumetric_compliance(dim));
@@ -326,9 +326,9 @@ std::vector<double> pre_slip_coulomb_stress(const Setup& s, const Parameters& p)
 }
 
 struct Slipped {
-  std::vector<double> slip;      // metres, tangential
-  std::vector<double> normal;    // Pa, the INCREMENTAL normal traction
-  std::vector<double> shear;     // Pa, the total shear on the fault
+  std::vector<double> slip;    // metres, tangential
+  std::vector<double> normal;  // Pa, the INCREMENTAL normal traction
+  std::vector<double> shear;   // Pa, the total shear on the fault
   int iterations{0};
   bool converged{false};
   double peak{0.0};
@@ -357,8 +357,7 @@ Slipped simulate(const Setup& s, const Parameters& p, const mimetika::contact::C
   const double mu = p.shear_modulus / s.unit;
   const double lam = 2.0 * mu * p.poisson / (1.0 - 2.0 * p.poisson);
   ContactDriver driver(mech, law,
-                       mimetika::contact::default_augmentation(s.mesh, dim, s.fault, mu, lam),
-                       opt);
+                       mimetika::contact::default_augmentation(s.mesh, dim, s.fault, mu, lam), opt);
 
   if (prestress) {
     // A CONTACT LAW CONSTRAINS THE TOTAL TRACTION, so an incremental solve has
@@ -406,9 +405,8 @@ MIMETIKA_TEST(the_offset_reservoir_is_built_correctly) {
       right_hi = std::max(right_hi, x[1]);
     }
   }
-  std::printf("  left  y in [%+.1f, %+.1f] m   right y in [%+.1f, %+.1f] m\n",
-              left_lo * s.length, left_hi * s.length, right_lo * s.length,
-              right_hi * s.length);
+  std::printf("  left  y in [%+.1f, %+.1f] m   right y in [%+.1f, %+.1f] m\n", left_lo * s.length,
+              left_hi * s.length, right_lo * s.length, right_hi * s.length);
   CHECK(left_lo < right_lo);  // the two are mirror images in y
   CHECK(left_hi < right_hi);
 
@@ -450,8 +448,7 @@ MIMETIKA_TEST(the_locked_fault_carries_the_analytic_coulomb_stress) {
   for (std::size_t i = 0; i < s.y.size(); ++i) {
     const double y = s.y[i];
     // clear of the four singularities and inside the near field
-    const bool usable = std::abs(y) < 400.0 &&
-                        std::abs(std::abs(y) - p.fault_a) > 25.0 &&
+    const bool usable = std::abs(y) < 400.0 && std::abs(std::abs(y) - p.fault_a) > 25.0 &&
                         std::abs(std::abs(y) - p.fault_b) > 25.0 && std::abs(y) > 10.0;
     if (!usable) continue;
     const double want = p.analytic_coulomb_stress(y);
@@ -545,8 +542,8 @@ MIMETIKA_TEST(without_the_prestress_the_unilateral_law_opens_the_fault) {
   for (const double t : without.normal) clipped = std::max(clipped, t);
   std::printf("  max incremental t_n:  with prestress %+.3e Pa   without %+.3e Pa\n", kept,
               clipped);
-  CHECK(kept > 1e6);        // the tensile increment is KEPT: the fault is shut
-  CHECK(clipped < 1e-6);    // and clipped without it: the fault is read as open
+  CHECK(kept > 1e6);      // the tensile increment is KEPT: the fault is shut
+  CHECK(clipped < 1e-6);  // and clipped without it: the fault is read as open
 }
 
 // AND THE TWO LAWS AGREE ONCE BOTH SEE THE TOTAL TRACTION. FrictionlessBilateral
@@ -584,10 +581,9 @@ MIMETIKA_TEST(the_narrow_domain_reproduces_the_published_discrepancy) {
               narrow.peak, 100.0 * (narrow.peak / target - 1.0), broad.peak,
               100.0 * (broad.peak / target - 1.0));
   CHECK(narrow.converged && broad.converged);
-  CHECK(narrow.peak / target - 1.0 < -0.02);            // short by more than 2%
-  CHECK(std::abs(broad.peak / target - 1.0) < 0.03);    // and on the analytic value
+  CHECK(narrow.peak / target - 1.0 < -0.02);          // short by more than 2%
+  CHECK(std::abs(broad.peak / target - 1.0) < 0.03);  // and on the analytic value
 }
-
 
 // THE SOLVE CONVERGES, AND IN A HANDFUL OF ITERATIONS -- Newton, not Picard.
 // The count is the diagnostic: an affine law makes the condensed residual linear,
@@ -665,8 +661,8 @@ MIMETIKA_TEST(refinement_converges_and_stays_close_to_the_analytic_peak) {
     std::printf("  spacing %5.2f m   profile RMS %.5e m   peak error %+.2f%%\n", spacing,
                 profile.back(), 100 * peak.back());
   }
-  CHECK(profile[1] < profile[0]);                       // the profile converges
-  CHECK(std::max(peak[0], peak[1]) < 0.03);             // and the peak stays put
+  CHECK(profile[1] < profile[0]);            // the profile converges
+  CHECK(std::max(peak[0], peak[1]) < 0.03);  // and the peak stays put
 }
 
 // THE DEFAULT LAW IS THE UNILATERAL ONE. Benchmark 1 runs SignoriniCoulomb at

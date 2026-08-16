@@ -4,8 +4,8 @@
 #include <string_view>
 #include <vector>
 
-#include "exokal/forms/terms/darcy.hpp"
 #include "exokal/forms/stencil.hpp"
+#include "mimetika/physics/terms/darcy.hpp"
 #include "mimetika/physics/package.hpp"
 
 // FLOW IN A POROUS MEDIUM, in mixed form.
@@ -67,9 +67,7 @@ class Flow final : public Package {
   // declares the quantity and exokal resolves it per stratum, so the
   // hierarchy costs one attachment rather than one package per depth.
   Requirements requirements(int dim, int codim = 0) const override {
-    const auto at = [codim](std::string_view base) {
-      return exokal::forms::field_at(base, codim);
-    };
+    const auto at = [codim](std::string_view base) { return exokal::forms::field_at(base, codim); };
     Requirements r;
     // the flux is a cochain on the facets, the pressure one per cell: the
     // lowest-order mixed pair, and the layouts that make the first row an
@@ -81,7 +79,8 @@ class Flow final : public Package {
     // a coarser version of one, so the choice belongs to whoever states the
     // model rather than to this package.
     r.fields.push_back(
-        {at("q"), DofLayout::moments(dim, dim - 1, opt_.flux_moments > 0 ? opt_.flux_moments : dim)});
+        {at("q"),
+         DofLayout::moments(dim, dim - 1, opt_.flux_moments > 0 ? opt_.flux_moments : dim)});
     r.fields.push_back({at("p"), DofLayout::cell_wise(dim)});
     if (opt_.thermal) r.fields.push_back({at("h"), DofLayout::cell_wise(dim)});
     for (std::size_t a = 0; a < opt_.components; ++a) {
@@ -103,8 +102,7 @@ class Flow final : public Package {
     return r;
   }
 
-  void attach(exokal::forms::Model& model,
-              const exokal::forms::TermContext& ctx) const override {
+  void attach(exokal::forms::Model& model, const exokal::forms::TermContext& ctx) const override {
     (void)ctx;  // the term reads its own data from the context by name
     model.add(opt_.darcy_term, exokal::forms::On::all(), {{"mobility", opt_.mobility}});
   }

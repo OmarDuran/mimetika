@@ -3,12 +3,12 @@
 
 #include "../mesh_fixtures.hpp"
 #include "../mimetika_test.hpp"
-#include "exokal/constitutive/coefficient.hpp"
+#include "exokal/hodge/coefficient.hpp"
 #include "exokal/hodge/flux_operators.hpp"
 #include "exokal/hodge/stress_operators.hpp"
-#include "mimetika/model/simulation.hpp"
 #include "mimetika/model/compositions/poroelasticity.hpp"
 #include "mimetika/model/compositions/single_phase_flow.hpp"
+#include "mimetika/model/simulation.hpp"
 
 using exokal::hodge::StressOperators;
 using mimetika::Simulation;
@@ -33,9 +33,9 @@ MIMETIKA_TEST(poroelasticity_adds_no_field_of_its_own) {
   CHECK(mech.size() == 1 && flow.size() == 1 && poro.size() == 3);
 
   const auto sm = mech.space(c, 3), sf = flow.space(c, 3), sp = poro.space(c, 3);
-  CHECK(sm.n_fields() == 3);                       // s, u, g
-  CHECK(sf.n_fields() == 2);                       // q, p
-  CHECK(sp.n_fields() == 5);                       // and nothing more
+  CHECK(sm.n_fields() == 3);  // s, u, g
+  CHECK(sf.n_fields() == 2);  // q, p
+  CHECK(sp.n_fields() == 5);  // and nothing more
   CHECK(sp.size() == sm.size() + sf.size());
   for (const char* f : {"s_0", "u_0", "g_0", "q_0", "p_0"}) CHECK(sp.has(f));
 
@@ -98,9 +98,9 @@ MIMETIKA_TEST(the_poroelastic_system_is_a_saddle_point_with_adjoint_couplings) {
       StressOperators::build(m, 3, 1.0, 1.0, StressOperators::Realization::stabilized_afw);
   CHECK(afw.n_stabilized() == afw.size());
 
-  const exokal::hodge::FluxOperators hodge = exokal::hodge::FluxOperators::build(
-      m, exokal::constitutive::Coefficient::uniform(1.0),
-      exokal::hodge::FluxOperators::Realization::derham_bdm);
+  const exokal::hodge::FluxOperators hodge =
+      exokal::hodge::FluxOperators::build(m, exokal::hodge::Coefficient::uniform(1.0),
+                                          exokal::hodge::FluxOperators::Realization::derham_bdm);
   exokal::forms::TermContext ctx;
   ctx.provide("stress_operators", ops);
   ctx.provide("flux_operators", hodge);

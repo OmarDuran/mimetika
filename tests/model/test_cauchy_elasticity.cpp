@@ -61,9 +61,7 @@ struct Outcome {
 const Family kFamilies[] = {Family::cartesian, Family::simplex, Family::prism};
 const Realization kProducts[] = {Realization::derham_afw, Realization::stabilized_afw};
 
-const char* product_name(Realization r) {
-  return exokal::hodge::StressOperators::name(r);
-}
+const char* product_name(Realization r) { return exokal::hodge::StressOperators::name(r); }
 
 void solve(CauchyElasticityModel& m) {
   m.build();
@@ -202,8 +200,7 @@ Outcome annulus_case(int nr, int nt, int dim, Family family, Realization how,
     const auto x = exokal::centroid(m, dim, e);
     const double r = std::sqrt(x[0] * x[0] + x[1] * x[1]);
     // the RADIAL displacement, projected out of the cell's vector unknown
-    const double ur =
-        (model.displacement(e, 0) * x[0] + model.displacement(e, 1) * x[1]) / r;
+    const double ur = (model.displacement(e, 0) * x[0] + model.displacement(e, 1) * x[1]) / r;
     const double d = ur - ex.u_r(r);
     out.max_err = std::max(out.max_err, std::abs(d));
     acc += d * d;
@@ -226,8 +223,8 @@ MIMETIKA_TEST(the_column_reproduces_the_linear_displacement_exactly) {
         const Outcome o = column_case(4, dim, f, r);
         std::printf(
             "  column  %-14s %dD %-10s %4zu cells %6zu dofs   u %.2e   sigma_lat %.2e   stab %zu\n",
-            product_name(r), dim, mimetika::mesh::name(f), o.cells, o.dofs, o.max_err,
-            o.stress_err, o.stabilized);
+            product_name(r), dim, mimetika::mesh::name(f), o.cells, o.dofs, o.max_err, o.stress_err,
+            o.stabilized);
         CHECK(o.max_err < 1e-10);
         CHECK(o.stress_err < 1e-10);
         // a simplex mesh never stabilizes, whichever product is asked for
@@ -250,9 +247,10 @@ MIMETIKA_TEST(the_annulus_reproduces_lame) {
         const Outcome coarse = annulus_case(6, 3, dim, f, r);
         const Outcome fine = annulus_case(12, 6, dim, f, r);
         std::printf(
-            "  annulus %-14s %dD %-10s %4zu -> %5zu cells   u max %.2e -> %.2e   rms %.2e -> %.2e\n",
-            product_name(r), dim, mimetika::mesh::name(f), coarse.cells, fine.cells,
-            coarse.max_err, fine.max_err, coarse.rms_err, fine.rms_err);
+            "  annulus %-14s %dD %-10s %4zu -> %5zu cells   u max %.2e -> %.2e   rms %.2e -> "
+            "%.2e\n",
+            product_name(r), dim, mimetika::mesh::name(f), coarse.cells, fine.cells, coarse.max_err,
+            fine.max_err, coarse.rms_err, fine.rms_err);
         CHECK(coarse.max_err < 5e-2);
         CHECK(fine.rms_err < coarse.rms_err);  // refinement helps, so it is resolution
       }
@@ -284,8 +282,9 @@ MIMETIKA_TEST(the_two_products_are_one_element_on_a_simplex_mesh) {
                                       ElasticMaterial{kMu, 100.0 * kMu}}) {
       const Outcome b = annulus_case(6, 3, dim, Family::simplex, Realization::derham_afw, mat);
       const Outcome a = annulus_case(6, 3, dim, Family::simplex, Realization::stabilized_afw, mat);
-      std::printf("  %dD simplex   nu %.4f   derham_afw %.12e   stabilized_afw %.12e  |diff| %.2e\n",
-                  dim, mat.poisson(), b.max_err, a.max_err, std::abs(b.max_err - a.max_err));
+      std::printf(
+          "  %dD simplex   nu %.4f   derham_afw %.12e   stabilized_afw %.12e  |diff| %.2e\n", dim,
+          mat.poisson(), b.max_err, a.max_err, std::abs(b.max_err - a.max_err));
       CHECK(std::abs(b.max_err - a.max_err) < 1e-10);
       CHECK(std::abs(b.rms_err - a.rms_err) < 1e-10);
       CHECK(b.stabilized == 0);
@@ -297,8 +296,8 @@ MIMETIKA_TEST(the_two_products_are_one_element_on_a_simplex_mesh) {
     const Outcome ca = annulus_case(6, 3, dim, Family::cartesian, Realization::stabilized_afw);
     std::printf("  %dD cartesian derham_afw %.12e   stabilized_afw %.12e  |diff| %.2e\n", dim,
                 cb.max_err, ca.max_err, std::abs(cb.max_err - ca.max_err));
-    CHECK(cb.stabilized == 0);          // enriched to unisolvence instead
-    CHECK(ca.stabilized == ca.cells);   // stabilized on ker(N^T)
+    CHECK(cb.stabilized == 0);         // enriched to unisolvence instead
+    CHECK(ca.stabilized == ca.cells);  // stabilized on ker(N^T)
     CHECK(std::abs(cb.max_err - ca.max_err) > 1e-10);
   }
 }
@@ -346,10 +345,9 @@ MIMETIKA_TEST(neither_product_locks_as_the_material_becomes_incompressible) {
         const Outcome hard_c = annulus_case(6, 3, dim, f, r, stiff);
         const Outcome hard_f = annulus_case(12, 6, dim, f, r, stiff);
         const double rate = std::log2(hard_c.rms_err / hard_f.rms_err);
-        std::printf(
-            "  %dD %-9s %-14s  nu 0.25 rms %.3e   nu 0.4999 rms %.3e -> %.3e  rate %.2f\n", dim,
-            mimetika::mesh::name(f), product_name(r), soft_c.rms_err, hard_c.rms_err,
-            hard_f.rms_err, rate);
+        std::printf("  %dD %-9s %-14s  nu 0.25 rms %.3e   nu 0.4999 rms %.3e -> %.3e  rate %.2f\n",
+                    dim, mimetika::mesh::name(f), product_name(r), soft_c.rms_err, hard_c.rms_err,
+                    hard_f.rms_err, rate);
         // no degradation at the limit, and the rate holds
         CHECK(hard_c.rms_err < 1.1 * soft_c.rms_err);
         CHECK(rate > 1.5);

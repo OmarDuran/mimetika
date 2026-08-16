@@ -4,7 +4,12 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <limits>
+#include <map>
 #include <memory>
+#include <sstream>
+#include <string>
 #include <vector>
 
 #include "exokal/io/gmsh.hpp"
@@ -13,11 +18,6 @@
 #include "mimetika/benchmarks/novikov_2024.hpp"
 #include "mimetika/model/cauchy_elasticity_model.hpp"
 #include "mimetika/solver/petsc.hpp"
-#include <fstream>
-#include <limits>
-#include <map>
-#include <sstream>
-#include <string>
 
 // THE INCLINED DISPLACED FAULT of Novikov et al. (2024), shared by benchmarks 2
 // and 3. They are the SAME problem under two friction laws -- constant Coulomb,
@@ -25,6 +25,8 @@
 // and the in-situ prestress are stated once here and the benchmarks differ only
 // in the law they hand the driver.
 
+using exokal::Geometry;
+using exokal::ShapeId;
 using graphos::Index;
 using mimetika::CauchyElasticityModel;
 using mimetika::ElasticMaterial;
@@ -36,8 +38,6 @@ using mimetika::contact::DriverOptions;
 using mimetika::contact::Fracture;
 using mimetika::contact::SignoriniCoulomb;
 using mimetika::contact::Vec3;
-using exokal::Geometry;
-using exokal::ShapeId;
 
 namespace novikov {
 
@@ -54,9 +54,7 @@ struct Reference {
   std::map<std::string, std::vector<double>> column;
 
   bool has(const std::string& name) const { return column.count(name) != 0; }
-  const std::vector<double>& operator[](const std::string& name) const {
-    return column.at(name);
-  }
+  const std::vector<double>& operator[](const std::string& name) const { return column.at(name); }
 
   // linear interpolation of (x, v) at xq, with x sorted ascending
   static double at(const std::vector<double>& x, const std::vector<double>& v, double xq) {
@@ -113,9 +111,9 @@ Parameters wide() {
 
 struct Setup {
   exokal::Mesh mesh;
-  std::vector<Index> fault;    // the fault facets, ordered by y
-  std::vector<double> y;       // their centroids, in METRES
-  std::vector<Index> depleted; // the offset reservoir's cells
+  std::vector<Index> fault;     // the fault facets, ordered by y
+  std::vector<double> y;        // their centroids, in METRES
+  std::vector<Index> depleted;  // the offset reservoir's cells
   double unit{1.0}, length{1.0};
 };
 
@@ -237,8 +235,8 @@ std::unique_ptr<CauchyElasticityModel> make_model(const Setup& s, const Paramete
   }
   std::fprintf(stderr, "  [mk] ctor (mu=%g lam=%g, %zu top, %zu rollers)\n", q.shear_modulus,
                q.lame(), top.size(), rollers.size());
-  auto model = std::make_unique<CauchyElasticityModel>(
-      s.mesh, dim, ElasticMaterial{q.shear_modulus, q.lame()});
+  auto model = std::make_unique<CauchyElasticityModel>(s.mesh, dim,
+                                                       ElasticMaterial{q.shear_modulus, q.lame()});
   model->mechanics().emplace<mimetika::TractionBC>(top, std::array<double, 9>{});
   model->mechanics().emplace<mimetika::FreeSlipBC>(rollers);
   std::fprintf(stderr, "  [mk] bcs done; pressurize %zu cells dp=%g\n", s.depleted.size(),
@@ -332,8 +330,8 @@ PreSlip pre_slip(const Setup& s, const Parameters& p, double depletion) {
       dn += frame.normal[static_cast<std::size_t>(k)] * t[static_cast<std::size_t>(k)];
       dt += frame.tangent[0][static_cast<std::size_t>(k)] * t[static_cast<std::size_t>(k)];
     }
-    const double sn = (dn + pre[i][0]) * s.unit;   // effective normal
-    const double st = (dt + pre[i][1]) * s.unit;   // shear
+    const double sn = (dn + pre[i][0]) * s.unit;  // effective normal
+    const double st = (dt + pre[i][1]) * s.unit;  // shear
     Vec3 incremental;
     incremental[0] = dn;
     incremental[1] = dt;
@@ -415,8 +413,7 @@ Slipped simulate_ramped(const Setup& s, const Parameters& p, double depletion,
                         const ContactState* warm = nullptr);
 
 Slipped simulate(const Setup& s, const Parameters& p, double depletion,
-                 const mimetika::contact::ContactLaw& law,
-                 const ContactState* warm = nullptr) {
+                 const mimetika::contact::ContactLaw& law, const ContactState* warm = nullptr) {
   const int dim = 2;
   Parameters q = p;
   q.depletion = depletion;
@@ -435,8 +432,7 @@ Slipped simulate(const Setup& s, const Parameters& p, double depletion,
   const double mu = p.shear_modulus / s.unit;
   const double lam = 2.0 * mu * p.poisson / (1.0 - 2.0 * p.poisson);
   ContactDriver driver(mech, law,
-                       mimetika::contact::default_augmentation(s.mesh, dim, s.fault, mu, lam),
-                       opt);
+                       mimetika::contact::default_augmentation(s.mesh, dim, s.fault, mu, lam), opt);
   const std::vector<Vec3> pre = insitu_prestress(s, p, fr, depletion);
   driver.set_prestress(pre);
   std::fprintf(stderr, "[sim] solve_step\n");
@@ -540,7 +536,6 @@ inline std::vector<std::pair<double, double>> patches(const Setup& s, const Slip
   return out;
 }
 
-
 inline Slipped simulate_ramped(const Setup& s, const Parameters& p, double depletion,
                                const mimetika::contact::ContactLaw& law, int substeps,
                                const ContactState* warm) {
@@ -557,7 +552,6 @@ inline Slipped simulate_ramped(const Setup& s, const Parameters& p, double deple
   }
   return r;
 }
-
 
 // -- PREPARE ONCE, SOLVE MANY ---------------------------------------------------
 //
@@ -613,17 +607,15 @@ inline Slipped solve_on(Prepared& prep, const Setup& s, const Parameters& p, dou
   opt.tolerance = 1e-10;
   opt.max_iterations = 400;
   opt.solver = DriverOptions::Solver::newton;
-  ContactDriver driver(*prep.mechanics, law,
-                       mimetika::contact::default_augmentation(s.mesh, dim, s.fault, prep.mu,
-                                                               prep.lam),
-                       opt);
+  ContactDriver driver(
+      *prep.mechanics, law,
+      mimetika::contact::default_augmentation(s.mesh, dim, s.fault, prep.mu, prep.lam), opt);
   const std::vector<Vec3> pre = insitu_prestress(s, p, *prep.fracture, depletion);
   driver.set_prestress(pre);
 
   // the condensation is per LEVEL: rebuild only when the load moved
   if (prep.condensed == nullptr || prep.condensed_at != depletion) {
-    prep.condensed =
-        std::make_unique<mimetika::contact::CondensedMap>(driver.condensed());
+    prep.condensed = std::make_unique<mimetika::contact::CondensedMap>(driver.condensed());
     prep.condensed_at = depletion;
   }
   const ContactState state = driver.solve_step_condensed(prep.condensed.get(), warm);

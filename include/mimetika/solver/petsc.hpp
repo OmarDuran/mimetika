@@ -1,10 +1,9 @@
 #pragma once
 
-#include <cstdlib>
-
-#include <algorithm>
 #include <petscksp.h>
 
+#include <algorithm>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <vector>

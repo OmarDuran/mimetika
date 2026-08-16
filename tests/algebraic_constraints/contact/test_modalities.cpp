@@ -96,7 +96,7 @@ MIMETIKA_TEST(a_conformal_fracture_is_a_constraint_on_existing_degrees_of_freedo
   const exokal::Mesh m = grid(4);
   const graphos::Complex& c = m.topology();
   const std::vector<Index> segment = mid_facets(m, 0.24, 0.76);
-  CHECK(segment.size() == 2);                        // a SEGMENT, not the whole line
+  CHECK(segment.size() == 2);                           // a SEGMENT, not the whole line
   CHECK(interior_count(m, segment) == segment.size());  // every one interior
 
   const Fracture fr(m, 2, segment, 2);
@@ -166,11 +166,11 @@ MIMETIKA_TEST(the_crack_tip_is_not_split_and_the_sides_stay_joined) {
   // The segment spans three vertices. The middle one has two sides and gets a
   // copy each; the two TIPS have a single side -- intact material still wraps
   // around them -- and are not copied at all. So exactly one vertex splits.
-  const std::size_t new_vertices =
-      static_cast<std::size_t>(r.complex.count(0) - c.count(0));
-  std::printf("  interior segment, %zu facets, 3 vertices: %zu vertex copies"
-              " (the middle one alone, one per side)\n",
-              segment.size(), new_vertices);
+  const std::size_t new_vertices = static_cast<std::size_t>(r.complex.count(0) - c.count(0));
+  std::printf(
+      "  interior segment, %zu facets, 3 vertices: %zu vertex copies"
+      " (the middle one alone, one per side)\n",
+      segment.size(), new_vertices);
   CHECK(new_vertices == 2);  // one vertex x two sides
 
   // AND A COMPLETE CUT SEVERS IT. Reaching the boundary at both ends leaves no
@@ -184,11 +184,11 @@ MIMETIKA_TEST(the_crack_tip_is_not_split_and_the_sides_stay_joined) {
   graphos::Marker full(c);
   for (const Index f : whole) full.mark(1, f);
   const graphos::CutResult rf = graphos::cut_along(c, full);
-  const std::size_t severed =
-      static_cast<std::size_t>(rf.complex.count(0) - c.count(0));
-  std::printf("  complete cut, %zu facets, 5 vertices: %zu vertex copies"
-              " (every one of them, the tips having reached the boundary)\n",
-              whole.size(), severed);
+  const std::size_t severed = static_cast<std::size_t>(rf.complex.count(0) - c.count(0));
+  std::printf(
+      "  complete cut, %zu facets, 5 vertices: %zu vertex copies"
+      " (every one of them, the tips having reached the boundary)\n",
+      whole.size(), severed);
   CHECK(severed == 10);  // five vertices x two sides: nothing holds it together
   CHECK(severed > new_vertices);
   CHECK(graphos::d_squared_is_zero(rf.complex));
@@ -199,10 +199,9 @@ MIMETIKA_TEST(the_crack_tip_is_not_split_and_the_sides_stay_joined) {
   graphos::Marker edge(c);
   for (const Index f : half) edge.mark(1, f);
   const graphos::CutResult re = graphos::cut_along(c, edge);
-  const std::size_t one_sided =
-      static_cast<std::size_t>(re.complex.count(0) - c.count(0));
-  std::printf("  boundary-touching segment, %zu facets: %zu vertex copies\n",
-              half.size(), one_sided);
+  const std::size_t one_sided = static_cast<std::size_t>(re.complex.count(0) - c.count(0));
+  std::printf("  boundary-touching segment, %zu facets: %zu vertex copies\n", half.size(),
+              one_sided);
   CHECK(one_sided == 4);  // the interior vertex AND the boundary end
 }
 

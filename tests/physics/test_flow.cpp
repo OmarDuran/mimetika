@@ -3,12 +3,12 @@
 
 #include "../mesh_fixtures.hpp"
 #include "../mimetika_test.hpp"
-#include "exokal/constitutive/coefficient.hpp"
+#include "exokal/hodge/coefficient.hpp"
 #include "exokal/forms/epoch.hpp"
 #include "exokal/hodge/flux_operators.hpp"
 #include "mimetika/model/compositions/single_phase_flow.hpp"
 
-using exokal::constitutive::Coefficient;
+using exokal::hodge::Coefficient;
 using exokal::hodge::FluxOperators;
 using mimetika::physics::Catalogue;
 using mimetika::physics::Composition;

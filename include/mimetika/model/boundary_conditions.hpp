@@ -95,8 +95,7 @@ class BoundaryCondition {
 // assembled against the wrong one is silently sign-flipped.
 class TractionBC final : public BoundaryCondition {
  public:
-  TractionBC(std::vector<Index> facets, std::array<double, 9> stress)
-      : stress_(stress) {
+  TractionBC(std::vector<Index> facets, std::array<double, 9> stress) : stress_(stress) {
     facets_ = std::move(facets);
   }
   std::string name() const override { return "traction"; }
@@ -104,8 +103,8 @@ class TractionBC final : public BoundaryCondition {
 
   const std::array<double, 9>& stress() const { return stress_; }
 
-  void resolve(const exokal::Mesh& mesh, int cell_dim,
-               const exokal::spaces::ProductSpace& space, Index offset) override {
+  void resolve(const exokal::Mesh& mesh, int cell_dim, const exokal::spaces::ProductSpace& space,
+               Index offset) override {
     forms_.clear();
     for (const Index f : facets_) {
       const FacetFrame fr = FacetFrame::of(mesh, cell_dim, cofacet_of(mesh, cell_dim, f), f);
@@ -113,7 +112,8 @@ class TractionBC final : public BoundaryCondition {
       for (int k = 0; k < cell_dim; ++k) {
         double t = 0.0;
         for (int j = 0; j < cell_dim; ++j) {
-          t += stress_[static_cast<std::size_t>(k * 3 + j)] * fr.normal[static_cast<std::size_t>(j)];
+          t +=
+              stress_[static_cast<std::size_t>(k * 3 + j)] * fr.normal[static_cast<std::size_t>(j)];
         }
         // a uniform traction lands entirely on the constant moment, scaled by
         // the measure it is integrated against; the higher moments are zero
@@ -138,8 +138,8 @@ class FreeSlipBC final : public BoundaryCondition {
   std::string name() const override { return "free slip"; }
   bool strong() const override { return true; }
 
-  void resolve(const exokal::Mesh& mesh, int cell_dim,
-               const exokal::spaces::ProductSpace& space, Index offset) override {
+  void resolve(const exokal::Mesh& mesh, int cell_dim, const exokal::spaces::ProductSpace& space,
+               Index offset) override {
     forms_.clear();
     for (const Index f : facets_) {
       const FacetFrame fr = FacetFrame::of(mesh, cell_dim, cofacet_of(mesh, cell_dim, f), f);
@@ -176,16 +176,15 @@ class NormalFluxBC final : public BoundaryCondition {
   bool strong() const override { return true; }
   double value() const { return value_; }
 
-  void resolve(const exokal::Mesh& mesh, int cell_dim,
-               const exokal::spaces::ProductSpace& space, Index offset) override {
+  void resolve(const exokal::Mesh& mesh, int cell_dim, const exokal::spaces::ProductSpace& space,
+               Index offset) override {
     forms_.clear();
     for (const Index f : facets_) {
       const FacetFrame fr = FacetFrame::of(mesh, cell_dim, cofacet_of(mesh, cell_dim, f), f);
       const FacetDofs d = facet_dofs(space, field_, cell_dim, f, offset);
       for (int b = 0; b < d.moments; ++b) {
         for (int k = 0; k < d.components; ++k) {
-          forms_.push_back(
-              FacetForm{f, {d.at(k, b)}, {1.0}, b == 0 ? value_ * fr.measure : 0.0});
+          forms_.push_back(FacetForm{f, {d.at(k, b)}, {1.0}, b == 0 ? value_ * fr.measure : 0.0});
         }
       }
     }
@@ -223,8 +222,8 @@ class PressureBC final : public BoundaryCondition {
     for (const Index f : facets_) data.set({f}, value_);
   }
 
-  void resolve(const exokal::Mesh& mesh, int cell_dim,
-               const exokal::spaces::ProductSpace& space, Index offset) override {
+  void resolve(const exokal::Mesh& mesh, int cell_dim, const exokal::spaces::ProductSpace& space,
+               Index offset) override {
     forms_.clear();
     for (const Index f : facets_) {
       const FacetDofs d = facet_dofs(space, field_, cell_dim, f, offset);
@@ -251,8 +250,8 @@ class RobinBC final : public BoundaryCondition {
   std::string name() const override { return "robin"; }
   bool strong() const override { return true; }
 
-  void resolve(const exokal::Mesh& mesh, int cell_dim,
-               const exokal::spaces::ProductSpace& space, Index offset) override {
+  void resolve(const exokal::Mesh& mesh, int cell_dim, const exokal::spaces::ProductSpace& space,
+               Index offset) override {
     forms_.clear();
     const std::size_t ci = space.index_of(cell_field_);
     const exokal::spaces::DofMap& cmap = space.map(ci);
@@ -293,8 +292,8 @@ class BoundarySet {
   std::size_t size() const { return conditions_.size(); }
   const BoundaryCondition& at(std::size_t i) const { return *conditions_[i]; }
 
-  void resolve(const exokal::Mesh& mesh, int cell_dim,
-               const exokal::spaces::ProductSpace& space, Index offset = 0) {
+  void resolve(const exokal::Mesh& mesh, int cell_dim, const exokal::spaces::ProductSpace& space,
+               Index offset = 0) {
     for (auto& c : conditions_) c->resolve(mesh, cell_dim, space, offset);
   }
 

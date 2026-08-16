@@ -95,8 +95,7 @@ class Package {
   // Attach this package's terms to a model. The context carries the data a
   // named term needs — the discrete Hodge, the closures — which the driver
   // owns and provides.
-  virtual void attach(exokal::forms::Model& model,
-                      const exokal::forms::TermContext& ctx) const = 0;
+  virtual void attach(exokal::forms::Model& model, const exokal::forms::TermContext& ctx) const = 0;
 };
 
 // SEVERAL PACKAGES, VALIDATED TOGETHER. The composition is where the
@@ -131,8 +130,8 @@ class Composition {
       for (const std::string& t : p->requirements(dim, codim).provides) {
         const auto [it, fresh] = provided.emplace(t, p->name());
         if (!fresh) {
-          throw std::invalid_argument("Composition: '" + t + "' is provided by both " +
-                                      it->second + " and " + p->name());
+          throw std::invalid_argument("Composition: '" + t + "' is provided by both " + it->second +
+                                      " and " + p->name());
         }
       }
     }
@@ -157,8 +156,8 @@ class Composition {
     for (const auto& p : packages_) {
       for (const FieldSpec& f : p->requirements(dim, codim).fields) {
         if (s.has(f.name)) {
-          throw std::invalid_argument("Composition: " + p->name() + " declares field '" +
-                                      f.name + "', which another package already declared");
+          throw std::invalid_argument("Composition: " + p->name() + " declares field '" + f.name +
+                                      "', which another package already declared");
         }
         s.add(f.name, DofMap(c, f.layout, dim));
       }

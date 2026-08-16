@@ -201,8 +201,7 @@ struct Parameters {
   // Biot coupling carries alongside alpha, and the same one the coupled solver
   // computes for itself
   double volumetric_compliance(int d) const {
-    return (1.0 - 2.0 * poisson) /
-           (2.0 * shear_modulus * (1.0 - 2.0 * poisson + d * poisson));
+    return (1.0 - 2.0 * poisson) / (2.0 * shear_modulus * (1.0 - 2.0 * poisson + d * poisson));
   }
 
   // -- Fig. 4: the combined state across the depleted reservoir ---------------
@@ -223,9 +222,7 @@ struct Parameters {
   // Fig. 4's two plateaus, at the reservoir's own level. Outside is simply the
   // in-situ state; inside, the uniaxial increment adds Delta sigma_xx with
   // Delta sigma_yy = 0, resolved on the same plane.
-  std::array<double, 2> plateau_outside(double degrees) const {
-    return resolved(0.0, degrees);
-  }
+  std::array<double, 2> plateau_outside(double degrees) const { return resolved(0.0, degrees); }
   std::array<double, 2> plateau_inside(double degrees) const {
     return combined_analytic(0.0, degrees);
   }

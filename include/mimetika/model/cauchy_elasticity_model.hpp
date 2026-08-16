@@ -9,8 +9,8 @@
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/model/boundary_conditions.hpp"
 #include "mimetika/model/compositions/elasticity.hpp"
-#include "mimetika/physics/boundary_terms.hpp"
 #include "mimetika/model/simulation.hpp"
+#include "mimetika/physics/boundary_terms.hpp"
 #include "mimetika/solver/linear.hpp"
 #include "mimetika/solver/petsc.hpp"
 
@@ -58,9 +58,7 @@ struct ElasticMaterial {
   }
 
   double poisson() const { return lame / (2.0 * (lame + shear)); }
-  double young() const {
-    return shear * (3.0 * lame + 2.0 * shear) / (lame + shear);
-  }
+  double young() const { return shear * (3.0 * lame + 2.0 * shear) / (lame + shear); }
   // the oedometer modulus: lam + 2mu in any dimension, since confinement
   // removes every lateral strain whatever d is
   double oedometer() const { return lame + 2.0 * shear; }
@@ -121,9 +119,8 @@ class CauchyElasticityModel {
     // the K-independent mode selection, which only the de Rham product has
     const bool derham = how_ == Realization::derham_afw;
     if (derham) geometry_ = exokal::hodge::DeRhamGeometryCache::build(*mesh_, dim_);
-    stress_ = exokal::hodge::StressOperators::build(*mesh_, dim_, material_.shear,
-                                                    material_.lame, how_,
-                                                    derham ? &geometry_ : nullptr);
+    stress_ = exokal::hodge::StressOperators::build(*mesh_, dim_, material_.shear, material_.lame,
+                                                    how_, derham ? &geometry_ : nullptr);
     ctx_.provide("stress_operators", stress_);
 
     displacement_data_ = BoundaryVectorData(static_cast<std::size_t>(c.count(dim_ - 1)));
@@ -171,8 +168,8 @@ class CauchyElasticityModel {
       for (const Index f : prescribed_) {
         for (int b = 0; b < nb; ++b) {
           for (int k = 0; k < dim_; ++k) {
-            const auto d = static_cast<Index>(
-                s_base + static_cast<std::size_t>(ms.global(dim_ - 1, f, b, k)));
+            const auto d =
+                static_cast<Index>(s_base + static_cast<std::size_t>(ms.global(dim_ - 1, f, b, k)));
             prescribed_forms_.push_back(sim_->constraints().size());
             prescribed_dofs_.push_back(static_cast<std::size_t>(d));
             sim_->constraints().pin(d, 0.0);
@@ -313,7 +310,11 @@ class CauchyElasticityModel {
       std::size_t slot = 0;
       bool found = false;
       for (std::size_t i = 0; i < op.faces.size(); ++i) {
-        if (op.faces[i] == facet) { slot = i; found = true; break; }
+        if (op.faces[i] == facet) {
+          slot = i;
+          found = true;
+          break;
+        }
       }
       if (!found) throw std::runtime_error("trace: the facet is not a face of its coface");
 
@@ -334,9 +335,8 @@ class CauchyElasticityModel {
           const std::size_t jf = j / ndf, jk = j % ndf;
           const int moment = static_cast<int>(jk) / dim_;
           const int comp = static_cast<int>(jk) % dim_;
-          acc += op.M(local, j) *
-                 z[s_offset_ + static_cast<std::size_t>(
-                                   ms.global(dim_ - 1, op.faces[jf], moment, comp))];
+          acc += op.M(local, j) * z[s_offset_ + static_cast<std::size_t>(ms.global(
+                                                    dim_ - 1, op.faces[jf], moment, comp))];
         }
         for (std::size_t j = 0; j < nu; ++j) {
           acc -= op.Dv(j, local) *
@@ -430,8 +430,8 @@ class CauchyElasticityModel {
   // `moments` runs facet-major over prescribed_traction(), d * nb entries each,
   // in the ProductSpace order (component fastest).
   const std::vector<double>& solution_operator(const std::vector<double>& moments) const {
-    const std::size_t ndf = static_cast<std::size_t>(dim_) *
-                            static_cast<std::size_t>(stress_.moments_per_facet());
+    const std::size_t ndf =
+        static_cast<std::size_t>(dim_) * static_cast<std::size_t>(stress_.moments_per_facet());
     if (moments.size() != prescribed_.size() * ndf) {
       throw std::invalid_argument("solution_operator: one traction moment block per facet");
     }
@@ -511,9 +511,8 @@ class CauchyElasticityModel {
       for (int i = 0; i < dim_; ++i) {
         // the leading moment is int_f (sigma n) against the CANONICAL normal;
         // the incidence turns it outward from this cell
-        const double t =
-            fr.incidence *
-            state_[s_offset_ + static_cast<std::size_t>(ms.global(dim_ - 1, f, 0, i))];
+        const double t = fr.incidence *
+                         state_[s_offset_ + static_cast<std::size_t>(ms.global(dim_ - 1, f, 0, i))];
         for (int j = 0; j < dim_; ++j) {
           raw[static_cast<std::size_t>(i * 3 + j)] +=
               t * (xf[static_cast<std::size_t>(j)] - xE[static_cast<std::size_t>(j)]);

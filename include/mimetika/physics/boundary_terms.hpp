@@ -5,8 +5,8 @@
 
 #include "exokal/ad/axpy.hpp"
 #include "exokal/forms/term.hpp"
-#include "exokal/hodge/stress_operators.hpp"
 #include "exokal/hodge/flux_operators.hpp"
+#include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/model/boundary.hpp"
 
 // THE NATURAL BOUNDARY TERMS: the datum for the quantity a mixed form does
@@ -156,8 +156,8 @@ class PrescribedDisplacement {
   const BoundaryVectorData* data_{nullptr};
 };
 
-inline const exokal::forms::RegisterTerm<PrescribedDisplacement>
-    register_prescribed_displacement{"prescribed_displacement", Coupling::boundary, {"s"}};
+inline const exokal::forms::RegisterTerm<PrescribedDisplacement> register_prescribed_displacement{
+    "prescribed_displacement", Coupling::boundary, {"s"}};
 
 // RESERVOIR PRESSURIZATION AS A LOAD ON THE MECHANICS ALONE.
 //
@@ -211,8 +211,7 @@ class ReservoirPressurization {
   double alpha_{1.0};
 };
 
-inline const exokal::forms::RegisterTerm<ReservoirPressurization>
-    register_reservoir_pressurization{"reservoir_pressurization",
-                                      exokal::forms::Coupling::closure, {"s"}};
+inline const exokal::forms::RegisterTerm<ReservoirPressurization> register_reservoir_pressurization{
+    "reservoir_pressurization", exokal::forms::Coupling::closure, {"s"}};
 
 }  // namespace mimetika::physics::terms

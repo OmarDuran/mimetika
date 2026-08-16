@@ -50,7 +50,7 @@ struct SparseSystem {
 struct SolveReport {
   bool converged{false};
   int iterations{0};
-  double residual{0.0};   // ||Ax - b|| relative to ||b||
+  double residual{0.0};  // ||Ax - b|| relative to ||b||
   std::string reason;
 };
 
@@ -71,8 +71,7 @@ inline double true_residual(const SparseSystem& A, const std::vector<double>& b,
                             const std::vector<double>& x) {
   std::vector<double> r = b;
   for (std::size_t k = 0; k < A.nnz(); ++k) {
-    r[static_cast<std::size_t>(A.row[k])] -=
-        A.value[k] * x[static_cast<std::size_t>(A.col[k])];
+    r[static_cast<std::size_t>(A.row[k])] -= A.value[k] * x[static_cast<std::size_t>(A.col[k])];
   }
   double num = 0.0, den = 0.0;
   for (std::size_t i = 0; i < r.size(); ++i) {

@@ -61,8 +61,9 @@ class MixedElasticityCell {
     const auto& c = ops_->cell(st.support);
     const std::size_t D = S.end - S.begin;
     if (D != c.M.rows()) {
-      throw std::invalid_argument("MixedElasticityCell: the stress block and the operators "
-                                  "disagree on the degree-of-freedom count");
+      throw std::invalid_argument(
+          "MixedElasticityCell: the stress block and the operators "
+          "disagree on the degree-of-freedom count");
     }
 
     // The operators arrive in the ProductSpace's own degree-of-freedom order:
@@ -133,9 +134,8 @@ class Mechanics final : public Package {
     // the rigid rotations of a cell are the same however the traction on its
     // facets is measured.
     r.fields.push_back(
-        {at("s"),
-         DofLayout::moments(dim, dim - 1, opt_.traction_moments > 0 ? opt_.traction_moments : dim,
-                            dim)});
+        {at("s"), DofLayout::moments(
+                      dim, dim - 1, opt_.traction_moments > 0 ? opt_.traction_moments : dim, dim)});
     r.fields.push_back({at("u"), DofLayout::cell_wise(dim, 1, dim)});
     r.fields.push_back({at("g"), DofLayout::cell_wise(dim, 1, dim * (dim - 1) / 2)});
     r.provides = {"displacement", "momentum_balance", "stress"};

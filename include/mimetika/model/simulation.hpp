@@ -72,8 +72,7 @@ class Simulation {
       // the composition decides the fields; the stratum decides their names,
       // through the codimension
       epoch_.add(s.name, s.codim,
-                 Epoch(*s.complex, composition.space(*s.complex, s.cell_dim, s.codim),
-                       s.cell_dim));
+                 Epoch(*s.complex, composition.space(*s.complex, s.cell_dim, s.codim), s.cell_dim));
     }
     model_.use(ctx);
     composition.attach(model_, ctx);

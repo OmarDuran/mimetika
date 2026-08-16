@@ -29,8 +29,8 @@
 using mimetika::contact::ContactLaw;
 using mimetika::contact::ContactMap;
 using mimetika::contact::ContactMechanics;
-using mimetika::contact::FixedPointOptions;
 using mimetika::contact::fixed_point;
+using mimetika::contact::FixedPointOptions;
 using mimetika::contact::State;
 using mimetika::contact::Vec3;
 
@@ -60,12 +60,13 @@ class StubMechanics final : public ContactMechanics {
     moments.assign(1, x[0][0]);
   }
 
-  void solution_operator(const std::vector<double>& moments, std::vector<double>& z) const override {
+  void solution_operator(const std::vector<double>& moments,
+                         std::vector<double>& z) const override {
     ++solves;
     const double x = moments[0];
     z.assign(2, 0.0);
-    z[0] = x;                            // pinned
-    z[1] = (kB1 - kC12 * x) / kD22;      // the remaining row
+    z[0] = x;                        // pinned
+    z[1] = (kB1 - kC12 * x) / kD22;  // the remaining row
   }
 
   void gap(const std::vector<double>& z, std::vector<Vec3>& g) const override {
@@ -80,8 +81,7 @@ class StubMechanics final : public ContactMechanics {
 class Identity final : public ContactLaw {
  public:
   std::string name() const override { return "identity"; }
-  Vec3 project(const Vec3& trial, State&, int, const Vec3*, const Vec3*,
-               double) const override {
+  Vec3 project(const Vec3& trial, State&, int, const Vec3*, const Vec3*, double) const override {
     return trial;
   }
 };
@@ -150,8 +150,8 @@ MIMETIKA_TEST(the_map_is_affine_under_an_affine_projection) {
   // CD(a x1 + (1-a) x2) = a CD(x1) + (1-a) CD(x2)
   const double x1 = -1.0, x2 = 5.0, a = 0.3;
   const double lhs = map.evaluate(at(a * x1 + (1.0 - a) * x2)).value[0][0];
-  const double rhs = a * map.evaluate(at(x1)).value[0][0] +
-                     (1.0 - a) * map.evaluate(at(x2)).value[0][0];
+  const double rhs =
+      a * map.evaluate(at(x1)).value[0][0] + (1.0 - a) * map.evaluate(at(x2)).value[0][0];
   CHECK(near(lhs, rhs));
 }
 
@@ -288,7 +288,7 @@ MIMETIKA_TEST(a_clamping_law_moves_the_fixed_point_off_the_bilateral_one) {
   opt.tolerance = 1e-12;
   const auto res = fixed_point(map, opt);
   CHECK(res.converged);
-  CHECK(res.x[0][0] <= 1e-12);                       // admissible
+  CHECK(res.x[0][0] <= 1e-12);                            // admissible
   CHECK(std::abs(res.x[0][0] - kExactFixedPoint) > 1.0);  // and not the bilateral one
 }
 
@@ -299,11 +299,15 @@ MIMETIKA_TEST(a_clamping_law_moves_the_fixed_point_off_the_bilateral_one) {
 // while Coulomb friction opposes the slip RATE.
 MIMETIKA_TEST(the_driving_gap_is_total_in_normal_and_incremental_in_shear) {
   Vec3 g, prev;
-  g[0] = 2.0;   g[1] = 5.0;   g[2] = 7.0;
-  prev[0] = 1.0; prev[1] = 3.0; prev[2] = 4.0;
+  g[0] = 2.0;
+  g[1] = 5.0;
+  g[2] = 7.0;
+  prev[0] = 1.0;
+  prev[1] = 3.0;
+  prev[2] = 4.0;
 
   const Vec3 with = mimetika::contact::driving_gap(g, &prev, 3);
-  CHECK(near(with[0], 2.0));  // normal: TOTAL, the previous value ignored
+  CHECK(near(with[0], 2.0));                        // normal: TOTAL, the previous value ignored
   CHECK(near(with[1], 2.0) && near(with[2], 3.0));  // shear: the increment
 
   const Vec3 without = mimetika::contact::driving_gap(g, nullptr, 3);

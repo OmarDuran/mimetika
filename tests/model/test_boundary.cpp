@@ -3,12 +3,12 @@
 
 #include "../mesh_fixtures.hpp"
 #include "../mimetika_test.hpp"
-#include "exokal/constitutive/coefficient.hpp"
+#include "exokal/hodge/coefficient.hpp"
 #include "exokal/hodge/flux_operators.hpp"
-#include "mimetika/model/simulation.hpp"
-#include "mimetika/model/compositions/single_phase_flow.hpp"
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/model/compositions/elasticity.hpp"
+#include "mimetika/model/compositions/single_phase_flow.hpp"
+#include "mimetika/model/simulation.hpp"
 #include "mimetika/physics/boundary_terms.hpp"
 
 using exokal::forms::Index;
@@ -45,9 +45,9 @@ MIMETIKA_TEST(the_boundary_facets_are_the_ones_with_a_single_cofacet) {
 MIMETIKA_TEST(a_sealed_face_pins_the_flux_and_nothing_else) {
   const auto m = mimetika_test::hex_grid(3);
   const graphos::Complex& c = m.topology();
-  const exokal::hodge::FluxOperators h = exokal::hodge::FluxOperators::build(
-      m, exokal::constitutive::Coefficient::uniform(1.0),
-      exokal::hodge::FluxOperators::Realization::derham_bdm);
+  const exokal::hodge::FluxOperators h =
+      exokal::hodge::FluxOperators::build(m, exokal::hodge::Coefficient::uniform(1.0),
+                                          exokal::hodge::FluxOperators::Realization::derham_bdm);
   exokal::forms::TermContext ctx;
   ctx.provide("flux_operators", h);
 
@@ -82,9 +82,9 @@ MIMETIKA_TEST(a_sealed_face_pins_the_flux_and_nothing_else) {
 MIMETIKA_TEST(a_homogeneous_natural_condition_costs_nothing) {
   const auto m = mimetika_test::hex_grid(3);
   const graphos::Complex& c = m.topology();
-  const exokal::hodge::FluxOperators h = exokal::hodge::FluxOperators::build(
-      m, exokal::constitutive::Coefficient::uniform(1.0),
-      exokal::hodge::FluxOperators::Realization::derham_bdm);
+  const exokal::hodge::FluxOperators h =
+      exokal::hodge::FluxOperators::build(m, exokal::hodge::Coefficient::uniform(1.0),
+                                          exokal::hodge::FluxOperators::Realization::derham_bdm);
 
   const auto comp = Catalogue::instance().build("single_phase_flow", {});
   const auto n_facets = static_cast<std::size_t>(c.count(2));

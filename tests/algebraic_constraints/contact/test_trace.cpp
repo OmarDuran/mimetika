@@ -69,9 +69,21 @@ MIMETIKA_TEST(an_empty_fracture_and_a_bad_moment_count_are_refused) {
   const exokal::Mesh m = mimetika::mesh::column(4, 3, Family::cartesian, 1.0, 1.0);
   const std::vector<Index> f = facets_at(m, 3, 0.5);
   int refused = 0;
-  try { const Fracture bad(m, 3, {}, 3); } catch (const std::invalid_argument&) { ++refused; }
-  try { const Fracture bad(m, 3, f, 0); } catch (const std::invalid_argument&) { ++refused; }
-  try { const Fracture bad(m, 3, f, 4); } catch (const std::invalid_argument&) { ++refused; }
+  try {
+    const Fracture bad(m, 3, {}, 3);
+  } catch (const std::invalid_argument&) {
+    ++refused;
+  }
+  try {
+    const Fracture bad(m, 3, f, 0);
+  } catch (const std::invalid_argument&) {
+    ++refused;
+  }
+  try {
+    const Fracture bad(m, 3, f, 4);
+  } catch (const std::invalid_argument&) {
+    ++refused;
+  }
   CHECK(refused == 3);
 }
 
@@ -93,11 +105,12 @@ MIMETIKA_TEST(the_frame_is_orthonormal_and_facet_intrinsic) {
       for (int a = 0; a < F.n_tangents; ++a) {
         double tt = 0.0, tn = 0.0;
         for (std::size_t k = 0; k < 3; ++k) {
-          tt += F.tangent[static_cast<std::size_t>(a)][k] * F.tangent[static_cast<std::size_t>(a)][k];
+          tt +=
+              F.tangent[static_cast<std::size_t>(a)][k] * F.tangent[static_cast<std::size_t>(a)][k];
           tn += F.tangent[static_cast<std::size_t>(a)][k] * F.normal[k];
         }
-        CHECK(near(tt, 1.0, 1e-12));   // unit
-        CHECK(near(tn, 0.0, 1e-12));   // and orthogonal to the normal
+        CHECK(near(tt, 1.0, 1e-12));  // unit
+        CHECK(near(tn, 0.0, 1e-12));  // and orthogonal to the normal
       }
       if (F.n_tangents == 2) {
         double t12 = 0.0;
