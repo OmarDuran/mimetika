@@ -30,6 +30,7 @@
 #include "exokal/hodge/coefficient.hpp"
 #include "exokal/hodge/flux_operators.hpp"
 #include "exokal/hodge/stress_operators.hpp"
+#include "exokal/io/vtu.hpp"
 #include "mimetika/mesh/structured.hpp"
 #include "mimetika/model/boundary.hpp"
 #include "mimetika/model/boundary_conditions.hpp"
@@ -217,8 +218,7 @@ class AssembledModel {
       : mesh_(std::move(mesh)), dim_(cell_dim) {
     geo_ = DeRhamGeometryCache::build(mesh_, cell_dim);
     stress_ = StressOperators::build(mesh_, cell_dim, mu, lam, stress_how, &geo_);
-    flux_ =
-        FluxOperators::build(mesh_, exokal::hodge::Coefficient::uniform(mobility), flux_how);
+    flux_ = FluxOperators::build(mesh_, exokal::hodge::Coefficient::uniform(mobility), flux_how);
     ctx_.provide("stress_operators", stress_);
     ctx_.provide("flux_operators", flux_);
     mimetika::physics::ModelOptions mo;
@@ -320,6 +320,23 @@ void solve_single_phase(mimetika::SinglePhaseModel& m) {
   m.accept(std::move(x));
 }
 
+// A CellData field from a NumPy array: (n,) is a scalar, (n,3) a vector,
+// (n,9) or (n,3,3) a tensor -- the three tuple sizes VTK reads back as such.
+exokal::CellField cell_field(const std::string& name, const py::array& a) {
+  const auto v = py::array_t<double, py::array::c_style | py::array::forcecast>::ensure(a);
+  if (!v) throw std::invalid_argument("write_vtu: field '" + name + "' is not real-valued");
+  int components = 1;
+  if (v.ndim() == 2) {
+    components = static_cast<int>(v.shape(1));
+  } else if (v.ndim() == 3) {
+    components = static_cast<int>(v.shape(1) * v.shape(2));
+  } else if (v.ndim() != 1) {
+    throw std::invalid_argument("write_vtu: field '" + name + "' must have 1, 2 or 3 axes");
+  }
+  const double* p = v.data();
+  return {name, std::vector<double>(p, p + v.size()), components};
+}
+
 }  // namespace
 
 PYBIND11_MODULE(_core, m) {
@@ -344,6 +361,21 @@ PYBIND11_MODULE(_core, m) {
   m.def(
       "measure", [](const exokal::Mesh& x, int k, Index i) { return exokal::measure(x, k, i); },
       py::arg("mesh"), py::arg("k"), py::arg("cell"));
+
+  // Writes the top cells with one tuple per cell of each named field. Values
+  // are in cell order: field[i] belongs to cell i of dimension mesh.dim().
+  m.def(
+      "write_vtu",
+      [](const exokal::Mesh& x, const std::string& path, const py::dict& fields, bool binary) {
+        std::vector<exokal::CellField> cf;
+        cf.reserve(fields.size());
+        for (const auto& [k, v] : fields) {
+          cf.push_back(cell_field(py::cast<std::string>(k), py::cast<py::array>(v)));
+        }
+        exokal::write_vtu(x, path, "tag", {},
+                          binary ? exokal::VtuFormat::binary : exokal::VtuFormat::ascii, -1, cf);
+      },
+      py::arg("mesh"), py::arg("path"), py::arg("fields") = py::dict(), py::arg("binary") = false);
 
   // ---- the stress star -----------------------------------------------------
   py::enum_<StressOperators::Realization>(m, "StressRealization")

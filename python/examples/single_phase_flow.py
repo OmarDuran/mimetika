@@ -14,12 +14,14 @@ Run it:
 
     PYTHONPATH=.. python single_phase_flow.py
     PYTHONPATH=.. python single_phase_flow.py --dim 3 --family simplex
+    PYTHONPATH=.. python single_phase_flow.py --vtu dupuit.vtu
 """
 
 import argparse
 import math
 
 import mimetika_cxx as mk
+import numpy as np
 
 # geometry and data
 A, B, HZ = 1.0, 10.0, 1.0
@@ -85,6 +87,7 @@ def main():
     ap.add_argument("--family", default="simplex", choices=sorted(FAMILIES))
     ap.add_argument("--product", default="derham_bdm", choices=sorted(PRODUCTS))
     ap.add_argument("--nr", type=int, default=8, help="radial divisions of the coarse mesh")
+    ap.add_argument("--vtu", help="write the coarse solution to this .vtu")
     args = ap.parse_args()
 
     family, how = FAMILIES[args.family], PRODUCTS[args.product]
@@ -102,6 +105,14 @@ def main():
     rows.sort()
     for r, got, want in rows[:: max(1, len(rows) // 10)]:
         print(f"  {r:8.4f}  {got:14.6f}  {want:12.6f}  {got - want:+10.2e}")
+
+    # ---- the same solution as a field on the cells --------------------------
+    if args.vtu:
+        n = model.n_cells
+        p = np.array([model.cell_pressure(e) for e in range(n)])
+        q = np.array([exact(mk.centroid(mesh, args.dim, e)) for e in range(n)])
+        mk.write_vtu(mesh, args.vtu, {"pressure": p, "dupuit": q, "error": p - q})
+        print(f"\n  wrote {args.vtu}")
 
     # ---- and what refinement does to it ------------------------------------
     print(f"\n  {'cells':>8}  {'max error':>11}  {'rms error':>11}  {'rate':>6}")

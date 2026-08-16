@@ -29,6 +29,7 @@ import argparse
 import math
 
 import mimetika_cxx as mk
+import numpy as np
 
 # geometry and data
 A_IN, B_OUT, HZ = 1.0, 4.0, 1.0
@@ -118,6 +119,7 @@ def main():
     ap.add_argument("--product", default="derham_afw", choices=sorted(PRODUCTS))
     ap.add_argument("--nr", type=int, default=6, help="radial divisions of the coarse mesh")
     ap.add_argument("--nu", type=float, default=None, help="Poisson ratio (default lam = mu = 1)")
+    ap.add_argument("--vtu", help="write the coarse solution to this .vtu")
     args = ap.parse_args()
 
     if args.nu is None:
@@ -144,6 +146,30 @@ def main():
     rows.sort()
     for r, got, want, srr in rows[:: max(1, len(rows) // 10)]:
         print(f"  {r:8.4f}  {got:16.6f}  {want:12.6f}  {got - want:+10.2e}  {srr:16.6f}")
+
+    # ---- the same solution as a field on the cells --------------------------
+    if args.vtu:
+        n = model.n_cells
+        u = np.zeros((n, 3))  # VTK reads a 3-vector; a 2D run leaves u_z at zero
+        r = np.empty(n)
+        u_r = np.empty(n)
+        for e in range(n):
+            x = mk.centroid(mesh, args.dim, e)
+            for k in range(args.dim):
+                u[e, k] = model.displacement(e, k)
+            r[e] = math.hypot(x[0], x[1])
+            u_r[e] = (u[e, 0] * x[0] + u[e, 1] * x[1]) / r[e]
+        mk.write_vtu(
+            mesh,
+            args.vtu,
+            {
+                "displacement": u,
+                "u_r": u_r,
+                "u_r_lame": np.array([ex.u_r(v) for v in r]),
+                "sigma_rr_lame": np.array([ex.sigma_rr(v) for v in r]),
+            },
+        )
+        print(f"\n  wrote {args.vtu}")
 
     # ---- and what refinement does to it ------------------------------------
     print(f"\n  {'cells':>8}  {'max error':>11}  {'rms error':>11}  {'rate':>6}")
