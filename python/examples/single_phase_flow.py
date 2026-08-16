@@ -32,6 +32,18 @@ FAMILIES = {
     "simplex": mk.Family.simplex,
     "prism": mk.Family.prism,
 }
+# THE LINEAR SOLVER. "riesz" is the Riesz map of H(div) x L^2 -- P is the Gram
+# matrix of ||q||^2 = (K^-1 q,q) + ||div q||^2 and ||p||^2 = ||p||_L2^2 -- so
+# its iteration count does not grow with the mesh. "direct" is a full
+# factorization: exact, and the wrong instrument past a few hundred thousand
+# unknowns.
+SOLVERS = {
+    "direct": mk.SolverOptions(),
+    "riesz": mk.SolverOptions(
+        method="gmres", preconditioner="riesz", rtol=1e-10, max_iterations=2000
+    ),
+}
+
 PRODUCTS = {
     "derham_bdm": mk.FluxRealization.derham_bdm,
     "derham_rt": mk.FluxRealization.derham_rt,
@@ -44,7 +56,7 @@ def exact(x):
     return P_INNER + (P_OUTER - P_INNER) * math.log(r / A) / math.log(B / A)
 
 
-def solve(nr, nt, dim, family, how):
+def solve(nr, nt, dim, family, how, solver="direct"):
     """Build the annulus, impose the three conditions, solve, measure."""
     mesh = mk.annulus(nr, nt, dim, family, A, B, HZ)
 
@@ -71,7 +83,7 @@ def solve(nr, nt, dim, family, how):
     model.add_normal_flux(sealed)  # no flow through the symmetry planes
     model.add_pressure(inner, P_INNER)
     model.add_pressure(outer, P_OUTER)
-    model.solve()
+    model.solve(options=SOLVERS[solver])
 
     worst = rms = 0.0
     for e in range(model.n_cells):
@@ -85,9 +97,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--dim", type=int, default=2, choices=(2, 3))
     ap.add_argument("--family", default="simplex", choices=sorted(FAMILIES))
-    ap.add_argument("--product", default="derham_bdm", choices=sorted(PRODUCTS))
-    ap.add_argument("--nr", type=int, default=8, help="radial divisions of the coarse mesh")
+    ap.add_argument("--product", default="stabilized_rt", choices=sorted(PRODUCTS))
+    ap.add_argument(
+        "--nr", type=int, default=8, help="radial divisions of the coarse mesh"
+    )
     ap.add_argument("--vtu", help="write the coarse solution to this .vtu")
+    ap.add_argument("--solver", default="direct", choices=sorted(SOLVERS))
     args = ap.parse_args()
 
     family, how = FAMILIES[args.family], PRODUCTS[args.product]
@@ -95,7 +110,9 @@ def main():
     print(f"  a = {A}, b = {B},  p(a) = {P_INNER}, p(b) = {P_OUTER}\n")
 
     # ---- the profile on one mesh ------------------------------------------
-    model, mesh, worst, rms = solve(args.nr, args.nr // 2, args.dim, family, how)
+    model, mesh, worst, rms = solve(
+        args.nr, args.nr // 2, args.dim, family, how, args.solver
+    )
     print(f"  {model.n_cells} cells, {model.n_dofs} dofs\n")
     print(f"  {'r':>8}  {'p (computed)':>14}  {'p (Dupuit)':>12}  {'error':>10}")
     rows = []
@@ -118,7 +135,7 @@ def main():
     print(f"\n  {'cells':>8}  {'max error':>11}  {'rms error':>11}  {'rate':>6}")
     previous = None
     for nr in (args.nr, 2 * args.nr, 4 * args.nr):
-        m, _, worst, rms = solve(nr, nr // 2, args.dim, family, how)
+        m, _, worst, rms = solve(nr, nr // 2, args.dim, family, how, args.solver)
         rate = "" if previous is None else f"{math.log2(previous / rms):6.2f}"
         print(f"  {m.n_cells:8d}  {worst:11.3e}  {rms:11.3e}  {rate:>6}")
         previous = rms

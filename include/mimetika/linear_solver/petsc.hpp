@@ -76,36 +76,76 @@ inline void check(PetscErrorCode e, const char* what) {
 // misspelled, and impossible to set differently for two solves in one process.
 //
 // A misspelled value here is refused by PETSc and surfaces as an exception.
-// THE NORM OF THE PRODUCT SPACE. P is its matrix, and nothing else.
+// THE NORM OF THE PRODUCT SPACE. P is its Gram matrix, and nothing else.
 //
 // A maps X to its DUAL, so a Krylov method -- which needs an operator X -> X --
 // requires a map X' -> X. The canonical one is the Riesz map of the inner
 // product of X, and with it P^{-1}A has a condition number bounded by the
-// inf-sup and continuity constants alone: independent of h. So P is not a
-// clever approximation of A. It is the Gram matrix of
+// inf-sup and continuity constants alone: independent of h. P is therefore not
+// an approximation of A. Write the norm and P is determined.
 //
-//     ||(q,p)||_X^2 = (K^{-1} q, q) + ||div q||_{L2}^2 + ||p||_{L2}^2
+//   FLOW      X = H(div) x L^2
+//             ||q||^2 = (K^{-1} q, q) + ||div q||^2 ,   ||p||^2 = ||p||_{L2}^2
 //
-// and the only question is how each term reads in THIS dof basis.
+//   ELASTICITY  X = H(div; M) x L^2(R^d) x L^2(skew)
+//             ||sigma||^2 = (A sigma, sigma) + ||div sigma||^2 ,  A = C^{-1}
+//             ||u||^2 = ||u||_{L2}^2 ,   ||r||^2 = ||r||_{L2}^2
 //
-//   (K^{-1} q, q)  is A00, already assembled: the discrete Hodge is that form.
+// Both are the same statement: the FIRST factor carries the material inner
+// product plus the graph term of its differential, and every factor after it
+// carries plain L^2. The multiplier for weak symmetry is an L^2 factor like the
+// displacement -- it is not special, and giving it anything else is a different
+// preconditioner.
 //
-//   ||div q||^2    is NOT B^T B. The flux dof is the measure-weighted moment
-//                  int_f q.n, so (Bq)_E = sum of moments = int_E div q, the
-//                  INTEGRAL. div q is constant on the cell, so its value is
-//                  (Bq)_E/|E| and its square integrates to (Bq)_E^2/|E|:
-//                  the term is B^T diag(1/|E|) B. On a uniform mesh that is a
-//                  constant factor and looks like a tuning parameter; on a
-//                  graded one it varies cell by cell and no constant repairs it.
+// HOW EACH TERM READS IN THIS DOF BASIS, which is the only part that is not
+// textbook:
 //
-//   ||p||^2        is diag(|E|): the cell dof is the VALUE on the cell, not its
-//                  moment, so the mass is the measure.
+//   (A sigma, sigma)  is the assembled (0,0) block. The discrete Hodge IS that
+//                     form, so it is taken rather than rebuilt.
 //
-// One quantity therefore fixes both blocks -- the cell measure -- which is what
-// makes this one norm rather than two tuned matrices.
-struct BlockSplit {
-  std::vector<std::vector<int>> blocks;
-  std::vector<double> cell_measure;  // |E|, one per cell unknown
+//   ||div sigma||^2   is NOT B^T B. The facet dof is the measure-weighted
+//                     moment, so (B sigma)_E = int_E div sigma, the INTEGRAL;
+//                     div sigma is constant on the cell, so its square
+//                     integrates to (B sigma)_E^2 / |E| and the term is
+//                     B^T diag(1/|E|) B. On a uniform mesh that is a constant
+//                     factor and passes for a tuning knob; on a graded one it
+//                     varies cell by cell and no constant repairs it.
+//
+//   ||u||^2           is diag(|E|): a cell dof is the VALUE on the cell.
+//
+// So one quantity -- the cell measure -- fixes every block, which is what makes
+// this one norm rather than a set of separately tuned matrices.
+struct SpaceNorm {
+  // the factors of X, as index sets, first factor first
+  std::vector<std::vector<int>> factors;
+  // the L2 weight of every unknown of factors 1.., one vector per such factor:
+  // the measure of the cell that unknown belongs to.
+  std::vector<std::vector<double>> l2_weight;
+
+  // THE WEIGHT OF EACH CONSTRAINT TERM, one vector per factor after the first.
+  //
+  // EVERY factor after the first is a multiplier for a constraint on the first,
+  // and the first factor's norm must control all of them:
+  //
+  //   flow         one constraint, div q = f, whose multiplier is the pressure.
+  //   elasticity   TWO. div sigma = f, and skew(sigma) = 0 -- the second is
+  //                ALGEBRAIC and cell-local, and its multiplier is the AFW
+  //                rotation. A stress norm carrying only the divergence leaves
+  //                the operator uncontrolled on the skew directions, and the
+  //                preconditioned residual stalls exactly there.
+  //
+  // The weight of each term follows that operator's own normalization, not the
+  // multiplier's L2 mass:
+  //
+  //   flow         the row is the incidence, so (Bq)_E = int_E div q, the
+  //                INTEGRAL, and the term is sum (Bq)^2 / |E|
+  //   elasticity   Dv and As both divide by |E| already, so their rows are
+  //                AVERAGES and the terms are sum (B sigma)^2 |E|
+  //
+  // The two are reciprocals, so taking one for the other is wrong by |E|^2:
+  // on a refined mesh the constraint term then swamps the material one and P
+  // goes singular in its complement.
+  std::vector<std::vector<double>> graph_weight;
 
   // A CONSTRAINED UNKNOWN IS NOT IN THE SPACE. Its row of A is the constraint,
   // scale * e_i^T, not a form; leaving the norm's entries there preconditions an
@@ -115,7 +155,7 @@ struct BlockSplit {
   std::vector<int> pinned;
   std::vector<double> pinned_diagonal;
 
-  bool empty() const { return blocks.empty(); }
+  bool empty() const { return factors.empty(); }
 };
 
 struct SolverOptions {
@@ -167,7 +207,7 @@ class PetscSolver final : public LinearSolver {
 
   // The factors of the product space. Required by the "riesz" preconditioner
   // and ignored by every other one.
-  void set_split(BlockSplit s) { split_ = std::move(s); }
+  void set_norm(SpaceNorm s) { norm_ = std::move(s); }
 
   std::string name() const override {
     return "petsc/" +
@@ -224,19 +264,8 @@ class PetscSolver final : public LinearSolver {
   }
 
  private:
-  // THE RIESZ MAP OF THE PRODUCT SPACE, AS A SEPARATE PRECONDITIONER MATRIX.
-  //
-  // The operator of a mixed form is an isomorphism from the product space to
-  // its dual, so the preconditioner that makes its condition number
-  // mesh-INDEPENDENT is the Riesz map of that space: block diagonal, one block
-  // per factor (Arnold-Falk-Winther; Mardal-Winther).
-  //
-  //     H(div) x L^2   ->   diag( A00 + B^T B ,  M_p )
-  //
-  // A00 is the discrete Hodge already assembled and B the divergence, so the
-  // H(div) inner product <q,q> + <div q, div q> is ALGEBRA ON THE ASSEMBLED
-  // OPERATOR and needs no second assembly. Only the L^2 mass of the cell
-  // unknown comes from outside, as the cell measures.
+  // P, ASSEMBLED FROM THE NORM ABOVE. Nothing here decides anything: every
+  // block is the term the norm names, read in this dof basis.
   //
   // IT IS A SECOND MATRIX, not an edit of the sub-solvers. PETSc takes the
   // preconditioner from Pmat in KSPSetOperators(ksp, Amat, Pmat) and a
@@ -245,95 +274,114 @@ class PetscSolver final : public LinearSolver {
   // the next time the outer KSP sets up and rebuilds them from Pmat, which
   // leaves the preconditioner silently equal to the operator: it converges on
   // nothing and reports DIVERGED_ITS.
-  //
-  // The (1,1) block of the operator is EMPTY, which is why it cannot serve as
-  // its own preconditioner; the mass matrix taking its place is the whole
-  // content of the method.
   void build_riesz(KSP ksp, PC pc) {
-    if (split_.blocks.size() < 2) {
+    const std::size_t nf = norm_.factors.size();
+    if (nf < 2 || norm_.l2_weight.size() != nf - 1) {
       throw std::invalid_argument(
-          "PetscSolver: the 'riesz' preconditioner needs a block split; call set_split()");
+          "PetscSolver: the 'riesz' preconditioner needs the space norm; call set_norm() with "
+          "one index set per factor and L2 weights for every factor after the first");
     }
-    const auto& flux = split_.blocks[0];
-    const auto& cell = split_.blocks[1];
-    const auto n0 = static_cast<PetscInt>(flux.size());
-    const auto n1 = static_cast<PetscInt>(cell.size());
 
-    std::vector<IS> sets(split_.blocks.size(), nullptr);
-    for (std::size_t b = 0; b < split_.blocks.size(); ++b) {
-      check(ISCreateGeneral(PETSC_COMM_SELF, static_cast<PetscInt>(split_.blocks[b].size()),
-                            split_.blocks[b].data(), PETSC_COPY_VALUES, &sets[b]),
+    std::vector<IS> sets(nf, nullptr);
+    for (std::size_t b = 0; b < nf; ++b) {
+      check(ISCreateGeneral(PETSC_COMM_SELF, static_cast<PetscInt>(norm_.factors[b].size()),
+                            norm_.factors[b].data(), PETSC_COPY_VALUES, &sets[b]),
             "ISCreateGeneral");
     }
 
-    // the flux block: A00 + B^T B, the H(div) inner product
-    Mat A00 = nullptr, B = nullptr, BtB = nullptr;
+    // FACTOR 0: the material form, plus one term per constraint that binds it.
+    //
+    //     A00 + sum_f B_f^T diag(w_f) B_f ,   B_f = A(factor f rows, factor 0 cols)
+    //
+    // For flow the sum has one term, the divergence. For AFW elasticity it has
+    // two: the divergence and the ALGEBRAIC symmetry constraint whose
+    // multiplier is the rotation. Both are constraints on the stress and both
+    // must be controlled, or the operator is unbounded in the directions the
+    // missing one spans.
+    Mat A00 = nullptr;
     check(MatCreateSubMatrix(M_, sets[0], sets[0], MAT_INITIAL_MATRIX, &A00), "sub(0,0)");
-    check(MatCreateSubMatrix(M_, sets[1], sets[0], MAT_INITIAL_MATRIX, &B), "sub(1,0)");
-    // ||div q||^2 = (Bq)^T diag(1/|E|) (Bq): scale the rows of B by |E|^{-1/2}
-    // so that B^T B is that form, rather than the unweighted one
-    Vec inv_root = nullptr;
-    check(VecCreateSeq(PETSC_COMM_SELF, n1, &inv_root), "VecCreateSeq");
-    for (PetscInt i = 0; i < n1; ++i) {
-      const auto k = static_cast<std::size_t>(i);
-      const double w = k < split_.cell_measure.size() ? split_.cell_measure[k] : 1.0;
-      check(VecSetValue(inv_root, i, 1.0 / std::sqrt(w), INSERT_VALUES), "VecSetValue");
+    // ONLY THE DIFFERENTIAL CONSTRAINT enters the first factor's norm. AFW's
+    // inf-sup is proved with ||sigma||^2 = (A sigma, sigma) + ||div sigma||^2:
+    // skw is bounded L^2 -> L^2, so its multiplier is already controlled by the
+    // material term and the algebraic constraint contributes no graph term.
+    // A factor whose weights are empty is such a multiplier.
+    for (std::size_t f = 1; f < nf; ++f) {
+      const auto& w = norm_.graph_weight[f - 1];
+      if (w.empty()) continue;
+      if (w.size() != norm_.factors[f].size()) {
+        throw std::invalid_argument("PetscSolver: constraint weights do not match their rows");
+      }
+      Mat B = nullptr, BtB = nullptr;
+      check(MatCreateSubMatrix(M_, sets[f], sets[0], MAT_INITIAL_MATRIX, &B), "constraint block");
+      // B^T diag(w) B, obtained by scaling the rows of B by sqrt(w)
+      Vec root = nullptr;
+      check(VecCreateSeq(PETSC_COMM_SELF, static_cast<PetscInt>(w.size()), &root), "VecCreateSeq");
+      for (std::size_t i = 0; i < w.size(); ++i) {
+        check(VecSetValue(root, static_cast<PetscInt>(i), std::sqrt(w[i]), INSERT_VALUES),
+              "VecSetValue");
+      }
+      check(VecAssemblyBegin(root), "VecAssembly");
+      check(VecAssemblyEnd(root), "VecAssembly");
+      check(MatDiagonalScale(B, root, nullptr), "row scale");
+      VecDestroy(&root);
+      check(MatTransposeMatMult(B, B, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &BtB), "constraint term");
+      check(MatAXPY(A00, 1.0, BtB, DIFFERENT_NONZERO_PATTERN), "A00 += constraint term");
+      MatDestroy(&B);
+      MatDestroy(&BtB);
     }
-    check(VecAssemblyBegin(inv_root), "VecAssembly");
-    check(VecAssemblyEnd(inv_root), "VecAssembly");
-    check(MatDiagonalScale(B, inv_root, nullptr), "row scale B");
-    VecDestroy(&inv_root);
-    check(MatTransposeMatMult(B, B, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &BtB), "B^T diag(1/|E|) B");
-    check(MatAXPY(A00, 1.0, BtB, DIFFERENT_NONZERO_PATTERN), "A00 += B^T B");
-    MatDestroy(&B);
-    MatDestroy(&BtB);
 
-    // scatter it, and the cell mass, into a preconditioner matrix of full size
+    // scatter it, and the L2 mass of every later factor, into a preconditioner
+    // matrix of full size
+    const auto& first = norm_.factors[0];
     std::vector<PetscInt> per_row(static_cast<std::size_t>(n_), 1);
-    for (PetscInt i = 0; i < n0; ++i) {
+    for (std::size_t i = 0; i < first.size(); ++i) {
       PetscInt ncols = 0;
       const PetscInt* cols = nullptr;
-      check(MatGetRow(A00, i, &ncols, &cols, nullptr), "MatGetRow");
-      per_row[static_cast<std::size_t>(flux[static_cast<std::size_t>(i)])] = ncols;
-      check(MatRestoreRow(A00, i, &ncols, &cols, nullptr), "MatRestoreRow");
+      check(MatGetRow(A00, static_cast<PetscInt>(i), &ncols, &cols, nullptr), "MatGetRow");
+      per_row[static_cast<std::size_t>(first[i])] = ncols;
+      check(MatRestoreRow(A00, static_cast<PetscInt>(i), &ncols, &cols, nullptr), "MatRestoreRow");
     }
     Mat P = nullptr;
     check(MatCreate(PETSC_COMM_SELF, &P), "MatCreate(P)");
     check(MatSetType(P, MATSEQAIJ), "MatSetType(P)");
     check(MatSetSizes(P, n_, n_, n_, n_), "MatSetSizes(P)");
     check(MatSeqAIJSetPreallocation(P, 0, per_row.data()), "preallocate(P)");
-    for (PetscInt i = 0; i < n0; ++i) {
+    for (std::size_t i = 0; i < first.size(); ++i) {
       PetscInt ncols = 0;
       const PetscInt* cols = nullptr;
       const PetscScalar* vals = nullptr;
-      check(MatGetRow(A00, i, &ncols, &cols, &vals), "MatGetRow");
-      const PetscInt gi = flux[static_cast<std::size_t>(i)];
+      check(MatGetRow(A00, static_cast<PetscInt>(i), &ncols, &cols, &vals), "MatGetRow");
+      const PetscInt gi = first[i];
       for (PetscInt k = 0; k < ncols; ++k) {
-        const PetscInt gj = flux[static_cast<std::size_t>(cols[k])];
-        check(MatSetValues(P, 1, &gi, 1, &gj, &vals[k], INSERT_VALUES), "P(flux)");
+        const PetscInt gj = first[static_cast<std::size_t>(cols[k])];
+        check(MatSetValues(P, 1, &gi, 1, &gj, &vals[k], INSERT_VALUES), "P(factor 0)");
       }
-      check(MatRestoreRow(A00, i, &ncols, &cols, &vals), "MatRestoreRow");
+      check(MatRestoreRow(A00, static_cast<PetscInt>(i), &ncols, &cols, &vals), "MatRestoreRow");
     }
-    // the cell unknown is piecewise constant, so its L^2 mass is diagonal and
-    // its entry is the cell measure
-    for (PetscInt i = 0; i < n1; ++i) {
-      const auto k = static_cast<std::size_t>(i);
-      const double w = k < split_.cell_measure.size() ? split_.cell_measure[k] : 1.0;
-      const PetscInt gi = cell[k];
-      check(MatSetValues(P, 1, &gi, 1, &gi, &w, INSERT_VALUES), "P(mass)");
+    MatDestroy(&A00);
+    // FACTORS 1..: plain L2, diagonal because a cell unknown is its value
+    for (std::size_t b = 1; b < nf; ++b) {
+      const auto& idx = norm_.factors[b];
+      const auto& w = norm_.l2_weight[b - 1];
+      if (w.size() != idx.size()) {
+        throw std::invalid_argument("PetscSolver: L2 weights do not match their factor");
+      }
+      for (std::size_t i = 0; i < idx.size(); ++i) {
+        const PetscInt gi = idx[i];
+        check(MatSetValues(P, 1, &gi, 1, &gi, &w[i], INSERT_VALUES), "P(L2 factor)");
+      }
     }
     check(MatAssemblyBegin(P, MAT_FINAL_ASSEMBLY), "assembly(P)");
     check(MatAssemblyEnd(P, MAT_FINAL_ASSEMBLY), "assembly(P)");
-    MatDestroy(&A00);
 
     // the constrained rows, given the row A gives them
-    if (!split_.pinned.empty()) {
-      check(MatZeroRowsColumns(P, static_cast<PetscInt>(split_.pinned.size()), split_.pinned.data(),
+    if (!norm_.pinned.empty()) {
+      check(MatZeroRowsColumns(P, static_cast<PetscInt>(norm_.pinned.size()), norm_.pinned.data(),
                                1.0, nullptr, nullptr),
             "MatZeroRowsColumns(P)");
-      for (std::size_t k = 0; k < split_.pinned.size(); ++k) {
-        const PetscInt i = split_.pinned[k];
-        const double d = k < split_.pinned_diagonal.size() ? split_.pinned_diagonal[k] : 1.0;
+      for (std::size_t k = 0; k < norm_.pinned.size(); ++k) {
+        const PetscInt i = norm_.pinned[k];
+        const double d = k < norm_.pinned_diagonal.size() ? norm_.pinned_diagonal[k] : 1.0;
         check(MatSetValues(P, 1, &i, 1, &i, &d, INSERT_VALUES), "P(pinned)");
       }
       check(MatAssemblyBegin(P, MAT_FINAL_ASSEMBLY), "assembly(P)");
@@ -342,12 +390,12 @@ class PetscSolver final : public LinearSolver {
 
     check(KSPSetOperators(ksp, M_, P), "KSPSetOperators(A, P)");
     check(PCSetType(pc, PCFIELDSPLIT), "PCSetType(fieldsplit)");
-    for (std::size_t b = 0; b < sets.size(); ++b) {
+    for (std::size_t b = 0; b < nf; ++b) {
       check(PCFieldSplitSetIS(pc, std::to_string(b).c_str(), sets[b]), "PCFieldSplitSetIS");
     }
     check(PCFieldSplitSetType(pc, PC_COMPOSITE_ADDITIVE), "PCFieldSplitSetType");
 
-    // each factor is inverted exactly: the flux block is SPD, the cell block
+    // each factor is inverted exactly: factor 0 is SPD, the L2 factors are
     // diagonal. Anything cheaper is a different preconditioner and no longer
     // the Riesz map.
     check(PCSetUp(pc), "PCSetUp(fieldsplit)");
@@ -524,7 +572,7 @@ class PetscSolver final : public LinearSolver {
   }
 
   SolverOptions opts_;
-  BlockSplit split_;
+  SpaceNorm norm_;
   std::vector<Mat> riesz_;  // the diagonal blocks of the Riesz map
   std::string prefix_;
   Mat M_{nullptr};

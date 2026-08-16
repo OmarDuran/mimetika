@@ -50,6 +50,18 @@ from _stages import stage
 
 MOBILITY = 1.0
 
+# THE LINEAR SOLVER. "riesz" is the Riesz map of H(div) x L^2 -- P is the Gram
+# matrix of ||q||^2 = (K^-1 q,q) + ||div q||^2 and ||p||^2 = ||p||_L2^2 -- so
+# its iteration count does not grow with the mesh. "direct" is a full
+# factorization: exact, and the wrong instrument past a few hundred thousand
+# unknowns.
+SOLVERS = {
+    "direct": mk.SolverOptions(),
+    "riesz": mk.SolverOptions(
+        method="gmres", preconditioner="riesz", rtol=1e-10, max_iterations=2000
+    ),
+}
+
 PRODUCTS = {
     "derham_bdm": mk.FluxRealization.derham_bdm,
     "derham_rt": mk.FluxRealization.derham_rt,
@@ -94,8 +106,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--mesh", help="the .vtu to solve on")
     ap.add_argument("--make-mesh", help="write a sample .vtu to this path and stop")
-    ap.add_argument("--product", default="derham_rt", choices=sorted(PRODUCTS))
+    ap.add_argument("--product", default="stabilized_rt", choices=sorted(PRODUCTS))
     ap.add_argument("--vtu", help="write the solution to this .vtu")
+    ap.add_argument("--solver", default="riesz", choices=sorted(SOLVERS))
     args = ap.parse_args()
 
     if args.make_mesh:
@@ -123,13 +136,15 @@ def main():
     )
     print(f"  characteristic length L = {length:.6g}  (the box diagonal)")
     print(f"  mobility = {MOBILITY}")
-    print(f"  {mk.flux_realization_name(how)}\n")
+    print(f"  {mk.flux_realization_name(how)}, {args.solver} solver\n")
 
     with stage("building the flux operators"):
         model = mk.SinglePhaseModel(mesh, dim, MOBILITY, how)
     with stage("prescribing p on the boundary"):
         n_facets = prescribe_linear_pressure(model, mesh, dim, lo, direction, length)
-    model.solve(progress=True)
+    report = model.solve(progress=True, options=SOLVERS[args.solver])
+    if args.solver != "direct":
+        print(f"  {args.solver}: {report.iterations} iterations, {report.reason}")
     print(
         f"\n  p = ((x - x_min).n)/L on all {n_facets} boundary facets, pure Dirichlet"
     )
@@ -158,7 +173,9 @@ def main():
             "\n  exact: the datum is a facet constant and the facet carries one moment"
         )
     elif model.moments_per_facet == 1:
-        print(f"\n  NOT exact ({worst:.3e}), and the datum is not the reason: the facet")
+        print(
+            f"\n  NOT exact ({worst:.3e}), and the datum is not the reason: the facet"
+        )
         print("  carries one moment, so nothing of it was dropped. The linear field is")
         print("  not being reproduced on this mesh.")
     else:
@@ -183,7 +200,7 @@ def main():
             mk.write_vtu(
                 mesh, args.vtu, {"pressure": p, "pressure_exact": q, "error": p - q}
             )
-    
+
 
 if __name__ == "__main__":
     main()

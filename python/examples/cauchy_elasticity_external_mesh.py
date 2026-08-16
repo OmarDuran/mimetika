@@ -94,7 +94,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--mesh", help="the .vtu to solve on")
     ap.add_argument("--make-mesh", help="write a sample .vtu to this path and stop")
-    ap.add_argument("--product", default="derham_afw", choices=sorted(PRODUCTS))
+    ap.add_argument("--product", default="stabilized_afw", choices=sorted(PRODUCTS))
     ap.add_argument(
         "--nu", type=float, default=None, help="Poisson ratio (default lam = mu = 1)"
     )

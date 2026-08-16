@@ -337,36 +337,65 @@ class Stage {
 // Build, solve and accept, in one call. The three are inseparable -- a model
 // whose state was never accepted answers `displacement` with the wrong vector
 // -- so exposing them apart would only create a way to get it wrong.
-// The Riesz map needs the factors of the space and the L2 weights of the cell
-// unknown, which is the cell measure. Both are read off the model rather than
-// restated, so a change of space cannot leave the preconditioner behind.
+// THE NORM OF THE MODEL'S SPACE, read off the model rather than restated.
+//
+// Factor 0 is the H(div) field -- flux or stress -- and every factor after it
+// is an L^2 field on the cells: the pressure, or the displacement and the
+// rotation. A cell field's dofs are laid out entity-major (see DofMap::global),
+// so dof k of a factor of size m over n cells belongs to cell k / (m / n) and
+// its L^2 weight is that cell's measure.
 template <class Model>
-void attach_split(mimetika::solver::PetscSolver& petsc, const Model& m, const exokal::Mesh& mesh,
-                  int dim) {
+void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exokal::Mesh& mesh,
+                 int dim, bool divergence_is_an_integral) {
   const auto blocks = mimetika::solver::field_blocks(m.simulation().epoch());
   if (blocks.size() < 2) {
     throw std::runtime_error("riesz: the space has fewer than two factors");
   }
-  mimetika::solver::BlockSplit split;
+  const auto n_cells = static_cast<std::size_t>(mesh.count(dim));
+  std::vector<double> measure(n_cells);
+  for (std::size_t e = 0; e < n_cells; ++e) {
+    measure[e] = exokal::measure(mesh, dim, static_cast<Index>(e));
+  }
+
+  mimetika::solver::SpaceNorm norm;
   for (const auto& b : blocks) {
     std::vector<int> idx;
     idx.reserve(b.size());
     for (const Index g : b.indices()) idx.push_back(static_cast<int>(g));
-    split.blocks.push_back(std::move(idx));
+    norm.factors.push_back(std::move(idx));
   }
-  // the last factor is the cell unknown: its L2 mass is the cell measure
-  split.cell_measure.reserve(static_cast<std::size_t>(mesh.count(dim)));
-  for (Index e = 0; e < mesh.count(dim); ++e) {
-    split.cell_measure.push_back(exokal::measure(mesh, dim, e));
+  for (std::size_t f = 1; f < blocks.size(); ++f) {
+    const std::size_t size = blocks[f].size();
+    if (size % n_cells != 0) {
+      throw std::runtime_error("riesz: factor '" + blocks[f].name +
+                               "' is not a cell field; its L2 norm is not the cell measure");
+    }
+    const std::size_t components = size / n_cells;
+    std::vector<double> w(size);
+    for (std::size_t k = 0; k < size; ++k) w[k] = measure[k / components];
+    norm.l2_weight.push_back(std::move(w));
+    // Factor 1 is the multiplier of the DIFFERENTIAL constraint and supplies
+    // the graph term; any factor beyond it multiplies an algebraic one -- the
+    // AFW rotation -- which contributes no term to the first factor's norm.
+    std::vector<double> gw;
+    if (f == 1) {
+      gw.resize(size);
+      for (std::size_t k = 0; k < size; ++k) {
+        const double me = measure[k / components];
+        gw[k] = divergence_is_an_integral ? 1.0 / me : me;
+      }
+    }
+    norm.graph_weight.push_back(std::move(gw));
   }
+
   // the constrained unknowns, with the diagonal A gave them
   const auto& c = m.simulation().constraints();
   for (std::size_t i = 0; i < m.simulation().n_dofs(); ++i) {
     if (!c.pinned(i)) continue;
-    split.pinned.push_back(static_cast<int>(i));
-    split.pinned_diagonal.push_back(c.scale_at(i));
+    norm.pinned.push_back(static_cast<int>(i));
+    norm.pinned_diagonal.push_back(c.scale_at(i));
   }
-  petsc.set_split(std::move(split));
+  petsc.set_norm(std::move(norm));
 }
 
 mimetika::solver::SolveReport solve_elasticity(mimetika::CauchyElasticityModel& m, bool progress,
@@ -376,7 +405,8 @@ mimetika::solver::SolveReport solve_elasticity(mimetika::CauchyElasticityModel& 
   m.build();
   stage.end();
   mimetika::solver::PetscSolver petsc(opts);
-  if (opts.preconditioner == "riesz") attach_split(petsc, m, m.mesh(), m.dim());
+  // the momentum row is Dv, whose entries already carry 1/|E|: it is an average
+  if (opts.preconditioner == "riesz") attach_norm(petsc, m, m.mesh(), m.dim(), false);
   std::vector<double> x;
   stage.begin(opts.direct() ? "factorizing and solving" : "solving");
   const auto rep = petsc.solve(m.system(), m.rhs(), x);
@@ -393,7 +423,8 @@ mimetika::solver::SolveReport solve_single_phase(mimetika::SinglePhaseModel& m, 
   m.build();
   stage.end();
   mimetika::solver::PetscSolver petsc(opts);
-  if (opts.preconditioner == "riesz") attach_split(petsc, m, m.mesh(), m.dim());
+  // the mass-balance row is the incidence: (Bq)_E is the integral of div q
+  if (opts.preconditioner == "riesz") attach_norm(petsc, m, m.mesh(), m.dim(), true);
   std::vector<double> x;
   stage.begin(opts.direct() ? "factorizing and solving" : "solving");
   const auto rep = petsc.solve(m.system(), m.rhs(), x);
@@ -431,6 +462,20 @@ PYBIND11_MODULE(_core, m) {
   m.def(
       "field_blocks",
       [](const mimetika::SinglePhaseModel& s) {
+        py::list out;
+        for (const auto& b : mimetika::solver::field_blocks(s.simulation().epoch())) {
+          py::list runs;
+          for (const auto& r : b.ranges) runs.append(py::make_tuple(r.begin, r.end));
+          out.append(py::dict(py::arg("name") = b.name, py::arg("size") = b.size(),
+                              py::arg("ranges") = runs));
+        }
+        return out;
+      },
+      py::arg("model"));
+
+  m.def(
+      "field_blocks",
+      [](const mimetika::CauchyElasticityModel& s) {
         py::list out;
         for (const auto& b : mimetika::solver::field_blocks(s.simulation().epoch())) {
           py::list runs;
@@ -628,6 +673,15 @@ PYBIND11_MODULE(_core, m) {
             s.mechanics().emplace<mimetika::FreeSlipBC>(facets);
           },
           py::arg("facets"))
+      .def_property_readonly("n_constrained",
+                             [](const mimetika::CauchyElasticityModel& s) {
+                               const auto& c = s.simulation().constraints();
+                               std::size_t n = 0;
+                               for (std::size_t i = 0; i < s.simulation().n_dofs(); ++i) {
+                                 if (c.pinned(i)) ++n;
+                               }
+                               return n;
+                             })
       .def("prescribe_displacement", &mimetika::CauchyElasticityModel::prescribe_displacement,
            py::arg("facets"), py::arg("constant"), py::arg("gradient") = std::array<double, 9>{})
       .def("solve", &solve_elasticity, py::arg("progress") = false,

@@ -116,7 +116,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--dim", type=int, default=2, choices=(2, 3))
     ap.add_argument("--family", default="simplex", choices=sorted(FAMILIES))
-    ap.add_argument("--product", default="derham_afw", choices=sorted(PRODUCTS))
+    ap.add_argument("--product", default="stabilized_afw", choices=sorted(PRODUCTS))
     ap.add_argument("--nr", type=int, default=6, help="radial divisions of the coarse mesh")
     ap.add_argument("--nu", type=float, default=None, help="Poisson ratio (default lam = mu = 1)")
     ap.add_argument("--vtu", help="write the coarse solution to this .vtu")
