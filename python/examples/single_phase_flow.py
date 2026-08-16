@@ -40,7 +40,7 @@ FAMILIES = {
 SOLVERS = {
     "direct": mk.SolverOptions(),
     "riesz": mk.SolverOptions(
-        method="gmres", preconditioner="riesz", rtol=1e-10, max_iterations=2000
+        method="gmres", preconditioner="riesz", rtol=1e-12, max_iterations=2000
     ),
 }
 
@@ -56,7 +56,7 @@ def exact(x):
     return P_INNER + (P_OUTER - P_INNER) * math.log(r / A) / math.log(B / A)
 
 
-def solve(nr, nt, dim, family, how, solver="direct"):
+def solve(nr, nt, dim, family, how, solver="riesz"):
     """Build the annulus, impose the three conditions, solve, measure."""
     mesh = mk.annulus(nr, nt, dim, family, A, B, HZ)
 
@@ -102,7 +102,7 @@ def main():
         "--nr", type=int, default=8, help="radial divisions of the coarse mesh"
     )
     ap.add_argument("--vtu", help="write the coarse solution to this .vtu")
-    ap.add_argument("--solver", default="direct", choices=sorted(SOLVERS))
+    ap.add_argument("--solver", default="riesz", choices=sorted(SOLVERS))
     args = ap.parse_args()
 
     family, how = FAMILIES[args.family], PRODUCTS[args.product]

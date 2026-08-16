@@ -45,6 +45,17 @@ from _stages import stage
 
 MU, LAM = 1.0, 1.0
 
+# THE LINEAR SOLVER. "riesz" is the Riesz map of the space the operator is an
+# isomorphism on -- P is the Gram matrix of its norm -- so its iteration count
+# does not grow with the mesh. "direct" is a full factorization: exact, and the
+# wrong instrument past a few hundred thousand unknowns.
+SOLVERS = {
+    "riesz": mk.SolverOptions(
+        method="gmres", preconditioner="riesz", rtol=1e-12, max_iterations=2000
+    ),
+    "direct": mk.SolverOptions(),
+}
+
 PRODUCTS = {
     "derham_afw": mk.StressRealization.derham_afw,
     "derham_afw_rt": mk.StressRealization.derham_afw_rt,
@@ -99,6 +110,7 @@ def main():
         "--nu", type=float, default=None, help="Poisson ratio (default lam = mu = 1)"
     )
     ap.add_argument("--vtu", help="write the solution to this .vtu")
+    ap.add_argument("--solver", default="riesz", choices=sorted(SOLVERS))
     args = ap.parse_args()
 
     if args.make_mesh:
@@ -128,13 +140,15 @@ def main():
     )
     print(f"  characteristic length L = {length:.6g}")
     print(f"  mu = {mat.shear}, lam = {mat.lame}  (nu = {mat.poisson():.4f})")
-    print(f"  {mk.stress_realization_name(how)}\n")
+    print(f"  {mk.stress_realization_name(how)}, {args.solver} solver\n")
 
     with stage("building the stress operators"):
         model = mk.CauchyElasticityModel(mesh, dim, mat, how)
     with stage("prescribing u on the boundary"):
         n_facets = prescribe_linear_displacement(model, mesh, dim, lo, length)
-    model.solve(progress=True)
+    report = model.solve(progress=True, options=SOLVERS[args.solver])
+    if args.solver != "direct":
+        print(f"  {args.solver}: {report.iterations} iterations, {report.reason}")
     print(f"\n  u = (x - x_min)/L on all {n_facets} boundary facets, pure Dirichlet")
     print(
         f"  {model.n_cells} cells, {model.n_dofs} dofs, {model.n_stabilized} stabilized\n"
@@ -151,8 +165,12 @@ def main():
                 rms += d * d
         rms = math.sqrt(rms / (model.n_cells * dim))
     print()
+    # WHAT THE NUMBER IS BOUNDED BY. The method reproduces the field exactly, so
+    # a direct solve leaves round-off; an iterative one leaves its own residual
+    # tolerance, which is larger and says nothing about the discretization.
+    floor = "round-off" if args.solver == "direct" else f"the {args.solver} tolerance"
     print(f"  max |u - u_exact|  {worst:11.3e}")
-    print(f"  rms |u - u_exact|  {rms:11.3e}   <- round-off, not discretization\n")
+    print(f"  rms |u - u_exact|  {rms:11.3e}   <- {floor}, not discretization\n")
 
     # ---- and the uniform stress that goes with it ---------------------------
     want_kk = (2.0 * mat.shear + dim * mat.lame) / length

@@ -58,7 +58,7 @@ MOBILITY = 1.0
 SOLVERS = {
     "direct": mk.SolverOptions(),
     "riesz": mk.SolverOptions(
-        method="gmres", preconditioner="riesz", rtol=1e-10, max_iterations=2000
+        method="gmres", preconditioner="riesz", rtol=1e-12, max_iterations=2000
     ),
 }
 
@@ -168,7 +168,10 @@ def main():
     # THE VERDICT IS THE MEASUREMENT, not the moment count. One moment per facet
     # means the datum loses nothing; it does not by itself mean the answer is
     # exact, and on a general polyhedral mesh it is not.
-    if worst < 1e-10:
+    # an iterative solve cannot show the round-off floor, so the threshold is
+    # the one that solver can actually reach
+    exact_below = 1e-10 if args.solver == "direct" else 1e-7
+    if worst < exact_below:
         print(
             "\n  exact: the datum is a facet constant and the facet carries one moment"
         )

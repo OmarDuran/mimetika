@@ -17,9 +17,8 @@ The test is therefore a refinement sweep, not a timing.
 
 import math
 
-import pytest
-
 import mimetika_cxx as mk
+import pytest
 
 A_IN, B_OUT = 1.0, 10.0
 P_IN, P_OUT = 2.0, 1.0
@@ -117,3 +116,74 @@ def test_it_holds_across_dimension_and_cell_type(dim, family):
         counts.append(report.iterations)
         print(f"  {dim}D {model.n_cells:5d} cells {model.n_dofs:6d} dofs   {report.iterations:4d} its")
     assert counts[-1] <= 2 * counts[0]
+
+
+# ---- elasticity: the same principle, three factors ---------------------------
+#
+# X = H(div; M) x L^2(R^d) x L^2(skew), with
+#
+#     ||sigma||^2 = (A sigma, sigma) + ||div sigma||^2 ,  A = C^-1
+#     ||u||^2 = ||u||_L2^2 ,  ||gamma||^2 = ||gamma||_L2^2
+#
+# The rotation is the multiplier of the ALGEBRAIC constraint skw(sigma) = 0 and
+# adds no term to the stress norm: skw is bounded L2 -> L2, so AFW's inf-sup is
+# proved with the H(div) norm alone.
+MU, LAM = 1.0, 1.0
+
+
+def patch(nr, dim=2, family=None):
+    """Linear displacement prescribed on the whole boundary: natural, no constraints."""
+    family = mk.Family.simplex if family is None else family
+    mesh = mk.annulus(nr, nr // 2, dim, family, A_IN, B_OUT, 1.0)
+    pts = [mesh.point(v) for v in range(mesh.count(0))]
+    lo = [min(p[k] for p in pts) for k in range(3)]
+    length = max(max(p[k] for p in pts) - lo[k] for k in range(dim))
+    model = mk.CauchyElasticityModel(
+        mesh, dim, mk.ElasticMaterial(MU, LAM), mk.StressRealization.stabilized_afw
+    )
+    gradient = [0.0] * 9
+    for k in range(dim):
+        gradient[k * 3 + k] = 1.0 / length
+    for f in mk.boundary_facets(mesh, dim):
+        x_e = mk.centroid(mesh, dim, mk.cofacet_of(mesh, dim, f))
+        constant = [0.0] * 3
+        for k in range(dim):
+            constant[k] = (x_e[k] - lo[k]) / length
+        model.prescribe_displacement([f], constant, gradient)
+    return model
+
+
+def test_the_elasticity_count_does_not_grow_under_refinement():
+    counts = []
+    for nr in (6, 12, 24, 36):
+        model = patch(nr)
+        report = model.solve(options=RIESZ)
+        counts.append(report.iterations)
+        print(f"  {model.n_cells:6d} cells {model.n_dofs:7d} dofs   {report.iterations:4d} its")
+    assert counts[-1] <= counts[0] + 10
+
+
+@pytest.mark.parametrize("nr", [6, 18])
+def test_the_elasticity_answer_is_the_direct_answer(nr):
+    direct = patch(nr)
+    direct.solve()
+    riesz = patch(nr)
+    riesz.solve(options=RIESZ)
+    worst = max(
+        abs(direct.displacement(e, k) - riesz.displacement(e, k))
+        for e in range(direct.n_cells)
+        for k in range(2)
+    )
+    print(f"  {direct.n_cells} cells   max |riesz - direct| = {worst:.2e}")
+    assert worst < 1e-7
+
+
+# P = A, factorized: a perfect preconditioner, so one iteration. It tests the
+# Pmat wiring, not a preconditioner -- and an earlier version that handed the
+# blocks to the sub-KSPs after PCSetUp failed exactly here, silently.
+@pytest.mark.parametrize("kind", ["flow", "elasticity"])
+def test_an_exact_preconditioner_converges_in_one_iteration(kind):
+    exact = mk.SolverOptions(method="gmres", preconditioner="exact", rtol=1e-12)
+    model = dupuit(4) if kind == "flow" else patch(4)
+    report = model.solve(options=exact)
+    assert report.iterations == 1

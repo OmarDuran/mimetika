@@ -122,36 +122,33 @@ struct SpaceNorm {
   // the measure of the cell that unknown belongs to.
   std::vector<std::vector<double>> l2_weight;
 
-  // THE WEIGHT OF EACH CONSTRAINT TERM, one vector per factor after the first.
+  // The graph term is NOT stated separately: it is B^T W^{-1} B with W the
+  // multiplier block above, which is the whole content of
   //
-  // EVERY factor after the first is a multiplier for a constraint on the first,
-  // and the first factor's norm must control all of them:
+  //     P = diag( M + B^T W^{-1} B ,  W ) .
   //
-  //   flow         one constraint, div q = f, whose multiplier is the pressure.
-  //   elasticity   TWO. div sigma = f, and skew(sigma) = 0 -- the second is
-  //                ALGEBRAIC and cell-local, and its multiplier is the AFW
-  //                rotation. A stress norm carrying only the divergence leaves
-  //                the operator uncontrolled on the skew directions, and the
-  //                preconditioned residual stalls exactly there.
+  // W IS THE SCHUR SCALE, not the variational L2 mass, and the two differ when
+  // the constraint rows are scaled. Flow's mass balance is the incidence, so
+  // (Bq)_E is the integral of div q and W = |E|. Elasticity's Dv and As divide
+  // by |E| already, so B = (1/|E|) B_var, the Schur complement B M^{-1} B^T
+  // scales as (1/|E|^2)|E| = 1/|E|, and W = 1/|E|.
   //
-  // The weight of each term follows that operator's own normalization, not the
-  // multiplier's L2 mass:
-  //
-  //   flow         the row is the incidence, so (Bq)_E = int_E div q, the
-  //                INTEGRAL, and the term is sum (Bq)^2 / |E|
-  //   elasticity   Dv and As both divide by |E| already, so their rows are
-  //                AVERAGES and the terms are sum (B sigma)^2 |E|
-  //
-  // The two are reciprocals, so taking one for the other is wrong by |E|^2:
-  // on a refined mesh the constraint term then swamps the material one and P
-  // goes singular in its complement.
-  std::vector<std::vector<double>> graph_weight;
+  // Measured on the Lame annulus, cond(P^{-1}A) with W = |E| is 8e2 and rising
+  // with refinement; with W = 1/|E| it is 3.2, 3.4, 3.5 over the same three
+  // meshes -- flat, which is the property the map exists to have.
 
   // A CONSTRAINED UNKNOWN IS NOT IN THE SPACE. Its row of A is the constraint,
   // scale * e_i^T, not a form; leaving the norm's entries there preconditions an
   // equation that is not the one being solved, and the iteration count starts
   // growing with h again. P carries the same row, so those unknowns contribute
   // the identity to P^{-1}A and drop out of the Krylov space.
+  // Which multipliers contribute a graph term: the DIFFERENTIAL constraint does
+  // (factor 1), an ALGEBRAIC one does not. AFW's inf-sup is proved with
+  // ||sigma||^2 = (A sigma, sigma) + ||div sigma||^2 -- skw is bounded
+  // L^2 -> L^2, so the rotation adds nothing to the stress norm.
+  std::size_t differential_factors{1};
+  bool carries_graph_term(std::size_t f) const { return f >= 1 && f <= differential_factors; }
+
   std::vector<int> pinned;
   std::vector<double> pinned_diagonal;
 
@@ -306,18 +303,16 @@ class PetscSolver final : public LinearSolver {
     // material term and the algebraic constraint contributes no graph term.
     // A factor whose weights are empty is such a multiplier.
     for (std::size_t f = 1; f < nf; ++f) {
-      const auto& w = norm_.graph_weight[f - 1];
-      if (w.empty()) continue;
-      if (w.size() != norm_.factors[f].size()) {
-        throw std::invalid_argument("PetscSolver: constraint weights do not match their rows");
-      }
+      if (!norm_.carries_graph_term(f)) continue;
+      const auto& w = norm_.l2_weight[f - 1];
       Mat B = nullptr, BtB = nullptr;
       check(MatCreateSubMatrix(M_, sets[f], sets[0], MAT_INITIAL_MATRIX, &B), "constraint block");
       // B^T diag(w) B, obtained by scaling the rows of B by sqrt(w)
       Vec root = nullptr;
       check(VecCreateSeq(PETSC_COMM_SELF, static_cast<PetscInt>(w.size()), &root), "VecCreateSeq");
       for (std::size_t i = 0; i < w.size(); ++i) {
-        check(VecSetValue(root, static_cast<PetscInt>(i), std::sqrt(w[i]), INSERT_VALUES),
+        // B^T W^{-1} B, by scaling the rows of B with W^{-1/2}
+        check(VecSetValue(root, static_cast<PetscInt>(i), 1.0 / std::sqrt(w[i]), INSERT_VALUES),
               "VecSetValue");
       }
       check(VecAssemblyBegin(root), "VecAssembly");

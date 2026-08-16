@@ -33,6 +33,8 @@
 #include "exokal/hodge/flux_operators.hpp"
 #include "exokal/hodge/stress_operators.hpp"
 #include "exokal/io/vtu.hpp"
+#include "mimetika/linear_solver/fields.hpp"
+#include "mimetika/linear_solver/petsc.hpp"
 #include "mimetika/mesh/structured.hpp"
 #include "mimetika/model/boundary.hpp"
 #include "mimetika/model/boundary_conditions.hpp"
@@ -42,8 +44,6 @@
 #include "mimetika/model/compositions/single_phase_flow.hpp"
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/model/single_phase_model.hpp"
-#include "mimetika/linear_solver/fields.hpp"
-#include "mimetika/linear_solver/petsc.hpp"
 
 namespace py = pybind11;
 
@@ -339,11 +339,20 @@ class Stage {
 // -- so exposing them apart would only create a way to get it wrong.
 // THE NORM OF THE MODEL'S SPACE, read off the model rather than restated.
 //
-// Factor 0 is the H(div) field -- flux or stress -- and every factor after it
-// is an L^2 field on the cells: the pressure, or the displacement and the
-// rotation. A cell field's dofs are laid out entity-major (see DofMap::global),
-// so dof k of a factor of size m over n cells belongs to cell k / (m / n) and
-// its L^2 weight is that cell's measure.
+// Factor 0 is the H(div) field -- flux or stress. EVERY LATER FIELD IS ONE L^2
+// FACTOR, merged: the norm of X is (A s, s) + ||div s||^2 on the first and
+// plain L^2 on the rest, and L^2 of a product is the product of the L^2s, so
+// the displacement and the AFW rotation form a single factor. Splitting them
+// would be a different preconditioner, not a finer statement of the same one.
+//
+// A cell field's dofs are laid out entity-major (see DofMap::global), so dof k
+// of a field of size m over n cells belongs to cell k / (m / n) and its L^2
+// weight is that cell's measure.
+//
+// The graph term is carried ONLY by the rows of the differential constraint.
+// AFW's inf-sup is proved with ||sigma||^2 = (A sigma, sigma) + ||div sigma||^2:
+// skw is bounded L^2 -> L^2, so the rotation's rows contribute nothing and
+// their weight is zero.
 template <class Model>
 void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exokal::Mesh& mesh,
                  int dim, bool divergence_is_an_integral) {
@@ -358,12 +367,13 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
   }
 
   mimetika::solver::SpaceNorm norm;
-  for (const auto& b : blocks) {
-    std::vector<int> idx;
-    idx.reserve(b.size());
-    for (const Index g : b.indices()) idx.push_back(static_cast<int>(g));
-    norm.factors.push_back(std::move(idx));
-  }
+  std::vector<int> first;
+  first.reserve(blocks[0].size());
+  for (const Index g : blocks[0].indices()) first.push_back(static_cast<int>(g));
+  norm.factors.push_back(std::move(first));
+
+  std::vector<int> rest;
+  std::vector<double> l2;
   for (std::size_t f = 1; f < blocks.size(); ++f) {
     const std::size_t size = blocks[f].size();
     if (size % n_cells != 0) {
@@ -371,22 +381,19 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
                                "' is not a cell field; its L2 norm is not the cell measure");
     }
     const std::size_t components = size / n_cells;
-    std::vector<double> w(size);
-    for (std::size_t k = 0; k < size; ++k) w[k] = measure[k / components];
-    norm.l2_weight.push_back(std::move(w));
-    // Factor 1 is the multiplier of the DIFFERENTIAL constraint and supplies
-    // the graph term; any factor beyond it multiplies an algebraic one -- the
-    // AFW rotation -- which contributes no term to the first factor's norm.
-    std::vector<double> gw;
-    if (f == 1) {
-      gw.resize(size);
-      for (std::size_t k = 0; k < size; ++k) {
-        const double me = measure[k / components];
-        gw[k] = divergence_is_an_integral ? 1.0 / me : me;
-      }
+    std::size_t k = 0;
+    for (const Index g : blocks[f].indices()) {
+      rest.push_back(static_cast<int>(g));
+      const double me = measure[k / components];
+      // W is the SCHUR SCALE of this constraint, not the variational L2 mass:
+      // an unscaled row (flow's incidence) gives |E|, a row already divided by
+      // the measure (elasticity's Dv, As) gives 1/|E|.
+      l2.push_back(divergence_is_an_integral ? me : 1.0 / me);
+      ++k;
     }
-    norm.graph_weight.push_back(std::move(gw));
   }
+  norm.factors.push_back(std::move(rest));
+  norm.l2_weight.push_back(std::move(l2));
 
   // the constrained unknowns, with the diagonal A gave them
   const auto& c = m.simulation().constraints();
@@ -509,6 +516,24 @@ PYBIND11_MODULE(_core, m) {
         return o.direct() ? "SolverOptions(direct, " + o.factorization + ")"
                           : "SolverOptions(" + o.method + " + " + o.preconditioner + ")";
       });
+
+  // The assembled operator as triplets. For diagnosis on small problems: a
+  // preconditioner is a claim about the spectrum of P^{-1}A, and that claim is
+  // checkable directly rather than inferred from an iteration count.
+  m.def(
+      "system_triplets",
+      [](const mimetika::CauchyElasticityModel& s) {
+        const auto& A = s.system();
+        py::array_t<int> r(static_cast<py::ssize_t>(A.nnz())), c(static_cast<py::ssize_t>(A.nnz()));
+        py::array_t<double> v(static_cast<py::ssize_t>(A.nnz()));
+        for (std::size_t k = 0; k < A.nnz(); ++k) {
+          r.mutable_data()[k] = static_cast<int>(A.row[k]);
+          c.mutable_data()[k] = static_cast<int>(A.col[k]);
+          v.mutable_data()[k] = A.value[k];
+        }
+        return py::make_tuple(r, c, v, A.n);
+      },
+      py::arg("model"));
 
   py::class_<mimetika::solver::SolveReport>(m, "SolveReport")
       .def_readonly("converged", &mimetika::solver::SolveReport::converged)

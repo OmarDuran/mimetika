@@ -41,6 +41,17 @@ FAMILIES = {
     "simplex": mk.Family.simplex,
     "prism": mk.Family.prism,
 }
+# THE LINEAR SOLVER. "riesz" is the Riesz map of the space the operator is an
+# isomorphism on -- P is the Gram matrix of its norm -- so its iteration count
+# does not grow with the mesh. "direct" is a full factorization: exact, and the
+# wrong instrument past a few hundred thousand unknowns.
+SOLVERS = {
+    "riesz": mk.SolverOptions(
+        method="gmres", preconditioner="riesz", rtol=1e-12, max_iterations=2000
+    ),
+    "direct": mk.SolverOptions(),
+}
+
 PRODUCTS = {
     "derham_afw": mk.StressRealization.derham_afw,
     "stabilized_afw": mk.StressRealization.stabilized_afw,
@@ -73,7 +84,7 @@ def isotropic(value):
     return s
 
 
-def solve(nr, nt, dim, family, how, mat):
+def solve(nr, nt, dim, family, how, mat, solver="riesz"):
     """Build the annulus, impose the three conditions, solve, measure."""
     mesh = mk.annulus(nr, nt, dim, family, A_IN, B_OUT, HZ)
 
@@ -97,7 +108,7 @@ def solve(nr, nt, dim, family, how, mat):
     model.add_traction(inner, isotropic(-P_INNER))
     model.add_traction(outer, isotropic(-P_OUTER))
     model.add_free_slip(symmetry)  # rollers: no normal displacement, no shear
-    model.solve()
+    model.solve(options=SOLVERS[solver])
 
     ex = Lame(mat)
     worst = rms = 0.0
@@ -120,6 +131,7 @@ def main():
     ap.add_argument("--nr", type=int, default=6, help="radial divisions of the coarse mesh")
     ap.add_argument("--nu", type=float, default=None, help="Poisson ratio (default lam = mu = 1)")
     ap.add_argument("--vtu", help="write the coarse solution to this .vtu")
+    ap.add_argument("--solver", default="riesz", choices=sorted(SOLVERS))
     args = ap.parse_args()
 
     if args.nu is None:
@@ -133,7 +145,7 @@ def main():
     print(f"  mu = {mat.shear}, lam = {mat.lame}  (nu = {mat.poisson():.4f})\n")
 
     # ---- the profile on one mesh ------------------------------------------
-    model, mesh, ex, worst, rms = solve(args.nr, args.nr // 2, args.dim, family, how, mat)
+    model, mesh, ex, worst, rms = solve(args.nr, args.nr // 2, args.dim, family, how, mat, args.solver)
     print(f"  {model.n_cells} cells, {model.n_dofs} dofs, {model.n_stabilized} stabilized\n")
     print(f"  {'r':>8}  {'u_r (computed)':>16}  {'u_r (Lame)':>12}  {'error':>10}"
           f"  {'sigma_rr (Lame)':>16}")
@@ -175,7 +187,7 @@ def main():
     print(f"\n  {'cells':>8}  {'max error':>11}  {'rms error':>11}  {'rate':>6}")
     previous = None
     for nr in (args.nr, 2 * args.nr, 4 * args.nr):
-        m, _, _, worst, rms = solve(nr, nr // 2, args.dim, family, how, mat)
+        m, _, _, worst, rms = solve(nr, nr // 2, args.dim, family, how, mat, args.solver)
         rate = "" if previous is None else f"{math.log2(previous / rms):6.2f}"
         print(f"  {m.n_cells:8d}  {worst:11.3e}  {rms:11.3e}  {rate:>6}")
         previous = rms
