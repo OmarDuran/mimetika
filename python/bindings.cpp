@@ -22,6 +22,8 @@
 #include <pybind11/stl.h>
 
 #include <array>
+#include <chrono>
+#include <cstdio>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -299,23 +301,65 @@ class AssembledModel {
   std::unique_ptr<Simulation> sim_;
 };
 
+// WHICH STAGE IS RUNNING, on request.
+//
+// Assembly and factorization are the two long stages, and from the outside a
+// process in either one is indistinguishable from a hung one. Reporting goes
+// through py::print rather than std::cout so it interleaves with the script's
+// own output in the order it was written.
+class Stage {
+ public:
+  explicit Stage(bool on) : on_(on) {}
+
+  void begin(const char* what) {
+    if (!on_) return;
+    what_ = what;
+    t0_ = std::chrono::steady_clock::now();
+    py::print("  ", what, " ...", py::arg("sep") = "", py::arg("end") = "",
+              py::arg("flush") = true);
+  }
+
+  void end() {
+    if (!on_) return;
+    const std::chrono::duration<double> dt = std::chrono::steady_clock::now() - t0_;
+    char buf[32];
+    std::snprintf(buf, sizeof buf, " %.2f s", dt.count());
+    py::print(buf, py::arg("flush") = true);
+  }
+
+ private:
+  bool on_;
+  const char* what_{""};
+  std::chrono::steady_clock::time_point t0_{};
+};
+
 // Build, solve and accept, in one call. The three are inseparable -- a model
 // whose state was never accepted answers `displacement` with the wrong vector
 // -- so exposing them apart would only create a way to get it wrong.
-void solve_elasticity(mimetika::CauchyElasticityModel& m) {
+void solve_elasticity(mimetika::CauchyElasticityModel& m, bool progress) {
+  Stage stage(progress);
+  stage.begin("assembling");
   m.build();
+  stage.end();
   mimetika::solver::PetscSolver petsc;
   std::vector<double> x;
+  stage.begin("factorizing and solving");
   const auto rep = petsc.solve(m.system(), m.rhs(), x);
+  stage.end();
   if (!rep.converged) throw std::runtime_error("cauchy elasticity: " + rep.reason);
   m.accept(std::move(x));
 }
 
-void solve_single_phase(mimetika::SinglePhaseModel& m) {
+void solve_single_phase(mimetika::SinglePhaseModel& m, bool progress) {
+  Stage stage(progress);
+  stage.begin("assembling");
   m.build();
+  stage.end();
   mimetika::solver::PetscSolver petsc;
   std::vector<double> x;
+  stage.begin("factorizing and solving");
   const auto rep = petsc.solve(m.system(), m.rhs(), x);
+  stage.end();
   if (!rep.converged) throw std::runtime_error("single phase: " + rep.reason);
   m.accept(std::move(x));
 }
@@ -348,10 +392,18 @@ PYBIND11_MODULE(_core, m) {
                   py::arg("points"), py::arg("cells"))
       .def_static("from_polygons", &exokal::Mesh::from_polygons, py::arg("points"),
                   py::arg("cells"))
-      .def_static("from_polyhedra", &exokal::Mesh::from_polyhedra, py::arg("points"),
-                  py::arg("cells"))
+      // the nested form; the flat-CSR overload is the reader's path, not Python's
+      .def_static(
+          "from_polyhedra",
+          [](std::vector<exokal::Mesh::Point> points,
+             const std::vector<std::vector<std::vector<Index>>>& cells) {
+            return exokal::Mesh::from_polyhedra(std::move(points), cells);
+          },
+          py::arg("points"), py::arg("cells"))
       .def_property_readonly("dim", &exokal::Mesh::dim)
       .def("count", &exokal::Mesh::count, py::arg("k"))
+      .def(
+          "point", [](const exokal::Mesh& x, Index v) { return x.point(v); }, py::arg("vertex"))
       .def("__repr__",
            [](const exokal::Mesh& x) { return "Mesh(dim=" + std::to_string(x.dim()) + ")"; });
 
@@ -361,6 +413,17 @@ PYBIND11_MODULE(_core, m) {
   m.def(
       "measure", [](const exokal::Mesh& x, int k, Index i) { return exokal::measure(x, k, i); },
       py::arg("mesh"), py::arg("k"), py::arg("cell"));
+
+  m.def("read_vtu", &exokal::read_vtu, py::arg("path"), py::arg("tag_array") = "tag");
+
+  // the one cell a boundary facet bounds; the affine datum is written about
+  // that cell's centroid
+  m.def(
+      "cofacet_of",
+      [](const exokal::Mesh& x, int cell_dim, Index facet) {
+        return mimetika::cofacet_of(x, cell_dim, facet);
+      },
+      py::arg("mesh"), py::arg("cell_dim"), py::arg("facet"));
 
   // Writes the top cells with one tuple per cell of each named field. Values
   // are in cell order: field[i] belongs to cell i of dimension mesh.dim().
@@ -476,7 +539,9 @@ PYBIND11_MODULE(_core, m) {
             s.mechanics().emplace<mimetika::FreeSlipBC>(facets);
           },
           py::arg("facets"))
-      .def("solve", &solve_elasticity)
+      .def("prescribe_displacement", &mimetika::CauchyElasticityModel::prescribe_displacement,
+           py::arg("facets"), py::arg("constant"), py::arg("gradient") = std::array<double, 9>{})
+      .def("solve", &solve_elasticity, py::arg("progress") = false)
       .def_property_readonly("dim", &mimetika::CauchyElasticityModel::dim)
       .def_property_readonly("n_cells", &mimetika::CauchyElasticityModel::n_cells)
       .def_property_readonly("n_stabilized", &mimetika::CauchyElasticityModel::n_stabilized)
@@ -523,7 +588,7 @@ PYBIND11_MODULE(_core, m) {
             s.flow().emplace<mimetika::PressureBC>(facets, value);
           },
           py::arg("facets"), py::arg("value"))
-      .def("solve", &solve_single_phase)
+      .def("solve", &solve_single_phase, py::arg("progress") = false)
       .def_property_readonly("dim", &mimetika::SinglePhaseModel::dim)
       .def_property_readonly("n_cells", &mimetika::SinglePhaseModel::n_cells)
       .def_property_readonly(
