@@ -11,7 +11,7 @@
 #include "mimetika/model/compositions/single_phase_flow.hpp"
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/physics/boundary_terms.hpp"
-#include "mimetika/solver/linear.hpp"
+#include "mimetika/linear_solver/linear.hpp"
 
 // SINGLE-PHASE FLOW, STATED AS DATA -- the poroelastic problem with one physics
 // instead of two.
@@ -70,7 +70,17 @@ class SinglePhaseModel {
   const FlowBoundary& flow() const { return flow_; }
 
   int dim() const { return dim_; }
-  const Simulation& simulation() const { return *sim_; }
+  const exokal::Mesh& mesh() const { return *mesh_; }
+  bool built() const { return sim_ != nullptr; }
+
+  // Dereferencing an unbuilt model is a null read, and from Python that is an
+  // abort rather than an exception -- so it is refused by name instead.
+  const Simulation& simulation() const {
+    if (sim_ == nullptr) {
+      throw std::logic_error("SinglePhaseModel: not built yet; call build() or solve() first");
+    }
+    return *sim_;
+  }
   const solver::SparseSystem& system() const { return system_; }
   std::size_t n_cells() const { return n_cells_; }
 

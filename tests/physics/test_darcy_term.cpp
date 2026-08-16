@@ -1,15 +1,13 @@
 #include <algorithm>
 #include <cmath>
 
-#include "mimetika/physics/constitutive/immiscible.hpp"
-#include "exokal/forms/model.hpp"
-#include "mimetika/physics/terms/darcy.hpp"
 #include "../mimetika_test.hpp"
+#include "exokal/forms/model.hpp"
+#include "mimetika/physics/constitutive/immiscible.hpp"
+#include "mimetika/physics/terms/darcy.hpp"
 
 using exokal::Index;
 using exokal::Mesh;
-using exokal::hodge::Coefficient;
-using exokal::hodge::SymTensor;
 using exokal::forms::Coupling;
 using exokal::forms::Epoch;
 using exokal::forms::Model;
@@ -18,13 +16,15 @@ using exokal::forms::StratifiedEpoch;
 using exokal::forms::TermContext;
 using exokal::forms::TripletSink;
 using exokal::forms::Workspace;
-using mimetika::physics::terms::ConstantMobility;
-using mimetika::physics::terms::mixed_darcy_cell;
-using mimetika::physics::terms::PressureEnthalpyMobility;
+using exokal::hodge::Coefficient;
 using exokal::hodge::FluxOperators;
+using exokal::hodge::SymTensor;
 using exokal::spaces::DofLayout;
 using exokal::spaces::DofMap;
 using exokal::spaces::ProductSpace;
+using mimetika::physics::terms::ConstantMobility;
+using mimetika::physics::terms::mixed_darcy_cell;
+using mimetika::physics::terms::PressureEnthalpyMobility;
 
 namespace {
 
@@ -198,14 +198,16 @@ MIMETIKA_TEST(the_same_term_runs_on_a_polytope) {
   for (std::size_t f = 0; f < 6; ++f) s += std::abs(A[6 * n + f]);
   CHECK(near(s, 6.0));
 
-  // and the consistency-only realization refuses this cell, by name
-  bool threw = false;
-  try {
-    (void)FluxOperators::build(m, Coefficient::uniform(1.5), FluxOperators::Realization::derham_rt);
-  } catch (const std::invalid_argument&) {
-    threw = true;
-  }
-  CHECK(threw);
+  // AND THE CONSISTENCY-ONLY REALIZATION TAKES IT TOO, by enrichment.
+  //
+  // It once refused a hexahedron -- RT_0's argument is d+1 modes against d+1
+  // facets, which a cube does not satisfy -- and now enriches with curl-type
+  // divergence-free fields until the six facet moments are unisolvent. Six
+  // unknowns either way, reached by two different arguments, so the term is
+  // still the same kernel over the same layout.
+  const FluxOperators rt =
+      FluxOperators::build(m, Coefficient::uniform(1.5), FluxOperators::Realization::derham_rt);
+  CHECK(rt.n_dofs(0) == 6);
 }
 
 // A STATE-DEPENDENT MOBILITY makes the term nonlinear, and the AD produces
@@ -287,8 +289,8 @@ MIMETIKA_TEST(a_space_missing_a_declared_field_is_refused) {
   const exokal::forms::StencilBuilder sb(c, s, Coupling::closure);
   auto st = sb.at(0);
 
-  mimetika::physics::terms::MixedDarcyCell<PressureEnthalpyMobility> term(h,
-                                                                      PressureEnthalpyMobility{});
+  mimetika::physics::terms::MixedDarcyCell<PressureEnthalpyMobility> term(
+      h, PressureEnthalpyMobility{});
   // resolving the names against a space that lacks one is where this is
   // caught, and the message NAMES the field rather than counting blocks
   bool threw = false;

@@ -5,7 +5,7 @@
 #include "../mimetika_test.hpp"
 #include "mimetika/mesh/structured.hpp"
 #include "mimetika/model/cauchy_elasticity_model.hpp"
-#include "mimetika/solver/petsc.hpp"
+#include "mimetika/linear_solver/petsc.hpp"
 
 // THE CAUCHY ELASTICITY MODEL, AGAINST TWO CLOSED FORMS, ON EVERY CELL TYPE AND
 // BOTH STRESS PRODUCTS.

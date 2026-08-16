@@ -17,7 +17,7 @@
 #include "mimetika/algebraic_constraints/contact/driver.hpp"
 #include "mimetika/benchmarks/novikov_2024.hpp"
 #include "mimetika/model/cauchy_elasticity_model.hpp"
-#include "mimetika/solver/petsc.hpp"
+#include "mimetika/linear_solver/petsc.hpp"
 
 // THE INCLINED DISPLACED FAULT of Novikov et al. (2024), shared by benchmarks 2
 // and 3. They are the SAME problem under two friction laws -- constant Coulomb,

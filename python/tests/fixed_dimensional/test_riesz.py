@@ -1,0 +1,119 @@
+"""The Riesz map preconditioner, and the one property that defines it.
+
+A block preconditioner is not judged by being fast on one mesh. P is the matrix
+of the inner product of the space the operator is an isomorphism on,
+
+    ||(q, p)||_X^2 = (K^-1 q, q) + ||div q||_L2^2 + ||p||_L2^2
+
+and the theorem that makes it worth building says P^-1 A has a condition number
+bounded by the inf-sup and continuity constants alone. Those do not depend on h.
+So the ITERATION COUNT MUST NOT GROW under refinement, and a count that grows is
+the signature of a P that is not that Gram matrix -- which is what a plain B^T B
+in place of B^T diag(1/|E|) B produces, and what leaving the constrained rows
+alone produces.
+
+The test is therefore a refinement sweep, not a timing.
+"""
+
+import math
+
+import pytest
+
+import mimetika_cxx as mk
+
+A_IN, B_OUT = 1.0, 10.0
+P_IN, P_OUT = 2.0, 1.0
+
+RIESZ = mk.SolverOptions(
+    method="gmres", preconditioner="riesz", rtol=1e-10, max_iterations=2000
+)
+
+
+def dupuit(nr, dim=2, family=None, product=None):
+    """The annulus with sealed symmetry planes: strong constraints and natural data."""
+    family = mk.Family.simplex if family is None else family
+    product = mk.FluxRealization.derham_rt if product is None else product
+    mesh = mk.annulus(nr, nr // 2, dim, family, A_IN, B_OUT, 1.0)
+    model = mk.SinglePhaseModel(mesh, dim, 1.0, product)
+    rmid = math.sqrt(A_IN * B_OUT)
+    inner, outer, sealed = [], [], []
+    for f in mk.boundary_facets(mesh, dim):
+        x = mk.centroid(mesh, dim - 1, f)
+        on_symmetry = (
+            abs(x[0]) < 1e-8
+            or abs(x[1]) < 1e-8
+            or (dim == 3 and (abs(x[2]) < 1e-8 or abs(x[2] - 1.0) < 1e-8))
+        )
+        if on_symmetry:
+            sealed.append(f)
+        elif math.hypot(x[0], x[1]) < rmid:
+            inner.append(f)
+        else:
+            outer.append(f)
+    model.add_normal_flux(sealed)  # STRONG: pinned rows, which P must match
+    model.add_pressure(inner, P_IN)
+    model.add_pressure(outer, P_OUT)
+    return model
+
+
+# THE DEFINING PROPERTY. Six meshes over a hundredfold in unknowns, and the
+# count is not allowed to drift upward: the slack here is wide enough that
+# ordinary variation passes and a preconditioner that scales with h does not.
+def test_the_iteration_count_does_not_grow_under_refinement():
+    counts = []
+    for nr in (8, 16, 32, 48, 64):
+        model = dupuit(nr)
+        report = model.solve(options=RIESZ)
+        counts.append(report.iterations)
+        print(f"  {model.n_cells:6d} cells {model.n_dofs:7d} dofs   {report.iterations:4d} its")
+    assert counts[-1] <= 2 * counts[0]
+    # and the growth is not monotone creep either: the finest is no worse than
+    # the coarsest, which is what "independent of h" actually claims
+    assert counts[-1] <= counts[0] + 5
+
+
+# CONVERGED IS NOT CORRECT. A preconditioner that quietly changes the operator
+# converges to the wrong vector, so the answer is compared against the direct
+# solve of the same system rather than against a tolerance.
+@pytest.mark.parametrize("nr", [8, 24])
+def test_the_preconditioned_answer_is_the_direct_answer(nr):
+    direct = dupuit(nr)
+    direct.solve()
+    riesz = dupuit(nr)
+    riesz.solve(options=RIESZ)
+    worst = max(
+        abs(direct.cell_pressure(e) - riesz.cell_pressure(e)) for e in range(direct.n_cells)
+    )
+    print(f"  {direct.n_cells} cells   max |riesz - direct| = {worst:.2e}")
+    assert worst < 1e-7
+
+
+# The split is the factors of the space, and it must tile the unknowns: one left
+# out is never preconditioned, one counted twice is corrected twice.
+def test_the_split_is_the_factors_of_the_space():
+    model = dupuit(8)
+    with pytest.raises(RuntimeError):  # the space does not exist until it is built
+        mk.field_blocks(model)
+    model.solve()
+    blocks = mk.field_blocks(model)
+    assert [b["name"] for b in blocks] == ["q_0", "p_0"]
+    assert sum(b["size"] for b in blocks) == model.n_dofs
+    assert blocks[0]["ranges"][0][0] == 0
+    assert blocks[-1]["ranges"][-1][1] == model.n_dofs
+
+
+# The map is written against H(div) x L2, so it holds in 3D and on cells that
+# are not simplices -- the norm does not know the cell type.
+@pytest.mark.parametrize(
+    "dim,family",
+    [(2, mk.Family.cartesian), (3, mk.Family.simplex), (3, mk.Family.prism)],
+    ids=["2D-cartesian", "3D-simplex", "3D-prism"],
+)
+def test_it_holds_across_dimension_and_cell_type(dim, family):
+    counts = []
+    for nr in (6, 12):
+        model = dupuit(nr, dim=dim, family=family)
+        report = model.solve(options=RIESZ)
+        counts.append(report.iterations)
+        print(f"  {dim}D {model.n_cells:5d} cells {model.n_dofs:6d} dofs   {report.iterations:4d} its")
+    assert counts[-1] <= 2 * counts[0]

@@ -5,7 +5,7 @@
 #include "../mimetika_test.hpp"
 #include "mimetika/mesh/structured.hpp"
 #include "mimetika/model/single_phase_model.hpp"
-#include "mimetika/solver/petsc.hpp"
+#include "mimetika/linear_solver/petsc.hpp"
 
 // THE SINGLE-PHASE SOLVER, AGAINST TWO CLOSED FORMS, ON EVERY CELL TYPE.
 //
@@ -159,20 +159,37 @@ const char* product_name(Realization r) {
   return "?";
 }
 
-// WHAT EACH PRODUCT CLAIMS, stated once. A configuration outside a product's
-// claim is not a failure and not a silent skip -- it is reported as refused,
-// and a separate test checks that the refusal is an exception rather than a
-// wrong answer.
-bool supported(Realization r, int dim, Family f) {
-  switch (r) {
-    case Realization::derham_bdm: return true;
-    // RT_0's unisolvence argument is d+1 modes against d+1 facets: a simplex,
-    // in either dimension
-    case Realization::derham_rt: return f == Family::simplex && !(dim == 3 && f == Family::prism);
-    // the stabilized construction is polytopal in both dimensions
-    case Realization::stabilized_rt: return true;
+// WHAT EACH PRODUCT CLAIMS, stated once.
+//
+// All three claim every structured family in both dimensions. RT_0's original
+// argument was d+1 modes against d+1 facets -- a simplex, and a hexahedron was
+// a different case rather than a coarser one -- but the consistency-only
+// families now ENRICH with curl-type divergence-free fields until the facet
+// moments are unisolvent, and that reaches the tensor cells too.
+//
+// The claim is therefore bounded by FACET COUNT, not by cell type: past
+// exokal's default_max_facets a cell is refused before any search is attempted,
+// which is what a_cell_past_the_facet_limit_is_refused pins down.
+bool supported(Realization, int, Family) { return true; }
+
+// An n-gonal prism as a single cell: n side quads and two caps, so n + 2
+// facets. The one family whose facet count is a free parameter.
+exokal::Mesh drum(int n) {
+  std::vector<exokal::Mesh::Point> pts;
+  for (const double z : {0.0, 1.0}) {
+    for (int i = 0; i < n; ++i) {
+      const double a = 2.0 * M_PI * i / n;
+      pts.push_back({std::cos(a), std::sin(a), z});
+    }
   }
-  return false;
+  std::vector<Index> bottom, top;
+  for (int i = n - 1; i >= 0; --i) bottom.push_back(i);
+  for (int i = 0; i < n; ++i) top.push_back(n + i);
+  std::vector<std::vector<Index>> faces{bottom, top};
+  for (int i = 0; i < n; ++i) {
+    faces.push_back({i, (i + 1) % n, (i + 1) % n + n, i + n});
+  }
+  return exokal::Mesh::from_polyhedra(std::move(pts), {faces});
 }
 
 }  // namespace
@@ -264,28 +281,35 @@ MIMETIKA_TEST(rt_and_the_stabilized_product_coincide_on_a_simplex) {
   }
 }
 
-// EVERY UNCLAIMED CONFIGURATION RAISES. A product that is not unisolvent on a
-// cell must say so: RT_0's whole argument is four modes against four facet
-// fluxes, so a hexahedron is a different case and not a coarser one, and the
-// stabilized construction is written for volumes. Refusing is the correct
-// behaviour, and a silent wrong answer is the one thing that is not.
-MIMETIKA_TEST(every_product_refuses_what_it_does_not_claim) {
-  for (const Realization r : kProducts) {
-    for (const int dim : {2, 3}) {
-      for (const Family f : kFamilies) {
-        if (supported(r, dim, f)) continue;
-        bool refused = false;
-        try {
-          column_case(2, dim, f, r);
-        } catch (const std::exception&) {
-          refused = true;
-        }
-        std::printf("  %-10s %dD %-10s  %s\n", product_name(r), dim, mimetika::mesh::name(f),
-                    refused ? "refused" : "ACCEPTED -- unclaimed but did not raise");
-        CHECK(refused);
-      }
+// WHERE THE CONSISTENCY-ONLY FAMILY STOPS, and that it stops by refusing.
+//
+// The enrichment is not unbounded: a cell with more facets than the search is
+// willing to chase is refused at once, before any search, because F is known
+// and discovering the refusal the slow way costs tens of milliseconds a cell.
+// An n-gonal prism walks the boundary one facet at a time -- n sides and two
+// caps -- so the limit is located rather than assumed.
+//
+// The stabilized construction has a fallback and takes every one of them, which
+// is what makes the pair the test: the refusal is a property of the
+// consistency-only argument and not of the cell being difficult.
+MIMETIKA_TEST(a_cell_past_the_facet_limit_is_refused) {
+  const auto builds = [](int n, Realization r) {
+    try {
+      (void)exokal::hodge::FluxOperators::build(drum(n), 3,
+                                                exokal::hodge::Coefficient::uniform(1.0), r);
+      return true;
+    } catch (const std::exception&) {
+      return false;
     }
-  }
+  };
+  // the last accepted cell and the first refused one, on either side of the cap
+  CHECK(builds(11, Realization::derham_rt));   // 13 facets
+  CHECK(!builds(12, Realization::derham_rt));  // 14
+  CHECK(!builds(16, Realization::derham_rt));
+  // the stabilized product stabilizes instead of enriching, and has no limit
+  CHECK(builds(12, Realization::stabilized_rt));
+  CHECK(builds(16, Realization::stabilized_rt));
+  std::printf("  derham_rt accepts 13 facets and refuses 14; stabilized_rt takes both\n");
 }
 
 MIMETIKA_TEST_MAIN()

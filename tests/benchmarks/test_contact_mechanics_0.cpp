@@ -9,7 +9,7 @@
 #include "mimetika/benchmarks/novikov_2024.hpp"
 #include "mimetika/mesh/structured.hpp"
 #include "mimetika/model/cauchy_elasticity_model.hpp"
-#include "mimetika/solver/petsc.hpp"
+#include "mimetika/linear_solver/petsc.hpp"
 
 // BENCHMARK 0 of Novikov et al. (2024): the in-situ state and the depletion
 // response, with NO FAULT. The case that has to be right before contact can be

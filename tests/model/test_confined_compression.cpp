@@ -10,7 +10,7 @@
 #include "mimetika/model/boundary.hpp"
 #include "mimetika/model/compositions/elasticity.hpp"
 #include "mimetika/model/simulation.hpp"
-#include "mimetika/solver/petsc.hpp"
+#include "mimetika/linear_solver/petsc.hpp"
 
 // THE SAME PROBLEM IN EVERY DIMENSION AND EVERY CELL FAMILY.
 //

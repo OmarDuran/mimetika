@@ -23,7 +23,7 @@
 #include <vector>
 
 #include "mimetika/model/poroelastic_model.hpp"
-#include "mimetika/solver/petsc.hpp"
+#include "mimetika/linear_solver/petsc.hpp"
 
 using namespace mimetika;
 using graphos::Index;

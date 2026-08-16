@@ -15,7 +15,7 @@
 #include "mimetika/model/compositions/poroelasticity.hpp"
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/physics/boundary_terms.hpp"
-#include "mimetika/solver/linear.hpp"
+#include "mimetika/linear_solver/linear.hpp"
 
 // A POROELASTIC PROBLEM, STATED AS DATA.
 //

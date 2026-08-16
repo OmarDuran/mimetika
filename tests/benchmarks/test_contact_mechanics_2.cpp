@@ -11,7 +11,7 @@
 #include "mimetika/algebraic_constraints/contact/driver.hpp"
 #include "mimetika/benchmarks/novikov_2024.hpp"
 #include "mimetika/model/cauchy_elasticity_model.hpp"
-#include "mimetika/solver/petsc.hpp"
+#include "mimetika/linear_solver/petsc.hpp"
 
 // BENCHMARK 2 of Novikov et al. (2024): the INCLINED displaced fault, with
 // constant Coulomb friction (paper 4.1).

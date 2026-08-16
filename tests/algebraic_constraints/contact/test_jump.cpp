@@ -5,7 +5,7 @@
 #include "../../mimetika_test.hpp"
 #include "mimetika/mesh/structured.hpp"
 #include "mimetika/model/cauchy_elasticity_model.hpp"
-#include "mimetika/solver/petsc.hpp"
+#include "mimetika/linear_solver/petsc.hpp"
 
 // THE TRACE OPERATOR, AGAINST A SOLVED SYSTEM.
 //

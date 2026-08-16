@@ -10,7 +10,7 @@
 #include "mimetika/model/compositions/poroelasticity.hpp"
 #include "mimetika/model/compositions/single_phase_flow.hpp"
 #include "mimetika/model/simulation.hpp"
-#include "mimetika/solver/petsc.hpp"
+#include "mimetika/linear_solver/petsc.hpp"
 
 using mimetika::Simulation;
 using mimetika::StratumSpec;

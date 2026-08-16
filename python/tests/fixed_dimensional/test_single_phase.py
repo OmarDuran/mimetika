@@ -101,13 +101,13 @@ def annulus_case(nr, nt, dim, family, how=BDM) -> Outcome:
 # a separate test checks that the refusal is an exception rather than a wrong
 # answer.
 def supported(r, dim, family) -> bool:
-    if r == BDM:
-        return True
-    # RT_0's unisolvence argument is d+1 modes against d+1 facets: a simplex,
-    # in either dimension
-    if r == RT:
-        return family == mk.Family.simplex and not (dim == 3 and family == mk.Family.prism)
-    # the stabilized construction is polytopal in both dimensions
+    # All three claim every structured family in both dimensions. RT_0's
+    # original argument was d+1 modes against d+1 facets -- a simplex, with a
+    # hexahedron a different case rather than a coarser one -- but the
+    # consistency-only families now enrich with curl-type divergence-free
+    # fields until the facet moments are unisolvent, which reaches the tensor
+    # cells too. The claim is bounded by FACET COUNT, not by cell type.
+    del r, dim, family
     return True
 
 
@@ -117,13 +117,6 @@ CLAIMED = [
     for dim in (2, 3)
     for f in FAMILIES
     if supported(r, dim, f)
-]
-UNCLAIMED = [
-    (r, dim, f)
-    for r in PRODUCTS
-    for dim in (2, 3)
-    for f in FAMILIES
-    if not supported(r, dim, f)
 ]
 _ID = lambda c: f"{str(c[0]).split('.')[-1]}-{c[1]}D-{str(c[2]).split('.')[-1]}"  # noqa: E731
 
@@ -193,12 +186,40 @@ def test_rt_and_the_stabilized_product_coincide_on_a_simplex(nr):
     assert abs(rt.rms_err - mfd.rms_err) < 1e-12
 
 
-# EVERY UNCLAIMED CONFIGURATION RAISES. A product that is not unisolvent on a
-# cell must say so: RT_0's whole argument is four modes against four facet
-# fluxes, so a hexahedron is a different case and not a coarser one. Refusing is
-# the correct behaviour, and a silent wrong answer is the one thing that is not.
-@pytest.mark.parametrize("how,dim,family", UNCLAIMED, ids=[_ID(c) for c in UNCLAIMED])
-def test_every_product_refuses_what_it_does_not_claim(how, dim, family):
-    with pytest.raises(Exception):
-        column_case(2, dim, family, how)
-    print(f"  {mk.flux_realization_name(how):<10} {dim}D {mk.family_name(family):<10}  refused")
+def drum(n):
+    """An n-gonal prism as a single cell: n side quads and two caps, n+2 facets.
+
+    The one family whose facet count is a free parameter, so the limit can be
+    located rather than assumed.
+    """
+    pts = [[math.cos(2 * math.pi * i / n), math.sin(2 * math.pi * i / n), z] for z in (0.0, 1.0)
+           for i in range(n)]
+    faces = [list(range(n - 1, -1, -1)), list(range(n, 2 * n))]
+    faces += [[i, (i + 1) % n, (i + 1) % n + n, i + n] for i in range(n)]
+    return mk.Mesh.from_polyhedra(pts, [faces])
+
+
+def builds(n, how):
+    try:
+        m = drum(n)
+        model = mk.SinglePhaseModel(m, 3, 1.0, how)
+        model.add_pressure(mk.boundary_facets(m, 3), 1.0)
+        model.solve()
+        return True
+    except Exception:
+        return False
+
+
+# WHERE THE CONSISTENCY-ONLY FAMILY STOPS, and that it stops by refusing.
+#
+# The enrichment is not unbounded: past a cap on the facet count the cell is
+# refused at once, before any search. The stabilized product stabilizes instead
+# of enriching and has no such limit, which is what makes the pair the test --
+# the refusal belongs to the consistency-only argument, not to the cell being
+# difficult. A silent wrong answer is the one thing that would not be correct.
+@pytest.mark.parametrize("n,accepted", [(11, True), (12, False), (16, False)])
+def test_the_consistency_only_product_refuses_past_the_facet_limit(n, accepted):
+    assert builds(n, RT) is accepted
+    assert builds(n, STABILIZED) is True  # no limit: it never had to enrich
+    print(f"  {n + 2:2d} facets   derham_rt {'accepts' if accepted else 'refuses'}, "
+          f"stabilized_rt accepts")

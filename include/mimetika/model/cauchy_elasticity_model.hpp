@@ -11,8 +11,8 @@
 #include "mimetika/model/compositions/elasticity.hpp"
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/physics/boundary_terms.hpp"
-#include "mimetika/solver/linear.hpp"
-#include "mimetika/solver/petsc.hpp"
+#include "mimetika/linear_solver/linear.hpp"
+#include "mimetika/linear_solver/petsc.hpp"
 
 // CAUCHY ELASTICITY, STATED AS DATA -- the poroelastic model with the flow
 // taken out, and the smallest problem that exercises the stress space alone.
@@ -102,6 +102,7 @@ class CauchyElasticityModel {
   const MechanicsBoundary& mechanics() const { return mechanics_; }
 
   int dim() const { return dim_; }
+  const exokal::Mesh& mesh() const { return *mesh_; }
   Realization realization() const { return how_; }
   const char* realization_name() const { return exokal::hodge::StressOperators::name(how_); }
   const ElasticMaterial& material() const { return material_; }

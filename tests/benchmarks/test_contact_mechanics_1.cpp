@@ -11,7 +11,7 @@
 #include "mimetika/algebraic_constraints/contact/driver.hpp"
 #include "mimetika/benchmarks/novikov_2024.hpp"
 #include "mimetika/mesh/structured.hpp"
-#include "mimetika/solver/petsc.hpp"
+#include "mimetika/linear_solver/petsc.hpp"
 
 // BENCHMARK 1 of Novikov et al. (2024): the VERTICAL DISPLACED FAULT, frictionless.
 //

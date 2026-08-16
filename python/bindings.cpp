@@ -42,7 +42,8 @@
 #include "mimetika/model/compositions/single_phase_flow.hpp"
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/model/single_phase_model.hpp"
-#include "mimetika/solver/petsc.hpp"
+#include "mimetika/linear_solver/fields.hpp"
+#include "mimetika/linear_solver/petsc.hpp"
 
 namespace py = pybind11;
 
@@ -336,32 +337,70 @@ class Stage {
 // Build, solve and accept, in one call. The three are inseparable -- a model
 // whose state was never accepted answers `displacement` with the wrong vector
 // -- so exposing them apart would only create a way to get it wrong.
-void solve_elasticity(mimetika::CauchyElasticityModel& m, bool progress) {
+// The Riesz map needs the factors of the space and the L2 weights of the cell
+// unknown, which is the cell measure. Both are read off the model rather than
+// restated, so a change of space cannot leave the preconditioner behind.
+template <class Model>
+void attach_split(mimetika::solver::PetscSolver& petsc, const Model& m, const exokal::Mesh& mesh,
+                  int dim) {
+  const auto blocks = mimetika::solver::field_blocks(m.simulation().epoch());
+  if (blocks.size() < 2) {
+    throw std::runtime_error("riesz: the space has fewer than two factors");
+  }
+  mimetika::solver::BlockSplit split;
+  for (const auto& b : blocks) {
+    std::vector<int> idx;
+    idx.reserve(b.size());
+    for (const Index g : b.indices()) idx.push_back(static_cast<int>(g));
+    split.blocks.push_back(std::move(idx));
+  }
+  // the last factor is the cell unknown: its L2 mass is the cell measure
+  split.cell_measure.reserve(static_cast<std::size_t>(mesh.count(dim)));
+  for (Index e = 0; e < mesh.count(dim); ++e) {
+    split.cell_measure.push_back(exokal::measure(mesh, dim, e));
+  }
+  // the constrained unknowns, with the diagonal A gave them
+  const auto& c = m.simulation().constraints();
+  for (std::size_t i = 0; i < m.simulation().n_dofs(); ++i) {
+    if (!c.pinned(i)) continue;
+    split.pinned.push_back(static_cast<int>(i));
+    split.pinned_diagonal.push_back(c.scale_at(i));
+  }
+  petsc.set_split(std::move(split));
+}
+
+mimetika::solver::SolveReport solve_elasticity(mimetika::CauchyElasticityModel& m, bool progress,
+                                               const mimetika::solver::SolverOptions& opts) {
   Stage stage(progress);
   stage.begin("assembling");
   m.build();
   stage.end();
-  mimetika::solver::PetscSolver petsc;
+  mimetika::solver::PetscSolver petsc(opts);
+  if (opts.preconditioner == "riesz") attach_split(petsc, m, m.mesh(), m.dim());
   std::vector<double> x;
-  stage.begin("factorizing and solving");
+  stage.begin(opts.direct() ? "factorizing and solving" : "solving");
   const auto rep = petsc.solve(m.system(), m.rhs(), x);
   stage.end();
   if (!rep.converged) throw std::runtime_error("cauchy elasticity: " + rep.reason);
   m.accept(std::move(x));
+  return rep;
 }
 
-void solve_single_phase(mimetika::SinglePhaseModel& m, bool progress) {
+mimetika::solver::SolveReport solve_single_phase(mimetika::SinglePhaseModel& m, bool progress,
+                                                 const mimetika::solver::SolverOptions& opts) {
   Stage stage(progress);
   stage.begin("assembling");
   m.build();
   stage.end();
-  mimetika::solver::PetscSolver petsc;
+  mimetika::solver::PetscSolver petsc(opts);
+  if (opts.preconditioner == "riesz") attach_split(petsc, m, m.mesh(), m.dim());
   std::vector<double> x;
-  stage.begin("factorizing and solving");
+  stage.begin(opts.direct() ? "factorizing and solving" : "solving");
   const auto rep = petsc.solve(m.system(), m.rhs(), x);
   stage.end();
   if (!rep.converged) throw std::runtime_error("single phase: " + rep.reason);
   m.accept(std::move(x));
+  return rep;
 }
 
 // A CellData field from a NumPy array: (n,) is a scalar, (n,3) a vector,
@@ -385,6 +424,56 @@ exokal::CellField cell_field(const std::string& name, const py::array& a) {
 
 PYBIND11_MODULE(_core, m) {
   m.doc() = "Python interface to the mimetika C++ application";
+
+  // The factors of a model's space, as the solver sees them: name, size and
+  // where each run begins. What a block preconditioner is built from, and the
+  // first thing to look at when one misbehaves.
+  m.def(
+      "field_blocks",
+      [](const mimetika::SinglePhaseModel& s) {
+        py::list out;
+        for (const auto& b : mimetika::solver::field_blocks(s.simulation().epoch())) {
+          py::list runs;
+          for (const auto& r : b.ranges) runs.append(py::make_tuple(r.begin, r.end));
+          out.append(py::dict(py::arg("name") = b.name, py::arg("size") = b.size(),
+                              py::arg("ranges") = runs));
+        }
+        return out;
+      },
+      py::arg("model"));
+
+  // ---- how the linear system is solved -------------------------------------
+  py::class_<mimetika::solver::SolverOptions>(m, "SolverOptions")
+      .def(py::init([](std::string method, std::string factorization, std::string preconditioner,
+                       double rtol, double atol, int max_iterations) {
+             return mimetika::solver::SolverOptions{
+                 std::move(method), std::move(factorization), std::move(preconditioner), rtol, atol,
+                 max_iterations};
+           }),
+           py::arg("method") = "direct", py::arg("factorization") = "superlu",
+           py::arg("preconditioner") = "lu", py::arg("rtol") = 1e-10, py::arg("atol") = 1e-50,
+           py::arg("max_iterations") = 1000)
+      .def_readwrite("method", &mimetika::solver::SolverOptions::method)
+      .def_readwrite("factorization", &mimetika::solver::SolverOptions::factorization)
+      .def_readwrite("preconditioner", &mimetika::solver::SolverOptions::preconditioner)
+      .def_readwrite("rtol", &mimetika::solver::SolverOptions::rtol)
+      .def_readwrite("atol", &mimetika::solver::SolverOptions::atol)
+      .def_readwrite("max_iterations", &mimetika::solver::SolverOptions::max_iterations)
+      .def_property_readonly("direct", &mimetika::solver::SolverOptions::direct)
+      .def("__repr__", [](const mimetika::solver::SolverOptions& o) {
+        return o.direct() ? "SolverOptions(direct, " + o.factorization + ")"
+                          : "SolverOptions(" + o.method + " + " + o.preconditioner + ")";
+      });
+
+  py::class_<mimetika::solver::SolveReport>(m, "SolveReport")
+      .def_readonly("converged", &mimetika::solver::SolveReport::converged)
+      .def_readonly("iterations", &mimetika::solver::SolveReport::iterations)
+      .def_readonly("residual", &mimetika::solver::SolveReport::residual)
+      .def_readonly("reason", &mimetika::solver::SolveReport::reason)
+      .def("__repr__", [](const mimetika::solver::SolveReport& r) {
+        return "SolveReport(converged=" + std::string(r.converged ? "True" : "False") +
+               ", iterations=" + std::to_string(r.iterations) + ", reason='" + r.reason + "')";
+      });
 
   // ---- mesh ----------------------------------------------------------------
   py::class_<exokal::Mesh>(m, "Mesh")
@@ -541,7 +630,8 @@ PYBIND11_MODULE(_core, m) {
           py::arg("facets"))
       .def("prescribe_displacement", &mimetika::CauchyElasticityModel::prescribe_displacement,
            py::arg("facets"), py::arg("constant"), py::arg("gradient") = std::array<double, 9>{})
-      .def("solve", &solve_elasticity, py::arg("progress") = false)
+      .def("solve", &solve_elasticity, py::arg("progress") = false,
+           py::arg("options") = mimetika::solver::SolverOptions{})
       .def_property_readonly("dim", &mimetika::CauchyElasticityModel::dim)
       .def_property_readonly("n_cells", &mimetika::CauchyElasticityModel::n_cells)
       .def_property_readonly("n_stabilized", &mimetika::CauchyElasticityModel::n_stabilized)
@@ -588,7 +678,8 @@ PYBIND11_MODULE(_core, m) {
             s.flow().emplace<mimetika::PressureBC>(facets, value);
           },
           py::arg("facets"), py::arg("value"))
-      .def("solve", &solve_single_phase, py::arg("progress") = false)
+      .def("solve", &solve_single_phase, py::arg("progress") = false,
+           py::arg("options") = mimetika::solver::SolverOptions{})
       .def_property_readonly("dim", &mimetika::SinglePhaseModel::dim)
       .def_property_readonly("n_cells", &mimetika::SinglePhaseModel::n_cells)
       .def_property_readonly(
