@@ -721,6 +721,9 @@ PYBIND11_MODULE(_core, m) {
       .def("material", &mimetika::CauchyElasticityModel::material, py::return_value_policy::copy)
       .def("displacement", &mimetika::CauchyElasticityModel::displacement, py::arg("cell"),
            py::arg("axis"))
+      .def("rotation", &mimetika::CauchyElasticityModel::rotation, py::arg("cell"),
+           py::arg("generator"))
+      .def_property_readonly("n_rotations", &mimetika::CauchyElasticityModel::n_rotations)
       .def("normal_traction", &mimetika::CauchyElasticityModel::normal_traction, py::arg("facet"))
       .def("cell_stress", &mimetika::CauchyElasticityModel::cell_stress, py::arg("cell"))
       .def("facet_traction", &mimetika::CauchyElasticityModel::facet_traction, py::arg("facet"));

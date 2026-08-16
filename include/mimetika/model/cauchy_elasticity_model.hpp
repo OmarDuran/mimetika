@@ -204,6 +204,7 @@ class CauchyElasticityModel {
     work_.assign(sim_->n_dofs(), 0.0);
     s_offset_ = static_cast<std::size_t>(sp.offset(sp.index_of("s_0")));
     u_offset_ = static_cast<std::size_t>(sp.offset(sp.index_of("u_0")));
+    g_offset_ = static_cast<std::size_t>(sp.offset(sp.index_of("g_0")));
     n_cells_ = static_cast<std::size_t>(c.count(dim_));
   }
 
@@ -476,6 +477,26 @@ class CauchyElasticityModel {
            exokal::measure(*mesh_, dim_, cell);
   }
 
+  // THE CELL ROTATION, the multiplier of the weak symmetry constraint.
+  //
+  // Same two conversions as the displacement, and for the same reasons: the
+  // unknown is the MOMENT over the cell and it stands in the constitutive row
+  // with the opposite sign. `p` indexes the generators of skew(d) in (i < j)
+  // order -- one in two dimensions, three in three -- so gamma(e, 0) is the
+  // rotation of the plane in 2D and the yz, xz, xy components follow in 3D.
+  //
+  // For a displacement field u, the rotation it is measuring is skew(grad u):
+  // an exactly reproduced linear field therefore has an exactly reproduced
+  // rotation, which is what makes it worth reporting next to the stress.
+  double rotation(Index cell, int p) const {
+    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& mg = sp.map(sp.index_of("g_0"));
+    return -state_[g_offset_ + static_cast<std::size_t>(mg.global(dim_, cell, 0, p))] /
+           exokal::measure(*mesh_, dim_, cell);
+  }
+
+  int n_rotations() const { return dim_ * (dim_ - 1) / 2; }
+
   // THE CELL-AVERAGE STRESS TENSOR, reconstructed from the facet tractions the
   // space already carries.
   //
@@ -618,7 +639,7 @@ class CauchyElasticityModel {
   BoundaryVectorData displacement_data_{0};
   std::vector<Index> prescribed_;
   std::vector<std::size_t> prescribed_forms_, prescribed_dofs_;
-  std::size_t s_offset_{0}, u_offset_{0}, n_cells_{0};
+  std::size_t s_offset_{0}, u_offset_{0}, g_offset_{0}, n_cells_{0};
   bool load_ready_{false};
 };
 

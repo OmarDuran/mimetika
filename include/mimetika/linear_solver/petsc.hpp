@@ -127,11 +127,12 @@ struct SpaceNorm {
   //
   //     P = diag( M + B^T W^{-1} B ,  W ) .
   //
-  // W IS THE SCHUR SCALE, not the variational L2 mass, and the two differ when
-  // the constraint rows are scaled. Flow's mass balance is the incidence, so
-  // (Bq)_E is the integral of div q and W = |E|. Elasticity's Dv and As divide
-  // by |E| already, so B = (1/|E|) B_var, the Schur complement B M^{-1} B^T
-  // scales as (1/|E|^2)|E| = 1/|E|, and W = 1/|E|.
+  // W IS THE L2 MASS IN THE DOF BASIS, and that basis differs between the two.
+  // Flow's cell unknown is the VALUE of p on the cell, so ||p||^2 = sum p^2 |E|
+  // and W = |E|. Elasticity's cell unknowns are MOMENTS -- u_dof = int_E u, as
+  // CauchyElasticityModel::displacement shows by dividing by the measure to
+  // report a mean -- so ||u||^2 = sum (u_dof/|E|)^2 |E| = sum u_dof^2 / |E| and
+  // W = 1/|E|. The rotation is a moment likewise.
   //
   // Measured on the Lame annulus, cond(P^{-1}A) with W = |E| is 8e2 and rising
   // with refinement; with W = 1/|E| it is 3.2, 3.4, 3.5 over the same three
