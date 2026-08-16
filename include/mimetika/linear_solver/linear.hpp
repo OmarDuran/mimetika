@@ -88,6 +88,15 @@ struct SolveReport {
   int iterations{0};
   double residual{0.0};  // ||Ax - b|| relative to ||b||
   std::string reason;
+
+  // WHERE THE TIME WENT, and the three are not interchangeable. Building the
+  // matrix is linear in the assembly; building the preconditioner is the part
+  // that decides whether a mesh is reachable at all; the iteration is what the
+  // preconditioner was chosen to shorten. Reporting one number for all three
+  // hides which of them to fix.
+  double matrix_seconds{0.0};
+  double preconditioner_seconds{0.0};
+  double solve_seconds{0.0};
 };
 
 class LinearSolver {

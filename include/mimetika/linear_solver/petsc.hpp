@@ -254,13 +254,18 @@ class PetscSolver final : public LinearSolver {
     release();
     n_ = static_cast<PetscInt>(A.n);
     bound_ = &A;  // build_riesz reads the triplets, so bind before the KSP
+    const auto t0 = std::chrono::steady_clock::now();
     build_matrix(A);
+    const auto t1 = std::chrono::steady_clock::now();
     build_ksp();
     check(VecCreateSeq(PETSC_COMM_SELF, n_, &rhs_), "VecCreate");
     check(VecDuplicate(rhs_, &sol_), "VecDuplicate");
     // force the factorization now rather than on the first solve, so that the
     // cost shows up where it is paid
     check(KSPSetUp(ksp_), "KSPSetUp");
+    const auto t2 = std::chrono::steady_clock::now();
+    matrix_seconds_ = std::chrono::duration<double>(t1 - t0).count();
+    preconditioner_seconds_ = std::chrono::duration<double>(t2 - t1).count();
     bound_ = &A;
   }
 
@@ -287,7 +292,10 @@ class PetscSolver final : public LinearSolver {
   SolveReport solve(const SparseSystem& A, const std::vector<double>& b,
                     std::vector<double>& x) override {
     if (bound_ != &A) factorize(A);
-    return solve(b, x);
+    SolveReport r = solve(b, x);
+    r.matrix_seconds = matrix_seconds_;
+    r.preconditioner_seconds = preconditioner_seconds_;
+    return r;
   }
 
  private:
@@ -635,7 +643,9 @@ class PetscSolver final : public LinearSolver {
     Vec sol = sol_;
     const PetscInt n = n_;
     SolveReport out;
+    const auto t0 = std::chrono::steady_clock::now();
     const PetscErrorCode e = KSPSolve(ksp, rhs_, sol);
+    out.solve_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     if (e == 0) {
       KSPConvergedReason why = KSP_CONVERGED_ITERATING;
       KSPGetConvergedReason(ksp, &why);
@@ -678,6 +688,7 @@ class PetscSolver final : public LinearSolver {
   }
 
   SolverOptions opts_;
+  double matrix_seconds_{0.0}, preconditioner_seconds_{0.0};
   SpaceNorm norm_;
   std::vector<Mat> riesz_;  // the diagonal blocks of the Riesz map
   std::string prefix_;

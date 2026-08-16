@@ -37,12 +37,29 @@ FAMILIES = {
 # its iteration count does not grow with the mesh. "direct" is a full
 # factorization: exact, and the wrong instrument past a few hundred thousand
 # unknowns.
-SOLVERS = {
-    "direct": mk.SolverOptions(),
-    "riesz": mk.SolverOptions(
-        method="gmres", preconditioner="riesz", rtol=1e-12, max_iterations=2000
-    ),
-}
+def solvers(rtol):
+    """The linear solvers, at the residual tolerance asked for.
+
+    "riesz" is the Riesz map of the space the operator is an isomorphism on --
+    P is the Gram matrix of its norm -- so its iteration count does not grow
+    with the mesh. "direct" is a full factorization: exact, and the wrong
+    instrument past a few hundred thousand unknowns.
+
+    THE TOLERANCE IS ON THE RESIDUAL, not on the answer. An iterative solve
+    cannot show the round-off floor a direct one leaves, so a patch test read
+    through it is bounded by this number rather than by the method.
+    """
+    return {
+        "riesz": mk.SolverOptions(
+            method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000
+        ),
+        "direct": mk.SolverOptions(),
+    }
+
+
+SOLVER_NAMES = ("direct", "riesz")
+DEFAULT_RTOL = 1e-12
+
 
 PRODUCTS = {
     "derham_bdm": mk.FluxRealization.derham_bdm,
@@ -56,7 +73,7 @@ def exact(x):
     return P_INNER + (P_OUTER - P_INNER) * math.log(r / A) / math.log(B / A)
 
 
-def solve(nr, nt, dim, family, how, solver="riesz"):
+def solve(nr, nt, dim, family, how, solver="riesz", rtol=DEFAULT_RTOL):
     """Build the annulus, impose the three conditions, solve, measure."""
     mesh = mk.annulus(nr, nt, dim, family, A, B, HZ)
 
@@ -83,7 +100,7 @@ def solve(nr, nt, dim, family, how, solver="riesz"):
     model.add_normal_flux(sealed)  # no flow through the symmetry planes
     model.add_pressure(inner, P_INNER)
     model.add_pressure(outer, P_OUTER)
-    model.solve(options=SOLVERS[solver])
+    model.solve(options=solvers(rtol)[solver])
 
     worst = rms = 0.0
     for e in range(model.n_cells):
@@ -102,7 +119,9 @@ def main():
         "--nr", type=int, default=8, help="radial divisions of the coarse mesh"
     )
     ap.add_argument("--vtu", help="write the coarse solution to this .vtu")
-    ap.add_argument("--solver", default="riesz", choices=sorted(SOLVERS))
+    ap.add_argument("--solver", default="riesz", choices=sorted(SOLVER_NAMES))
+    ap.add_argument("--rtol", type=float, default=DEFAULT_RTOL,
+                    help="residual tolerance of the iterative solver")
     args = ap.parse_args()
 
     family, how = FAMILIES[args.family], PRODUCTS[args.product]
@@ -135,7 +154,7 @@ def main():
     print(f"\n  {'cells':>8}  {'max error':>11}  {'rms error':>11}  {'rate':>6}")
     previous = None
     for nr in (args.nr, 2 * args.nr, 4 * args.nr):
-        m, _, worst, rms = solve(nr, nr // 2, args.dim, family, how, args.solver)
+        m, _, worst, rms = solve(nr, nr // 2, args.dim, family, how, args.solver, args.rtol)
         rate = "" if previous is None else f"{math.log2(previous / rms):6.2f}"
         print(f"  {m.n_cells:8d}  {worst:11.3e}  {rms:11.3e}  {rate:>6}")
         previous = rms

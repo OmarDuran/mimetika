@@ -49,12 +49,29 @@ MU, LAM = 1.0, 1.0
 # isomorphism on -- P is the Gram matrix of its norm -- so its iteration count
 # does not grow with the mesh. "direct" is a full factorization: exact, and the
 # wrong instrument past a few hundred thousand unknowns.
-SOLVERS = {
-    "riesz": mk.SolverOptions(
-        method="gmres", preconditioner="riesz", rtol=1e-12, max_iterations=2000
-    ),
-    "direct": mk.SolverOptions(),
-}
+def solvers(rtol):
+    """The linear solvers, at the residual tolerance asked for.
+
+    "riesz" is the Riesz map of the space the operator is an isomorphism on --
+    P is the Gram matrix of its norm -- so its iteration count does not grow
+    with the mesh. "direct" is a full factorization: exact, and the wrong
+    instrument past a few hundred thousand unknowns.
+
+    THE TOLERANCE IS ON THE RESIDUAL, not on the answer. An iterative solve
+    cannot show the round-off floor a direct one leaves, so a patch test read
+    through it is bounded by this number rather than by the method.
+    """
+    return {
+        "riesz": mk.SolverOptions(
+            method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000
+        ),
+        "direct": mk.SolverOptions(),
+    }
+
+
+SOLVER_NAMES = ("direct", "riesz")
+DEFAULT_RTOL = 1e-12
+
 
 PRODUCTS = {
     "derham_afw": mk.StressRealization.derham_afw,
@@ -147,7 +164,9 @@ def main():
         "--nu", type=float, default=None, help="Poisson ratio (default lam = mu = 1)"
     )
     ap.add_argument("--vtu", help="write the solution to this .vtu")
-    ap.add_argument("--solver", default="riesz", choices=sorted(SOLVERS))
+    ap.add_argument("--solver", default="riesz", choices=sorted(SOLVER_NAMES))
+    ap.add_argument("--rtol", type=float, default=DEFAULT_RTOL,
+                    help="residual tolerance of the iterative solver")
     ap.add_argument("--spin", type=float, default=0.5,
                     help="magnitude of the skew part of grad u (0 leaves the rotation zero)")
     args = ap.parse_args()
@@ -186,7 +205,7 @@ def main():
         model = mk.CauchyElasticityModel(mesh, dim, mat, how)
     with stage("prescribing u on the boundary"):
         n_facets = prescribe_linear_displacement(model, mesh, dim, lo, gradient)
-    report = model.solve(progress=True, options=SOLVERS[args.solver])
+    report = model.solve(progress=True, options=solvers(args.rtol)[args.solver])
     if args.solver != "direct":
         print(f"  {args.solver}: {report.iterations} iterations, {report.reason}")
     print(f"\n  u = (I + W)(x - x_min)/L on all {n_facets} boundary facets, pure Dirichlet")

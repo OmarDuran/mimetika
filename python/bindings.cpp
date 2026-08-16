@@ -304,10 +304,16 @@ class AssembledModel {
 
 // WHICH STAGE IS RUNNING, on request.
 //
-// Assembly and factorization are the two long stages, and from the outside a
-// process in either one is indistinguishable from a hung one. Reporting goes
-// through py::print rather than std::cout so it interleaves with the script's
-// own output in the order it was written.
+// Assembly, preconditioner and iteration are the three long stages, and from
+// the outside a process in any of them is indistinguishable from a hung one.
+//
+// THE WRITE GOES TO stderr, unbuffered. Reporting through Python's stdout
+// looks correct and is not: on a redirected stream the bytes sit in a buffer
+// that `flush=True` does not push to the operating system, so a stage that
+// takes ten minutes prints its label immediately and its duration only when
+// the process exits -- which is exactly the case the reporting exists for, and
+// exactly when it says nothing. Python's own output is flushed first so the
+// two streams stay in order.
 class Stage {
  public:
   explicit Stage(bool on) : on_(on) {}
@@ -316,27 +322,41 @@ class Stage {
     if (!on_) return;
     what_ = what;
     t0_ = std::chrono::steady_clock::now();
-    py::print("  ", what, " ...", py::arg("sep") = "", py::arg("end") = "",
-              py::arg("flush") = true);
+    flush_python();
+    std::fprintf(stderr, "  %s ...", what);
+    std::fflush(stderr);
   }
 
   void end() {
     if (!on_) return;
-    const std::chrono::duration<double> dt = std::chrono::steady_clock::now() - t0_;
-    char buf[32];
-    std::snprintf(buf, sizeof buf, " %.2f s", dt.count());
-    py::print(buf, py::arg("flush") = true);
+    report(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count());
+  }
+
+  // A stage whose duration was measured elsewhere -- the solver reports its own
+  // three -- so that they print in the same shape as the ones timed here.
+  void done(const char* what, double seconds) {
+    if (!on_) return;
+    flush_python();
+    std::fprintf(stderr, "  %s ... %.2f s\n", what, seconds);
+    std::fflush(stderr);
   }
 
  private:
+  void report(double seconds) {
+    std::fprintf(stderr, " %.2f s\n", seconds);
+    std::fflush(stderr);
+    (void)what_;
+  }
+
+  static void flush_python() {
+    py::module_::import("sys").attr("stdout").attr("flush")();
+  }
+
   bool on_;
   const char* what_{""};
   std::chrono::steady_clock::time_point t0_{};
 };
 
-// Build, solve and accept, in one call. The three are inseparable -- a model
-// whose state was never accepted answers `displacement` with the wrong vector
-// -- so exposing them apart would only create a way to get it wrong.
 // THE NORM OF THE MODEL'S SPACE, read off the model rather than restated.
 //
 // Factor 0 is the H(div) field -- flux or stress. EVERY LATER FIELD IS ONE L^2
@@ -415,9 +435,15 @@ mimetika::solver::SolveReport solve_elasticity(mimetika::CauchyElasticityModel& 
   // the momentum row is Dv, whose entries already carry 1/|E|: it is an average
   if (opts.preconditioner == "riesz") attach_norm(petsc, m, m.mesh(), m.dim(), false);
   std::vector<double> x;
-  stage.begin(opts.direct() ? "factorizing and solving" : "solving");
+  // THE SOLVER TIMES ITS OWN THREE, because they are not one stage: the matrix
+  // is linear in the assembly, the preconditioner is what decides whether a
+  // mesh is reachable, and the iteration is what the preconditioner shortens.
+  stage.begin("solving");
   const auto rep = petsc.solve(m.system(), m.rhs(), x);
   stage.end();
+  stage.done("  matrix", rep.matrix_seconds);
+  stage.done(opts.direct() ? "  factorization" : "  preconditioner", rep.preconditioner_seconds);
+  stage.done("  iteration", rep.solve_seconds);
   if (!rep.converged) throw std::runtime_error("cauchy elasticity: " + rep.reason);
   m.accept(std::move(x));
   return rep;
@@ -433,9 +459,15 @@ mimetika::solver::SolveReport solve_single_phase(mimetika::SinglePhaseModel& m, 
   // the mass-balance row is the incidence: (Bq)_E is the integral of div q
   if (opts.preconditioner == "riesz") attach_norm(petsc, m, m.mesh(), m.dim(), true);
   std::vector<double> x;
-  stage.begin(opts.direct() ? "factorizing and solving" : "solving");
+  // THE SOLVER TIMES ITS OWN THREE, because they are not one stage: the matrix
+  // is linear in the assembly, the preconditioner is what decides whether a
+  // mesh is reachable, and the iteration is what the preconditioner shortens.
+  stage.begin("solving");
   const auto rep = petsc.solve(m.system(), m.rhs(), x);
   stage.end();
+  stage.done("  matrix", rep.matrix_seconds);
+  stage.done(opts.direct() ? "  factorization" : "  preconditioner", rep.preconditioner_seconds);
+  stage.done("  iteration", rep.solve_seconds);
   if (!rep.converged) throw std::runtime_error("single phase: " + rep.reason);
   m.accept(std::move(x));
   return rep;
