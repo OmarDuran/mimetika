@@ -12,6 +12,18 @@ endif()
 set_target_properties(_core PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/mimetika_cxx)
 
+if(DEFINED SKBUILD)
+  set(_core_rpath "")
+  if(EXOKAL_BASIX_ROOT)
+    list(APPEND _core_rpath "${EXOKAL_BASIX_ROOT}/lib")
+  endif()
+  foreach(_p IN LISTS CMAKE_PREFIX_PATH)
+    list(APPEND _core_rpath "${_p}/lib")
+  endforeach()
+  set_target_properties(_core PROPERTIES INSTALL_RPATH "${_core_rpath}")
+  install(TARGETS _core DESTINATION mimetika_cxx)
+endif()
+
 # The pytest suite is the Python-side mirror of tests/model: the same problems,
 # the same closed forms, the same tolerances, driven through the bindings.
 if(BUILD_TESTING)

@@ -15,3 +15,11 @@ dependencies = ["numpy"]
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
+
+[tool.scikit-build]
+cmake.source-dir = ".."
+wheel.packages = ["mimetika_cxx"]
+
+[tool.scikit-build.cmake.define]
+MIMETIKA_BUILD_PYTHON = "ON"
+MIMETIKA_BUILD_TESTS = "OFF"
