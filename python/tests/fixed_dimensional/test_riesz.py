@@ -222,6 +222,40 @@ def test_the_elasticity_count_does_not_grow_under_refinement():
     assert counts[-1] <= counts[0] + 10
 
 
+# THE STRESS BLOCK REACHES ADS THROUGH ITS FACET CONSTANTS.
+#
+# stabilized_afw puts d^2 unknowns on a facet -- d traction components, each
+# against the d functions of the facet P_1 basis -- and ADS wants one. The
+# constants are a SUBSET of those unknowns, so the injection into them is exact
+# rather than interpolated; the divergence sees only them, and what is left is
+# local to a facet. That is a two-level cycle: facet-block smoother, ADS per
+# component on the constants.
+def test_the_stress_block_reaches_the_auxiliary_space():
+    _needs_hypre()
+    direct = patch(8, dim=3)
+    direct.solve()
+    ads = patch(8, dim=3)
+    ads.solve(options=ADS)
+    worst = max(
+        abs(direct.displacement(e, k) - ads.displacement(e, k))
+        for e in range(direct.n_cells)
+        for k in range(3)
+    )
+    print(f"  {direct.n_cells} cells   max |ads - direct| = {worst:.2e}")
+    assert worst < 1e-7
+
+
+def test_the_stress_cycle_count_does_not_grow_under_refinement():
+    _needs_hypre()
+    counts = []
+    for nr in (6, 12, 18):
+        model = patch(nr, dim=3)
+        report = model.solve(options=ADS)
+        counts.append(report.iterations)
+        print(f"  {model.n_cells:6d} cells {model.n_dofs:7d} dofs   {report.iterations:4d} its")
+    assert counts[-1] <= counts[0] + 10
+
+
 @pytest.mark.parametrize("nr", [6, 18])
 def test_the_elasticity_answer_is_the_direct_answer(nr):
     direct = patch(nr)

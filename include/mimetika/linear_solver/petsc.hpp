@@ -185,6 +185,26 @@ struct SpaceNorm {
   std::vector<double> vertex_coordinates;  // row-major, n_vertices x space_dim
   int space_dim{3};
 
+  // THE LOWEST-ORDER SUBSPACE OF THE FIRST FACTOR, when the first factor is
+  // not itself lowest order.
+  //
+  // ADS is written for ONE UNKNOWN PER FACET. Flow's RT space is that already;
+  // the AFW stress space is not -- a facet carries d traction components, each
+  // measured against the d functions of the facet P_1 basis, so d^2 unknowns
+  // sit on it. The auxiliary-space argument still applies, and this is the map
+  // it applies through: the injection of the facet-CONSTANT moments, which are
+  // a subset of the degrees of freedom rather than a computed interpolation,
+  // because the space is defined by its moments and the constant one is one of
+  // them.
+  //
+  // Columns are ordered component-major -- all facets of component 0, then
+  // component 1 -- so that each component is a contiguous run of the coarse
+  // space and ADS can be given it as the scalar H(div) problem it expects.
+  //
+  // Rows are GLOBAL unknowns; build_riesz maps them into the block.
+  Incidence lowest_order;
+  int lowest_order_components{1};
+
   bool empty() const { return factors.empty(); }
 };
 
@@ -592,7 +612,6 @@ class PetscSolver final : public LinearSolver {
     const auto n0 = static_cast<int>(norm_.factors[0].size());
     const bool inexact_block =
         opts_.riesz_block_its > 0 || (opts_.riesz_block_its < 0 && n0 > opts_.riesz_exact_limit);
-    const int block_its = opts_.riesz_block_its > 0 ? opts_.riesz_block_its : 200;
     // WHEN THE COMPLEX IS THERE, ADS IS THE DEFAULT FOR A BIG BLOCK.
     //
     // The two incidence maps are supplied only when the first factor is one
@@ -607,15 +626,46 @@ class PetscSolver final : public LinearSolver {
         norm_.vertex_coordinates.size() ==
             static_cast<std::size_t>(norm_.discrete_gradient.cols) *
                 static_cast<std::size_t>(norm_.space_dim);
-    const bool use_ads = ads_possible && (inexact_block || n0 > opts_.riesz_ads_limit);
+    // THE CROSSOVER IS NOT THE SAME FOR THE TWO ROUTES.
+    //
+    // Acting on the block itself, ADS overtakes a factorization early -- 25k
+    // unknowns -- because one V-cycle is most of the inverse. Acting through a
+    // subspace it does not: the cycle needs an inner CG, each of whose steps
+    // costs a smoother and d ADS applications, and on a POLYHEDRAL mesh the
+    // count is worse besides (356 iterations against Cholesky's 115 on a
+    // 25k-unknown stress block, where a simplicial mesh of the same size gives
+    // 38 against 28). So the subspace route is taken where the factorization
+    // is refused anyway -- past riesz_exact_limit, where the fill is the
+    // problem and any scalable method beats not solving at all -- and left to
+    // the caller below it.
+    const bool through_subspace = !norm_.lowest_order.empty();
+    const bool use_ads =
+        ads_possible && (inexact_block || (!through_subspace && n0 > opts_.riesz_ads_limit));
     const std::string b0_pc = !opts_.riesz_block_pc.empty() ? opts_.riesz_block_pc
                               : use_ads                    ? "ads"
                               : inexact_block              ? "icc"
                                                            : "cholesky";
+    // A TWO-LEVEL CYCLE IS NOT A COMPLETE SOLVER, and one application of it is
+    // not enough. Where ADS acts on the block itself, a single V-cycle is
+    // already a good inverse -- flow converges in 33 iterations with one. Where
+    // it acts through the facet-constant subspace, one cycle leaves the
+    // non-constant moments to a smoother and the outer count is 195 against
+    // Cholesky's 25; solving the block with a short CG under the same cycle
+    // brings it to 37 and costs less than the difference. So the cycle asks for
+    // the inner Krylov itself rather than waiting for the block to be big
+    // enough to trigger it.
+    const bool two_level = b0_pc == "ads" && !norm_.lowest_order.empty();
+    const bool inner_krylov = inexact_block || two_level;
+    const int block_its = opts_.riesz_block_its > 0 ? opts_.riesz_block_its
+                          : two_level              ? 50
+                                                   : 200;
+    const double block_rtol = opts_.riesz_block_its > 0 ? opts_.riesz_block_rtol
+                              : two_level              ? 1e-2
+                                                       : opts_.riesz_block_rtol;
     // an inner Krylov makes the preconditioner a VARYING operator, which only a
     // flexible outer method may use; applying it under plain gmres is a silent
     // wrong answer, so the promotion happens here rather than in the caller
-    if (inexact_block) check(KSPSetType(ksp, KSPFGMRES), "KSPSetType(fgmres)");
+    if (inner_krylov) check(KSPSetType(ksp, KSPFGMRES), "KSPSetType(fgmres)");
 
     // THE SUB-SOLVERS ARE SET THROUGH THE OPTIONS DATABASE, before setup.
     //
@@ -630,10 +680,10 @@ class PetscSolver final : public LinearSolver {
     const auto set = [](const std::string& key, const std::string& value) {
       PetscOptionsSetValue(nullptr, ("-" + key).c_str(), value.c_str());
     };
-    if (inexact_block) {
+    if (inner_krylov) {
       set(p0 + "ksp_type", "cg");
       set(p0 + "ksp_max_it", std::to_string(block_its));
-      set(p0 + "ksp_rtol", std::to_string(opts_.riesz_block_rtol));
+      set(p0 + "ksp_rtol", std::to_string(block_rtol));
       set(p0 + "pc_type", b0_pc);
     } else {
       set(p0 + "ksp_type", "preonly");
@@ -677,48 +727,184 @@ class PetscSolver final : public LinearSolver {
       // asks for an inner Krylov instead, which sharpens the block at the price
       // of making the preconditioner vary -- the outer method was already
       // promoted to fgmres above for exactly that.
-      if (!inexact_block) {
+      if (!inner_krylov) {
         check(KSPSetType(sub[0], KSPPREONLY), "sub KSPSetType");
       } else {
         check(KSPSetType(sub[0], KSPCG), "sub KSPSetType(cg)");
-        check(KSPSetTolerances(sub[0], opts_.riesz_block_rtol, PETSC_DEFAULT, PETSC_DEFAULT,
-                               block_its),
+        check(KSPSetTolerances(sub[0], block_rtol, PETSC_DEFAULT, PETSC_DEFAULT, block_its),
               "sub KSPSetTolerances");
       }
       check(KSPGetPC(sub[0], &sub_pc), "sub KSPGetPC");
-      check(PCSetType(sub_pc, PCHYPRE), "PCSetType(hypre)");
-      check(PCHYPRESetType(sub_pc, "ads"), "PCHYPRESetType(ads)");
-      if (norm_.discrete_gradient.empty() || norm_.discrete_curl.empty()) {
-        throw std::invalid_argument(
-            "PetscSolver: 'ads' needs the discrete gradient and curl of the complex");
+      // ONE UNKNOWN PER FACET, or a lowest-order subspace of one that is not.
+      // The first is ADS as hypre offers it; the second is the auxiliary-space
+      // argument applied one level up, and is what the AFW stress space needs.
+      if (norm_.lowest_order.empty()) {
+        attach_ads(sub_pc);
+      } else {
+        build_lowest_order_cycle(sub_pc);
       }
-      const std::size_t n_vertex = static_cast<std::size_t>(norm_.discrete_gradient.cols);
-      if (norm_.vertex_coordinates.size() !=
-          n_vertex * static_cast<std::size_t>(norm_.space_dim)) {
-        throw std::invalid_argument(
-            "PetscSolver: 'ads' needs one coordinate per vertex of the gradient");
-      }
-      Mat G = to_mat(norm_.discrete_gradient);
-      Mat C = to_mat(norm_.discrete_curl);
-      check(PCHYPRESetDiscreteGradient(sub_pc, G), "PCHYPRESetDiscreteGradient");
-      check(PCHYPRESetDiscreteCurl(sub_pc, C), "PCHYPRESetDiscreteCurl");
-      // the metric, and the only metric ADS is told: x, y, z at the vertices,
-      // from which it interpolates the auxiliary vector spaces
-      std::vector<PetscReal> xyz(norm_.vertex_coordinates.begin(),
-                                 norm_.vertex_coordinates.end());
-      check(PCSetCoordinates(sub_pc, norm_.space_dim, static_cast<PetscInt>(n_vertex),
-                             xyz.data()),
-            "PCSetCoordinates(ads)");
       // set up here, so the hierarchy is built where factorize() is timed
       // rather than inside the first KSPSolve
       check(PCSetUp(sub_pc), "PCSetUp(ads)");
-      riesz_.push_back(G);
-      riesz_.push_back(C);
       PetscFree(sub);
     }
 
     riesz_.push_back(P);
     for (IS& s : sets) ISDestroy(&s);
+  }
+
+  // ADS on a block whose unknowns ARE the facets, with the two maps of the
+  // complex and the vertex coordinates the auxiliary spaces are built from.
+  void attach_ads(PC pc) {
+    check(PCSetType(pc, PCHYPRE), "PCSetType(hypre)");
+    check(PCHYPRESetType(pc, "ads"), "PCHYPRESetType(ads)");
+    if (norm_.discrete_gradient.empty() || norm_.discrete_curl.empty()) {
+      throw std::invalid_argument(
+          "PetscSolver: 'ads' needs the discrete gradient and curl of the complex");
+    }
+    const std::size_t n_vertex = static_cast<std::size_t>(norm_.discrete_gradient.cols);
+    if (norm_.vertex_coordinates.size() != n_vertex * static_cast<std::size_t>(norm_.space_dim)) {
+      throw std::invalid_argument("PetscSolver: 'ads' needs one coordinate per vertex");
+    }
+    Mat G = to_mat(norm_.discrete_gradient);
+    Mat C = to_mat(norm_.discrete_curl);
+    check(PCHYPRESetDiscreteGradient(pc, G), "PCHYPRESetDiscreteGradient");
+    check(PCHYPRESetDiscreteCurl(pc, C), "PCHYPRESetDiscreteCurl");
+    // the metric, and the only metric ADS is told: x, y, z at the vertices,
+    // from which it interpolates the auxiliary vector spaces
+    std::vector<PetscReal> xyz(norm_.vertex_coordinates.begin(), norm_.vertex_coordinates.end());
+    check(PCSetCoordinates(pc, norm_.space_dim, static_cast<PetscInt>(n_vertex), xyz.data()),
+          "PCSetCoordinates(ads)");
+    riesz_.push_back(G);
+    riesz_.push_back(C);
+  }
+
+  // A TWO-LEVEL CYCLE WHOSE COARSE SPACE IS THE FACET CONSTANTS.
+  //
+  // The AFW stress block is not an ADS problem: a facet carries d traction
+  // components measured against the d functions of its P_1 basis, so d^2
+  // unknowns sit on it and hypre would not know what a facet is. But the
+  // auxiliary-space argument is about a SUBSPACE where the operator is
+  // spectrally equivalent to something a solver exists for, and here that
+  // subspace is written down rather than interpolated: the facet-constant
+  // moments are a subset of the degrees of freedom, so the injection is a
+  // matrix of ones.
+  //
+  //   smoother   Chebyshev/Jacobi on the whole block -- the higher moments are
+  //              LOCAL to a facet, and what is local is what a smoother is for
+  //   coarse     the constants, one H(div) problem per component: the coupling
+  //              between components is the material's, bounded and dropped by
+  //              an additive split, and each diagonal block is what ADS takes
+  //
+  // The coarse operator is Galerkin, P^T A P, so nothing about the physics is
+  // restated at the coarse level -- it is the same operator seen on the
+  // subspace.
+  void build_lowest_order_cycle(PC pc) {
+    const auto& inj = norm_.lowest_order;
+    const int nc = norm_.lowest_order_components;
+    if (nc < 1 || inj.cols % nc != 0) {
+      throw std::invalid_argument("PetscSolver: lowest-order injection is not component-blocked");
+    }
+    // rows are global unknowns; the block sees them in its own numbering
+    std::vector<int> at(static_cast<std::size_t>(n_), -1);
+    const std::vector<int>& first = norm_.factors[0];
+    for (std::size_t i = 0; i < first.size(); ++i) {
+      at[static_cast<std::size_t>(first[i])] = static_cast<int>(i);
+    }
+    SpaceNorm::Incidence local;
+    local.rows = static_cast<int>(first.size());
+    local.cols = inj.cols;
+    local.row.reserve(inj.value.size());
+    local.col.reserve(inj.value.size());
+    local.value.reserve(inj.value.size());
+    for (std::size_t k = 0; k < inj.value.size(); ++k) {
+      const int r = at[static_cast<std::size_t>(inj.row[k])];
+      if (r < 0) throw std::invalid_argument("PetscSolver: injection row is not in the block");
+      local.row.push_back(r);
+      local.col.push_back(inj.col[k]);
+      local.value.push_back(inj.value[k]);
+    }
+    at = std::vector<int>();
+    Mat interpolation = to_mat(local);
+
+    // the facet's unknowns are contiguous, so telling the block how big a
+    // facet is costs nothing and is what lets the smoother invert one exactly
+    const PetscInt per_facet =
+        static_cast<PetscInt>(local.rows) / (static_cast<PetscInt>(inj.cols) / nc);
+    {
+      Mat block_a = nullptr, block_p = nullptr;
+      check(PCGetOperators(pc, &block_a, &block_p), "PCGetOperators(block)");
+      if (block_p != nullptr && per_facet > 1) {
+        check(MatSetBlockSize(block_p, per_facet), "MatSetBlockSize(block)");
+      }
+    }
+
+    check(PCSetType(pc, PCMG), "PCSetType(mg)");
+    check(PCMGSetLevels(pc, 2, nullptr), "PCMGSetLevels");
+    check(PCMGSetType(pc, PC_MG_MULTIPLICATIVE), "PCMGSetType");
+    check(PCMGSetCycleType(pc, PC_MG_CYCLE_V), "PCMGSetCycleType");
+    check(PCMGSetGalerkin(pc, PC_MG_GALERKIN_BOTH), "PCMGSetGalerkin");
+    check(PCMGSetInterpolation(pc, 1, interpolation), "PCMGSetInterpolation");
+    riesz_.push_back(interpolation);
+
+    // THE SMOOTHER IS FACET-LOCAL, and exactly so.
+    //
+    // What the coarse space does not carry is the non-constant moments, and
+    // those live ON one facet: the divergence sees only the constants, so the
+    // rest of a facet's block is coupled to the mesh through the material mass
+    // alone. Inverting each facet's block exactly is therefore the right
+    // smoother rather than an expensive one -- it is d^2 x d^2, one dense
+    // solve per facet -- and point Jacobi, which splits those moments from
+    // each other, is what makes the cycle look weak.
+    KSP smoother = nullptr;
+    check(PCMGGetSmoother(pc, 1, &smoother), "PCMGGetSmoother");
+    check(KSPSetType(smoother, KSPCHEBYSHEV), "smoother KSPSetType");
+    check(KSPSetTolerances(smoother, PETSC_DEFAULT, PETSC_DEFAULT, PETSC_DEFAULT, 2),
+          "smoother KSPSetTolerances");
+    PC smooth_pc = nullptr;
+    check(KSPGetPC(smoother, &smooth_pc), "smoother KSPGetPC");
+    check(PCSetType(smooth_pc, PCPBJACOBI), "smoother PCSetType");
+
+    // The coarse solve is a split by component, and each component is only
+    // reachable after the coarse operator exists -- which is what setting the
+    // cycle up computes. So it is brought up with a PC that costs nothing, and
+    // the real ones are attached to the sub-solves afterwards.
+    KSP coarse = nullptr;
+    check(PCMGGetCoarseSolve(pc, &coarse), "PCMGGetCoarseSolve");
+    check(KSPSetType(coarse, KSPPREONLY), "coarse KSPSetType");
+    PC coarse_pc = nullptr;
+    check(KSPGetPC(coarse, &coarse_pc), "coarse KSPGetPC");
+    check(PCSetType(coarse_pc, PCFIELDSPLIT), "coarse PCSetType(fieldsplit)");
+    const PetscInt per = inj.cols / nc;
+    std::vector<IS> parts(static_cast<std::size_t>(nc), nullptr);
+    const char* cprefix = nullptr;
+    check(PCGetOptionsPrefix(coarse_pc, &cprefix), "PCGetOptionsPrefix(coarse)");
+    const std::string cp = cprefix != nullptr ? cprefix : "";
+    for (int c = 0; c < nc; ++c) {
+      check(ISCreateStride(PETSC_COMM_SELF, per, c * per, 1, &parts[static_cast<std::size_t>(c)]),
+            "ISCreateStride(component)");
+      check(PCFieldSplitSetIS(coarse_pc, std::to_string(c).c_str(),
+                              parts[static_cast<std::size_t>(c)]),
+            "PCFieldSplitSetIS(component)");
+      const std::string key = cp + "fieldsplit_" + std::to_string(c) + "_";
+      PetscOptionsSetValue(nullptr, ("-" + key + "ksp_type").c_str(), "preonly");
+      PetscOptionsSetValue(nullptr, ("-" + key + "pc_type").c_str(), "none");
+    }
+    check(PCFieldSplitSetType(coarse_pc, PC_COMPOSITE_ADDITIVE), "coarse PCFieldSplitSetType");
+    check(PCSetUp(pc), "PCSetUp(mg)");
+    check(PCSetUp(coarse_pc), "PCSetUp(coarse fieldsplit)");
+    PetscInt n_part = 0;
+    KSP* csub = nullptr;
+    check(PCFieldSplitGetSubKSP(coarse_pc, &n_part, &csub), "PCFieldSplitGetSubKSP(coarse)");
+    for (PetscInt c = 0; c < n_part; ++c) {
+      PC cpc = nullptr;
+      check(KSPSetType(csub[c], KSPPREONLY), "coarse component KSPSetType");
+      check(KSPGetPC(csub[c], &cpc), "coarse component KSPGetPC");
+      attach_ads(cpc);
+      check(PCSetUp(cpc), "PCSetUp(coarse ads)");
+    }
+    PetscFree(csub);
+    for (IS& s : parts) ISDestroy(&s);
   }
 
   // An incidence matrix of the complex as a PETSc operator.

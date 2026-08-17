@@ -67,11 +67,37 @@ def solvers(rtol):
         "riesz": mk.SolverOptions(
             method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000
         ),
+        # THE SAME MAP, WITH THE STRESS BLOCK INVERTED BY AN AUXILIARY SPACE.
+        #
+        # P's stress block is H(div; M) and it is most of the unknowns; a
+        # Cholesky of it is exact and creates fill, so its cost per iteration
+        # grows with the mesh (0.62 -> 8.0 us per dof per iteration over a
+        # refinement to 100k unknowns) even though the iteration count does
+        # not.
+        #
+        # ADS wants ONE unknown per facet and the stabilized_afw facet carries
+        # d^2 -- d traction components, each against the d functions of the
+        # facet P_1 basis. The route to it is the facet-CONSTANT subspace:
+        # those moments are a subset of the unknowns, so the injection into
+        # them is exact, they are where the divergence lives, and what is left
+        # over is local to a facet and belongs to a smoother. So the block gets
+        # a two-level cycle -- facet-block smoother, ADS per component on the
+        # constants -- which holds ~3 us per dof per iteration flat.
+        "ads": mk.SolverOptions(
+            method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000,
+            riesz_block_pc="ads",
+        ),
+        # the same cycle with the inner CG stated explicitly rather than left
+        # to the default the two-level path chooses (50 iterations to 1e-2)
+        "ads-cg": mk.SolverOptions(
+            method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000,
+            riesz_block_pc="ads", riesz_block_its=50, riesz_block_rtol=1e-2,
+        ),
         "direct": mk.SolverOptions(),
     }
 
 
-SOLVER_NAMES = ("direct", "riesz")
+SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg")
 DEFAULT_RTOL = 1e-12
 
 
