@@ -43,10 +43,12 @@ with --make-mesh to produce a sample file first, if there is none to hand:
 
 import argparse
 import math
+import os
 
 import mimetika_cxx as mk
 import numpy as np
 
+from _diagnostics import write_report
 from _stages import stage
 
 MOBILITY = 1.0
@@ -127,6 +129,22 @@ def main():
     ap.add_argument("--product", default="stabilized_rt", choices=sorted(PRODUCTS))
     ap.add_argument("--vtu", help="write the solution to this .vtu")
     ap.add_argument("--solver", default="riesz", choices=sorted(SOLVER_NAMES))
+    ap.add_argument(
+        "--output",
+        default="diagnostics",
+        help="folder for the mesh diagnostics; empty string to skip them",
+    )
+    ap.add_argument(
+        "--degeneracy-percent",
+        type=float,
+        default=0.1,
+        help="a cell is degenerate below this percent of its neighborhood mean measure",
+    )
+    ap.add_argument(
+        "--assemble-only",
+        action="store_true",
+        help="build the Jacobian and the preconditioner, and stop before the iteration",
+    )
     ap.add_argument("--rtol", type=float, default=DEFAULT_RTOL,
                     help="residual tolerance of the iterative solver")
     args = ap.parse_args()
@@ -143,6 +161,15 @@ def main():
     if dim not in (2, 3):
         raise SystemExit(
             f"{args.mesh}: top cells are {dim}-dimensional, expected 2 or 3"
+        )
+
+    if args.output:
+        out = os.path.join(args.output, os.path.splitext(os.path.basename(args.mesh))[0])
+        with stage(f"diagnosing the mesh into {out}"):
+            bad, warn, degenerate = write_report(args.mesh, out, args.degeneracy_percent)
+        print(
+            f"  diagnostics: {bad} violation(s), {warn} warning(s), "
+            f"{degenerate} degenerate cell(s)"
         )
 
     with stage("bounding box"):
@@ -162,9 +189,31 @@ def main():
         model = mk.SinglePhaseModel(mesh, dim, MOBILITY, how)
     with stage("prescribing p on the boundary"):
         n_facets = prescribe_linear_pressure(model, mesh, dim, lo, direction, length)
+    if args.assemble_only:
+        report = model.assemble(progress=True, options=solvers(args.rtol)[args.solver])
+        print(
+            f"\n  assembled: matrix {report.matrix_seconds:.2f} s, "
+            f"preconditioner {report.preconditioner_seconds:.2f} s"
+        )
+        print(
+            f"  {model.n_cells} cells, {model.n_dofs} dofs, "
+            f"{model.moments_per_facet} moment(s) per facet"
+        )
+        return
     report = model.solve(progress=True, options=solvers(args.rtol)[args.solver])
+    # THE TWO ASSEMBLIES, ALWAYS. They are what scales with the mesh, and they
+    # are separate costs: the Jacobian is the physics, the preconditioner is the
+    # price of being able to solve it iteratively.
+    print(
+        f"\n  assembly: jacobian {report.assembly_seconds:.2f} s + matrix "
+        f"{report.matrix_seconds:.2f} s, preconditioner "
+        f"{report.preconditioner_seconds:.2f} s"
+    )
     if args.solver != "direct":
-        print(f"  {args.solver}: {report.iterations} iterations, {report.reason}")
+        print(
+            f"  {args.solver}: {report.iterations} iterations to rtol {args.rtol:.1e}"
+            f", {report.reason} in {report.solve_seconds:.2f} s"
+        )
     print(
         f"\n  p = ((x - x_min).n)/L on all {n_facets} boundary facets, pure Dirichlet"
     )

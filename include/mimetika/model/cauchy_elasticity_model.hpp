@@ -218,8 +218,14 @@ class CauchyElasticityModel {
                     : -r[i];
     }
 
-    // ONE FACTORIZATION for every later evaluation of S
-    solver_.factorize(system_);
+    // THE FACTORIZATION FOR S IS DEFERRED, because most problems never ask for
+    // it. S exists for prescribed TRACTIONS -- the contact iteration reuses one
+    // factorization across many right-hand sides -- and a model that prescribes
+    // none never evaluates it. Taking it here made every build pay a full
+    // direct solve of the whole saddle point: on a mesh of tens of thousands of
+    // polyhedra that is minutes and gigabytes of fill, spent inside "assembly",
+    // for a matrix nothing goes on to use.
+    factorized_ = false;
     load_ready_ = true;
     work_.assign(sim_->n_dofs(), 0.0);
     s_offset_ = static_cast<std::size_t>(sp.offset(sp.index_of("s_0")));
@@ -471,6 +477,11 @@ class CauchyElasticityModel {
         rhs_[d] = constraints.scale_at(d) * moments[i * ndf + k];
       }
     }
+    // one factorization, taken the first time S is actually evaluated
+    if (!factorized_) {
+      solver_.factorize(system_);
+      factorized_ = true;
+    }
     solver_.solve(rhs_, work_);
     return work_;
   }
@@ -661,6 +672,7 @@ class CauchyElasticityModel {
   std::vector<std::size_t> prescribed_forms_, prescribed_dofs_;
   std::size_t s_offset_{0}, u_offset_{0}, g_offset_{0}, n_cells_{0};
   bool load_ready_{false};
+  mutable bool factorized_{false};
 };
 
 }  // namespace mimetika

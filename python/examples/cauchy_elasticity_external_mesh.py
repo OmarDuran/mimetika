@@ -37,10 +37,12 @@ with --make-mesh to produce a sample file first, if there is none to hand:
 """
 
 import argparse
+import os
 
 import mimetika_cxx as mk
 import numpy as np
 
+from _diagnostics import write_report
 from _stages import stage
 
 MU, LAM = 1.0, 1.0
@@ -118,13 +120,33 @@ def prescribe_linear_displacement(model, mesh, dim, lo, gradient):
     """u = grad u . (x - lo) on every boundary facet, as an affine datum.
 
     The datum is written about the CELL centroid -- u = a + B (x - x_E) -- so
-    the gradient is the same everywhere and only the constant moves.
+    the gradient is the same everywhere and only the constant moves.  Facets of
+    one cell share x_E and therefore share the constant, so the data are grouped
+    by cell: one centroid lookup and one datum per boundary *cell* rather than
+    per boundary facet.
     """
-    facets = mk.boundary_facets(mesh, dim)
-    for f in facets:
-        x_e = mk.centroid(mesh, dim, mk.cofacet_of(mesh, dim, f))
-        constant = exact_displacement(x_e, lo, gradient, dim) + [0.0] * (3 - dim)
-        model.prescribe_displacement([f], constant, gradient)
+    facets = np.asarray(mk.boundary_facets(mesh, dim), dtype=np.int64)
+    cells = np.fromiter(
+        (mk.cofacet_of(mesh, dim, int(f)) for f in facets),
+        dtype=np.int64,
+        count=len(facets),
+    )
+
+    unique, inverse = np.unique(cells, return_inverse=True)
+    centroids = np.array([mk.centroid(mesh, dim, int(c)) for c in unique], dtype=float)
+
+    # constant_k = sum_c B[k, c] (x_E[c] - lo[c]), padded to three components
+    B = np.asarray(gradient, dtype=float).reshape(3, 3)
+    constants = np.zeros((len(unique), 3))
+    constants[:, :dim] = (
+        centroids[:, :dim] - np.asarray(lo, dtype=float)[:dim]
+    ) @ B[:dim, :dim].T
+
+    order = np.argsort(inverse, kind="stable")
+    edges = np.searchsorted(inverse[order], np.arange(len(unique) + 1))
+    for j in range(len(unique)):
+        group = facets[order[edges[j] : edges[j + 1]]].tolist()
+        model.prescribe_displacement(group, constants[j].tolist(), gradient)
     return len(facets)
 
 
@@ -165,6 +187,22 @@ def main():
     )
     ap.add_argument("--vtu", help="write the solution to this .vtu")
     ap.add_argument("--solver", default="riesz", choices=sorted(SOLVER_NAMES))
+    ap.add_argument(
+        "--output",
+        default="diagnostics",
+        help="folder for the mesh diagnostics; empty string to skip them",
+    )
+    ap.add_argument(
+        "--degeneracy-percent",
+        type=float,
+        default=0.1,
+        help="a cell is degenerate below this percent of its neighborhood mean measure",
+    )
+    ap.add_argument(
+        "--assemble-only",
+        action="store_true",
+        help="build the Jacobian and the preconditioner, and stop before the iteration",
+    )
     ap.add_argument("--rtol", type=float, default=DEFAULT_RTOL,
                     help="residual tolerance of the iterative solver")
     ap.add_argument("--spin", type=float, default=0.5,
@@ -183,6 +221,15 @@ def main():
     if dim not in (2, 3):
         raise SystemExit(
             f"{args.mesh}: top cells are {dim}-dimensional, expected 2 or 3"
+        )
+
+    if args.output:
+        out = os.path.join(args.output, os.path.splitext(os.path.basename(args.mesh))[0])
+        with stage(f"diagnosing the mesh into {out}"):
+            bad, warn, degenerate = write_report(args.mesh, out, args.degeneracy_percent)
+        print(
+            f"  diagnostics: {bad} violation(s), {warn} warning(s), "
+            f"{degenerate} degenerate cell(s)"
         )
 
     with stage("bounding box"):
@@ -205,9 +252,31 @@ def main():
         model = mk.CauchyElasticityModel(mesh, dim, mat, how)
     with stage("prescribing u on the boundary"):
         n_facets = prescribe_linear_displacement(model, mesh, dim, lo, gradient)
+    if args.assemble_only:
+        # THE TWO BUILDS ALONE. They are what scales with the mesh, and a caller
+        # measuring them should not have to wait for a Krylov method to
+        # converge -- nor be told a time without being told they finished.
+        report = model.assemble(progress=True, options=solvers(args.rtol)[args.solver])
+        print(
+            f"\n  assembled: matrix {report.matrix_seconds:.2f} s, "
+            f"preconditioner {report.preconditioner_seconds:.2f} s"
+        )
+        print(f"  {model.n_cells} cells, {model.n_dofs} dofs, {model.n_stabilized} stabilized")
+        return
     report = model.solve(progress=True, options=solvers(args.rtol)[args.solver])
+    # THE TWO ASSEMBLIES, ALWAYS. They are what scales with the mesh, and they
+    # are separate costs: the Jacobian is the physics, the preconditioner is the
+    # price of being able to solve it iteratively.
+    print(
+        f"\n  assembly: jacobian {report.assembly_seconds:.2f} s + matrix "
+        f"{report.matrix_seconds:.2f} s, preconditioner "
+        f"{report.preconditioner_seconds:.2f} s"
+    )
     if args.solver != "direct":
-        print(f"  {args.solver}: {report.iterations} iterations, {report.reason}")
+        print(
+            f"  {args.solver}: {report.iterations} iterations to rtol {args.rtol:.1e}"
+            f", {report.reason} in {report.solve_seconds:.2f} s"
+        )
     print(f"\n  u = (I + W)(x - x_min)/L on all {n_facets} boundary facets, pure Dirichlet")
     print(f"  {model.n_cells} cells, {model.n_dofs} dofs, {model.n_stabilized} stabilized")
 

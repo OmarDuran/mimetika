@@ -26,13 +26,16 @@
 #include <cstdio>
 #include <memory>
 #include <stdexcept>
+#include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "exokal/hodge/coefficient.hpp"
 #include "exokal/hodge/flux_operators.hpp"
 #include "exokal/hodge/stress_operators.hpp"
 #include "exokal/io/vtu.hpp"
+#include "exokal/preprocess/diagnostics.hpp"
 #include "mimetika/linear_solver/fields.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
 #include "mimetika/mesh/structured.hpp"
@@ -425,11 +428,51 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
   petsc.set_norm(std::move(norm));
 }
 
+// ASSEMBLE ONLY: the Jacobian and the preconditioner, and no iteration.
+//
+// The two are what a mesh has to survive before a solve is even attempted, and
+// they are the part that scales with the mesh rather than with the physics. A
+// caller measuring them wants them without waiting for a Krylov method to
+// converge -- and wants to know that they COMPLETED, which a timing alone does
+// not say.
+template <class Model>
+mimetika::solver::SolveReport assemble_only(Model& m, bool progress,
+                                            const mimetika::solver::SolverOptions& opts,
+                                            bool divergence_is_an_integral) {
+  Stage stage(progress);
+  stage.begin("assembling");
+  const auto t_build = std::chrono::steady_clock::now();
+  m.build();
+  const double assembly_seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count();
+  stage.end();
+  mimetika::solver::PetscSolver petsc(opts);
+  if (opts.preconditioner == "riesz") {
+    attach_norm(petsc, m, m.mesh(), m.dim(), divergence_is_an_integral);
+  }
+  stage.begin("preconditioner");
+  petsc.factorize(m.system());
+  stage.end();
+  stage.done("  matrix", petsc.matrix_seconds());
+  stage.done(opts.direct() ? "  factorization" : "  preconditioner",
+             petsc.preconditioner_seconds());
+  mimetika::solver::SolveReport r;
+  r.converged = true;  // nothing was solved; the two builds finished
+  r.reason = "assembled";
+  r.assembly_seconds = assembly_seconds;
+  r.matrix_seconds = petsc.matrix_seconds();
+  r.preconditioner_seconds = petsc.preconditioner_seconds();
+  return r;
+}
+
 mimetika::solver::SolveReport solve_elasticity(mimetika::CauchyElasticityModel& m, bool progress,
                                                const mimetika::solver::SolverOptions& opts) {
   Stage stage(progress);
   stage.begin("assembling");
+  const auto t_build = std::chrono::steady_clock::now();
   m.build();
+  const double assembly_seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count();
   stage.end();
   mimetika::solver::PetscSolver petsc(opts);
   // the momentum row is Dv, whose entries already carry 1/|E|: it is an average
@@ -444,6 +487,7 @@ mimetika::solver::SolveReport solve_elasticity(mimetika::CauchyElasticityModel& 
   stage.done("  matrix", rep.matrix_seconds);
   stage.done(opts.direct() ? "  factorization" : "  preconditioner", rep.preconditioner_seconds);
   stage.done("  iteration", rep.solve_seconds);
+  const_cast<mimetika::solver::SolveReport&>(rep).assembly_seconds = assembly_seconds;
   if (!rep.converged) throw std::runtime_error("cauchy elasticity: " + rep.reason);
   m.accept(std::move(x));
   return rep;
@@ -453,7 +497,10 @@ mimetika::solver::SolveReport solve_single_phase(mimetika::SinglePhaseModel& m, 
                                                  const mimetika::solver::SolverOptions& opts) {
   Stage stage(progress);
   stage.begin("assembling");
+  const auto t_build = std::chrono::steady_clock::now();
   m.build();
+  const double assembly_seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count();
   stage.end();
   mimetika::solver::PetscSolver petsc(opts);
   // the mass-balance row is the incidence: (Bq)_E is the integral of div q
@@ -468,6 +515,7 @@ mimetika::solver::SolveReport solve_single_phase(mimetika::SinglePhaseModel& m, 
   stage.done("  matrix", rep.matrix_seconds);
   stage.done(opts.direct() ? "  factorization" : "  preconditioner", rep.preconditioner_seconds);
   stage.done("  iteration", rep.solve_seconds);
+  const_cast<mimetika::solver::SolveReport&>(rep).assembly_seconds = assembly_seconds;
   if (!rep.converged) throw std::runtime_error("single phase: " + rep.reason);
   m.accept(std::move(x));
   return rep;
@@ -586,6 +634,11 @@ PYBIND11_MODULE(_core, m) {
       .def_readonly("iterations", &mimetika::solver::SolveReport::iterations)
       .def_readonly("residual", &mimetika::solver::SolveReport::residual)
       .def_readonly("reason", &mimetika::solver::SolveReport::reason)
+      .def_readonly("assembly_seconds", &mimetika::solver::SolveReport::assembly_seconds)
+      .def_readonly("matrix_seconds", &mimetika::solver::SolveReport::matrix_seconds)
+      .def_readonly("preconditioner_seconds",
+                    &mimetika::solver::SolveReport::preconditioner_seconds)
+      .def_readonly("solve_seconds", &mimetika::solver::SolveReport::solve_seconds)
       .def("__repr__", [](const mimetika::solver::SolveReport& r) {
         return "SolveReport(converged=" + std::string(r.converged ? "True" : "False") +
                ", iterations=" + std::to_string(r.iterations) + ", reason='" + r.reason + "')";
@@ -621,6 +674,56 @@ PYBIND11_MODULE(_core, m) {
 
   m.def("read_vtu", &exokal::read_vtu, py::arg("path"), py::arg("tag_array") = "tag");
 
+  // ---- what the mesh is, before anything is solved on it -------------------
+  //
+  // Both of these are exokal's own diagnostics; nothing is recomputed here.
+  // `diagnostics_report` is the same text the preprocessor writes, and
+  // `degenerate_cells` is the scan behind its metric-degeneracy finding, with
+  // the witnesses returned as numbers rather than formatted into the message.
+  m.def(
+      "diagnostics_report",
+      [](const std::string& path, double degeneracy_percent) {
+        const exokal::VtuFile file = exokal::read_vtu_file(path);
+        exokal::DiagnosticReport r = exokal::diagnose(file.mesh, degeneracy_percent);
+        exokal::annotate_vtk_cell_ids(r, file);
+        const exokal::Mesh& mesh = file.mesh;
+        std::ostringstream out;
+        out << "fundamental-principle diagnostics: " << path << "\n";
+        out << "complex: v " << mesh.count(0) << " e " << mesh.count(1) << " f " << mesh.count(2)
+            << " c " << mesh.count(3) << "\n\n";
+        out << "== ambient complex, realization, and induced full subcomplexes ==\n";
+        r.print(out);  // print() emits the per-section summary line itself
+        return out.str();
+      },
+      py::arg("path"), py::arg("degeneracy_percent") = 0.1);
+
+  // the metric-degeneracy witnesses, addressed by the id of the ORIGINAL FILE
+  // -- the cell ParaView selects -- alongside the numbers that flagged them
+  m.def(
+      "degenerate_cells",
+      [](const std::string& path, double degeneracy_percent) {
+        const exokal::VtuFile file = exokal::read_vtu_file(path);
+        const auto rows = exokal::degenerate_cells(file.mesh, degeneracy_percent);
+        // ambient top-cell id -> file cell id, the inverse of file_cell_of
+        const int n = file.mesh.dim();
+        std::unordered_map<Index, long long> to_file;
+        for (std::size_t fc = 0; fc < file.file_cell_of.size(); ++fc) {
+          const auto sid = file.file_cell_of[fc];
+          if (sid.dim == n) to_file.emplace(sid.id, static_cast<long long>(fc));
+        }
+        py::list out;
+        for (const auto& d : rows) {
+          const auto it = to_file.find(d.cell);
+          out.append(py::dict(
+              py::arg("vtk_cell_id") = it == to_file.end() ? -1 : it->second,
+              py::arg("cell") = static_cast<int>(d.cell), py::arg("measure") = d.measure,
+              py::arg("neighborhood_mean") = d.neighborhood_mean,
+              py::arg("percent") = d.percent));
+        }
+        return out;
+      },
+      py::arg("path"), py::arg("degeneracy_percent") = 0.1);
+
   // the one cell a boundary facet bounds; the affine datum is written about
   // that cell's centroid
   m.def(
@@ -629,6 +732,18 @@ PYBIND11_MODULE(_core, m) {
         return mimetika::cofacet_of(x, cell_dim, facet);
       },
       py::arg("mesh"), py::arg("cell_dim"), py::arg("facet"));
+
+  // Batched: the coboundary is built once for the whole array rather than once
+  // per facet, which is what makes a loop over the boundary affordable.
+  m.def(
+      "cofacets_of",
+      [](const exokal::Mesh& x, int cell_dim, const std::vector<Index>& facets) {
+        const auto v = mimetika::cofacets_of(x, cell_dim, facets);
+        py::array_t<Index> out(static_cast<py::ssize_t>(v.size()));
+        std::copy(v.begin(), v.end(), out.mutable_data());
+        return out;
+      },
+      py::arg("mesh"), py::arg("cell_dim"), py::arg("facets"));
 
   // Writes the top cells with one tuple per cell of each named field. Values
   // are in cell order: field[i] belongs to cell i of dimension mesh.dim().
@@ -753,6 +868,13 @@ PYBIND11_MODULE(_core, m) {
                                }
                                return n;
                              })
+      .def(
+          "assemble",
+          [](mimetika::CauchyElasticityModel& s, bool progress,
+             const mimetika::solver::SolverOptions& o) {
+            return assemble_only(s, progress, o, false);
+          },
+          py::arg("progress") = false, py::arg("options") = mimetika::solver::SolverOptions{})
       .def("prescribe_displacement", &mimetika::CauchyElasticityModel::prescribe_displacement,
            py::arg("facets"), py::arg("constant"), py::arg("gradient") = std::array<double, 9>{})
       .def("solve", &solve_elasticity, py::arg("progress") = false,
@@ -806,6 +928,13 @@ PYBIND11_MODULE(_core, m) {
             s.flow().emplace<mimetika::PressureBC>(facets, value);
           },
           py::arg("facets"), py::arg("value"))
+      .def(
+          "assemble",
+          [](mimetika::SinglePhaseModel& s, bool progress,
+             const mimetika::solver::SolverOptions& o) {
+            return assemble_only(s, progress, o, true);
+          },
+          py::arg("progress") = false, py::arg("options") = mimetika::solver::SolverOptions{})
       .def("solve", &solve_single_phase, py::arg("progress") = false,
            py::arg("options") = mimetika::solver::SolverOptions{})
       .def_property_readonly("dim", &mimetika::SinglePhaseModel::dim)

@@ -137,6 +137,29 @@ struct FacetFrame {
 // about a facet, but the facet's normal lives in the plane of the cell it
 // bounds, so the cell has to be recovered -- and on the boundary there is
 // exactly one, which is what makes it a boundary facet.
+// The cell bounding each of `facets`, for a whole batch at once.
+//
+// The coboundary is built ONCE here. `cofacet_of` builds it per call, which is
+// O(mesh) each time, so a Python loop over the boundary spends all of its time
+// rebuilding the same operator -- measured at 1.28 s for 5255 facets on a 22k
+// cell mesh, against 3 ms for every other part of that loop.
+inline std::vector<Index> cofacets_of(const exokal::Mesh& mesh, int cell_dim,
+                                      const std::vector<Index>& facets) {
+  const graphos::CoboundaryOperator cob = graphos::coboundary(mesh.topology(), cell_dim - 1);
+  std::vector<Index> out;
+  out.reserve(facets.size());
+  for (const Index facet : facets) {
+    const auto b = static_cast<std::size_t>(cob.offsets[static_cast<std::size_t>(facet)]);
+    const auto e = static_cast<std::size_t>(cob.offsets[static_cast<std::size_t>(facet) + 1]);
+    if (e - b != 1) {
+      throw std::invalid_argument("cofacets_of: facet " + std::to_string(facet) +
+                                  " is interior; a boundary condition needs a boundary facet");
+    }
+    out.push_back(cob.indices[b]);
+  }
+  return out;
+}
+
 inline Index cofacet_of(const exokal::Mesh& mesh, int cell_dim, Index facet) {
   const graphos::CoboundaryOperator cob = graphos::coboundary(mesh.topology(), cell_dim - 1);
   const auto b = static_cast<std::size_t>(cob.offsets[static_cast<std::size_t>(facet)]);

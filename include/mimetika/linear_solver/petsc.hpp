@@ -231,6 +231,12 @@ class PetscSolver final : public LinearSolver {
 
   const SolverOptions& options() const { return opts_; }
 
+  // What factorize() spent, so a caller can report the two halves of it
+  // separately: the matrix is linear in the assembly, the preconditioner is
+  // what decides whether a mesh is reachable at all.
+  double matrix_seconds() const { return matrix_seconds_; }
+  double preconditioner_seconds() const { return preconditioner_seconds_; }
+
   // The factors of the product space. Required by the "riesz" preconditioner
   // and ignored by every other one.
   void set_norm(SpaceNorm s) { norm_ = std::move(s); }
@@ -396,6 +402,15 @@ class PetscSolver final : public LinearSolver {
       }
     }
 
+    // THE GRAPH TERM IS NEVER MATERIALIZED AS TRIPLETS.
+    //
+    // B^T W^-1 B is an outer product per constraint row, so writing it as
+    // triplets costs the SQUARE of each row's entry count: on this mesh that
+    // is 122 million of them against 90 million for the material block, and
+    // they then have to be sorted alongside it. A row's outer product is a
+    // dense block over the columns that row touches, which is exactly what one
+    // MatSetValues call takes -- so the term goes straight into the matrix,
+    // and only the material block passes through a triplet list.
     std::vector<Index> p_row, p_col;
     std::vector<double> p_val;
     const auto emit = [&](Index i, Index j, double v) {
@@ -404,30 +419,12 @@ class PetscSolver final : public LinearSolver {
       p_col.push_back(j);
       p_val.push_back(v);
     };
-    // material: the (0,0) entries of A
     for (std::size_t k = 0; k < A.nnz(); ++k) {
       if (factor_of[static_cast<std::size_t>(A.row[k])] == 0 &&
           factor_of[static_cast<std::size_t>(A.col[k])] == 0) {
         emit(A.row[k], A.col[k], A.value[k]);
       }
     }
-    // graph: B^T W^-1 B, row by row
-    for (std::size_t i = 0; i < static_cast<std::size_t>(n_); ++i) {
-      const auto b = static_cast<std::size_t>(b_begin[i]);
-      const auto e = static_cast<std::size_t>(b_begin[i + 1]);
-      if (e == b) continue;
-      const double inv_w = 1.0 / weight[i];
-      for (std::size_t a = b; a < e; ++a) {
-        for (std::size_t c = b; c < e; ++c) {
-          emit(b_col[a], b_col[c], b_val[a] * b_val[c] * inv_w);
-        }
-      }
-    }
-    b_col = std::vector<Index>();
-    b_val = std::vector<double>();
-    b_begin = std::vector<Index>();
-    // L2 mass of every factor after the first, and the constrained rows the row
-    // A gave them
     for (std::size_t i = 0; i < static_cast<std::size_t>(n_); ++i) {
       if (factor_of[i] >= 1 && !is_pinned[i]) {
         emit(static_cast<Index>(i), static_cast<Index>(i), weight[i]);
@@ -440,10 +437,74 @@ class PetscSolver final : public LinearSolver {
       p_val.push_back(k < norm_.pinned_diagonal.size() ? norm_.pinned_diagonal[k] : 1.0);
     }
 
-    Mat P = assemble(p_row, p_col, p_val, n_);
+    // preallocate for both parts: the material triplets, and every column of a
+    // constraint row against every other column of that row
+    std::vector<PetscInt> per_row(static_cast<std::size_t>(n_), 0);
+    for (const Index r : p_row) ++per_row[static_cast<std::size_t>(r)];
+    for (std::size_t r = 0; r < static_cast<std::size_t>(n_); ++r) {
+      const auto b = static_cast<std::size_t>(b_begin[r]);
+      const auto e = static_cast<std::size_t>(b_begin[r + 1]);
+      for (std::size_t a = b; a < e; ++a) {
+        per_row[static_cast<std::size_t>(b_col[a])] += static_cast<PetscInt>(e - b);
+      }
+    }
+    for (PetscInt& c : per_row) c = std::min(c, n_);
+
+    Mat P = nullptr;
+    check(MatCreate(PETSC_COMM_SELF, &P), "MatCreate(P)");
+    check(MatSetType(P, MATSEQAIJ), "MatSetType(P)");
+    check(MatSetSizes(P, n_, n_, n_, n_), "MatSetSizes(P)");
+    check(MatSeqAIJSetPreallocation(P, 0, per_row.data()), "preallocate(P)");
+    check(MatSetOption(P, MAT_NEW_NONZERO_ALLOCATION_ERR, PETSC_FALSE), "MatSetOption(P)");
+    check(MatSetOption(P, MAT_IGNORE_ZERO_ENTRIES, PETSC_FALSE), "MatSetOption(P)");
+    per_row = std::vector<PetscInt>();
+
+    scatter_by_row(P, p_row, p_col, p_val, n_);
     p_row = std::vector<Index>();
     p_col = std::vector<Index>();
     p_val = std::vector<double>();
+
+    // one dense block per constraint row: (1/W_r) b_r b_r^T, over the columns
+    // that row touches. Pinned unknowns are not in the space, so a row is
+    // skipped where it would reach one.
+    {
+      std::vector<PetscInt> cols;
+      std::vector<PetscScalar> blk;
+      for (std::size_t r = 0; r < static_cast<std::size_t>(n_); ++r) {
+        const auto b = static_cast<std::size_t>(b_begin[r]);
+        const auto e = static_cast<std::size_t>(b_begin[r + 1]);
+        if (e == b) continue;
+        const double inv_w = 1.0 / weight[r];
+        cols.clear();
+        for (std::size_t a = b; a < e; ++a) {
+          if (!is_pinned[static_cast<std::size_t>(b_col[a])]) cols.push_back(b_col[a]);
+        }
+        if (cols.empty()) continue;
+        const std::size_t m = cols.size();
+        blk.assign(m * m, 0.0);
+        std::size_t ia = 0;
+        for (std::size_t a = b; a < e; ++a) {
+          if (is_pinned[static_cast<std::size_t>(b_col[a])]) continue;
+          std::size_t ic = 0;
+          for (std::size_t c = b; c < e; ++c) {
+            if (is_pinned[static_cast<std::size_t>(b_col[c])]) continue;
+            blk[ia * m + ic] = b_val[a] * b_val[c] * inv_w;
+            ++ic;
+          }
+          ++ia;
+        }
+        check(MatSetValues(P, static_cast<PetscInt>(m), cols.data(), static_cast<PetscInt>(m),
+                           cols.data(), blk.data(), ADD_VALUES),
+              "P(graph block)");
+      }
+    }
+    b_col = std::vector<Index>();
+    b_val = std::vector<double>();
+    b_begin = std::vector<Index>();
+
+    check(MatAssemblyBegin(P, MAT_FINAL_ASSEMBLY), "assembly(P)");
+    check(MatAssemblyEnd(P, MAT_FINAL_ASSEMBLY), "assembly(P)");
+
     // P IS SYMMETRIC POSITIVE DEFINITE BY CONSTRUCTION -- a material inner
     // product plus B^T W^-1 B plus positive diagonals -- and saying so lets a
     // Cholesky be taken of its blocks: half the fill of an LU.
@@ -460,8 +521,8 @@ class PetscSolver final : public LinearSolver {
     // exact or not, decided on the size of the block being inverted: the fill
     // of a complete factorization is what stops this scaling, not its speed
     const auto n0 = static_cast<int>(norm_.factors[0].size());
-    const bool inexact_block = opts_.riesz_block_its > 0 ||
-                               (opts_.riesz_block_its < 0 && n0 > opts_.riesz_exact_limit);
+    const bool inexact_block =
+        opts_.riesz_block_its > 0 || (opts_.riesz_block_its < 0 && n0 > opts_.riesz_exact_limit);
     const int block_its = opts_.riesz_block_its > 0 ? opts_.riesz_block_its : 200;
     const std::string b0_pc =
         !opts_.riesz_block_pc.empty() ? opts_.riesz_block_pc : (inexact_block ? "icc" : "lu");
@@ -538,30 +599,40 @@ class PetscSolver final : public LinearSolver {
     // an explicitly stored zero is structure, not noise, and must survive
     check(MatSetOption(M, MAT_IGNORE_ZERO_ENTRIES, PETSC_FALSE), "MatSetOption");
     per_row = std::vector<PetscInt>();
-
-    {
-      std::vector<PetscInt> at(begin.begin(), begin.end() - 1);
-      std::vector<PetscInt> cols(nnz);
-      std::vector<PetscScalar> vals(nnz);
-      for (std::size_t k = 0; k < nnz; ++k) {
-        const auto slot = static_cast<std::size_t>(at[static_cast<std::size_t>(row[k])]++);
-        cols[slot] = static_cast<PetscInt>(col[k]);
-        vals[slot] = val[k];
-      }
-      at = std::vector<PetscInt>();
-      for (PetscInt i = 0; i < n; ++i) {
-        const auto b = static_cast<std::size_t>(begin[static_cast<std::size_t>(i)]);
-        const auto e = static_cast<std::size_t>(begin[static_cast<std::size_t>(i) + 1]);
-        if (e == b) continue;
-        check(MatSetValues(M, 1, &i, static_cast<PetscInt>(e - b), cols.data() + b,
-                           vals.data() + b, ADD_VALUES),
-              "MatSetValues");
-      }
-    }
-
+    scatter_by_row(M, row, col, val, n);
     check(MatAssemblyBegin(M, MAT_FINAL_ASSEMBLY), "assembly");
     check(MatAssemblyEnd(M, MAT_FINAL_ASSEMBLY), "assembly");
     return M;
+  }
+
+  // The scatter alone, for a matrix the caller preallocated itself -- the
+  // preconditioner adds terms that never become triplets, so it has to own the
+  // preallocation.
+  static void scatter_by_row(Mat M, const std::vector<Index>& row, const std::vector<Index>& col,
+                             const std::vector<double>& val, PetscInt n) {
+    const auto rows = static_cast<std::size_t>(n);
+    const std::size_t nnz = val.size();
+    std::vector<PetscInt> begin(rows + 1, 0);
+    for (std::size_t k = 0; k < nnz; ++k) ++begin[static_cast<std::size_t>(row[k]) + 1];
+    for (std::size_t i = 0; i < rows; ++i) begin[i + 1] += begin[i];
+
+    std::vector<PetscInt> at(begin.begin(), begin.end() - 1);
+    std::vector<PetscInt> cols(nnz);
+    std::vector<PetscScalar> vals(nnz);
+    for (std::size_t k = 0; k < nnz; ++k) {
+      const auto slot = static_cast<std::size_t>(at[static_cast<std::size_t>(row[k])]++);
+      cols[slot] = static_cast<PetscInt>(col[k]);
+      vals[slot] = val[k];
+    }
+    at = std::vector<PetscInt>();
+    for (PetscInt i = 0; i < n; ++i) {
+      const auto b = static_cast<std::size_t>(begin[static_cast<std::size_t>(i)]);
+      const auto e = static_cast<std::size_t>(begin[static_cast<std::size_t>(i) + 1]);
+      if (e == b) continue;
+      check(MatSetValues(M, 1, &i, static_cast<PetscInt>(e - b), cols.data() + b, vals.data() + b,
+                         ADD_VALUES),
+            "MatSetValues");
+    }
   }
 
   void build_matrix(const SparseSystem& A) { M_ = assemble(A.row, A.col, A.value, n_); }
@@ -645,7 +716,8 @@ class PetscSolver final : public LinearSolver {
     SolveReport out;
     const auto t0 = std::chrono::steady_clock::now();
     const PetscErrorCode e = KSPSolve(ksp, rhs_, sol);
-    out.solve_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    out.solve_seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     if (e == 0) {
       KSPConvergedReason why = KSP_CONVERGED_ITERATING;
       KSPGetConvergedReason(ksp, &why);

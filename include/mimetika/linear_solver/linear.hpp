@@ -94,6 +94,7 @@ struct SolveReport {
   // that decides whether a mesh is reachable at all; the iteration is what the
   // preconditioner was chosen to shorten. Reporting one number for all three
   // hides which of them to fix.
+  double assembly_seconds{0.0};  // the Jacobian: the model's own build
   double matrix_seconds{0.0};
   double preconditioner_seconds{0.0};
   double solve_seconds{0.0};
