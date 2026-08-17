@@ -430,12 +430,17 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
   const auto& space = m.simulation().epoch().stratum(0).space();
   const auto& facet_map = space.map(0);
   const auto& layout = facet_map.layout();
-  const int per_facet = layout.on(dim - 1);
-  const int components = layout.components;
-  const bool on_facets =
-      layout.carries(dim - 1) &&
-      blocks[0].size() == static_cast<std::size_t>(topo.count(dim - 1)) *
-                              static_cast<std::size_t>(per_facet * components);
+  // THE TWO NUMBERS THAT DESCRIBE A FACET-CARRIED SPACE, and they are not the
+  // same number even when they are equal. `moments` is how much of the facet
+  // P_1 basis is measured -- 1 for RT, d for BDM -- and `copies` is how many
+  // H(div) fields sit side by side: one for a flux, d for the rows of a
+  // stress. ADS solves ONE copy of ONE moment, so both are what decides which
+  // route it is reached by.
+  const int moments = layout.on(dim - 1);
+  const int copies = layout.components;
+  const bool on_facets = layout.carries(dim - 1) &&
+                         blocks[0].size() == static_cast<std::size_t>(topo.count(dim - 1)) *
+                                                 static_cast<std::size_t>(moments * copies);
   if (dim == 3 && on_facets) {
     const auto copy_out = [](const graphos::BoundaryOperator& b, int rows, int cols) {
       mimetika::solver::SpaceNorm::Incidence out;
@@ -464,42 +469,44 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
       norm.vertex_coordinates.insert(norm.vertex_coordinates.end(), {x[0], x[1], x[2]});
     }
 
-    // THE FACET-CONSTANT SUBSPACE, when the facet carries more than one moment.
+    // THE FACET-CONSTANT SUBSPACE, for every space that is not already it.
     //
-    // The moments on a facet are taken against its P_1 basis {1, in-facet
-    // coordinates} and the CONSTANT is the first of them, so the lowest-order
-    // space is not interpolated here -- it is the subset of the unknowns with
-    // functional index 0, one per component per facet, and the injection is a
-    // matrix of ones. Ordered component-major so each component of the coarse
-    // space is a contiguous run: ADS takes one scalar H(div) problem at a
-    // time, and the components of a stress row are exactly that.
-    // A facet's unknowns are ordered (basis, component) with the COMPONENT
-    // fastest -- StressOperators permutes its own (component, basis) ordering
-    // into this one when it builds, see its `perm` -- so the d constants are
-    // the FIRST d unknowns of the facet's block, and the injection selects a
-    // contiguous run rather than a strided one. Getting that backwards is not
-    // a crash: the coarse space is then one component's worth of moments, the
-    // divergence term is absent from it, and the cycle merely converges badly
-    // (204 iterations against 1070, measured).
-    const int per_facet_total = per_facet * components;
-    if (per_facet_total > dim && per_facet_total % dim == 0) {
+    // ADS takes one scalar H(div) problem: one copy, one moment per facet.
+    // Anything else -- BDM's d moments of a flux, AFW's d copies of those --
+    // reaches it through the subspace spanned by the CONSTANT moment of each
+    // copy, and that subspace is not interpolated here. The moments are taken
+    // against the facet P_1 basis {1, in-facet coordinates} with the constant
+    // first, so the lowest-order space is a SUBSET of the unknowns and the
+    // injection is a matrix of ones.
+    //
+    // A facet's unknowns are ordered (moment, copy) with the COPY fastest --
+    // StressOperators permutes its own (copy, moment) ordering into this one
+    // when it builds, see its `perm` -- so the constants are the FIRST
+    // `copies` unknowns of the facet's block, contiguous rather than strided.
+    // Getting that backwards is not a crash: the coarse space is then one
+    // copy's worth of moments, carries no divergence, and the cycle merely
+    // converges badly (204 iterations against 1070, measured).
+    //
+    // Columns are copy-major, so each copy of the coarse space is a contiguous
+    // run and can be handed to ADS as the scalar problem it expects.
+    if (moments * copies > 1) {
       const auto base = static_cast<Index>(m.simulation().epoch().offset(0)) +
                         static_cast<Index>(space.offset(0));
       const Index n_facet = topo.count(dim - 1);
       auto& inj = norm.lowest_order;
       inj.rows = static_cast<int>(m.simulation().n_dofs());
-      inj.cols = static_cast<int>(n_facet) * dim;
-      const auto n_entry = static_cast<std::size_t>(n_facet) * static_cast<std::size_t>(dim);
+      inj.cols = static_cast<int>(n_facet) * copies;
+      const auto n_entry = static_cast<std::size_t>(n_facet) * static_cast<std::size_t>(copies);
       inj.row.reserve(n_entry);
       inj.col.reserve(n_entry);
       inj.value.assign(n_entry, 1.0);
-      for (int c = 0; c < dim; ++c) {
+      for (int c = 0; c < copies; ++c) {
         for (Index f = 0; f < n_facet; ++f) {
           inj.row.push_back(static_cast<int>(base + facet_map.global(dim - 1, f, 0, 0) + c));
           inj.col.push_back(static_cast<int>(c * n_facet + f));
         }
       }
-      norm.lowest_order_components = dim;
+      norm.lowest_order_components = copies;
     }
   }
 

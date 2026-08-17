@@ -192,6 +192,12 @@ def main():
         raise SystemExit(
             f"{args.mesh}: top cells are {dim}-dimensional, expected 2 or 3"
         )
+    if args.solver.startswith("ads") and dim != 3:
+        raise SystemExit(
+            f"--solver {args.solver} is a 3D construction (it needs the discrete "
+            f"gradient and curl of a 3-complex); {args.mesh} is {dim}D. "
+            "Use --solver riesz."
+        )
 
     if args.output:
         out = os.path.join(args.output, os.path.splitext(os.path.basename(args.mesh))[0])

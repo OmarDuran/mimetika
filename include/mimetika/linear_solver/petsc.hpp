@@ -874,6 +874,17 @@ class PetscSolver final : public LinearSolver {
     check(KSPSetType(coarse, KSPPREONLY), "coarse KSPSetType");
     PC coarse_pc = nullptr;
     check(KSPGetPC(coarse, &coarse_pc), "coarse KSPGetPC");
+    // ONE COPY NEEDS NO SPLIT. A flux has a single H(div) field, so its coarse
+    // space is already the scalar problem ADS takes; wrapping it in a
+    // one-field fieldsplit hands hypre a submatrix it builds its AMG hierarchy
+    // from differently, and that segfaults inside BoomerAMG rather than
+    // failing. The split exists for the d copies of a stress.
+    if (nc == 1) {
+      check(PCSetUp(pc), "PCSetUp(mg)");
+      attach_ads(coarse_pc);
+      check(PCSetUp(coarse_pc), "PCSetUp(coarse ads)");
+      return;
+    }
     check(PCSetType(coarse_pc, PCFIELDSPLIT), "coarse PCSetType(fieldsplit)");
     const PetscInt per = inj.cols / nc;
     std::vector<IS> parts(static_cast<std::size_t>(nc), nullptr);

@@ -61,12 +61,42 @@ def solvers(rtol):
         "riesz": mk.SolverOptions(
             method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000
         ),
+        # THE SAME MAP, WITH THE STRESS BLOCK INVERTED BY AN AUXILIARY SPACE.
+        #
+        # ADS splits an H(div) operator along the de Rham complex instead of
+        # factorizing it, so it costs no fill and is linear in the unknowns.
+        # It is a 3D construction and it wants ONE unknown per facet; the AFW
+        # facet carries d moments in each of d components, and reaches it
+        # through the facet-constant subspace, as a two-level cycle.
+        "ads": mk.SolverOptions(
+            method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000,
+            riesz_block_pc="ads",
+        ),
+        # the block solved to a tolerance rather than approximated by one
+        # cycle: more work per iteration, and a count that stops drifting
+        "ads-cg": mk.SolverOptions(
+            method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000,
+            riesz_block_pc="ads", riesz_block_its=50, riesz_block_rtol=1e-2,
+        ),
         "direct": mk.SolverOptions(),
     }
 
 
-SOLVER_NAMES = ("direct", "riesz")
+SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg")
 DEFAULT_RTOL = 1e-12
+
+# ADS IS A THREE-DIMENSIONAL CONSTRUCTION. Its auxiliary spaces are built from
+# the discrete gradient and curl, d_1 and d_2, and in two dimensions the
+# H(div) unknowns sit on edges rather than faces -- the maps do not address
+# them, and hypre has no ADS for that case.
+def require_three_dimensions(solver, dim):
+    if solver.startswith("ads") and dim != 3:
+        raise SystemExit(
+            f"--solver {solver} is a 3D construction (it needs the discrete "
+            f"gradient and curl of a 3-complex); this problem is {dim}D. "
+            "Use --solver riesz, or run in 3D."
+        )
+
 
 
 PRODUCTS = {
@@ -159,6 +189,7 @@ def main():
         mat = mk.ElasticMaterial(MU, 2.0 * MU * args.nu / (1.0 - 2.0 * args.nu))
 
     family, how = FAMILIES[args.family], PRODUCTS[args.product]
+    require_three_dimensions(args.solver, args.dim)
     print(f"Lame tube, {args.dim}D {args.family}, {mk.stress_realization_name(how)}")
     print(f"  a = {A_IN}, b = {B_OUT},  p(a) = {P_INNER}, p(b) = {P_OUTER}")
     print(f"  mu = {mat.shear}, lam = {mat.lame}  (nu = {mat.poisson():.4f})\n")
