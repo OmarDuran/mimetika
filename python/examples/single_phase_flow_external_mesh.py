@@ -44,6 +44,7 @@ with --make-mesh to produce a sample file first, if there is none to hand:
 import argparse
 import math
 import os
+import sys
 
 import mimetika_cxx as mk
 import numpy as np
@@ -163,7 +164,20 @@ def make_mesh(path):
     print(f"wrote {path}: {mesh.count(2)} cells, {mesh.count(0)} vertices")
 
 
+# ONE PROCESS SPEAKS AND WRITES. Under mpirun every rank runs this file and
+# solves the same problem -- the algebra is shared out, the script is not -- so
+# without this the report appears N times and N processes race to write the
+# same .vtu. The solve itself is unaffected: every rank takes part in it, and
+# every rank ends up with the whole answer.
+def only_root():
+    if mk.mpi_rank() == 0:
+        return True
+    sys.stdout = open(os.devnull, "w")
+    return False
+
+
 def main():
+    root = only_root()
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--mesh", help="the .vtu to solve on")
     ap.add_argument("--make-mesh", help="write a sample .vtu to this path and stop")
@@ -216,7 +230,7 @@ def main():
             "Use --solver riesz."
         )
 
-    if args.output:
+    if args.output and root:
         out = os.path.join(args.output, os.path.splitext(os.path.basename(args.mesh))[0])
         with stage(f"diagnosing the mesh into {out}"):
             bad, warn, degenerate = write_report(args.mesh, out, args.degeneracy_percent)
@@ -312,7 +326,7 @@ def main():
             "  facet is dropped. First order, and it looks like a discretization error."
         )
 
-    if args.vtu:
+    if args.vtu and root:
         with stage(f"writing {args.vtu}"):
             n = model.n_cells
             p = np.array([model.cell_pressure(e) for e in range(n)])

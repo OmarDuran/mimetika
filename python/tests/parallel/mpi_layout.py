@@ -28,6 +28,7 @@ import math
 import sys
 
 import mimetika_cxx as mk
+import numpy as np
 
 A_IN, B_OUT = 1.0, 10.0
 P_IN, P_OUT = 2.0, 1.0
@@ -102,10 +103,21 @@ def flow_case(nr, solver):
     }
 
 
+# THE STRESS IS THE ONE FIELD THAT CAN GO MISSING. It is reconstructed from a
+# cell's operators, and distributed assembly builds those only where the cell
+# is owned or in the halo -- everywhere else it reads zero, which is a wrong
+# answer wearing the shape of a right one. So the elasticity cases carry it,
+# and carry it gathered.
+def stress_of(model):
+    sig = mk.gather_cells(model, np.array([model.cell_stress(e) for e in range(model.n_cells)]))
+    return float(sig.sum()), float((sig * sig).sum())
+
+
 def elasticity_case(nr, solver):
     model, mesh = patch(nr)
     report = model.solve(options=solver)
     u = [model.displacement(e, k) for e in range(model.n_cells) for k in range(2)]
+    stress_sum, stress_sq = stress_of(model)
     return {
         "dofs": model.n_dofs,
         "iterations": report.iterations,
@@ -113,6 +125,8 @@ def elasticity_case(nr, solver):
         "sum_sq": sum(v * v for v in u),
         "first": u[0],
         "last": u[-1],
+        "stress_sum": stress_sum,
+        "stress_sq": stress_sq,
     }
 
 
@@ -122,6 +136,23 @@ ADS = mk.SolverOptions(
     method="gmres", preconditioner="riesz", rtol=1e-10, max_iterations=2000,
     riesz_block_pc="ads", riesz_exact_limit=10**9,
 )
+
+
+def elasticity_3d_case(nr, solver):
+    model, mesh = patch(nr, dim=3)
+    report = model.solve(options=solver)
+    u = [model.displacement(e, k) for e in range(model.n_cells) for k in range(3)]
+    stress_sum, stress_sq = stress_of(model)
+    return {
+        "dofs": model.n_dofs,
+        "iterations": report.iterations,
+        "sum": sum(u),
+        "sum_sq": sum(v * v for v in u),
+        "first": u[0],
+        "last": u[-1],
+        "stress_sum": stress_sum,
+        "stress_sq": stress_sq,
+    }
 
 
 def flow_3d_case(nr, solver):
@@ -144,6 +175,10 @@ CASES = {
     "elasticity-direct": lambda: elasticity_case(8, DIRECT),
     "elasticity-riesz": lambda: elasticity_case(8, RIESZ),
     "flow-3d-ads": lambda: flow_3d_case(8, ADS),
+    # the OTHER route to ADS: the AFW stress facet carries d^2 unknowns, so it
+    # reaches the solver through its facet-constant subspace, as a two-level
+    # cycle whose interpolation and coarse split are distributed with it
+    "elasticity-3d-ads": lambda: elasticity_3d_case(6, ADS),
 }
 
 # THE ONE CASE WHOSE COUNT MAY MOVE. ADS is hypre's, and the algebraic
@@ -151,7 +186,7 @@ CASES = {
 # distributed -- so its hierarchy, and its iteration count, depend a little on
 # the number of ranks. That is the solver's own business; the ANSWER is not
 # allowed to move, and is compared as strictly as every other case.
-LOOSE_COUNTS = {"flow-3d-ads": 15}
+LOOSE_COUNTS = {"flow-3d-ads": 15, "elasticity-3d-ads": 15}
 
 
 def run():
@@ -182,7 +217,7 @@ def compare(got, want, tol=1e-9):
             )
         if mine["dofs"] != ref["dofs"]:
             bad.append(f"{name}: {mine['dofs']} dofs against {ref['dofs']}")
-        for key in ("sum", "sum_sq", "first", "last"):
+        for key in sorted(set(ref) - {"iterations", "dofs"}):
             scale = max(1.0, abs(ref[key]))
             if abs(mine[key] - ref[key]) > tol * scale:
                 bad.append(f"{name}: {key} {mine[key]:.17g} against {ref[key]:.17g}")

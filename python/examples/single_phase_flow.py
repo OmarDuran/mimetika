@@ -18,6 +18,8 @@ Run it:
 """
 
 import argparse
+import os
+import sys
 import math
 
 import mimetika_cxx as mk
@@ -140,7 +142,20 @@ def solve(nr, nt, dim, family, how, solver="riesz", rtol=DEFAULT_RTOL):
     return model, mesh, worst, math.sqrt(rms / model.n_cells)
 
 
+# ONE PROCESS SPEAKS AND WRITES. Under mpirun every rank runs this file and
+# solves the same problem -- the algebra is shared out, the script is not -- so
+# without this the report appears N times and N processes race to write the
+# same .vtu. The solve itself is unaffected: every rank takes part in it, and
+# every rank ends up with the whole answer.
+def only_root():
+    if mk.mpi_rank() == 0:
+        return True
+    sys.stdout = open(os.devnull, "w")
+    return False
+
+
 def main():
+    root = only_root()
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--dim", type=int, default=2, choices=(2, 3))
     ap.add_argument("--family", default="simplex", choices=sorted(FAMILIES))
@@ -174,7 +189,7 @@ def main():
         print(f"  {r:8.4f}  {got:14.6f}  {want:12.6f}  {got - want:+10.2e}")
 
     # ---- the same solution as a field on the cells --------------------------
-    if args.vtu:
+    if args.vtu and root:
         n = model.n_cells
         p = np.array([model.cell_pressure(e) for e in range(n)])
         q = np.array([exact(mk.centroid(mesh, args.dim, e)) for e in range(n)])

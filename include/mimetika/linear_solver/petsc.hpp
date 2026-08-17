@@ -735,12 +735,12 @@ class PetscSolver final : public LinearSolver {
     // problem and any scalable method beats not solving at all -- and left to
     // the caller below it.
     const bool through_subspace = !norm_.lowest_order.empty();
-    // ADS ITSELF IS DISTRIBUTED; the two-level cycle that reaches it through a
-    // subspace is not yet, so on several processes that route is declined and
-    // the direct one is not.
+    // BOTH ROUTES ARE DISTRIBUTED: ADS on a block whose unknowns are the
+    // facets, and the two-level cycle that reaches it through the
+    // facet-constant subspace. Each needs the entities laid out on the
+    // partition, which is the one thing that must be supplied for it.
     const bool ads_possible_here =
-        ads_possible && (!distributed_ || norm_.entity_owner.size() >= 3) &&
-        !(distributed_ && through_subspace);
+        ads_possible && (!distributed_ || norm_.entity_owner.size() >= 3);
     const bool use_ads = ads_possible_here &&
                          (inexact_block || (!through_subspace && n0 > opts_.riesz_ads_limit));
     std::string b0_pc = !opts_.riesz_block_pc.empty() ? opts_.riesz_block_pc
@@ -825,12 +825,6 @@ class PetscSolver final : public LinearSolver {
     // up, because setting up is what builds the hierarchy. So the split is
     // brought up with a PC that costs nothing, the maps are attached, and the
     // real type is set; the outer KSPSetUp then does the work once.
-    if (b0_pc == "ads" && distributed_ && through_subspace) {
-      throw std::invalid_argument(
-          "PetscSolver: 'ads' through the facet-constant subspace is not distributed yet -- the "
-          "two-level cycle's interpolation and its coarse split are still built on one process. "
-          "ADS itself is distributed: a space with one unknown per facet takes it directly.");
-    }
     if (b0_pc == "ads") {
       set(p0 + "pc_type", "none");
       check(PCSetUp(pc), "PCSetUp(fieldsplit)");
@@ -875,9 +869,16 @@ class PetscSolver final : public LinearSolver {
   // simply be true.
   struct EntityLayout {
     std::vector<PetscInt> new_of, old_of;
+    // where each rank's run starts, n_ranks + 1 of them: needed to build a
+    // space ON TOP of this one, which is what the coarse space of the
+    // two-level cycle is
+    std::vector<PetscInt> first;
     PetscInt begin{0}, end{0}, local{0}, total{0};
 
     bool owns(PetscInt i) const { return i >= begin && i < end; }
+    PetscInt count(int rank) const {
+      return first[static_cast<std::size_t>(rank) + 1] - first[static_cast<std::size_t>(rank)];
+    }
   };
 
   EntityLayout layout_of(const std::vector<int>& owner, int n_ranks) const {
@@ -894,6 +895,7 @@ class PetscSolver final : public LinearSolver {
     out.begin = count[static_cast<std::size_t>(rank_)];
     out.end = count[static_cast<std::size_t>(rank_) + 1];
     out.local = out.end - out.begin;
+    out.first = count;
     out.new_of.resize(owner.size());
     out.old_of.resize(owner.size());
     std::vector<PetscInt> at_slot(count.begin(), count.end() - 1);
@@ -933,9 +935,62 @@ class PetscSolver final : public LinearSolver {
     return M;
   }
 
+  // how many rows of the first factor's block this rank holds
+  PetscInt block_rows_local() const {
+    PetscInt n = 0;
+    for (const int g : norm_.factors[0]) {
+      if (owns(at(g))) ++n;
+    }
+    return n;
+  }
+
+  // A rectangular map whose two spaces are laid out independently -- the
+  // interpolation of the cycle, whose rows are the block's and whose columns
+  // are the coarse space's. Rows already carry the solver's numbering, so each
+  // rank inserts the ones it holds.
+  Mat to_mat_rectangular(const SpaceNorm::Incidence& a, PetscInt local_rows,
+                         PetscInt local_cols) const {
+    PetscInt row_begin = 0;
+    MPI_Scan(&local_rows, &row_begin, 1, MPIU_INT, MPI_SUM, comm_);
+    row_begin -= local_rows;
+    PetscInt col_begin = 0;
+    MPI_Scan(&local_cols, &col_begin, 1, MPIU_INT, MPI_SUM, comm_);
+    col_begin -= local_cols;
+    std::vector<PetscInt> diag(static_cast<std::size_t>(local_rows), 0);
+    std::vector<PetscInt> off(static_cast<std::size_t>(local_rows), 0);
+    const auto ours = [&](PetscInt i) { return i >= row_begin && i < row_begin + local_rows; };
+    for (std::size_t k = 0; k < a.value.size(); ++k) {
+      const PetscInt i = a.row[k];
+      if (!ours(i)) continue;
+      const PetscInt j = a.col[k];
+      const bool in_diagonal = j >= col_begin && j < col_begin + local_cols;
+      ++(in_diagonal ? diag : off)[static_cast<std::size_t>(i - row_begin)];
+    }
+    Mat M = nullptr;
+    check(MatCreate(comm_, &M), "MatCreate(interpolation)");
+    check(MatSetType(M, MATMPIAIJ), "MatSetType(interpolation)");
+    check(MatSetSizes(M, local_rows, local_cols, a.rows, a.cols), "MatSetSizes(interpolation)");
+    check(MatMPIAIJSetPreallocation(M, 0, diag.data(), 0, off.data()),
+          "preallocate(interpolation)");
+    for (std::size_t k = 0; k < a.value.size(); ++k) {
+      const PetscInt i = a.row[k];
+      if (!ours(i)) continue;
+      const PetscInt j = a.col[k];
+      check(MatSetValues(M, 1, &i, 1, &j, &a.value[k], INSERT_VALUES), "interpolation entry");
+    }
+    check(MatAssemblyBegin(M, MAT_FINAL_ASSEMBLY), "assembly(interpolation)");
+    check(MatAssemblyEnd(M, MAT_FINAL_ASSEMBLY), "assembly(interpolation)");
+    return M;
+  }
+
   // ADS on a block whose unknowns ARE the facets, with the two maps of the
   // complex and the vertex coordinates the auxiliary spaces are built from.
-  void attach_ads(PC pc) {
+  // `local_rows` is how many rows of the operator this rank holds -- the first
+  // factor's owned unknowns when ADS acts on the block itself, one copy's
+  // worth of faces when it acts on a component of a coarse space. It is
+  // checked rather than assumed, because hypre cannot be told the numbering
+  // and a mismatch would silently precondition a permuted operator.
+  void attach_ads(PC pc, PetscInt local_rows = -1) {
     check(PCSetType(pc, PCHYPRE), "PCSetType(hypre)");
     check(PCHYPRESetType(pc, "ads"), "PCHYPRESetType(ads)");
     if (norm_.discrete_gradient.empty() || norm_.discrete_curl.empty()) {
@@ -973,11 +1028,12 @@ class PetscSolver final : public LinearSolver {
       const EntityLayout vertices = layout_of(norm_.entity_owner[0], size);
       const EntityLayout edges = layout_of(norm_.entity_owner[1], size);
       const EntityLayout faces = layout_of(norm_.entity_owner[2], size);
-      // the block's rows are the first factor's owned unknowns; one per face
-      // is what this route is for, so the two counts must be the same number
-      PetscInt owned_dofs = 0;
-      for (const int g : norm_.factors[0]) {
-        if (owns(at(g))) ++owned_dofs;
+      PetscInt owned_dofs = local_rows;
+      if (owned_dofs < 0) {
+        owned_dofs = 0;
+        for (const int g : norm_.factors[0]) {
+          if (owns(at(g))) ++owned_dofs;
+        }
       }
       if (owned_dofs != faces.local) {
         throw std::invalid_argument(
@@ -1037,11 +1093,21 @@ class PetscSolver final : public LinearSolver {
     if (nc < 1 || inj.cols % nc != 0) {
       throw std::invalid_argument("PetscSolver: lowest-order injection is not component-blocked");
     }
-    // rows are global unknowns; the block sees them in its own numbering
-    std::vector<int> position(static_cast<std::size_t>(n_), -1);
+    // THE BLOCK'S ROW OF EACH UNKNOWN. A fieldsplit gives its sub-matrix the
+    // rows of its index set in that set's order, which is ascending in the
+    // SOLVER's numbering -- so on several processes the block's rows are
+    // grouped by rank exactly as the unknowns are, and the injection's rows
+    // must be numbered the same way.
     const std::vector<int>& first = norm_.factors[0];
-    for (std::size_t i = 0; i < first.size(); ++i) {
-      position[static_cast<std::size_t>(first[i])] = static_cast<int>(i);
+    std::vector<PetscInt> order(first.size());
+    std::iota(order.begin(), order.end(), PetscInt{0});
+    std::sort(order.begin(), order.end(), [&](PetscInt a, PetscInt b) {
+      return at(first[static_cast<std::size_t>(a)]) < at(first[static_cast<std::size_t>(b)]);
+    });
+    std::vector<int> position(static_cast<std::size_t>(n_), -1);
+    for (std::size_t i = 0; i < order.size(); ++i) {
+      position[static_cast<std::size_t>(first[static_cast<std::size_t>(order[i])])] =
+          static_cast<int>(i);
     }
     SpaceNorm::Incidence local;
     local.rows = static_cast<int>(first.size());
@@ -1057,7 +1123,50 @@ class PetscSolver final : public LinearSolver {
       local.value.push_back(inj.value[k]);
     }
     position = std::vector<int>();
-    Mat interpolation = to_mat(local);
+    order = std::vector<PetscInt>();
+
+    // THE COARSE SPACE, LAID OUT ON THE PARTITION.
+    //
+    // Serially it is copy-major: every face of copy 0, then copy 1. That
+    // ordering cannot survive distribution -- it would give the first ranks
+    // whole copies and the last ranks none -- so distributed it becomes
+    // (rank, copy, face): each process holds its own faces of every copy, and
+    // a copy is still a contiguous run WITHIN a process, which is what the
+    // coarse split needs and what makes each component's rows the faces this
+    // process owns, in the order ADS is given them.
+    EntityLayout faces;
+    std::vector<PetscInt> coarse_first;
+    PetscInt coarse_local = local.cols;
+    if (distributed_) {
+      PetscMPIInt size = 1;
+      MPI_Comm_size(comm_, &size);
+      if (norm_.entity_owner.size() < 3) {
+        throw std::invalid_argument(
+            "PetscSolver: the two-level cycle needs the owner of every vertex, edge and face");
+      }
+      faces = layout_of(norm_.entity_owner[2], size);
+      coarse_first.assign(static_cast<std::size_t>(size) + 1, 0);
+      for (int r = 0; r < size; ++r) {
+        coarse_first[static_cast<std::size_t>(r) + 1] =
+            coarse_first[static_cast<std::size_t>(r)] + nc * faces.count(r);
+      }
+      coarse_local = nc * faces.local;
+      // the injection's columns, renumbered into that layout
+      const PetscInt per_copy = inj.cols / nc;
+      for (std::size_t k = 0; k < local.col.size(); ++k) {
+        const PetscInt column = local.col[static_cast<std::size_t>(k)];
+        const PetscInt copy = column / per_copy;
+        const PetscInt face = column % per_copy;
+        const int owner = norm_.entity_owner[2][static_cast<std::size_t>(face)];
+        const PetscInt within = faces.new_of[static_cast<std::size_t>(face)] -
+                                faces.first[static_cast<std::size_t>(owner)];
+        local.col[static_cast<std::size_t>(k)] =
+            coarse_first[static_cast<std::size_t>(owner)] + copy * faces.count(owner) + within;
+      }
+    }
+    Mat interpolation = distributed_
+                            ? to_mat_rectangular(local, block_rows_local(), coarse_local)
+                            : to_mat(local);
 
     // the facet's unknowns are contiguous, so telling the block how big a
     // facet is costs nothing and is what lets the smoother invert one exactly
@@ -1118,13 +1227,18 @@ class PetscSolver final : public LinearSolver {
       return;
     }
     check(PCSetType(coarse_pc, PCFIELDSPLIT), "coarse PCSetType(fieldsplit)");
-    const PetscInt per = inj.cols / nc;
+    // one component of the coarse space: every face, serially; this rank's
+    // faces of that copy, distributed -- contiguous either way
+    const PetscInt per = distributed_ ? faces.local : inj.cols / nc;
+    const PetscInt coarse_begin =
+        distributed_ ? coarse_first[static_cast<std::size_t>(rank_)] : 0;
     std::vector<IS> parts(static_cast<std::size_t>(nc), nullptr);
     const char* cprefix = nullptr;
     check(PCGetOptionsPrefix(coarse_pc, &cprefix), "PCGetOptionsPrefix(coarse)");
     const std::string cp = cprefix != nullptr ? cprefix : "";
     for (int c = 0; c < nc; ++c) {
-      check(ISCreateStride(PETSC_COMM_SELF, per, c * per, 1, &parts[static_cast<std::size_t>(c)]),
+      check(ISCreateStride(comm_, per, coarse_begin + c * per, 1,
+                           &parts[static_cast<std::size_t>(c)]),
             "ISCreateStride(component)");
       check(PCFieldSplitSetIS(coarse_pc, std::to_string(c).c_str(),
                               parts[static_cast<std::size_t>(c)]),
@@ -1143,7 +1257,8 @@ class PetscSolver final : public LinearSolver {
       PC cpc = nullptr;
       check(KSPSetType(csub[c], KSPPREONLY), "coarse component KSPSetType");
       check(KSPGetPC(csub[c], &cpc), "coarse component KSPGetPC");
-      attach_ads(cpc);
+      // the component's rows ARE this rank's faces, which is what ADS is told
+      attach_ads(cpc, distributed_ ? faces.local : -1);
       check(PCSetUp(cpc), "PCSetUp(coarse ads)");
     }
     PetscFree(csub);

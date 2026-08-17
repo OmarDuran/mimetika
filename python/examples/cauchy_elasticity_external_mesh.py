@@ -38,6 +38,7 @@ with --make-mesh to produce a sample file first, if there is none to hand:
 
 import argparse
 import os
+import sys
 
 import mimetika_cxx as mk
 import numpy as np
@@ -200,7 +201,20 @@ def make_mesh(path):
     print(f"wrote {path}: {mesh.count(2)} cells, {mesh.count(0)} vertices")
 
 
+# ONE PROCESS SPEAKS AND WRITES. Under mpirun every rank runs this file and
+# solves the same problem -- the algebra is shared out, the script is not -- so
+# without this the report appears N times and N processes race to write the
+# same .vtu. The solve itself is unaffected: every rank takes part in it, and
+# every rank ends up with the whole answer.
+def only_root():
+    if mk.mpi_rank() == 0:
+        return True
+    sys.stdout = open(os.devnull, "w")
+    return False
+
+
 def main():
+    root = only_root()
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--mesh", help="the .vtu to solve on")
     ap.add_argument("--make-mesh", help="write a sample .vtu to this path and stop")
@@ -258,7 +272,7 @@ def main():
             "Use --solver riesz."
         )
 
-    if args.output:
+    if args.output and root:
         out = os.path.join(args.output, os.path.splitext(os.path.basename(args.mesh))[0])
         with stage(f"diagnosing the mesh into {out}"):
             bad, warn, degenerate = write_report(args.mesh, out, args.degeneracy_percent)
@@ -325,6 +339,13 @@ def main():
     n_rot = model.n_rotations
 
     with stage("measuring displacement, rotation and stress"):
+        # THE STRESS IS RECONSTRUCTED FROM THE CELL'S OPERATORS, and on several
+        # processes each holds only its own; every other cell would read zero.
+        # The displacement and the rotation are read from the solution, which
+        # every process has in full, so only this one is gathered.
+        stress = mk.gather_cells(
+            model, np.array([model.cell_stress(e) for e in range(model.n_cells)])
+        )
         du = dr = ds = dso = 0.0
         got_u = [0.0] * dim
         got_r = [0.0] * n_rot
@@ -337,7 +358,7 @@ def main():
             for k in range(n_rot):
                 got_r[k] = model.rotation(e, k)
                 dr = max(dr, abs(got_r[k] - u_hat[k]))
-            s = model.cell_stress(e)
+            s = stress[e]
             for k in range(9):
                 got_s[k] = s[k]
             for k in range(dim):
@@ -366,7 +387,7 @@ def main():
         print(f"  {name:15s} {fmt(want):>{w}s} {fmt(got):>{w}s} {err:11.3e}")
     print(f"\n  every error above is {floor}, not discretization")
 
-    if args.vtu:
+    if args.vtu and root:
         with stage(f"writing {args.vtu}"):
             n = model.n_cells
             u = np.zeros((n, 3))
@@ -382,7 +403,10 @@ def main():
                 for k in range(n_rot):
                     rot[e, k] = model.rotation(e, k)
                     rot_exact[e, k] = u_hat[k]
-                sig[e] = model.cell_stress(e)
+                # ALREADY GATHERED, and it must not be gathered again here: a
+                # gather is collective, this block runs on one process only,
+                # and the others would wait for it forever.
+                sig[e] = stress[e]
             fields = {
                     "displacement": u,
                     "displacement_exact": u_exact,

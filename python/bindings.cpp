@@ -1081,6 +1081,44 @@ PYBIND11_MODULE(_core, m) {
       },
       "this process's rank in PETSC_COMM_WORLD");
 
+  // A CELL FIELD THE WHOLE MESH CAN SEE.
+  //
+  // Distributed, a process builds the per-cell operators of its own cells and
+  // its halo, and no others -- that is what makes the assembly divide. So
+  // anything reconstructed FROM those operators, stress above all, exists only
+  // where they do; asked for elsewhere it comes back zero, which reads as a
+  // wrong answer rather than as an absent one.
+  //
+  // Each cell is owned by exactly one process, so zeroing what this one does
+  // not own and summing over all of them assembles the exact field, once. The
+  // displacement and the rotation do not need this: they are read from the
+  // solution, which every process already has in full.
+  m.def(
+      "gather_cells",
+      [](const mimetika::CauchyElasticityModel& model, py::array_t<double> values) {
+        const auto& owned = model.distribution().owned_cells;
+        if (owned.empty()) return values;
+        auto v = values.mutable_unchecked();
+        const auto rows = static_cast<std::size_t>(values.shape(0));
+        if (rows != owned.size()) {
+          throw std::invalid_argument("gather_cells: not one row per cell");
+        }
+        const auto width = values.ndim() == 1
+                               ? std::size_t{1}
+                               : static_cast<std::size_t>(values.shape(1));
+        double* data = values.mutable_data();
+        for (std::size_t e = 0; e < rows; ++e) {
+          if (owned[e] != 0) continue;
+          for (std::size_t k = 0; k < width; ++k) data[e * width + k] = 0.0;
+        }
+        MPI_Allreduce(MPI_IN_PLACE, data, static_cast<int>(rows * width), MPI_DOUBLE, MPI_SUM,
+                      PETSC_COMM_WORLD);
+        (void)v;
+        return values;
+      },
+      py::arg("model"), py::arg("values"),
+      "sum a per-cell field over the processes, each contributing the cells it owns");
+
   // THE PARTITION AS A FIELD, so it can be looked at rather than trusted.
   //
   // The same geometric bisection the solver uses, asked for any number of
