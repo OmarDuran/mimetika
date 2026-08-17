@@ -70,6 +70,17 @@ inline void check(PetscErrorCode e, const char* what) {
   if (e != 0) throw std::runtime_error(std::string("petsc: ") + what);
 }
 
+// A FACTORIZATION IS NOT A FACTORIZATION ON EVERY COMMUNICATOR. PETSc's own LU
+// and Cholesky, SuperLU and ICC are sequential codes; asked for on several
+// processes they fail at setup rather than distributing themselves. MUMPS is
+// the one in this build that does both, and it is already the choice for these
+// saddle points, so a sequential name becomes it. An incomplete factorization
+// has no distributed form at all and becomes block Jacobi over the ranks, each
+// block keeping the incomplete factorization it asked for.
+inline std::string parallel_package(const std::string& package) {
+  return (package.empty() || package == "petsc" || package == "superlu") ? "mumps" : package;
+}
+
 // HOW THE SYSTEM IS SOLVED, as an argument rather than an environment.
 //
 // Every one of these was reachable only through the MIMETIKA_FACTOR environment
@@ -185,6 +196,19 @@ struct SpaceNorm {
   std::vector<double> vertex_coordinates;  // row-major, n_vertices x space_dim
   int space_dim{3};
 
+  // WHICH PROCESS OWNS EACH ENTITY the two maps address -- vertices, edges,
+  // faces -- by the same rule and the same partition that owns the unknowns.
+  //
+  // The maps above are stated in the complex's own numbering, which is a
+  // serial numbering. Distributed, hypre needs each of the three spaces laid
+  // out across the ranks, and the FACES must be laid out exactly as the block
+  // is: its row i has to be that block's row i. This is what lets the solver
+  // renumber all three consistently, without asking the complex to be
+  // distributed.
+  //
+  // Empty on one process, where there is nothing to lay out.
+  std::vector<std::vector<int>> entity_owner;  // [k][entity]
+
   // THE LOWEST-ORDER SUBSPACE OF THE FIRST FACTOR, when the first factor is
   // not itself lowest order.
   //
@@ -282,6 +306,11 @@ struct SolverOptions {
   // -- the crossover is around 25k, and past it the gap only widens, because
   // Cholesky's cost per iteration grows with the fill and ADS's does not.
   int riesz_ads_limit{25000};
+  // RENUMBER BY THE MESH PARTITION when there is more than one process. Off,
+  // the rows are split by index and a rank's unknowns come from all over the
+  // mesh; the answer is the same either way, and the difference is how much of
+  // the matrix crosses a process boundary.
+  bool partition{true};
   double rtol{1e-10};
   double atol{1e-50};
   int max_iterations{1000};
@@ -326,9 +355,43 @@ class PetscSolver final : public LinearSolver {
   double matrix_seconds() const { return matrix_seconds_; }
   double preconditioner_seconds() const { return preconditioner_seconds_; }
 
+  // HOW MUCH OF THE MATRIX CROSSES A PROCESS BOUNDARY. PETSc stores an MPIAIJ
+  // row in two pieces -- the columns this rank owns and the rest -- and the
+  // second is exactly what a mat-vec has to communicate. It is the measure of
+  // a partition that does not depend on the machine, the load or the timer.
+  double off_rank_fraction() const {
+    const double total = local_entries_ + off_rank_entries_;
+    return total > 0.0 ? off_rank_entries_ / total : 0.0;
+  }
+
   // The factors of the product space. Required by the "riesz" preconditioner
   // and ignored by every other one.
   void set_norm(SpaceNorm s) { norm_ = std::move(s); }
+
+  // WHO OWNS EACH UNKNOWN, one rank per global unknown, in the caller's own
+  // numbering.
+  //
+  // Without this the rows are split by index, and an index is not a place: a
+  // rank's rows are then scattered over the whole mesh, every mat-vec is
+  // nearly all off-rank communication, and the layout that a parallel
+  // preconditioner assumes -- that a rank holds a SUBDOMAIN -- is absent.
+  // With it the solver renumbers so that each rank's unknowns are the
+  // contiguous block PETSc requires, and hands the answer back in the
+  // caller's numbering as if nothing had happened.
+  //
+  // Ignored on one process, where there is nothing to renumber for.
+  void set_owners(std::vector<int> owner_of_dof) { owners_ = std::move(owner_of_dof); }
+
+  // DISTRIBUTED ASSEMBLY NEEDS NOTHING FROM THE SOLVER, and that is the point
+  // of the convention it uses. A process assembles every cell that contributes
+  // to a row it owns -- its own and its halo -- so those rows arrive complete
+  // and the rest are dropped, exactly as they are when the assembly is
+  // replicated. No stash, no exchange, and one code path for both.
+  //
+  // The alternative, assembling only owned cells and letting the matrix carry
+  // the rest, was measured: PETSc's off-process stash turned a 2 second matrix
+  // into a 310 second one on a 22k-cell mesh.
+  void set_local_assembly(bool) {}
 
   std::string name() const override {
     return "petsc/" +
@@ -348,16 +411,22 @@ class PetscSolver final : public LinearSolver {
   void factorize(const SparseSystem& A) {
     release();
     n_ = static_cast<PetscInt>(A.n);
+    claim_rows();
     bound_ = &A;  // build_riesz reads the triplets, so bind before the KSP
     const auto t0 = std::chrono::steady_clock::now();
     build_matrix(A);
     const auto t1 = std::chrono::steady_clock::now();
     build_ksp();
-    check(VecCreateSeq(PETSC_COMM_SELF, n_, &rhs_), "VecCreate");
+    if (distributed_) {
+      check(VecCreateMPI(comm_, n_local_, n_, &rhs_), "VecCreate");
+    } else {
+      check(VecCreateSeq(PETSC_COMM_SELF, n_, &rhs_), "VecCreate");
+    }
     check(VecDuplicate(rhs_, &sol_), "VecDuplicate");
     // force the factorization now rather than on the first solve, so that the
     // cost shows up where it is paid
     check(KSPSetUp(ksp_), "KSPSetUp");
+    measure_locality();
     const auto t2 = std::chrono::steady_clock::now();
     matrix_seconds_ = std::chrono::duration<double>(t1 - t0).count();
     preconditioner_seconds_ = std::chrono::duration<double>(t2 - t1).count();
@@ -374,8 +443,10 @@ class PetscSolver final : public LinearSolver {
     if (static_cast<PetscInt>(b.size()) != n_) {
       throw std::invalid_argument("PetscSolver: right-hand side size");
     }
-    for (PetscInt i = 0; i < n_; ++i) {
-      check(VecSetValue(rhs_, i, b[static_cast<std::size_t>(i)], INSERT_VALUES), "VecSetValue");
+    for (PetscInt i = own_begin_; i < own_end_; ++i) {
+      const auto source =
+          static_cast<std::size_t>(old_of_.empty() ? i : old_of_[static_cast<std::size_t>(i)]);
+      check(VecSetValue(rhs_, i, b[source], INSERT_VALUES), "VecSetValue");
     }
     check(VecAssemblyBegin(rhs_), "VecAssembly");
     check(VecAssemblyEnd(rhs_), "VecAssembly");
@@ -390,6 +461,7 @@ class PetscSolver final : public LinearSolver {
     SolveReport r = solve(b, x);
     r.matrix_seconds = matrix_seconds_;
     r.preconditioner_seconds = preconditioner_seconds_;
+    r.off_rank_fraction = off_rank_fraction();
     return r;
   }
 
@@ -417,18 +489,28 @@ class PetscSolver final : public LinearSolver {
     // asked for, and on a block of several hundred thousand that search is the
     // whole cost of building the preconditioner -- minutes, against the second
     // the extraction itself takes from a stride.
+    // AN INDEX SET IS PER PROCESS. Every rank names the unknowns of the factor
+    // that it OWNS -- the union over ranks is the factor, which is what
+    // PCFIELDSPLIT wants; naming all of them everywhere would give each field
+    // n_ranks copies of itself.
     std::vector<IS> sets(nf, nullptr);
     for (std::size_t b = 0; b < nf; ++b) {
-      const auto& idx = norm_.factors[b];
+      const auto& all = norm_.factors[b];
+      std::vector<PetscInt> idx;
+      idx.reserve(all.size());
+      for (const int g : all) {
+        if (owns(at(g))) idx.push_back(at(g));
+      }
+      std::sort(idx.begin(), idx.end());
       const auto m = static_cast<PetscInt>(idx.size());
       bool contiguous = !idx.empty();
       for (std::size_t k = 1; k < idx.size() && contiguous; ++k) {
         contiguous = idx[k] == idx[k - 1] + 1;
       }
       if (contiguous) {
-        check(ISCreateStride(PETSC_COMM_SELF, m, idx.front(), 1, &sets[b]), "ISCreateStride");
+        check(ISCreateStride(comm_, m, idx.front(), 1, &sets[b]), "ISCreateStride");
       } else {
-        check(ISCreateGeneral(PETSC_COMM_SELF, m, idx.data(), PETSC_COPY_VALUES, &sets[b]),
+        check(ISCreateGeneral(comm_, m, idx.data(), PETSC_COPY_VALUES, &sets[b]),
               "ISCreateGeneral");
         check(ISSort(sets[b]), "ISSort");
       }
@@ -527,26 +609,27 @@ class PetscSolver final : public LinearSolver {
     }
 
     // preallocate for both parts: the material triplets, and every column of a
-    // constraint row against every other column of that row
-    std::vector<PetscInt> per_row(static_cast<std::size_t>(n_), 0);
-    for (const Index r : p_row) ++per_row[static_cast<std::size_t>(r)];
+    // constraint row against every other column of that row. Counted over all
+    // rows and reduced afterwards, because a constraint row's outer product
+    // reaches facets this rank may not own.
+    std::vector<PetscInt> diag, off;
+    count_into(diag, off, p_row, p_col);
     for (std::size_t r = 0; r < static_cast<std::size_t>(n_); ++r) {
       const auto b = static_cast<std::size_t>(b_begin[r]);
       const auto e = static_cast<std::size_t>(b_begin[r + 1]);
       for (std::size_t a = b; a < e; ++a) {
-        per_row[static_cast<std::size_t>(b_col[a])] += static_cast<PetscInt>(e - b);
+        const PetscInt i = at(b_col[a]);
+        for (std::size_t c = b; c < e; ++c) {
+          const PetscInt j = at(b_col[c]);
+          const bool in_diagonal = !distributed_ || (owns(i) && owns(j));
+          ++(in_diagonal ? diag : off)[static_cast<std::size_t>(i)];
+        }
       }
     }
-    for (PetscInt& c : per_row) c = std::min(c, n_);
-
-    Mat P = nullptr;
-    check(MatCreate(PETSC_COMM_SELF, &P), "MatCreate(P)");
-    check(MatSetType(P, MATSEQAIJ), "MatSetType(P)");
-    check(MatSetSizes(P, n_, n_, n_, n_), "MatSetSizes(P)");
-    check(MatSeqAIJSetPreallocation(P, 0, per_row.data()), "preallocate(P)");
-    check(MatSetOption(P, MAT_NEW_NONZERO_ALLOCATION_ERR, PETSC_FALSE), "MatSetOption(P)");
-    check(MatSetOption(P, MAT_IGNORE_ZERO_ENTRIES, PETSC_FALSE), "MatSetOption(P)");
-    per_row = std::vector<PetscInt>();
+    finish_counts(diag, off);
+    Mat P = new_matrix(diag, off, "MatCreate(P)");
+    diag = std::vector<PetscInt>();
+    off = std::vector<PetscInt>();
 
     scatter_by_row(P, p_row, p_col, p_val, n_);
     p_row = std::vector<Index>();
@@ -566,7 +649,7 @@ class PetscSolver final : public LinearSolver {
         const double inv_w = 1.0 / weight[r];
         cols.clear();
         for (std::size_t a = b; a < e; ++a) {
-          if (!is_pinned[static_cast<std::size_t>(b_col[a])]) cols.push_back(b_col[a]);
+          if (!is_pinned[static_cast<std::size_t>(b_col[a])]) cols.push_back(at(b_col[a]));
         }
         if (cols.empty()) continue;
         const std::size_t m = cols.size();
@@ -582,9 +665,22 @@ class PetscSolver final : public LinearSolver {
           }
           ++ia;
         }
-        check(MatSetValues(P, static_cast<PetscInt>(m), cols.data(), static_cast<PetscInt>(m),
-                           cols.data(), blk.data(), ADD_VALUES),
-              "P(graph block)");
+        // the block's rows are this constraint's columns -- the facets of one
+        // cell -- and each rank inserts the ones it owns. Every rank that
+        // assembles the cell computes the same block, so a row inserted twice
+        // would be doubled.
+        if (!distributed_) {
+          check(MatSetValues(P, static_cast<PetscInt>(m), cols.data(), static_cast<PetscInt>(m),
+                             cols.data(), blk.data(), ADD_VALUES),
+                "P(graph block)");
+        } else {
+          for (std::size_t ir = 0; ir < m; ++ir) {
+            if (!owns(cols[ir])) continue;
+            check(MatSetValues(P, 1, cols.data() + ir, static_cast<PetscInt>(m), cols.data(),
+                               blk.data() + ir * m, ADD_VALUES),
+                  "P(graph block)");
+          }
+        }
       }
     }
     b_col = std::vector<Index>();
@@ -639,12 +735,19 @@ class PetscSolver final : public LinearSolver {
     // problem and any scalable method beats not solving at all -- and left to
     // the caller below it.
     const bool through_subspace = !norm_.lowest_order.empty();
-    const bool use_ads =
-        ads_possible && (inexact_block || (!through_subspace && n0 > opts_.riesz_ads_limit));
-    const std::string b0_pc = !opts_.riesz_block_pc.empty() ? opts_.riesz_block_pc
-                              : use_ads                    ? "ads"
-                              : inexact_block              ? "icc"
-                                                           : "cholesky";
+    // ADS ITSELF IS DISTRIBUTED; the two-level cycle that reaches it through a
+    // subspace is not yet, so on several processes that route is declined and
+    // the direct one is not.
+    const bool ads_possible_here =
+        ads_possible && (!distributed_ || norm_.entity_owner.size() >= 3) &&
+        !(distributed_ && through_subspace);
+    const bool use_ads = ads_possible_here &&
+                         (inexact_block || (!through_subspace && n0 > opts_.riesz_ads_limit));
+    std::string b0_pc = !opts_.riesz_block_pc.empty() ? opts_.riesz_block_pc
+                        : use_ads                     ? "ads"
+                        : inexact_block               ? "icc"
+                                                      : "cholesky";
+
     // A TWO-LEVEL CYCLE IS NOT A COMPLETE SOLVER, and one application of it is
     // not enough. Where ADS acts on the block itself, a single V-cycle is
     // already a good inverse -- flow converges in 33 iterations with one. Where
@@ -680,6 +783,12 @@ class PetscSolver final : public LinearSolver {
     const auto set = [](const std::string& key, const std::string& value) {
       PetscOptionsSetValue(nullptr, ("-" + key).c_str(), value.c_str());
     };
+    // an incomplete factorization is sequential; over several ranks it becomes
+    // one per rank, which is what PCBJACOBI is
+    if (distributed_ && (b0_pc == "icc" || b0_pc == "ilu")) {
+      set(p0 + "sub_pc_type", b0_pc);
+      b0_pc = "bjacobi";
+    }
     if (inner_krylov) {
       set(p0 + "ksp_type", "cg");
       set(p0 + "ksp_max_it", std::to_string(block_its));
@@ -688,9 +797,10 @@ class PetscSolver final : public LinearSolver {
     } else {
       set(p0 + "ksp_type", "preonly");
       set(p0 + "pc_type", b0_pc);
-      const std::string pkg = !opts_.riesz_block_factorization.empty()
-                                  ? opts_.riesz_block_factorization
-                                  : opts_.factorization;
+      std::string pkg = !opts_.riesz_block_factorization.empty()
+                            ? opts_.riesz_block_factorization
+                            : opts_.factorization;
+      if (distributed_) pkg = parallel_package(pkg);
       if ((b0_pc == "lu" || b0_pc == "cholesky") && !pkg.empty() && pkg != "petsc") {
         set(p0 + "pc_factor_mat_solver_type", pkg);
       }
@@ -715,6 +825,12 @@ class PetscSolver final : public LinearSolver {
     // up, because setting up is what builds the hierarchy. So the split is
     // brought up with a PC that costs nothing, the maps are attached, and the
     // real type is set; the outer KSPSetUp then does the work once.
+    if (b0_pc == "ads" && distributed_ && through_subspace) {
+      throw std::invalid_argument(
+          "PetscSolver: 'ads' through the facet-constant subspace is not distributed yet -- the "
+          "two-level cycle's interpolation and its coarse split are still built on one process. "
+          "ADS itself is distributed: a space with one unknown per facet takes it directly.");
+    }
     if (b0_pc == "ads") {
       set(p0 + "pc_type", "none");
       check(PCSetUp(pc), "PCSetUp(fieldsplit)");
@@ -753,6 +869,70 @@ class PetscSolver final : public LinearSolver {
     for (IS& s : sets) ISDestroy(&s);
   }
 
+  // THE ENTITIES, LAID OUT LIKE THE UNKNOWNS. Same sort -- by owner, stable
+  // within a rank -- so a rank's faces are contiguous and in the order its
+  // block rows are in, which is the one thing hypre cannot be told and must
+  // simply be true.
+  struct EntityLayout {
+    std::vector<PetscInt> new_of, old_of;
+    PetscInt begin{0}, end{0}, local{0}, total{0};
+
+    bool owns(PetscInt i) const { return i >= begin && i < end; }
+  };
+
+  EntityLayout layout_of(const std::vector<int>& owner, int n_ranks) const {
+    EntityLayout out;
+    out.total = static_cast<PetscInt>(owner.size());
+    std::vector<PetscInt> count(static_cast<std::size_t>(n_ranks) + 1, 0);
+    for (const int r : owner) {
+      if (r < 0 || r >= n_ranks) {
+        throw std::invalid_argument("PetscSolver: an entity is owned by no rank in this run");
+      }
+      ++count[static_cast<std::size_t>(r) + 1];
+    }
+    for (std::size_t r = 0; r < static_cast<std::size_t>(n_ranks); ++r) count[r + 1] += count[r];
+    out.begin = count[static_cast<std::size_t>(rank_)];
+    out.end = count[static_cast<std::size_t>(rank_) + 1];
+    out.local = out.end - out.begin;
+    out.new_of.resize(owner.size());
+    out.old_of.resize(owner.size());
+    std::vector<PetscInt> at_slot(count.begin(), count.end() - 1);
+    for (std::size_t e = 0; e < owner.size(); ++e) {
+      const auto slot = at_slot[static_cast<std::size_t>(owner[e])]++;
+      out.new_of[e] = slot;
+      out.old_of[static_cast<std::size_t>(slot)] = static_cast<PetscInt>(e);
+    }
+    return out;
+  }
+
+  // An incidence matrix over two such layouts: the complex's numbers on the
+  // way in, the partition's on the way out, and only the rows this rank owns.
+  Mat to_mat(const SpaceNorm::Incidence& a, const EntityLayout& rows,
+             const EntityLayout& cols) const {
+    std::vector<PetscInt> diag(static_cast<std::size_t>(rows.local), 0);
+    std::vector<PetscInt> off(static_cast<std::size_t>(rows.local), 0);
+    for (std::size_t k = 0; k < a.value.size(); ++k) {
+      const PetscInt i = rows.new_of[static_cast<std::size_t>(a.row[k])];
+      if (!rows.owns(i)) continue;
+      const PetscInt j = cols.new_of[static_cast<std::size_t>(a.col[k])];
+      ++(cols.owns(j) ? diag : off)[static_cast<std::size_t>(i - rows.begin)];
+    }
+    Mat M = nullptr;
+    check(MatCreate(comm_, &M), "MatCreate(incidence)");
+    check(MatSetType(M, MATMPIAIJ), "MatSetType(incidence)");
+    check(MatSetSizes(M, rows.local, cols.local, rows.total, cols.total), "MatSetSizes(incidence)");
+    check(MatMPIAIJSetPreallocation(M, 0, diag.data(), 0, off.data()), "preallocate(incidence)");
+    for (std::size_t k = 0; k < a.value.size(); ++k) {
+      const PetscInt i = rows.new_of[static_cast<std::size_t>(a.row[k])];
+      if (!rows.owns(i)) continue;
+      const PetscInt j = cols.new_of[static_cast<std::size_t>(a.col[k])];
+      check(MatSetValues(M, 1, &i, 1, &j, &a.value[k], INSERT_VALUES), "incidence entry");
+    }
+    check(MatAssemblyBegin(M, MAT_FINAL_ASSEMBLY), "assembly(incidence)");
+    check(MatAssemblyEnd(M, MAT_FINAL_ASSEMBLY), "assembly(incidence)");
+    return M;
+  }
+
   // ADS on a block whose unknowns ARE the facets, with the two maps of the
   // complex and the vertex coordinates the auxiliary spaces are built from.
   void attach_ads(PC pc) {
@@ -766,14 +946,66 @@ class PetscSolver final : public LinearSolver {
     if (norm_.vertex_coordinates.size() != n_vertex * static_cast<std::size_t>(norm_.space_dim)) {
       throw std::invalid_argument("PetscSolver: 'ads' needs one coordinate per vertex");
     }
-    Mat G = to_mat(norm_.discrete_gradient);
-    Mat C = to_mat(norm_.discrete_curl);
+    Mat G = nullptr;
+    Mat C = nullptr;
+    PetscInt local_vertices = static_cast<PetscInt>(n_vertex);
+    std::vector<PetscReal> xyz;
+    if (!distributed_) {
+      G = to_mat(norm_.discrete_gradient);
+      C = to_mat(norm_.discrete_curl);
+      xyz.assign(norm_.vertex_coordinates.begin(), norm_.vertex_coordinates.end());
+    } else {
+      // THE THREE SPACES, LAID OUT ON THE PARTITION.
+      //
+      // hypre is handed the maps between them, so all three have to agree with
+      // each other AND the faces have to agree with the block: C's row i is
+      // the block's row i, or the solver is preconditioning a permutation of
+      // its own operator. Nothing here communicates -- every rank sorts the
+      // same ownership array the same way -- which is the point of an
+      // ownership rule that needs no negotiation.
+      PetscMPIInt size = 1;
+      MPI_Comm_size(comm_, &size);
+      if (norm_.entity_owner.size() < 3) {
+        throw std::invalid_argument(
+            "PetscSolver: 'ads' on several processes needs the owner of every vertex, edge and "
+            "face");
+      }
+      const EntityLayout vertices = layout_of(norm_.entity_owner[0], size);
+      const EntityLayout edges = layout_of(norm_.entity_owner[1], size);
+      const EntityLayout faces = layout_of(norm_.entity_owner[2], size);
+      // the block's rows are the first factor's owned unknowns; one per face
+      // is what this route is for, so the two counts must be the same number
+      PetscInt owned_dofs = 0;
+      for (const int g : norm_.factors[0]) {
+        if (owns(at(g))) ++owned_dofs;
+      }
+      if (owned_dofs != faces.local) {
+        throw std::invalid_argument(
+            "PetscSolver: 'ads' needs the faces laid out as the block is; this rank owns " +
+            std::to_string(owned_dofs) + " unknowns of the first factor and " +
+            std::to_string(faces.local) + " faces");
+      }
+      G = to_mat(norm_.discrete_gradient, edges, vertices);
+      C = to_mat(norm_.discrete_curl, faces, edges);
+      local_vertices = vertices.local;
+      xyz.resize(static_cast<std::size_t>(vertices.local) *
+                 static_cast<std::size_t>(norm_.space_dim));
+      for (PetscInt i = 0; i < vertices.local; ++i) {
+        const auto old = static_cast<std::size_t>(vertices.old_of[static_cast<std::size_t>(
+            vertices.begin + i)]);
+        for (int c = 0; c < norm_.space_dim; ++c) {
+          xyz[static_cast<std::size_t>(i) * static_cast<std::size_t>(norm_.space_dim) +
+              static_cast<std::size_t>(c)] =
+              norm_.vertex_coordinates[old * static_cast<std::size_t>(norm_.space_dim) +
+                                       static_cast<std::size_t>(c)];
+        }
+      }
+    }
     check(PCHYPRESetDiscreteGradient(pc, G), "PCHYPRESetDiscreteGradient");
     check(PCHYPRESetDiscreteCurl(pc, C), "PCHYPRESetDiscreteCurl");
     // the metric, and the only metric ADS is told: x, y, z at the vertices,
     // from which it interpolates the auxiliary vector spaces
-    std::vector<PetscReal> xyz(norm_.vertex_coordinates.begin(), norm_.vertex_coordinates.end());
-    check(PCSetCoordinates(pc, norm_.space_dim, static_cast<PetscInt>(n_vertex), xyz.data()),
+    check(PCSetCoordinates(pc, norm_.space_dim, local_vertices, xyz.data()),
           "PCSetCoordinates(ads)");
     riesz_.push_back(G);
     riesz_.push_back(C);
@@ -806,10 +1038,10 @@ class PetscSolver final : public LinearSolver {
       throw std::invalid_argument("PetscSolver: lowest-order injection is not component-blocked");
     }
     // rows are global unknowns; the block sees them in its own numbering
-    std::vector<int> at(static_cast<std::size_t>(n_), -1);
+    std::vector<int> position(static_cast<std::size_t>(n_), -1);
     const std::vector<int>& first = norm_.factors[0];
     for (std::size_t i = 0; i < first.size(); ++i) {
-      at[static_cast<std::size_t>(first[i])] = static_cast<int>(i);
+      position[static_cast<std::size_t>(first[i])] = static_cast<int>(i);
     }
     SpaceNorm::Incidence local;
     local.rows = static_cast<int>(first.size());
@@ -818,13 +1050,13 @@ class PetscSolver final : public LinearSolver {
     local.col.reserve(inj.value.size());
     local.value.reserve(inj.value.size());
     for (std::size_t k = 0; k < inj.value.size(); ++k) {
-      const int r = at[static_cast<std::size_t>(inj.row[k])];
+      const int r = position[static_cast<std::size_t>(inj.row[k])];
       if (r < 0) throw std::invalid_argument("PetscSolver: injection row is not in the block");
       local.row.push_back(r);
       local.col.push_back(inj.col[k]);
       local.value.push_back(inj.value[k]);
     }
-    at = std::vector<int>();
+    position = std::vector<int>();
     Mat interpolation = to_mat(local);
 
     // the facet's unknowns are contiguous, so telling the block how big a
@@ -936,6 +1168,164 @@ class PetscSolver final : public LinearSolver {
     return M;
   }
 
+  // WHICH ROWS THIS PROCESS OWNS.
+  //
+  // One process and the solver is what it was: PETSC_COMM_SELF, sequential
+  // matrices, every row local. Several and the algebra is distributed across
+  // MPI_COMM_WORLD, in the layout PETSc itself chooses -- a contiguous run per
+  // rank, which is what its Mat and Vec require and what every parallel
+  // preconditioner assumes.
+  //
+  // ASSEMBLY IS STILL REPLICATED at this stage: every rank builds the whole
+  // triplet list and inserts only the rows it owns. That is deliberate and it
+  // is not the end state -- it makes the solve parallel while leaving the
+  // partition, the ghosts and the owned-cell assembly for the step that
+  // introduces them, so a wrong answer here can only come from the layout.
+  void claim_rows() {
+    PetscMPIInt size = 1, rank = 0;
+    MPI_Comm_size(PETSC_COMM_WORLD, &size);
+    MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
+    distributed_ = size > 1;
+    comm_ = distributed_ ? PETSC_COMM_WORLD : PETSC_COMM_SELF;
+    rank_ = rank;
+    if (!distributed_) {
+      n_local_ = n_;
+      own_begin_ = 0;
+      own_end_ = n_;
+      return;
+    }
+    if (owners_.size() == static_cast<std::size_t>(n_)) {
+      renumber(size);
+      return;
+    }
+    PetscInt local = PETSC_DECIDE;
+    check(PetscSplitOwnership(comm_, &local, &n_), "PetscSplitOwnership");
+    PetscInt scan = 0;
+    MPI_Scan(&local, &scan, 1, MPIU_INT, MPI_SUM, comm_);
+    n_local_ = local;
+    own_begin_ = scan - local;
+    own_end_ = scan;
+  }
+
+  // THE RENUMBERING IS A SORT, and nothing more: the unknowns of rank 0 first,
+  // in their original order, then rank 1's. Every rank computes the same one
+  // from the same ownership array -- no communication, and no rank's answer
+  // can disagree about where an unknown lives.
+  //
+  // Stable within a rank, so the locality the caller's numbering already had
+  // survives inside each block; what changes is only that a rank's unknowns
+  // become adjacent, which is what makes its rows a subdomain rather than a
+  // stride through the mesh.
+  void renumber(int n_ranks) {
+    const auto n = static_cast<std::size_t>(n_);
+    std::vector<PetscInt> count(static_cast<std::size_t>(n_ranks) + 1, 0);
+    for (const int owner : owners_) {
+      if (owner < 0 || owner >= n_ranks) {
+        throw std::invalid_argument("PetscSolver: an unknown is owned by no rank in this run");
+      }
+      ++count[static_cast<std::size_t>(owner) + 1];
+    }
+    for (std::size_t r = 0; r < static_cast<std::size_t>(n_ranks); ++r) count[r + 1] += count[r];
+    own_begin_ = count[static_cast<std::size_t>(rank_)];
+    own_end_ = count[static_cast<std::size_t>(rank_) + 1];
+    n_local_ = own_end_ - own_begin_;
+
+    new_of_.resize(n);
+    old_of_.resize(n);
+    std::vector<PetscInt> at(count.begin(), count.end() - 1);
+    for (std::size_t i = 0; i < n; ++i) {
+      const auto slot = at[static_cast<std::size_t>(owners_[i])]++;
+      new_of_[i] = slot;
+      old_of_[static_cast<std::size_t>(slot)] = static_cast<PetscInt>(i);
+    }
+  }
+
+  // the caller's numbering to the solver's, and the identity when there is no
+  // renumbering to do
+  PetscInt at(Index i) const {
+    return new_of_.empty() ? static_cast<PetscInt>(i) : new_of_[static_cast<std::size_t>(i)];
+  }
+
+  bool owns(PetscInt i) const { return i >= own_begin_ && i < own_end_; }
+
+  // the two halves of an MPIAIJ row, summed over the ranks
+  void measure_locality() {
+    local_entries_ = off_rank_entries_ = 0.0;
+    if (!distributed_ || M_ == nullptr) return;
+    Mat diag = nullptr, off = nullptr;
+    const PetscInt* colmap = nullptr;
+    if (MatMPIAIJGetSeqAIJ(M_, &diag, &off, &colmap) != 0) return;
+    MatInfo info;
+    if (diag != nullptr && MatGetInfo(diag, MAT_LOCAL, &info) == 0) local_entries_ = info.nz_used;
+    if (off != nullptr && MatGetInfo(off, MAT_LOCAL, &info) == 0) off_rank_entries_ = info.nz_used;
+    double both[2] = {local_entries_, off_rank_entries_};
+    MPI_Allreduce(MPI_IN_PLACE, both, 2, MPI_DOUBLE, MPI_SUM, comm_);
+    local_entries_ = both[0];
+    off_rank_entries_ = both[1];
+  }
+
+  // THE NONZERO COUNTS PETSc PREALLOCATES FROM, in two steps because they come
+  // from two places: the triplets, and the terms P adds that were never
+  // triplets. Both are counted over ALL rows in the solver's numbering, and
+  // only then reduced to the rows this rank owns.
+  void count_into(std::vector<PetscInt>& diag, std::vector<PetscInt>& off,
+                  const std::vector<Index>& row, const std::vector<Index>& col) const {
+    if (diag.empty()) diag.assign(static_cast<std::size_t>(n_), 0);
+    if (off.empty()) off.assign(static_cast<std::size_t>(n_), 0);
+    for (std::size_t k = 0; k < row.size(); ++k) {
+      const PetscInt i = at(row[k]);
+      // a rank that does not own the row cannot tell that row's diagonal block
+      // from its off-diagonal one -- that is the owner's ownership range -- so
+      // what it contributes is counted as off-diagonal. Over-allocating the
+      // off-diagonal block costs memory, never correctness.
+      const bool in_diagonal = !distributed_ || (owns(i) && owns(at(col[k])));
+      ++(in_diagonal ? diag : off)[static_cast<std::size_t>(i)];
+    }
+  }
+
+  // and reduced to the rows this rank owns, which are the only ones it writes
+  void finish_counts(std::vector<PetscInt>& diag, std::vector<PetscInt>& off) const {
+    if (!distributed_) {
+      for (PetscInt& c : diag) c = std::min(c, n_);
+      off.clear();
+      return;
+    }
+    std::vector<PetscInt> d(static_cast<std::size_t>(n_local_)), o(static_cast<std::size_t>(n_local_));
+    for (PetscInt i = own_begin_; i < own_end_; ++i) {
+      const auto k = static_cast<std::size_t>(i - own_begin_);
+      d[k] = std::min(diag[static_cast<std::size_t>(i)], n_local_);
+      o[k] = std::min(off[static_cast<std::size_t>(i)], n_ - n_local_);
+    }
+    diag = std::move(d);
+    off = std::move(o);
+  }
+
+  void count_rows(const std::vector<Index>& row, const std::vector<Index>& col,
+                  std::vector<PetscInt>& diag, std::vector<PetscInt>& off) const {
+    diag.clear();
+    off.clear();
+    count_into(diag, off, row, col);
+    finish_counts(diag, off);
+  }
+
+  // Create and preallocate, sequential or distributed, from those counts.
+  Mat new_matrix(const std::vector<PetscInt>& diag, const std::vector<PetscInt>& off,
+                 const char* what) const {
+    Mat M = nullptr;
+    check(MatCreate(comm_, &M), what);
+    check(MatSetType(M, distributed_ ? MATMPIAIJ : MATSEQAIJ), what);
+    check(MatSetSizes(M, distributed_ ? n_local_ : n_, distributed_ ? n_local_ : n_, n_, n_), what);
+    if (distributed_) {
+      check(MatMPIAIJSetPreallocation(M, 0, diag.data(), 0, off.data()), what);
+    } else {
+      check(MatSeqAIJSetPreallocation(M, 0, diag.data()), what);
+    }
+    check(MatSetOption(M, MAT_NEW_NONZERO_ALLOCATION_ERR, PETSC_FALSE), what);
+    // an explicitly stored zero is structure, not noise, and must survive
+    check(MatSetOption(M, MAT_IGNORE_ZERO_ENTRIES, PETSC_FALSE), what);
+    return M;
+  }
+
   // A MATRIX FROM TRIPLETS, one call per row rather than one per entry.
   //
   // Handing PETSc one triplet at a time costs a search of the row for every
@@ -944,31 +1334,16 @@ class PetscSolver final : public LinearSolver {
   // and one to place -- turns that into one call per row, and PETSc sums the
   // duplicates inside each call as before. The scratch is scoped so it is
   // returned before anything else is allocated.
-  static Mat assemble(const std::vector<Index>& row, const std::vector<Index>& col,
-                      const std::vector<double>& val, PetscInt n) {
-    const auto rows = static_cast<std::size_t>(n);
-    const std::size_t nnz = val.size();
-
-    std::vector<PetscInt> begin(rows + 1, 0);
-    for (std::size_t k = 0; k < nnz; ++k) ++begin[static_cast<std::size_t>(row[k]) + 1];
-    std::vector<PetscInt> per_row(rows, 0);
-    for (std::size_t i = 0; i < rows; ++i) {
-      // TRIPLETS, NOT NONZEROS: a row's triplet count is an upper bound on its
-      // nonzero count, and on a small mesh it can exceed the dimension, which
-      // PETSc rejects outright
-      per_row[i] = std::min(begin[i + 1], n);
-      begin[i + 1] += begin[i];
-    }
-
-    Mat M = nullptr;
-    check(MatCreate(PETSC_COMM_SELF, &M), "MatCreate");
-    check(MatSetType(M, MATSEQAIJ), "MatSetType");
-    check(MatSetSizes(M, n, n, n, n), "MatSetSizes");
-    check(MatSeqAIJSetPreallocation(M, 0, per_row.data()), "preallocate");
-    check(MatSetOption(M, MAT_NEW_NONZERO_ALLOCATION_ERR, PETSC_FALSE), "MatSetOption");
-    // an explicitly stored zero is structure, not noise, and must survive
-    check(MatSetOption(M, MAT_IGNORE_ZERO_ENTRIES, PETSC_FALSE), "MatSetOption");
-    per_row = std::vector<PetscInt>();
+  Mat assemble(const std::vector<Index>& row, const std::vector<Index>& col,
+               const std::vector<double>& val, PetscInt n) const {
+    // TRIPLETS, NOT NONZEROS: a row's triplet count is an upper bound on its
+    // nonzero count, and on a small mesh it can exceed the dimension, which
+    // PETSc rejects outright -- count_rows caps them.
+    std::vector<PetscInt> diag, off;
+    count_rows(row, col, diag, off);
+    Mat M = new_matrix(diag, off, "MatCreate");
+    diag = std::vector<PetscInt>();
+    off = std::vector<PetscInt>();
     scatter_by_row(M, row, col, val, n);
     check(MatAssemblyBegin(M, MAT_FINAL_ASSEMBLY), "assembly");
     check(MatAssemblyEnd(M, MAT_FINAL_ASSEMBLY), "assembly");
@@ -978,24 +1353,30 @@ class PetscSolver final : public LinearSolver {
   // The scatter alone, for a matrix the caller preallocated itself -- the
   // preconditioner adds terms that never become triplets, so it has to own the
   // preallocation.
-  static void scatter_by_row(Mat M, const std::vector<Index>& row, const std::vector<Index>& col,
-                             const std::vector<double>& val, PetscInt n) {
+  void scatter_by_row(Mat M, const std::vector<Index>& row, const std::vector<Index>& col,
+                      const std::vector<double>& val, PetscInt n) const {
     const auto rows = static_cast<std::size_t>(n);
     const std::size_t nnz = val.size();
+    // THE COUNTING SORT IS DONE IN THE SOLVER'S NUMBERING, so a row of the
+    // matrix is a row of the partition: the entries a rank owns end up
+    // adjacent here as well as in PETSc.
     std::vector<PetscInt> begin(rows + 1, 0);
-    for (std::size_t k = 0; k < nnz; ++k) ++begin[static_cast<std::size_t>(row[k]) + 1];
+    for (std::size_t k = 0; k < nnz; ++k) ++begin[static_cast<std::size_t>(at(row[k])) + 1];
     for (std::size_t i = 0; i < rows; ++i) begin[i + 1] += begin[i];
 
-    std::vector<PetscInt> at(begin.begin(), begin.end() - 1);
+    std::vector<PetscInt> slot_of(begin.begin(), begin.end() - 1);
     std::vector<PetscInt> cols(nnz);
     std::vector<PetscScalar> vals(nnz);
     for (std::size_t k = 0; k < nnz; ++k) {
-      const auto slot = static_cast<std::size_t>(at[static_cast<std::size_t>(row[k])]++);
-      cols[slot] = static_cast<PetscInt>(col[k]);
+      const auto slot = static_cast<std::size_t>(slot_of[static_cast<std::size_t>(at(row[k]))]++);
+      cols[slot] = at(col[k]);
       vals[slot] = val[k];
     }
-    at = std::vector<PetscInt>();
+    slot_of = std::vector<PetscInt>();
     for (PetscInt i = 0; i < n; ++i) {
+      // a row is written by the rank that owns it and by no other, whether
+      // the triplets came from the whole mesh or from a subdomain and its halo
+      if (!owns(i)) continue;
       const auto b = static_cast<std::size_t>(begin[static_cast<std::size_t>(i)]);
       const auto e = static_cast<std::size_t>(begin[static_cast<std::size_t>(i) + 1]);
       if (e == b) continue;
@@ -1009,7 +1390,7 @@ class PetscSolver final : public LinearSolver {
 
   void build_ksp() {
     KSP ksp = nullptr;
-    check(KSPCreate(PETSC_COMM_SELF, &ksp), "KSPCreate");
+    check(KSPCreate(comm_, &ksp), "KSPCreate");
     check(KSPSetOperators(ksp, M_, M_), "KSPSetOperators");
     check(KSPSetType(ksp, opts_.direct() ? KSPPREONLY : opts_.method.c_str()), "KSPSetType");
     PC pc = nullptr;
@@ -1034,8 +1415,10 @@ class PetscSolver final : public LinearSolver {
     // quietly becomes an exact solve, and the iteration count then says the
     // preconditioner is excellent when there is no iteration happening.
     const bool factorizing = pc_type == "lu" || pc_type == "cholesky";
-    if (factorizing && !opts_.factorization.empty() && opts_.factorization != "petsc") {
-      check(PCFactorSetMatSolverType(pc, opts_.factorization.c_str()), "PCFactorSetMatSolverType");
+    const std::string package =
+        distributed_ ? parallel_package(opts_.factorization) : opts_.factorization;
+    if (factorizing && !package.empty() && package != "petsc") {
+      check(PCFactorSetMatSolverType(pc, package.c_str()), "PCFactorSetMatSolverType");
     }
     if (!opts_.direct()) {
       check(KSPSetTolerances(ksp, opts_.rtol, opts_.atol, PETSC_DEFAULT,
@@ -1065,7 +1448,7 @@ class PetscSolver final : public LinearSolver {
     // ONLY WHEN MUMPS IS THE PACKAGE. Set unconditionally these are options no
     // solver claims, and PETSc reports every run as having unused options --
     // noise that trains a reader to ignore the one that matters.
-    if (factorizing && opts_.factorization == "mumps") {
+    if (factorizing && package == "mumps") {
       PetscOptionsSetValue(nullptr, "-mat_mumps_icntl_14", "200");
       PetscOptionsSetValue(nullptr, "-mat_mumps_icntl_24", "1");  // detect null pivots
     }
@@ -1099,10 +1482,34 @@ class PetscSolver final : public LinearSolver {
       KSPGetConvergedReasonString(ksp, &text);
       out.reason = text != nullptr ? text : "";
 
+      // THE ANSWER GOES BACK TO EVERY RANK. The model that reads it -- cell
+      // pressures, stresses, the error norms the examples print -- is still
+      // replicated, so each rank needs the whole vector, not its slice. One
+      // gather at the end of the solve is what keeps the rest of the code
+      // unchanged while the algebra is distributed.
+      Vec whole = sol;
+      VecScatter gather = nullptr;
+      if (distributed_) {
+        check(VecScatterCreateToAll(sol, &gather, &whole), "VecScatterCreateToAll");
+        check(VecScatterBegin(gather, sol, whole, INSERT_VALUES, SCATTER_FORWARD), "VecScatter");
+        check(VecScatterEnd(gather, sol, whole, INSERT_VALUES, SCATTER_FORWARD), "VecScatter");
+      }
       const PetscScalar* v = nullptr;
-      check(VecGetArrayRead(sol, &v), "VecGetArrayRead");
-      x.assign(v, v + n);
-      check(VecRestoreArrayRead(sol, &v), "VecRestoreArrayRead");
+      check(VecGetArrayRead(whole, &v), "VecGetArrayRead");
+      if (old_of_.empty()) {
+        x.assign(v, v + n);
+      } else {
+        // back to the caller's numbering: it knows nothing of the partition
+        x.assign(static_cast<std::size_t>(n), 0.0);
+        for (PetscInt i = 0; i < n; ++i) {
+          x[static_cast<std::size_t>(old_of_[static_cast<std::size_t>(i)])] = v[i];
+        }
+      }
+      check(VecRestoreArrayRead(whole, &v), "VecRestoreArrayRead");
+      if (distributed_) {
+        VecDestroy(&whole);
+        VecScatterDestroy(&gather);
+      }
       // reported from the SYSTEM, not from the backend's own iteration: a
       // direct solve reports zero iterations and would otherwise say nothing
       out.residual = true_residual(A, b, x);
@@ -1127,6 +1534,8 @@ class PetscSolver final : public LinearSolver {
     sol_ = rhs_ = nullptr;
     M_ = nullptr;
     bound_ = nullptr;
+    new_of_ = std::vector<PetscInt>();
+    old_of_ = std::vector<PetscInt>();
   }
 
   SolverOptions opts_;
@@ -1134,6 +1543,16 @@ class PetscSolver final : public LinearSolver {
   SpaceNorm norm_;
   std::vector<Mat> riesz_;  // the diagonal blocks of the Riesz map
   std::string prefix_;
+  // the parallel layout: one process leaves these at [0, n) on PETSC_COMM_SELF
+  MPI_Comm comm_{PETSC_COMM_SELF};
+  bool distributed_{false};
+  int rank_{0};
+  PetscInt n_local_{0}, own_begin_{0}, own_end_{0};
+  // the partition, and the permutation it induces: new_of_ takes the caller's
+  // numbering to the solver's and old_of_ brings the answer back
+  std::vector<int> owners_;
+  std::vector<PetscInt> new_of_, old_of_;
+  double local_entries_{0.0}, off_rank_entries_{0.0};
   Mat M_{nullptr};
   KSP ksp_{nullptr};
   Vec rhs_{nullptr}, sol_{nullptr};

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include <cstdio>
 #include <memory>
 #include <stdexcept>
@@ -11,6 +13,7 @@
 #include "mimetika/linear_solver/petsc.hpp"
 #include "mimetika/model/boundary_conditions.hpp"
 #include "mimetika/model/compositions/elasticity.hpp"
+#include "mimetika/model/partition.hpp"
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/physics/boundary_terms.hpp"
 
@@ -106,6 +109,9 @@ class CauchyElasticityModel {
   Realization realization() const { return how_; }
   const char* realization_name() const { return exokal::hodge::StressOperators::name(how_); }
   const ElasticMaterial& material() const { return material_; }
+  // NON-CONST, for the one caller that configures the simulation rather than
+  // reading it: the partition, which tells it which sites to assemble.
+  Simulation& simulation() { return *sim_; }
   const Simulation& simulation() const { return *sim_; }
   const solver::SparseSystem& system() const { return system_; }
   const std::vector<double>& rhs() const { return rhs_; }
@@ -115,13 +121,30 @@ class CauchyElasticityModel {
   std::size_t n_stabilized() const { return stress_.n_stabilized(); }
   const exokal::hodge::StressOperators& stress_operators() const { return stress_; }
 
+  // SHARE THIS MODEL OUT over `n_ranks` processes. Nothing happens until
+  // build(): the partition needs the space, and the space is built there.
+  // `reduce` sums a vector across the processes, and is used once per
+  // assembly, on the scales of the constrained rows alone.
+  void distribute_over(int n_ranks, int rank, std::function<void(std::vector<double>&)> reduce) {
+    n_ranks_ = n_ranks;
+    rank_ = rank;
+    reduce_ = std::move(reduce);
+  }
+
+  const Distribution& distribution() const { return distribution_; }
+
   void build() {
     const graphos::Complex& c = mesh_->topology();
+    // THE PARTITION COMES FIRST, because the products below are per cell and
+    // are the bulk of the work: a process builds its own and no others.
+    if (n_ranks_ > 1) distribution_ = partition_cells(*mesh_, dim_, n_ranks_, rank_);
+    const std::vector<char>* only =
+        distribution_.assembled_cells.empty() ? nullptr : &distribution_.assembled_cells;
     // the K-independent mode selection, which only the de Rham product has
     const bool derham = how_ == Realization::derham_afw;
     if (derham) geometry_ = exokal::hodge::DeRhamGeometryCache::build(*mesh_, dim_);
     stress_ = exokal::hodge::StressOperators::build(*mesh_, dim_, material_.shear, material_.lame,
-                                                    how_, derham ? &geometry_ : nullptr);
+                                                    how_, derham ? &geometry_ : nullptr, only);
     ctx_.provide("stress_operators", stress_);
 
     displacement_data_ = BoundaryVectorData(static_cast<std::size_t>(c.count(dim_ - 1)));
@@ -180,6 +203,16 @@ class CauchyElasticityModel {
     }
     sim_->freeze_constraints();
 
+    // THE PARTITION, APPLIED WHERE THE SPACE EXISTS. Asked for before the
+    // build, because the assembly below is the thing it divides.
+    if (n_ranks_ > 1) {
+      add_dof_ownership(distribution_, *mesh_, dim_, sim_->epoch(), n_ranks_, rank_);
+      // ASSEMBLE the halo as well, WRITE only what this process owns: the
+      // rows it owns are then complete without a single message.
+      sim_->distribute_over(distribution_.assembled_cells, distribution_.assembled_facets,
+                            distribution_.owned_dofs, reduce_);
+    }
+
     // RESERVE BEFORE ASSEMBLING, and hand the storage over afterwards.
     //
     // The triplets are the largest object this model ever holds: every cell
@@ -213,8 +246,12 @@ class CauchyElasticityModel {
     sim_->residual(r);
     rhs_.assign(sim_->n_dofs(), 0.0);
     for (std::size_t i = 0; i < sim_->n_dofs(); ++i) {
+      // -r is a CONTRIBUTION and is summed across the processes; a constrained
+      // row is a REPLACEMENT and is written by whichever process owns it, so
+      // the others leave it at zero rather than adding a copy of it.
+      const bool mine = sim_->owned_dofs().empty() || sim_->owned_dofs()[i] != 0;
       rhs_[i] = sim_->constraints().pinned(i)
-                    ? sim_->constraints().scale_at(i) * sim_->constraints().rhs_at(i)
+                    ? (mine ? sim_->constraints().scale_at(i) * sim_->constraints().rhs_at(i) : 0.0)
                     : -r[i];
     }
 
@@ -260,8 +297,12 @@ class CauchyElasticityModel {
     sim_->state().assign(sim_->n_dofs(), 0.0);
     sim_->residual(r);
     for (std::size_t i = 0; i < sim_->n_dofs(); ++i) {
+      // -r is a CONTRIBUTION and is summed across the processes; a constrained
+      // row is a REPLACEMENT and is written by whichever process owns it, so
+      // the others leave it at zero rather than adding a copy of it.
+      const bool mine = sim_->owned_dofs().empty() || sim_->owned_dofs()[i] != 0;
       rhs_[i] = sim_->constraints().pinned(i)
-                    ? sim_->constraints().scale_at(i) * sim_->constraints().rhs_at(i)
+                    ? (mine ? sim_->constraints().scale_at(i) * sim_->constraints().rhs_at(i) : 0.0)
                     : -r[i];
     }
   }
@@ -648,6 +689,10 @@ class CauchyElasticityModel {
   exokal::hodge::DeRhamGeometryCache geometry_;
   exokal::hodge::StressOperators stress_;
   exokal::forms::TermContext ctx_;
+  // the partition, requested before the build and applied inside it
+  int n_ranks_{1}, rank_{0};
+  std::function<void(std::vector<double>&)> reduce_;
+  Distribution distribution_;
   std::unique_ptr<Simulation> sim_;
   solver::SparseSystem system_;
   mutable std::vector<double> rhs_;

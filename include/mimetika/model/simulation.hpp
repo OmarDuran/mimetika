@@ -3,6 +3,8 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <functional>
+#include <map>
 #include <utility>
 #include <vector>
 
@@ -92,6 +94,31 @@ class Simulation {
   std::vector<double>& state() { return state_; }
   const std::vector<double>& state() const { return state_; }
 
+  // ---- what this process is responsible for -------------------------------
+  //
+  // Set together or not at all. `cells` is which sites of the top stratum this
+  // process assembles, and `dofs` is which unknowns it writes a CONSTRAINT row
+  // for -- and those are different questions. A term's contribution is a SUM,
+  // so it may be split across processes and added back together; a constraint
+  // row is a REPLACEMENT, so exactly one process may write it or the equation
+  // appears several times over.
+  //
+  // `reduce` sums a vector across the processes. It is used on the scales
+  // alone -- one compact array, once per assembly -- because the diagonal a
+  // constrained row is scaled by may have been assembled by a process that
+  // does not own that row.
+  void distribute_over(std::vector<char> cells, std::vector<char> facets, std::vector<char> dofs,
+                       std::function<void(std::vector<double>&)> reduce) {
+    owned_cells_ = std::move(cells);
+    owned_facets_ = std::move(facets);
+    owned_dofs_ = std::move(dofs);
+    reduce_ = std::move(reduce);
+    restricted_.clear();
+  }
+
+  bool distributed() const { return !owned_cells_.empty(); }
+  const std::vector<char>& owned_dofs() const { return owned_dofs_; }
+
   // The constraints are set up through this, then frozen. Freezing is what
   // builds the membership mask every assembly consults.
   Constraints& constraints() { return constraints_; }
@@ -107,7 +134,7 @@ class Simulation {
     if (!constraints_.empty()) ensure_scales();
     r.assign(state_.size(), 0.0);
     exokal::forms::ResidualSink sink(r);
-    model_.assemble(epoch_, state_, sink, ws_);
+    model_.assemble(epoch_, state_, sink, ws_, colors());
     if (!constraints_.empty()) constraints_.apply_to_residual(state_, r);
   }
 
@@ -115,7 +142,7 @@ class Simulation {
   // and the entries the terms produced on those rows are dropped rather than
   // added to — a row that keeps both would not be a constraint.
   void jacobian(exokal::forms::TripletSink& sink) const {
-    model_.assemble(epoch_, state_, sink, ws_);
+    model_.assemble(epoch_, state_, sink, ws_, colors());
     if (constraints_.empty()) return;
     // the scale of each constrained equation is the diagonal of the row about
     // to be replaced, and it is sitting in this very sink -- so it is read off
@@ -130,11 +157,33 @@ class Simulation {
     if (!constraints_.empty()) ensure_scales();
     y.assign(state_.size(), 0.0);
     exokal::forms::ActionSink sink(v, y);
-    model_.assemble(epoch_, state_, sink, ws_);
+    model_.assemble(epoch_, state_, sink, ws_, colors());
     if (!constraints_.empty()) constraints_.apply_to_action(v, y);
   }
 
  private:
+  // The restricted colouring of each (stratum, coupling), built once and kept:
+  // a filter over the stratum's own, so the colours stay race-free and the
+  // cells keep their numbering.
+  exokal::forms::Model::ColorSource colors() const {
+    if (!distributed()) return {};
+    return [this](std::size_t stratum, exokal::forms::Coupling kind,
+                  const exokal::forms::Epoch& e) -> const exokal::spaces::Coloring& {
+      const auto key = std::pair<std::size_t, int>{stratum, static_cast<int>(kind)};
+      const auto it = restricted_.find(key);
+      if (it != restricted_.end()) return it->second;
+      // the sites of a coupling are cells or facets, and exokal says which
+      const std::vector<char>& keep =
+          exokal::forms::evaluated_on_facets(kind) ? owned_facets_ : owned_cells_;
+      return restricted_.emplace(key, exokal::spaces::restricted(e.colors(kind), keep))
+          .first->second;
+    };
+  }
+
+  bool writes_constraint(std::size_t dof) const {
+    return owned_dofs_.empty() || owned_dofs_[dof] != 0;
+  }
+
   // THE SCALE, MEASURED FROM AN ASSEMBLED TANGENT.
   //
   // What is wanted is the diagonal the terms write on each constrained row:
@@ -147,6 +196,23 @@ class Simulation {
         diagonal[static_cast<std::size_t>(sink.row[k])] += sink.value[k];
       }
     }
+    // THE DIAGONAL OF A ROW IS NOT LOCAL, even where the row is: an interior
+    // facet is assembled from both its cells, and those can belong to two
+    // processes. A constrained row scaled by half its diagonal on one process
+    // and half on another is two different equations, so the scales are summed
+    // across the processes before they are used. Only the constrained rows
+    // need it, and that is what is sent.
+    if (reduce_ && !constraints_.empty()) {
+      std::vector<std::size_t> which;
+      std::vector<double> theirs;
+      for (std::size_t i = 0; i < diagonal.size(); ++i) {
+        if (!constraints_.pinned(i)) continue;
+        which.push_back(i);
+        theirs.push_back(diagonal[i]);
+      }
+      reduce_(theirs);
+      for (std::size_t k = 0; k < which.size(); ++k) diagonal[which[k]] = theirs[k];
+    }
     constraints_.set_scales(diagonal);
   }
 
@@ -157,7 +223,7 @@ class Simulation {
   void ensure_scales() const {
     if (constraints_.scaled()) return;
     exokal::forms::TripletSink probe(state_.size());
-    model_.assemble(epoch_, state_, probe, ws_);
+    model_.assemble(epoch_, state_, probe, ws_, colors());
     measure_scales(probe);
   }
 
@@ -182,6 +248,8 @@ class Simulation {
     // statement written where it is actually true.
     for (std::size_t d = 0; d < state_.size(); ++d) {
       if (!constraints_.pinned(d)) continue;
+      // a replacement, so exactly one process writes it
+      if (!writes_constraint(d)) continue;
       const double s = constraints_.scale_at(d);
       const Constraints::Form& f = constraints_.form_at(d);
       for (std::size_t j = 0; j < f.dofs.size(); ++j) {
@@ -199,6 +267,11 @@ class Simulation {
   Constraints constraints_;
   std::vector<double> state_;
   mutable Workspace ws_;
+  // the partition, as this layer needs it: which sites to assemble, which
+  // constrained rows to write, and how to sum a vector across the processes
+  std::vector<char> owned_cells_, owned_facets_, owned_dofs_;
+  std::function<void(std::vector<double>&)> reduce_;
+  mutable std::map<std::pair<std::size_t, int>, exokal::spaces::Coloring> restricted_;
 };
 
 }  // namespace mimetika

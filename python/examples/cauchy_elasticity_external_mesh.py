@@ -182,6 +182,17 @@ def exact_stress(gradient, mat, dim):
     return s
 
 
+# THE PARTITION, WRITTEN OUT WITH THE ANSWER. A partition is a picture: a rank
+# holding a disconnected piece, or most of the mesh, is obvious in ParaView and
+# invisible in a timing. `--partition N` previews an N-way split without
+# running on N processes; with no argument it shows the one this run used.
+def partition_field(mesh, dim, requested):
+    parts = requested if requested else mk.mpi_size()
+    if parts < 2:
+        return {}
+    return {"rank": mk.cell_ranks(mesh, dim, parts).astype(float)}
+
+
 def make_mesh(path):
     """A sample .vtu, so the example runs without a mesh from somewhere else."""
     mesh = mk.annulus(8, 4, 2, mk.Family.simplex, 1.0, 10.0, 1.0)
@@ -196,6 +207,12 @@ def main():
     ap.add_argument("--product", default="stabilized_afw", choices=sorted(PRODUCTS))
     ap.add_argument(
         "--nu", type=float, default=None, help="Poisson ratio (default lam = mu = 1)"
+    )
+    ap.add_argument(
+        "--partition",
+        type=int,
+        default=0,
+        help="write an N-way mesh partition into the .vtu (default: the processes in use)",
     )
     ap.add_argument("--vtu", help="write the solution to this .vtu")
     ap.add_argument("--solver", default="riesz", choices=sorted(SOLVER_NAMES))
@@ -366,10 +383,7 @@ def main():
                     rot[e, k] = model.rotation(e, k)
                     rot_exact[e, k] = u_hat[k]
                 sig[e] = model.cell_stress(e)
-            mk.write_vtu(
-                mesh,
-                args.vtu,
-                {
+            fields = {
                     "displacement": u,
                     "displacement_exact": u_exact,
                     "displacement_error": u - u_exact,
@@ -379,8 +393,9 @@ def main():
                     "stress": sig,
                     "stress_exact": np.tile(np.array(s_hat), (n, 1)),
                     "stress_error": sig - np.array(s_hat),
-                },
-            )
+            }
+            fields.update(partition_field(mesh, dim, args.partition))
+            mk.write_vtu(mesh, args.vtu, fields)
 
 
 if __name__ == "__main__":

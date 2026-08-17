@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -9,6 +11,7 @@
 #include "exokal/hodge/flux_operators.hpp"
 #include "mimetika/model/boundary_conditions.hpp"
 #include "mimetika/model/compositions/single_phase_flow.hpp"
+#include "mimetika/model/partition.hpp"
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/physics/boundary_terms.hpp"
 #include "mimetika/linear_solver/linear.hpp"
@@ -75,6 +78,15 @@ class SinglePhaseModel {
 
   // Dereferencing an unbuilt model is a null read, and from Python that is an
   // abort rather than an exception -- so it is refused by name instead.
+  // NON-CONST, for the one caller that configures the simulation rather than
+  // reading it: the partition, which tells it which sites to assemble.
+  Simulation& simulation() {
+    if (!sim_) {
+      throw std::logic_error("SinglePhaseModel: not built yet; call build() or solve() first");
+    }
+    return *sim_;
+  }
+
   const Simulation& simulation() const {
     if (sim_ == nullptr) {
       throw std::logic_error("SinglePhaseModel: not built yet; call build() or solve() first");
@@ -84,15 +96,34 @@ class SinglePhaseModel {
   const solver::SparseSystem& system() const { return system_; }
   std::size_t n_cells() const { return n_cells_; }
 
+  // SHARE THIS MODEL OUT over `n_ranks` processes. Nothing happens until
+  // build(): the partition needs the space, and the space is built there.
+  // `reduce` sums a vector across the processes, and is used once per
+  // assembly, on the scales of the constrained rows alone.
+  void distribute_over(int n_ranks, int rank, std::function<void(std::vector<double>&)> reduce) {
+    n_ranks_ = n_ranks;
+    rank_ = rank;
+    reduce_ = std::move(reduce);
+  }
+
+  const Distribution& distribution() const { return distribution_; }
+
   void build() {
     const graphos::Complex& c = mesh_->topology();
+    // THE PARTITION COMES FIRST, because the products below are per cell and
+    // are the bulk of the work: a process builds its own and no others.
+    if (n_ranks_ > 1) distribution_ = partition_cells(*mesh_, dim_, n_ranks_, rank_);
+    const std::vector<char>* only =
+        distribution_.assembled_cells.empty() ? nullptr : &distribution_.assembled_cells;
     // the K-independent mode selection, and only the P_1 realization needs it
     if (how_ == Realization::derham_bdm) {
       geometry_ = exokal::hodge::DeRhamGeometryCache::build(*mesh_, dim_);
     }
     flux_ = exokal::hodge::FluxOperators::build(
         *mesh_, dim_, exokal::hodge::Coefficient::uniform(mobility_), how_,
-        how_ == Realization::derham_bdm ? &geometry_ : nullptr);
+        how_ == Realization::derham_bdm ? &geometry_ : nullptr,
+        exokal::hodge::default_enrichment_degree,
+        exokal::hodge::default_max_facets, only);
     pressure_data_ = BoundaryData(static_cast<std::size_t>(c.count(dim_ - 1)));
     const bool any_pressure = flow_.fill_pressure(pressure_data_, *mesh_, dim_);
 
@@ -111,6 +142,16 @@ class SinglePhaseModel {
     flow_.impose(sim_->constraints());
     sim_->freeze_constraints();
 
+    // THE PARTITION, APPLIED WHERE THE SPACE EXISTS. Asked for before the
+    // build, because the assembly below is the thing it divides.
+    if (n_ranks_ > 1) {
+      add_dof_ownership(distribution_, *mesh_, dim_, sim_->epoch(), n_ranks_, rank_);
+      // ASSEMBLE the halo as well, WRITE only what this process owns: the
+      // rows it owns are then complete without a single message.
+      sim_->distribute_over(distribution_.assembled_cells, distribution_.assembled_facets,
+                            distribution_.owned_dofs, reduce_);
+    }
+
     exokal::forms::TripletSink jac(sim_->n_dofs());
     sim_->jacobian(jac);
     system_ = solver::SparseSystem::from(jac);
@@ -124,8 +165,12 @@ class SinglePhaseModel {
     sim_->residual(r);
     rhs_.assign(sim_->n_dofs(), 0.0);
     for (std::size_t i = 0; i < sim_->n_dofs(); ++i) {
+      // -r is a CONTRIBUTION and is summed across the processes; a constrained
+      // row is a REPLACEMENT and is written by whichever process owns it, so
+      // the others leave it at zero rather than adding a copy of it.
+      const bool mine = sim_->owned_dofs().empty() || sim_->owned_dofs()[i] != 0;
       rhs_[i] = sim_->constraints().pinned(i)
-                    ? sim_->constraints().scale_at(i) * sim_->constraints().rhs_at(i)
+                    ? (mine ? sim_->constraints().scale_at(i) * sim_->constraints().rhs_at(i) : 0.0)
                     : -r[i];
     }
     p_offset_ = static_cast<std::size_t>(sp.offset(sp.index_of("p_0")));
@@ -150,6 +195,10 @@ class SinglePhaseModel {
   exokal::forms::TermContext ctx_;
   std::unique_ptr<Simulation> sim_;
   solver::SparseSystem system_;
+  // the partition, requested before the build and applied inside it
+  int n_ranks_{1}, rank_{0};
+  std::function<void(std::vector<double>&)> reduce_;
+  Distribution distribution_;
   std::vector<double> rhs_, state_;
   std::size_t p_offset_{0}, n_cells_{0};
 };

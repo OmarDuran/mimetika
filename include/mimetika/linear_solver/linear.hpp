@@ -98,6 +98,9 @@ struct SolveReport {
   double matrix_seconds{0.0};
   double preconditioner_seconds{0.0};
   double solve_seconds{0.0};
+  // the share of the matrix whose columns another process owns: zero on one
+  // process, and on several the price of the layout
+  double off_rank_fraction{0.0};
 };
 
 class LinearSolver {

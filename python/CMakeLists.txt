@@ -33,6 +33,31 @@ if(BUILD_TESTING)
              COMMAND ${Python_EXECUTABLE} -m pytest -q
                      ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixed_dimensional/${t}.py)
     set_tests_properties(python.${t} PROPERTIES
-      ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}")
+      # PYTHONNOUSERSITE keeps ~/.local out of the interpreter: a package
+      # installed there for another architecture or another build shadows the
+      # environment's, and the failure reads as a broken extension rather than
+      # as the wrong numpy.
+      ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR};PYTHONNOUSERSITE=1")
   endforeach()
+
+  # THE SAME ANSWER ON SEVERAL PROCESSES. The solver distributes its algebra
+  # over MPI_COMM_WORLD when there is more than one rank, and the property that
+  # matters is that nothing about the answer -- including the iteration count --
+  # depends on how many there were. Skipped where there is no mpiexec to launch
+  # them with.
+  find_program(MIMETIKA_MPIEXEC NAMES mpirun mpiexec)
+  if(MIMETIKA_MPIEXEC)
+    add_test(NAME python.mpi_layout
+             COMMAND ${CMAKE_COMMAND}
+                     -DPYTHON=${Python_EXECUTABLE}
+                     -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel/mpi_layout.py
+                     -DMPIEXEC=${MIMETIKA_MPIEXEC}
+                     -DRANKS=2
+                     -DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel/run_mpi_layout.cmake)
+    set_tests_properties(python.mpi_layout PROPERTIES
+      ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR};PYTHONNOUSERSITE=1"
+      SKIP_REGULAR_EXPRESSION "SKIP:"
+      PROCESSORS 2)
+  endif()
 endif()

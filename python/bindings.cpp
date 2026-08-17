@@ -36,6 +36,7 @@
 #include "exokal/hodge/stress_operators.hpp"
 #include "exokal/io/vtu.hpp"
 #include "exokal/preprocess/diagnostics.hpp"
+#include "mimetika/model/partition.hpp"
 #include "mimetika/linear_solver/fields.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
 #include "mimetika/mesh/structured.hpp"
@@ -469,6 +470,18 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
       norm.vertex_coordinates.insert(norm.vertex_coordinates.end(), {x[0], x[1], x[2]});
     }
 
+    // WHO OWNS EACH VERTEX, EDGE AND FACE, on several processes.
+    //
+    // The maps above are the complex's, in its own serial numbering; hypre
+    // needs the three spaces distributed, and consistently -- so the ownership
+    // is taken from the SAME partition the unknowns were taken from, through
+    // the same exokal call, with a layout that puts one unknown on each entity
+    // of the dimension in question. A k-entity's owner is then just the owner
+    // of that one unknown.
+    PetscMPIInt size = 1;
+    MPI_Comm_size(PETSC_COMM_WORLD, &size);
+    norm.entity_owner = mimetika::entity_owners(mesh, dim, static_cast<int>(size));
+
     // THE FACET-CONSTANT SUBSPACE, for every space that is not already it.
     //
     // ADS takes one scalar H(div) problem: one copy, one moment per facet.
@@ -527,11 +540,40 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
 // caller measuring them wants them without waiting for a Krylov method to
 // converge -- and wants to know that they COMPLETED, which a timing alone does
 // not say.
+// THE PARTITION, IN TWO HALVES, because it is needed on both sides of the
+// build: the model must know it before it assembles, and the solver only
+// after, when the unknowns it lays out exist.
+//
+// Neither half decides anything -- mimetika's own `distribute_model` reads
+// exokal's geometric partition and its ownership rule -- and both are skipped
+// on one process, which is then exactly the program it was before.
+template <class Model>
+void request_partition(Model& m, const mimetika::solver::SolverOptions& opts) {
+  PetscMPIInt size = 1, rank = 0;
+  mimetika::solver::PetscSession::instance();
+  MPI_Comm_size(PETSC_COMM_WORLD, &size);
+  MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
+  if (size < 2 || !opts.partition) return;
+  // NO REDUCTION IS NEEDED, and that is worth saying rather than leaving as an
+  // absence: a process assembles every cell that contributes to a row it owns,
+  // so the diagonal a constrained row is scaled by is already complete where
+  // it is used. Summing across the processes would count the halo twice.
+  m.distribute_over(static_cast<int>(size), static_cast<int>(rank), {});
+}
+
+template <class Model>
+void attach_partition(mimetika::solver::PetscSolver& petsc, const Model& m) {
+  if (m.distribution().empty()) return;
+  petsc.set_local_assembly(true);
+  petsc.set_owners(m.distribution().owner_of_dof);
+}
+
 template <class Model>
 mimetika::solver::SolveReport assemble_only(Model& m, bool progress,
                                             const mimetika::solver::SolverOptions& opts,
                                             bool divergence_is_an_integral) {
   Stage stage(progress);
+  request_partition(m, opts);
   stage.begin("assembling");
   const auto t_build = std::chrono::steady_clock::now();
   m.build();
@@ -539,6 +581,7 @@ mimetika::solver::SolveReport assemble_only(Model& m, bool progress,
       std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count();
   stage.end();
   mimetika::solver::PetscSolver petsc(opts);
+  attach_partition(petsc, m);
   if (opts.preconditioner == "riesz") {
     attach_norm(petsc, m, m.mesh(), m.dim(), divergence_is_an_integral);
   }
@@ -560,6 +603,7 @@ mimetika::solver::SolveReport assemble_only(Model& m, bool progress,
 mimetika::solver::SolveReport solve_elasticity(mimetika::CauchyElasticityModel& m, bool progress,
                                                const mimetika::solver::SolverOptions& opts) {
   Stage stage(progress);
+  request_partition(m, opts);
   stage.begin("assembling");
   const auto t_build = std::chrono::steady_clock::now();
   m.build();
@@ -567,6 +611,7 @@ mimetika::solver::SolveReport solve_elasticity(mimetika::CauchyElasticityModel& 
       std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count();
   stage.end();
   mimetika::solver::PetscSolver petsc(opts);
+  attach_partition(petsc, m);
   // the momentum row is Dv, whose entries already carry 1/|E|: it is an average
   if (opts.preconditioner == "riesz") attach_norm(petsc, m, m.mesh(), m.dim(), false);
   std::vector<double> x;
@@ -588,6 +633,7 @@ mimetika::solver::SolveReport solve_elasticity(mimetika::CauchyElasticityModel& 
 mimetika::solver::SolveReport solve_single_phase(mimetika::SinglePhaseModel& m, bool progress,
                                                  const mimetika::solver::SolverOptions& opts) {
   Stage stage(progress);
+  request_partition(m, opts);
   stage.begin("assembling");
   const auto t_build = std::chrono::steady_clock::now();
   m.build();
@@ -595,6 +641,7 @@ mimetika::solver::SolveReport solve_single_phase(mimetika::SinglePhaseModel& m, 
       std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count();
   stage.end();
   mimetika::solver::PetscSolver petsc(opts);
+  attach_partition(petsc, m);
   // the mass-balance row is the incidence: (Bq)_E is the integral of div q
   if (opts.preconditioner == "riesz") attach_norm(petsc, m, m.mesh(), m.dim(), true);
   std::vector<double> x;
@@ -670,8 +717,8 @@ PYBIND11_MODULE(_core, m) {
   py::class_<mimetika::solver::SolverOptions>(m, "SolverOptions")
       .def(py::init([](std::string method, std::string factorization, std::string preconditioner,
                        std::string riesz_block_pc, std::string riesz_block_factorization, int riesz_block_its, double riesz_block_rtol,
-                       int riesz_exact_limit, int riesz_ads_limit, double rtol, double atol,
-                       int max_iterations) {
+                       int riesz_exact_limit, int riesz_ads_limit, bool partition, double rtol,
+                       double atol, int max_iterations) {
              return mimetika::solver::SolverOptions{std::move(method),
                                                     std::move(factorization),
                                                     std::move(preconditioner),
@@ -681,6 +728,7 @@ PYBIND11_MODULE(_core, m) {
                                                     riesz_block_rtol,
                                                     riesz_exact_limit,
                                                     riesz_ads_limit,
+                                                    partition,
                                                     rtol,
                                                     atol,
                                                     max_iterations};
@@ -689,7 +737,7 @@ PYBIND11_MODULE(_core, m) {
            py::arg("preconditioner") = "lu", py::arg("riesz_block_pc") = "", py::arg("riesz_block_factorization") = "petsc",
            py::arg("riesz_block_its") = -1, py::arg("riesz_block_rtol") = 1e-4,
            py::arg("riesz_exact_limit") = 400000, py::arg("riesz_ads_limit") = 25000,
-           py::arg("rtol") = 1e-10,
+           py::arg("partition") = true, py::arg("rtol") = 1e-10,
            py::arg("atol") = 1e-50, py::arg("max_iterations") = 1000)
       .def_readwrite("riesz_block_pc", &mimetika::solver::SolverOptions::riesz_block_pc)
       .def_readwrite("riesz_block_factorization",
@@ -698,6 +746,7 @@ PYBIND11_MODULE(_core, m) {
       .def_readwrite("riesz_block_rtol", &mimetika::solver::SolverOptions::riesz_block_rtol)
       .def_readwrite("riesz_exact_limit", &mimetika::solver::SolverOptions::riesz_exact_limit)
       .def_readwrite("riesz_ads_limit", &mimetika::solver::SolverOptions::riesz_ads_limit)
+      .def_readwrite("partition", &mimetika::solver::SolverOptions::partition)
       .def_readwrite("method", &mimetika::solver::SolverOptions::method)
       .def_readwrite("factorization", &mimetika::solver::SolverOptions::factorization)
       .def_readwrite("preconditioner", &mimetika::solver::SolverOptions::preconditioner)
@@ -738,6 +787,7 @@ PYBIND11_MODULE(_core, m) {
       .def_readonly("preconditioner_seconds",
                     &mimetika::solver::SolveReport::preconditioner_seconds)
       .def_readonly("solve_seconds", &mimetika::solver::SolveReport::solve_seconds)
+      .def_readonly("off_rank_fraction", &mimetika::solver::SolveReport::off_rank_fraction)
       .def("__repr__", [](const mimetika::solver::SolveReport& r) {
         return "SolveReport(converged=" + std::string(r.converged ? "True" : "False") +
                ", iterations=" + std::to_string(r.iterations) + ", reason='" + r.reason + "')";
@@ -1007,6 +1057,50 @@ PYBIND11_MODULE(_core, m) {
       .value("derham_bdm", FluxOperators::Realization::derham_bdm)
       .value("derham_rt", FluxOperators::Realization::derham_rt)
       .value("stabilized_rt", FluxOperators::Realization::stabilized_rt);
+
+  // HOW MANY PROCESSES THE SOLVER WILL USE, which is a question worth being
+  // able to ask: launched under mpirun with a mismatched runtime, MPI falls
+  // back to singletons and every rank solves the whole problem believing it is
+  // alone. That looks like a working parallel run and is not one.
+  m.def(
+      "mpi_size",
+      [] {
+        mimetika::solver::PetscSession::instance();
+        PetscMPIInt size = 1;
+        MPI_Comm_size(PETSC_COMM_WORLD, &size);
+        return static_cast<int>(size);
+      },
+      "the number of processes in PETSC_COMM_WORLD");
+  m.def(
+      "mpi_rank",
+      [] {
+        mimetika::solver::PetscSession::instance();
+        PetscMPIInt rank = 0;
+        MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
+        return static_cast<int>(rank);
+      },
+      "this process's rank in PETSC_COMM_WORLD");
+
+  // THE PARTITION AS A FIELD, so it can be looked at rather than trusted.
+  //
+  // The same geometric bisection the solver uses, asked for any number of
+  // parts: written into a .vtu it colours the mesh by process, which is how a
+  // partition that has gone wrong -- a rank with a disconnected piece, or with
+  // most of the mesh -- is seen rather than inferred from a timing.
+  m.def(
+      "cell_ranks",
+      [](const exokal::Mesh& mesh, int dim, int n_ranks) {
+        const auto part = mimetika::partition_cells(mesh, dim, std::max(n_ranks, 2), 0);
+        py::array_t<int> out(static_cast<py::ssize_t>(mesh.count(dim)));
+        const auto owners =
+            exokal::spaces::rcb(exokal::spaces::cell_centroids(mesh, dim), std::max(n_ranks, 2));
+        for (Index e = 0; e < mesh.count(dim); ++e) {
+          out.mutable_data()[e] = owners.owner(e);
+        }
+        return out;
+      },
+      py::arg("mesh"), py::arg("dim"), py::arg("n_ranks"),
+      "the rank owning each cell, under an n_ranks-way partition");
 
   m.def("flux_realization_name", &FluxOperators::name, py::arg("realization"));
 
