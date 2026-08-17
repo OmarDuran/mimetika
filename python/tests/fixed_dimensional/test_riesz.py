@@ -118,6 +118,65 @@ def test_it_holds_across_dimension_and_cell_type(dim, family):
     assert counts[-1] <= 2 * counts[0]
 
 
+# ---- the auxiliary-space block solve -----------------------------------------
+#
+# The Riesz map is only as scalable as the way its first block is inverted. A
+# Cholesky of that block is exact and creates fill, so the cost per iteration
+# grows even though the count does not; ADS (Kolev & Vassilevski, on the
+# Hiptmair-Xu auxiliary-space framework) inverts it by splitting along the de
+# Rham complex instead, which costs no fill and is linear in the unknowns.
+#
+# It needs the discrete gradient and curl -- the complex's own boundary
+# operators, d_1 and d_2 -- and the vertex coordinates, and it is defined for
+# ONE UNKNOWN PER FACET in 3D. Those are supplied automatically when they
+# exist, which is why this is a 3D RT test and not a BDM one.
+ADS = mk.SolverOptions(
+    method="gmres", preconditioner="riesz", rtol=1e-10, max_iterations=2000,
+    riesz_block_pc="ads",
+)
+# a short CG under ADS instead of a single V-cycle: the block is then solved to
+# a tolerance rather than approximated once, and the outer count flattens
+CG_ADS = mk.SolverOptions(
+    method="gmres", preconditioner="riesz", rtol=1e-10, max_iterations=2000,
+    riesz_block_pc="ads", riesz_block_its=50, riesz_block_rtol=1e-2,
+)
+
+
+def _needs_hypre():
+    try:
+        dupuit(4, dim=3).solve(options=ADS)
+    except RuntimeError as e:  # PETSc built without hypre
+        pytest.skip(f"hypre/ADS unavailable: {e}")
+
+
+def test_the_auxiliary_space_block_gives_the_same_answer():
+    _needs_hypre()
+    direct = dupuit(10, dim=3)
+    direct.solve()
+    ads = dupuit(10, dim=3)
+    ads.solve(options=ADS)
+    worst = max(
+        abs(direct.cell_pressure(e) - ads.cell_pressure(e)) for e in range(direct.n_cells)
+    )
+    print(f"  {direct.n_cells} cells   max |ads - direct| = {worst:.2e}")
+    assert worst < 1e-7
+
+
+# SOLVING THE BLOCK, NOT APPROXIMATING IT ONCE, is what h-independence needs. A
+# single V-cycle leaves the count drifting up with the mesh (29, 45, 53, 60 over
+# sixty times the unknowns); with CG to 1e-2 under it the count is flat, which
+# says the drift is the block solve and not the norm.
+def test_the_auxiliary_space_count_does_not_grow_under_refinement():
+    _needs_hypre()
+    counts = []
+    for nr in (8, 16, 24):
+        model = dupuit(nr, dim=3)
+        report = model.solve(options=CG_ADS)
+        counts.append(report.iterations)
+        print(f"  {model.n_cells:6d} cells {model.n_dofs:7d} dofs   {report.iterations:4d} its")
+    assert counts[-1] <= counts[0] + 5
+
+
 # ---- elasticity: the same principle, three factors ---------------------------
 #
 # X = H(div; M) x L^2(R^d) x L^2(skew), with

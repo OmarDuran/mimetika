@@ -418,6 +418,44 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
   norm.factors.push_back(std::move(rest));
   norm.l2_weight.push_back(std::move(l2));
 
+  // THE COMPLEX'S OWN BOUNDARY OPERATORS, for an auxiliary-space solver.
+  //
+  // d_1 (edges x vertices) is the discrete gradient and d_2 (faces x edges)
+  // the discrete curl -- not built here, only copied out of the topology with
+  // the incidence numbers already on them. They are supplied whenever the
+  // first factor is ONE UNKNOWN PER FACET, which is the space ADS is defined
+  // for; with several moments per facet the dofs are not the faces and the
+  // maps would not address them.
+  const graphos::Complex& topo = mesh.topology();
+  if (dim == 3 && blocks[0].size() == static_cast<std::size_t>(topo.count(2))) {
+    const auto copy_out = [](const graphos::BoundaryOperator& b, int rows, int cols) {
+      mimetika::solver::SpaceNorm::Incidence out;
+      out.rows = rows;
+      out.cols = cols;
+      for (Index r = 0; r < static_cast<Index>(b.rows()); ++r) {
+        for (Index k = b.offsets[static_cast<std::size_t>(r)];
+             k < b.offsets[static_cast<std::size_t>(r) + 1]; ++k) {
+          out.row.push_back(static_cast<int>(r));
+          out.col.push_back(static_cast<int>(b.indices[static_cast<std::size_t>(k)]));
+          out.value.push_back(static_cast<double>(b.signs[static_cast<std::size_t>(k)]));
+        }
+      }
+      return out;
+    };
+    norm.discrete_gradient = copy_out(topo.boundary(1), topo.count(1), topo.count(0));
+    norm.discrete_curl = copy_out(topo.boundary(2), topo.count(2), topo.count(1));
+    // and the vertices themselves: ADS interpolates its auxiliary vector
+    // spaces by applying the two maps above to the coordinate functions, so
+    // this is where the metric enters a construction that is otherwise the
+    // complex alone.
+    norm.space_dim = 3;
+    norm.vertex_coordinates.reserve(static_cast<std::size_t>(topo.count(0)) * 3);
+    for (Index v = 0; v < topo.count(0); ++v) {
+      const auto& x = mesh.point(v);
+      norm.vertex_coordinates.insert(norm.vertex_coordinates.end(), {x[0], x[1], x[2]});
+    }
+  }
+
   // the constrained unknowns, with the diagonal A gave them
   const auto& c = m.simulation().constraints();
   for (std::size_t i = 0; i < m.simulation().n_dofs(); ++i) {
@@ -577,28 +615,35 @@ PYBIND11_MODULE(_core, m) {
   // ---- how the linear system is solved -------------------------------------
   py::class_<mimetika::solver::SolverOptions>(m, "SolverOptions")
       .def(py::init([](std::string method, std::string factorization, std::string preconditioner,
-                       std::string riesz_block_pc, int riesz_block_its, double riesz_block_rtol,
-                       int riesz_exact_limit, double rtol, double atol, int max_iterations) {
+                       std::string riesz_block_pc, std::string riesz_block_factorization, int riesz_block_its, double riesz_block_rtol,
+                       int riesz_exact_limit, int riesz_ads_limit, double rtol, double atol,
+                       int max_iterations) {
              return mimetika::solver::SolverOptions{std::move(method),
                                                     std::move(factorization),
                                                     std::move(preconditioner),
                                                     std::move(riesz_block_pc),
+                                                    std::move(riesz_block_factorization),
                                                     riesz_block_its,
                                                     riesz_block_rtol,
                                                     riesz_exact_limit,
+                                                    riesz_ads_limit,
                                                     rtol,
                                                     atol,
                                                     max_iterations};
            }),
            py::arg("method") = "direct", py::arg("factorization") = "superlu",
-           py::arg("preconditioner") = "lu", py::arg("riesz_block_pc") = "",
+           py::arg("preconditioner") = "lu", py::arg("riesz_block_pc") = "", py::arg("riesz_block_factorization") = "petsc",
            py::arg("riesz_block_its") = -1, py::arg("riesz_block_rtol") = 1e-4,
-           py::arg("riesz_exact_limit") = 50000, py::arg("rtol") = 1e-10,
+           py::arg("riesz_exact_limit") = 400000, py::arg("riesz_ads_limit") = 25000,
+           py::arg("rtol") = 1e-10,
            py::arg("atol") = 1e-50, py::arg("max_iterations") = 1000)
       .def_readwrite("riesz_block_pc", &mimetika::solver::SolverOptions::riesz_block_pc)
+      .def_readwrite("riesz_block_factorization",
+                     &mimetika::solver::SolverOptions::riesz_block_factorization)
       .def_readwrite("riesz_block_its", &mimetika::solver::SolverOptions::riesz_block_its)
       .def_readwrite("riesz_block_rtol", &mimetika::solver::SolverOptions::riesz_block_rtol)
       .def_readwrite("riesz_exact_limit", &mimetika::solver::SolverOptions::riesz_exact_limit)
+      .def_readwrite("riesz_ads_limit", &mimetika::solver::SolverOptions::riesz_ads_limit)
       .def_readwrite("method", &mimetika::solver::SolverOptions::method)
       .def_readwrite("factorization", &mimetika::solver::SolverOptions::factorization)
       .def_readwrite("preconditioner", &mimetika::solver::SolverOptions::preconditioner)

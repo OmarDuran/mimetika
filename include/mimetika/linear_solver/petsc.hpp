@@ -155,6 +155,36 @@ struct SpaceNorm {
   std::vector<int> pinned;
   std::vector<double> pinned_diagonal;
 
+  // THE DE RHAM MAPS AN AUXILIARY-SPACE SOLVER NEEDS.
+  //
+  // ADS preconditions an H(div) operator by splitting it along the complex --
+  // a field becomes a vector potential in H(curl) plus a part carried by the
+  // vertex spaces -- and the maps that take it there are the discrete GRADIENT
+  // (edges x vertices) and CURL (faces x edges). Those are not a new
+  // construction: they are the boundary operators of the complex as stored,
+  // which is why a library built on a chain complex can hand them over instead
+  // of reconstructing them from an element table.
+  //
+  // Empty means no auxiliary solver is possible and a factorization is used.
+  struct Incidence {
+    int rows{0}, cols{0};
+    std::vector<int> row, col;
+    std::vector<double> value;
+
+    bool empty() const { return value.empty(); }
+  };
+  Incidence discrete_gradient;  // d_1 : vertices -> edges
+  Incidence discrete_curl;      // d_2 : edges -> faces
+
+  // ADS also needs the VERTEX COORDINATES, one row of `space_dim` per column of
+  // the gradient. They are not redundant with the maps above: the complex is
+  // metric-free, and the auxiliary spaces the solver builds are spaces of
+  // piecewise linear FIELDS -- it recovers their interpolation by applying the
+  // maps to the coordinate functions x, y, z. This is the whole metric content
+  // ADS asks for.
+  std::vector<double> vertex_coordinates;  // row-major, n_vertices x space_dim
+  int space_dim{3};
+
   bool empty() const { return factors.empty(); }
 };
 
@@ -178,6 +208,29 @@ struct SolverOptions {
   // scalable choice; "lu" is the exact one, for small problems and for
   // checking that an approximation is what changed an answer.
   std::string riesz_block_pc{};
+  // THE RIESZ BLOCK IS SPD, AND IS SOLVED AS SUCH.
+  //
+  // `factorization` defaults to SuperLU because the whole system is an
+  // INDEFINITE saddle point, where MUMPS sizes its workspace from a symbolic
+  // estimate that delayed pivots overrun. The first Riesz factor has no such
+  // structure: a material inner product plus B^T W^-1 B, symmetric positive
+  // definite, with no zero pivot to delay. So it takes a CHOLESKY -- half the
+  // fill and half the work of an LU -- through PETSc's own factorization,
+  // which needs no third-party pivoting strategy on a matrix that needs no
+  // pivoting.
+  //
+  // Measured on the H(div) block of a 22k-cell polyhedral mesh (77k unknowns),
+  // solving to 1e-12:
+  //
+  //     LU / SuperLU        96 iterations   51.0 s
+  //     LU / MUMPS          94              2.7 s
+  //     Cholesky / MUMPS    95              1.5 s
+  //     Cholesky / PETSc    66              1.3 s
+  //
+  // The iteration count moves because a factorization that pivots on an SPD
+  // matrix returns a slightly different operator; the exact one is also the
+  // one the Riesz theory assumes, and it is the cheapest.
+  std::string riesz_block_factorization{"petsc"};
   // How the first factor is inverted, and it is a MEMORY decision.
   //
   //   0   exact: a complete factorization. 21 iterations flat, and fill that
@@ -191,8 +244,24 @@ struct SolverOptions {
   //       rather than where the method changes character.
   int riesz_block_its{-1};
   double riesz_block_rtol{1e-4};
-  // first-factor unknowns above which the exact solve is refused
-  int riesz_exact_limit{50000};
+  // First-factor unknowns above which the exact solve is refused. Set from
+  // where the FILL stops being affordable rather than from where the method
+  // changes: with MUMPS the H(div) block of a 22k-cell polyhedral mesh -- 77k
+  // unknowns -- factors in 1.5 s, so the limit sits well above it.
+  int riesz_exact_limit{400000};
+  // First-factor unknowns above which the AUXILIARY-SPACE solver is preferred
+  // to the exact one, when the complex makes it possible at all. Lower than
+  // the limit above, and for a different reason: a Cholesky of this block
+  // still succeeds at 77k unknowns, it just stops being the cheapest way to
+  // apply P. Measured on a uniform refinement, solve time
+  //
+  //     dofs     12k    41k    96k
+  //     cholesky 0.05   0.47   2.55 s
+  //     ads      0.08   0.30   0.79 s
+  //
+  // -- the crossover is around 25k, and past it the gap only widens, because
+  // Cholesky's cost per iteration grows with the fill and ADS's does not.
+  int riesz_ads_limit{25000};
   double rtol{1e-10};
   double atol{1e-50};
   int max_iterations{1000};
@@ -524,8 +593,25 @@ class PetscSolver final : public LinearSolver {
     const bool inexact_block =
         opts_.riesz_block_its > 0 || (opts_.riesz_block_its < 0 && n0 > opts_.riesz_exact_limit);
     const int block_its = opts_.riesz_block_its > 0 ? opts_.riesz_block_its : 200;
-    const std::string b0_pc =
-        !opts_.riesz_block_pc.empty() ? opts_.riesz_block_pc : (inexact_block ? "icc" : "lu");
+    // WHEN THE COMPLEX IS THERE, ADS IS THE DEFAULT FOR A BIG BLOCK.
+    //
+    // The two incidence maps are supplied only when the first factor is one
+    // unknown per facet in 3D, which is the space ADS is written for; without
+    // them the auxiliary decomposition does not exist and an incomplete
+    // factorization is the fallback. On a 96k-dof block the difference is not
+    // marginal -- ADS holds ~0.14 us per dof per iteration across a refinement
+    // where icc goes 0.17 -> 1.4 and Cholesky 0.11 -> 0.68, because both of
+    // those pay for fill and ADS pays for none.
+    const bool ads_possible =
+        !norm_.discrete_gradient.empty() && !norm_.discrete_curl.empty() &&
+        norm_.vertex_coordinates.size() ==
+            static_cast<std::size_t>(norm_.discrete_gradient.cols) *
+                static_cast<std::size_t>(norm_.space_dim);
+    const bool use_ads = ads_possible && (inexact_block || n0 > opts_.riesz_ads_limit);
+    const std::string b0_pc = !opts_.riesz_block_pc.empty() ? opts_.riesz_block_pc
+                              : use_ads                    ? "ads"
+                              : inexact_block              ? "icc"
+                                                           : "cholesky";
     // an inner Krylov makes the preconditioner a VARYING operator, which only a
     // flexible outer method may use; applying it under plain gmres is a silent
     // wrong answer, so the promotion happens here rather than in the caller
@@ -552,9 +638,11 @@ class PetscSolver final : public LinearSolver {
     } else {
       set(p0 + "ksp_type", "preonly");
       set(p0 + "pc_type", b0_pc);
-      if ((b0_pc == "lu" || b0_pc == "cholesky") && !opts_.factorization.empty() &&
-          opts_.factorization != "petsc") {
-        set(p0 + "pc_factor_mat_solver_type", opts_.factorization);
+      const std::string pkg = !opts_.riesz_block_factorization.empty()
+                                  ? opts_.riesz_block_factorization
+                                  : opts_.factorization;
+      if ((b0_pc == "lu" || b0_pc == "cholesky") && !pkg.empty() && pkg != "petsc") {
+        set(p0 + "pc_factor_mat_solver_type", pkg);
       }
     }
     // the L2 factors are DIAGONAL, so Jacobi inverts them exactly and anything
@@ -562,8 +650,93 @@ class PetscSolver final : public LinearSolver {
     set(p1 + "ksp_type", "preonly");
     set(p1 + "pc_type", "jacobi");
 
+    // AN AUXILIARY-SPACE SOLVER ON THE FIRST FACTOR.
+    //
+    // ADS preconditions an H(div) operator by splitting it along the de Rham
+    // complex -- a field becomes a vector potential in H(curl) plus a part
+    // carried by the vertex spaces -- and preconditioning each piece where
+    // multigrid actually works. Classical AMG cannot: the near-null space here
+    // is the DIVERGENCE-FREE fields, not the constants, which is why BoomerAMG
+    // on this block needs more iterations the finer the mesh. ADS costs no
+    // fill and is linear in the unknowns, which is the only thing that scales.
+    //
+    // Its two maps are the discrete gradient and curl -- the complex's own
+    // boundary operators -- and they must be attached BEFORE the sub-PC is set
+    // up, because setting up is what builds the hierarchy. So the split is
+    // brought up with a PC that costs nothing, the maps are attached, and the
+    // real type is set; the outer KSPSetUp then does the work once.
+    if (b0_pc == "ads") {
+      set(p0 + "pc_type", "none");
+      check(PCSetUp(pc), "PCSetUp(fieldsplit)");
+      PetscInt n_split = 0;
+      KSP* sub = nullptr;
+      check(PCFieldSplitGetSubKSP(pc, &n_split, &sub), "PCFieldSplitGetSubKSP");
+      PC sub_pc = nullptr;
+      // ONE APPLICATION, or a short CG under it. A single ADS V-cycle is a
+      // fixed linear operator, which plain gmres may use; riesz_block_its > 0
+      // asks for an inner Krylov instead, which sharpens the block at the price
+      // of making the preconditioner vary -- the outer method was already
+      // promoted to fgmres above for exactly that.
+      if (!inexact_block) {
+        check(KSPSetType(sub[0], KSPPREONLY), "sub KSPSetType");
+      } else {
+        check(KSPSetType(sub[0], KSPCG), "sub KSPSetType(cg)");
+        check(KSPSetTolerances(sub[0], opts_.riesz_block_rtol, PETSC_DEFAULT, PETSC_DEFAULT,
+                               block_its),
+              "sub KSPSetTolerances");
+      }
+      check(KSPGetPC(sub[0], &sub_pc), "sub KSPGetPC");
+      check(PCSetType(sub_pc, PCHYPRE), "PCSetType(hypre)");
+      check(PCHYPRESetType(sub_pc, "ads"), "PCHYPRESetType(ads)");
+      if (norm_.discrete_gradient.empty() || norm_.discrete_curl.empty()) {
+        throw std::invalid_argument(
+            "PetscSolver: 'ads' needs the discrete gradient and curl of the complex");
+      }
+      const std::size_t n_vertex = static_cast<std::size_t>(norm_.discrete_gradient.cols);
+      if (norm_.vertex_coordinates.size() !=
+          n_vertex * static_cast<std::size_t>(norm_.space_dim)) {
+        throw std::invalid_argument(
+            "PetscSolver: 'ads' needs one coordinate per vertex of the gradient");
+      }
+      Mat G = to_mat(norm_.discrete_gradient);
+      Mat C = to_mat(norm_.discrete_curl);
+      check(PCHYPRESetDiscreteGradient(sub_pc, G), "PCHYPRESetDiscreteGradient");
+      check(PCHYPRESetDiscreteCurl(sub_pc, C), "PCHYPRESetDiscreteCurl");
+      // the metric, and the only metric ADS is told: x, y, z at the vertices,
+      // from which it interpolates the auxiliary vector spaces
+      std::vector<PetscReal> xyz(norm_.vertex_coordinates.begin(),
+                                 norm_.vertex_coordinates.end());
+      check(PCSetCoordinates(sub_pc, norm_.space_dim, static_cast<PetscInt>(n_vertex),
+                             xyz.data()),
+            "PCSetCoordinates(ads)");
+      // set up here, so the hierarchy is built where factorize() is timed
+      // rather than inside the first KSPSolve
+      check(PCSetUp(sub_pc), "PCSetUp(ads)");
+      riesz_.push_back(G);
+      riesz_.push_back(C);
+      PetscFree(sub);
+    }
+
     riesz_.push_back(P);
     for (IS& s : sets) ISDestroy(&s);
+  }
+
+  // An incidence matrix of the complex as a PETSc operator.
+  static Mat to_mat(const SpaceNorm::Incidence& a) {
+    std::vector<PetscInt> per_row(static_cast<std::size_t>(a.rows), 0);
+    for (const int r : a.row) ++per_row[static_cast<std::size_t>(r)];
+    Mat M = nullptr;
+    check(MatCreate(PETSC_COMM_SELF, &M), "MatCreate(incidence)");
+    check(MatSetType(M, MATSEQAIJ), "MatSetType(incidence)");
+    check(MatSetSizes(M, a.rows, a.cols, a.rows, a.cols), "MatSetSizes(incidence)");
+    check(MatSeqAIJSetPreallocation(M, 0, per_row.data()), "preallocate(incidence)");
+    for (std::size_t k = 0; k < a.value.size(); ++k) {
+      const PetscInt i = a.row[k], j = a.col[k];
+      check(MatSetValues(M, 1, &i, 1, &j, &a.value[k], INSERT_VALUES), "incidence entry");
+    }
+    check(MatAssemblyBegin(M, MAT_FINAL_ASSEMBLY), "assembly(incidence)");
+    check(MatAssemblyEnd(M, MAT_FINAL_ASSEMBLY), "assembly(incidence)");
+    return M;
   }
 
   // A MATRIX FROM TRIPLETS, one call per row rather than one per entry.

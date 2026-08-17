@@ -40,6 +40,21 @@ if(MIMETIKA_USE_PETSC)
     add_library(mimetika_petsc INTERFACE)
     target_link_libraries(mimetika_petsc INTERFACE PkgConfig::PETSC)
     target_compile_definitions(mimetika_petsc INTERFACE MIMETIKA_HAVE_PETSC=1)
+    # PETSc's HEADERS MUST BE SEARCHED BEFORE ANY SYSTEM DIRECTORY.
+    #
+    # An imported target carries its includes as SYSTEM ones, so they arrive as
+    # -isystem. PETSc's prefix is a whole environment -- Python, zlib and basix
+    # live there too -- so that directory reaches the command line as -isystem
+    # whatever PETSc itself is marked as, and it then sits in the same chain as
+    # /usr/local/include. A machine with an older Open MPI installed there
+    # supplies mpi.h, and PETSc, which checks the version it was configured
+    # against, refuses to compile.
+    #
+    # Adding the directory back as -I does NOT fix it: a compiler drops an -I
+    # that duplicates an -isystem. The classification itself has to go, which
+    # is what this variable is for -- imported targets then contribute plain
+    # -I, searched ahead of every system directory.
+    set(CMAKE_NO_SYSTEM_FROM_IMPORTED TRUE)
     # PETSc's own pkg-config advertises only -lpetsc, but PETSC_COMM_SELF
     # expands to an MPI symbol, so the MPI it was built against has to be on
     # the link line too. Every PETSc is an MPI build even when it will only

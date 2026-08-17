@@ -66,6 +66,11 @@ def solvers(rtol):
     with the mesh. "direct" is a full factorization: exact, and the wrong
     instrument past a few hundred thousand unknowns.
 
+    "ads" and "ads-cg" are the same map with its first block inverted by an
+    auxiliary-space solver instead of a factorization; "riesz" picks that route
+    by itself once the block is large enough, so they are here to be MEASURED
+    against the default rather than to be needed.
+
     THE TOLERANCE IS ON THE RESIDUAL, not on the answer. An iterative solve
     cannot show the round-off floor a direct one leaves, so a patch test read
     through it is bounded by this number rather than by the method.
@@ -74,11 +79,36 @@ def solvers(rtol):
         "riesz": mk.SolverOptions(
             method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000
         ),
+        # THE SAME MAP, WITH THE BIG BLOCK INVERTED BY AN AUXILIARY SPACE.
+        #
+        # P's first block is H(div)-like and it is most of the unknowns. A
+        # Cholesky of it is exact and creates fill, so the cost per iteration
+        # grows with the mesh even though the count does not. ADS splits it
+        # along the de Rham complex instead -- the discrete gradient and curl
+        # are the complex's own boundary operators, handed over rather than
+        # rebuilt -- and costs no fill: on a refinement to 96k unknowns it holds
+        # 0.14 us per dof per iteration while icc goes 0.17 -> 1.4 and Cholesky
+        # 0.11 -> 0.68.
+        #
+        # Only for ONE UNKNOWN PER FACET in 3D (derham_rt, stabilized_rt),
+        # which is the space ADS is written for.
+        "ads": mk.SolverOptions(
+            method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000,
+            riesz_block_pc="ads",
+        ),
+        # a short CG under ADS rather than a single V-cycle: the block is then
+        # SOLVED to a tolerance instead of approximated once, and the outer
+        # count stops drifting up with the mesh (60 -> 21 at 96k unknowns).
+        # Each iteration costs more, so which of the two wins is a measurement.
+        "ads-cg": mk.SolverOptions(
+            method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000,
+            riesz_block_pc="ads", riesz_block_its=50, riesz_block_rtol=1e-2,
+        ),
         "direct": mk.SolverOptions(),
     }
 
 
-SOLVER_NAMES = ("direct", "riesz")
+SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg")
 DEFAULT_RTOL = 1e-12
 
 
