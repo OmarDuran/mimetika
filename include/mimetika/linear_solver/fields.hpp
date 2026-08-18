@@ -104,6 +104,19 @@ inline std::vector<FieldBlock> field_blocks(const exokal::forms::StratifiedEpoch
   return out;
 }
 
+// THE UNKNOWNS A DIAGONAL STAR MAKES ELIMINABLE: the first factor, which is
+// the flux or the stress. Naming them is a permission -- see
+// PetscSolver::set_condensable -- and the matrix decides whether the block
+// really is diagonal, so this asks nothing about which product built it.
+inline std::vector<int> first_field_dofs(const exokal::forms::StratifiedEpoch& e) {
+  const std::vector<FieldBlock> blocks = field_blocks(e);
+  std::vector<int> out;
+  if (blocks.empty()) return out;
+  out.reserve(blocks[0].size());
+  for (const Index g : blocks[0].indices()) out.push_back(static_cast<int>(g));
+  return out;
+}
+
 // Do these blocks partition [0, n) exactly? A fieldsplit is only a
 // preconditioner for the whole operator if they do: an unknown in no block is
 // left out of the preconditioner, and one in two blocks is corrected twice.

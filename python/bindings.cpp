@@ -644,6 +644,7 @@ mimetika::solver::SolveReport solve_elasticity(mimetika::CauchyElasticityModel& 
   // is linear in the assembly, the preconditioner is what decides whether a
   // mesh is reachable, and the iteration is what the preconditioner shortens.
   stage.begin("solving");
+  petsc.set_condensable(mimetika::solver::first_field_dofs(m.simulation().epoch()));
   const auto rep = petsc.solve(m.system(), m.rhs(), x);
   stage.end();
   stage.done("  matrix", rep.matrix_seconds);
@@ -674,6 +675,7 @@ mimetika::solver::SolveReport solve_single_phase(mimetika::SinglePhaseModel& m, 
   // is linear in the assembly, the preconditioner is what decides whether a
   // mesh is reachable, and the iteration is what the preconditioner shortens.
   stage.begin("solving");
+  petsc.set_condensable(mimetika::solver::first_field_dofs(m.simulation().epoch()));
   const auto rep = petsc.solve(m.system(), m.rhs(), x);
   stage.end();
   stage.done("  matrix", rep.matrix_seconds);
@@ -741,12 +743,14 @@ PYBIND11_MODULE(_core, m) {
   // ---- how the linear system is solved -------------------------------------
   py::class_<mimetika::solver::SolverOptions>(m, "SolverOptions")
       .def(py::init([](std::string method, std::string factorization, std::string preconditioner,
+                       bool condense,
                        std::string riesz_block_pc, std::string riesz_block_factorization, int riesz_block_its, double riesz_block_rtol,
                        int riesz_exact_limit, int riesz_ads_limit, bool partition, double rtol,
                        double atol, int max_iterations) {
              return mimetika::solver::SolverOptions{std::move(method),
                                                     std::move(factorization),
                                                     std::move(preconditioner),
+                                                    condense,
                                                     std::move(riesz_block_pc),
                                                     std::move(riesz_block_factorization),
                                                     riesz_block_its,
@@ -759,11 +763,13 @@ PYBIND11_MODULE(_core, m) {
                                                     max_iterations};
            }),
            py::arg("method") = "direct", py::arg("factorization") = "superlu",
-           py::arg("preconditioner") = "lu", py::arg("riesz_block_pc") = "", py::arg("riesz_block_factorization") = "mumps",
+           py::arg("preconditioner") = "lu", py::arg("condense") = true,
+           py::arg("riesz_block_pc") = "", py::arg("riesz_block_factorization") = "mumps",
            py::arg("riesz_block_its") = -1, py::arg("riesz_block_rtol") = 1e-4,
            py::arg("riesz_exact_limit") = 400000, py::arg("riesz_ads_limit") = 400000,
            py::arg("partition") = true, py::arg("rtol") = 1e-10,
            py::arg("atol") = 1e-50, py::arg("max_iterations") = 1000)
+      .def_readwrite("condense", &mimetika::solver::SolverOptions::condense)
       .def_readwrite("riesz_block_pc", &mimetika::solver::SolverOptions::riesz_block_pc)
       .def_readwrite("riesz_block_factorization",
                      &mimetika::solver::SolverOptions::riesz_block_factorization)
@@ -814,6 +820,8 @@ PYBIND11_MODULE(_core, m) {
       .def_readonly("solve_seconds", &mimetika::solver::SolveReport::solve_seconds)
       .def_readonly("off_rank_fraction", &mimetika::solver::SolveReport::off_rank_fraction)
       .def_readonly("block_solver", &mimetika::solver::SolveReport::block_solver)
+      .def_readonly("condensed", &mimetika::solver::SolveReport::condensed)
+      .def_readonly("condensed_dofs", &mimetika::solver::SolveReport::condensed_dofs)
       .def("__repr__", [](const mimetika::solver::SolveReport& r) {
         return "SolveReport(converged=" + std::string(r.converged ? "True" : "False") +
                ", iterations=" + std::to_string(r.iterations) + ", reason='" + r.reason + "')";

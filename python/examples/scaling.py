@@ -45,6 +45,12 @@ FLUX_PRODUCTS = {
 STRESS_PRODUCTS = {
     "derham_bdm": mk.StressRealization.derham_bdm,
     "stabilized_bdm": mk.StressRealization.stabilized_bdm,
+    "diagonal_tpsa": mk.StressRealization.diagonal_tpsa,
+}
+# diagonal_tpsa is diagonal only in the total-pressure form, and exists in no
+# other; the de Rham ones are asked for in three fields, as elsewhere.
+FORMULATIONS = {
+    "diagonal_tpsa": mk.StressFormulation.weak_symmetry_total,
 }
 SOLVERS = ("direct", "riesz", "ads")
 MU, LAM = 1.0, 1.0
@@ -78,10 +84,12 @@ def flow(mesh, dim, lo, direction, length, product):
     return model
 
 
-def elasticity(mesh, dim, lo, direction, length, product):
+def elasticity(mesh, dim, lo, direction, length, product, formulation=None):
     """u = (x - x_min)/L on every boundary facet, as an affine datum."""
-    model = mk.CauchyElasticityModel(mesh, dim, mk.ElasticMaterial(MU, LAM),
-                                     STRESS_PRODUCTS[product])
+    model = mk.CauchyElasticityModel(
+        mesh, dim, mk.ElasticMaterial(MU, LAM), STRESS_PRODUCTS[product],
+        getattr(mk.StressFormulation, formulation) if formulation
+        else FORMULATIONS.get(product, mk.StressFormulation.weak_symmetry))
     gradient = [0.0] * 9
     for k in range(dim):
         gradient[k * 3 + k] = 1.0 / length
@@ -115,6 +123,9 @@ def main():
     ap.add_argument("--product", default=None,
                     help="flux or stress realization; the default is the "
                          "lowest-order stabilized one of the physics chosen")
+    ap.add_argument("--formulation", default=None,
+                    choices=("weak_symmetry", "weak_symmetry_total"),
+                    help="three fields or four; the default is what the product allows")
     ap.add_argument("--solver", default="riesz", choices=sorted(SOLVERS))
     ap.add_argument("--rtol", type=float, default=1e-9)
     ap.add_argument("--block-its", type=int, default=0,
@@ -139,8 +150,10 @@ def main():
     if product not in known:
         raise SystemExit(f"--product {product} is not a {args.physics} realization; "
                          f"choose from {', '.join(sorted(known))}")
-    build = flow if args.physics == "flow" else elasticity
-    model = build(mesh, args.dim, lo, direction, length, product)
+    if args.physics == "flow":
+        model = flow(mesh, args.dim, lo, direction, length, product)
+    else:
+        model = elasticity(mesh, args.dim, lo, direction, length, product, args.formulation)
     report = model.solve(
         options=solver_options(args.solver, args.rtol, args.block_its, args.block_rtol))
     error = error_of(args.physics, model, mesh, args.dim, lo, direction, length)

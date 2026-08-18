@@ -190,15 +190,17 @@ def test_the_auxiliary_space_count_does_not_grow_under_refinement():
 MU, LAM = 1.0, 1.0
 
 
-def patch(nr, dim=2, family=None):
+def patch(nr, dim=2, family=None, product=None, formulation=None):
     """Linear displacement prescribed on the whole boundary: natural, no constraints."""
     family = mk.Family.simplex if family is None else family
+    product = mk.StressRealization.stabilized_bdm if product is None else product
+    formulation = mk.StressFormulation.weak_symmetry if formulation is None else formulation
     mesh = mk.annulus(nr, nr // 2, dim, family, A_IN, B_OUT, 1.0)
     pts = [mesh.point(v) for v in range(mesh.count(0))]
     lo = [min(p[k] for p in pts) for k in range(3)]
     length = max(max(p[k] for p in pts) - lo[k] for k in range(dim))
     model = mk.CauchyElasticityModel(
-        mesh, dim, mk.ElasticMaterial(MU, LAM), mk.StressRealization.stabilized_bdm
+        mesh, dim, mk.ElasticMaterial(MU, LAM), product, formulation
     )
     gradient = [0.0] * 9
     for k in range(dim):
@@ -280,3 +282,60 @@ def test_an_exact_preconditioner_converges_in_one_iteration(kind):
     model = dupuit(4) if kind == "flow" else patch(4)
     report = model.solve(options=exact)
     assert report.iterations == 1
+
+
+# ---- four fields: a different norm, not the same one with a field added ------
+#
+# The total-pressure form moves the trace of the stress into its own unknown,
+# p = lambda div u, and what is left acting on sigma is the DEVIATORIC
+# compliance. So the norm changes with it:
+#
+#   ||sigma||^2 = (A sigma, sigma) + ||div sigma||^2 + c_p^-1 ||(2 mu)^-1 tr sigma||^2
+#   ||p||^2     = c_p ||p||^2 ,   c_p = d/(2 mu) + 1/lambda
+#
+# and neither term is what the three-field norm would give. The pressure row is
+# the only multiplier row that is not a constraint -- it has c_p |E| on the
+# diagonal -- which is where both come from: W is that diagonal rather than the
+# measure, and B^T W^-1 B is then the Schur complement of an invertible block,
+# which is the trace term above. Taking the three-field reading instead scales
+# the pressure block by c_p |E|^2 and the solve stops converging on 6^3 cells.
+#
+# What did NOT change: the rotation keeps its graph term. skw is bounded
+# L^2 -> L^2 so the norm does not need it, but the count does -- 41 iterations
+# against 85 -- and a norm the iteration disagrees with is not the norm.
+def test_the_total_pressure_row_keeps_the_scale_the_operator_gave_it():
+    counts = []
+    for nr in (6, 12, 24):
+        model = patch(nr, formulation=mk.StressFormulation.weak_symmetry_total)
+        report = model.solve(options=RIESZ)
+        counts.append(report.iterations)
+        print(f"  {model.n_cells:6d} cells {model.n_dofs:7d} dofs   {report.iterations:4d} its")
+    # four fields cost a constant factor over three -- 136 against 41 -- and
+    # that is the form, not the norm: what the norm owes is that the factor
+    # STAYS constant, which is what is asserted
+    assert counts[-1] <= counts[0] + 15
+
+
+# WHAT THE NORM DOES NOT YET COVER: A LUMPED COMPLIANCE.
+#
+# diagonal_tpsa exists only in the four-field form, and its count grows under
+# refinement (231, 377, 960 over a hundredfold in unknowns) with the block
+# solved EXACTLY -- so this is the Gram matrix itself, not the way its first
+# block is inverted. ||sigma||^2 = (A sigma, sigma) + ||div sigma||^2 is AFW's
+# norm for AFW's compliance; TPSA replaces A by a lumped diagonal, and the
+# equivalence of the two is the same conditional the consistency is, so the
+# inf-sup constant the theorem bounds the count by is not the one this norm
+# measures. The product is solvable and the answer is right -- both are tested
+# in test_cauchy_elasticity -- it is the PRECONDITIONER that does not yet know
+# it. Recorded rather than hidden in a slack bound.
+@pytest.mark.xfail(reason="the Riesz norm is AFW's, and TPSA's compliance is lumped",
+                   strict=True)
+def test_the_lumped_compliance_is_not_yet_preconditioned_uniformly():
+    counts = []
+    for nr in (6, 12, 24):
+        model = patch(nr, product=mk.StressRealization.diagonal_tpsa,
+                      formulation=mk.StressFormulation.weak_symmetry_total)
+        report = model.solve(options=RIESZ)
+        counts.append(report.iterations)
+        print(f"  {model.n_cells:6d} cells {model.n_dofs:7d} dofs   {report.iterations:4d} its")
+    assert counts[-1] <= counts[0] + 15

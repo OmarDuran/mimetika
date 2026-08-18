@@ -7,10 +7,12 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
+#include "mimetika/linear_solver/condense.hpp"
 #include "mimetika/linear_solver/linear.hpp"
 
 // PETSC, WITH A DIRECT FACTORIZATION FIRST.
@@ -251,6 +253,12 @@ struct SolverOptions {
   // depending on the mesh. "gamg" is algebraic multigrid, which is the
   // scalable choice; "lu" is the exact one, for small problems and for
   // checking that an approximation is what changed an answer.
+  // ELIMINATE THE FIRST FIELD FIRST, when the caller says it can be. A
+  // diagonal star -- diagonal_tpfa, diagonal_tpsa -- makes that block diagonal,
+  // and then the flux or the stress is divided out cell by cell and what is
+  // solved is the finite volume system itself. Off is the saddle point, which
+  // is what every other product must have.
+  bool condense{true};
   std::string riesz_block_pc{};
   // THE RIESZ BLOCK IS SPD, AND IS SOLVED AS SUCH -- BY MUMPS.
   //
@@ -368,6 +376,13 @@ class PetscSolver final : public LinearSolver {
   // and ignored by every other one.
   void set_norm(SpaceNorm s) { norm_ = std::move(s); }
 
+  // WHICH UNKNOWNS MAY BE DIVIDED OUT, named by the caller because only the
+  // model knows which field is the flux or the stress. Naming them is a
+  // PERMISSION and not an instruction: the matrix is asked whether that block
+  // really is diagonal, and a product whose star couples a cell's facets is
+  // solved as the saddle point it is.
+  void set_condensable(std::vector<int> dofs) { condensable_ = std::move(dofs); }
+
   // WHO OWNS EACH UNKNOWN, one rank per global unknown, in the caller's own
   // numbering.
   //
@@ -457,6 +472,9 @@ class PetscSolver final : public LinearSolver {
   // same operator comes back
   SolveReport solve(const SparseSystem& A, const std::vector<double>& b,
                     std::vector<double>& x) override {
+    if (opts_.condense && !condensable_.empty() && block_is_diagonal(A, condensable_)) {
+      return solve_condensed(A, b, x);
+    }
     if (bound_ != &A) factorize(A);
     SolveReport r = solve(b, x);
     r.matrix_seconds = matrix_seconds_;
@@ -466,6 +484,74 @@ class PetscSolver final : public LinearSolver {
   }
 
  private:
+  // THE CONDENSED SOLVE, WHICH IS THE SAME SOLVER ON A SMALLER PROBLEM.
+  //
+  // S is handed to a second PetscSolver with this one's options and NO
+  // condensable set, so it takes the ordinary path -- the same methods, the
+  // same factorizations, the same reporting -- and there is one implementation
+  // of a solve rather than two. What this adds is the elimination either side
+  // of it, and the timing of the elimination itself, which belongs to the
+  // matrix rather than to the iteration.
+  //
+  // ONE PROCESS. The elimination reads whole rows and whole columns of the
+  // eliminated unknowns, and distributed assembly gives a rank its own rows and
+  // its halo -- so on several processes the outer products would be emitted
+  // twice on the halo and missing nowhere. Rather than half-condense, a
+  // distributed run takes the saddle point, which is correct and is what it did
+  // before this existed.
+  SolveReport solve_condensed(const SparseSystem& A, const std::vector<double>& b,
+                              std::vector<double>& x) {
+    PetscMPIInt size = 1;
+    MPI_Comm_size(comm_, &size);
+    if (size > 1) {
+      if (bound_ != &A) factorize(A);
+      SolveReport r = solve(b, x);
+      r.matrix_seconds = matrix_seconds_;
+      r.preconditioner_seconds = preconditioner_seconds_;
+      r.off_rank_fraction = off_rank_fraction();
+      return r;
+    }
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const Condensation c = condense(A, b, condensable_);
+    const auto t1 = std::chrono::steady_clock::now();
+
+    SolverOptions inner = opts_;
+    inner.condense = false;
+
+    // A RIESZ MAP IS A STATEMENT ABOUT A SPACE THAT IS NO LONGER THERE.
+    //
+    // P = diag(A + B^T W^-1 B, W) preconditions a saddle point by inverting its
+    // H(div) block; S has no such block -- the field it was built on has been
+    // divided out -- so "riesz" and "exact" name nothing here. What S is
+    // instead is a finite volume operator with the two-point stencil, and the
+    // preconditioner for that is ALGEBRAIC MULTIGRID, on the whole of it.
+    //
+    // The Krylov method is kept if the caller named one, because the two
+    // products do not take the same one: TPFA's S is positive definite and CG
+    // applies, TPSA's is symmetric quasi-definite -- (u, r) positive, p
+    // negative -- and CG does not. GMRES is the choice that is right for both,
+    // so it is what an unnamed method becomes.
+    if (inner.preconditioner == "riesz" || inner.preconditioner == "exact") {
+      inner.preconditioner = "hypre";
+      if (inner.direct()) inner.method = "gmres";
+    }
+    PetscSolver sub(inner);
+    std::vector<double> y;
+    SolveReport r = sub.solve(c.reduced, c.rhs, y);
+    x = c.expand(y, b);
+
+    r.condensed = true;
+    r.condensed_dofs = c.size();
+    if (r.block_solver.empty()) r.block_solver = inner.preconditioner;
+    r.matrix_seconds += std::chrono::duration<double>(t1 - t0).count();
+    // the residual the caller is owed is the ORIGINAL system's, not the
+    // reduced one's: they differ by however well the recovery went, and that
+    // is the number worth reporting
+    r.residual = true_residual(A, b, x);
+    return r;
+  }
+
   // P, ASSEMBLED FROM THE NORM ABOVE. Nothing here decides anything: every
   // block is the term the norm names, read in this dof basis.
   //
@@ -544,6 +630,40 @@ class PetscSolver final : public LinearSolver {
         if (f >= 1) weight[static_cast<std::size_t>(idx[k])] = norm_.l2_weight[f - 1][k];
       }
     }
+    // W IS THE SCHUR SCALE, AND FOR ONE ROW THE OPERATOR STATES IT.
+    //
+    // Everything the norm does to a multiplier is done because its row says
+    // nothing about itself: a constraint has no diagonal, so the scale of its
+    // multiplier has to be named from outside, and above it is named by the
+    // measure. The FOUR-FIELD form has one row that is not of that kind. The
+    // total pressure is a definition, p = lambda div u, and its row carries
+    // c_p |E| p with c_p = d/(2 mu) + 1/lambda -- a scale the operator states,
+    // and not the measure. Taking the stand-in there instead rescales the
+    // pressure block by c_p |E|^2; on 6^3 cells the solve stopped converging.
+    //
+    // Its B^T W^-1 B is then not a graph term but the SCHUR COMPLEMENT of a
+    // block that is invertible, which is to say the trace part of the stress
+    // norm this form asks for:
+    //
+    //   ||sigma||^2 = (A sigma, sigma) + ||div sigma||^2
+    //                                  + c_p^-1 ||(2 mu)^-1 tr sigma||^2
+    //
+    // The deviatoric compliance is what A is once p carries the trace, so
+    // without that term nothing in the norm sees a trace at all. It is kept
+    // for exactly the discretization that needs it: with a LUMPED compliance
+    // the mass controls the deviator only, and dropping the term costs
+    // diagonal_tpsa a quarter of its count (1192 against 960), while
+    // stabilized_bdm, whose mass is a real one, hardly moves (135 against 148).
+    //
+    // Both follow from the diagonal alone -- no field named here, and no
+    // formulation known here.
+    for (std::size_t k = 0; k < A.nnz(); ++k) {
+      const auto i = static_cast<std::size_t>(A.row[k]);
+      if (A.col[k] == A.row[k] && factor_of[i] >= 1 && A.value[k] != 0.0) {
+        weight[i] = std::abs(A.value[k]);
+      }
+    }
+
     std::vector<char> is_pinned(static_cast<std::size_t>(n_), 0);
     for (const int i : norm_.pinned) is_pinned[static_cast<std::size_t>(i)] = 1;
 
@@ -1161,6 +1281,87 @@ class PetscSolver final : public LinearSolver {
   // The coarse operator is Galerkin, P^T A P, so nothing about the physics is
   // restated at the coarse level -- it is the same operator seen on the
   // subspace.
+  // d COPIES OF A ONE-UNKNOWN-PER-FACET SPACE, split and handed to ADS.
+  //
+  // The material couples the copies -- through the trace in three fields, not
+  // at all in four where M is diagonal -- and an additive split drops that
+  // coupling, which is a preconditioner's privilege. Each diagonal block is
+  // then the scalar H(div) problem ADS is written for.
+  // ONE COMPONENT AT A TIME, AND IN SEQUENCE.
+  //
+  // Each component is the scalar H(div) problem ADS is written for. What the
+  // split drops is the coupling BETWEEN components -- the rotation, and the
+  // trace the total pressure takes -- and that coupling is real: applied
+  // additively the count grows with the mesh (388 against 199 at 68k unknowns),
+  // MULTIPLICATIVE recovers most of it for the same work, since each component
+  // then sees the residual the ones before it left.
+  //
+  // A point-block smoother over a facet's d tractions was the other candidate
+  // and is not usable: with a LUMPED compliance those blocks are near-singular,
+  // and inverting them diverges outright by 8^3 cells.
+  void split_by_component(PC pc, const SpaceNorm::Incidence& local, int nc) {
+    const PetscInt per = local.cols / nc;
+    // the block rows this rank holds, as one range: MPI_Scan is collective, so
+    // it is taken once here rather than per row
+    PetscInt block_begin = 0, block_end = local.rows;
+    if (distributed_) {
+      const PetscInt mine_rows = block_rows_local();
+      MPI_Scan(&mine_rows, &block_end, 1, MPIU_INT, MPI_SUM, comm_);
+      block_begin = block_end - mine_rows;
+    }
+    std::vector<std::vector<PetscInt>> rows(static_cast<std::size_t>(nc));
+    for (std::size_t k = 0; k < local.value.size(); ++k) {
+      const int c = local.col[k] / per;
+      rows[static_cast<std::size_t>(c)].push_back(local.row[k]);
+    }
+    check(PCSetType(pc, PCFIELDSPLIT), "PCSetType(component split)");
+    const char* own = nullptr;
+    check(PCGetOptionsPrefix(pc, &own), "PCGetOptionsPrefix(component split)");
+    const std::string mine = own != nullptr ? own : "";
+    std::vector<IS> parts(static_cast<std::size_t>(nc), nullptr);
+    for (int c = 0; c < nc; ++c) {
+      auto& r = rows[static_cast<std::size_t>(c)];
+      std::sort(r.begin(), r.end());
+      if (distributed_) {
+        // a rank names the rows of this component that it holds; the union
+        // over the ranks is the component
+        std::vector<PetscInt> ours;
+        for (const PetscInt i : r) {
+          if (i >= block_begin && i < block_end) ours.push_back(i);
+        }
+        r = std::move(ours);
+      }
+      check(ISCreateGeneral(comm_, static_cast<PetscInt>(r.size()), r.data(), PETSC_COPY_VALUES,
+                            &parts[static_cast<std::size_t>(c)]),
+            "ISCreateGeneral(component)");
+      check(PCFieldSplitSetIS(pc, std::to_string(c).c_str(), parts[static_cast<std::size_t>(c)]),
+            "PCFieldSplitSetIS(component)");
+      const std::string key = mine + "fieldsplit_" + std::to_string(c) + "_";
+      PetscOptionsSetValue(nullptr, ("-" + key + "ksp_type").c_str(), "preonly");
+      PetscOptionsSetValue(nullptr, ("-" + key + "pc_type").c_str(), "none");
+    }
+    check(PCFieldSplitSetType(pc, PC_COMPOSITE_MULTIPLICATIVE), "PCFieldSplitSetType(component)");
+    check(PCSetUp(pc), "PCSetUp(component split)");
+    PetscInt n_part = 0;
+    KSP* sub = nullptr;
+    check(PCFieldSplitGetSubKSP(pc, &n_part, &sub), "PCFieldSplitGetSubKSP(component)");
+    for (PetscInt c = 0; c < n_part; ++c) {
+      PC cpc = nullptr;
+      check(KSPSetType(sub[c], KSPPREONLY), "component KSPSetType");
+      check(KSPGetPC(sub[c], &cpc), "component KSPGetPC");
+      PetscInt local_rows = -1;
+      if (distributed_) {
+        Mat a = nullptr, b = nullptr;
+        check(KSPGetOperators(sub[c], &a, &b), "component KSPGetOperators");
+        check(MatGetLocalSize(b, &local_rows, nullptr), "MatGetLocalSize(component)");
+      }
+      attach_ads(cpc, local_rows);
+      check(PCSetUp(cpc), "PCSetUp(component ads)");
+    }
+    PetscFree(sub);
+    for (IS& s : parts) ISDestroy(&s);
+  }
+
   void build_lowest_order_cycle(PC pc) {
     const auto& inj = norm_.lowest_order;
     const int nc = norm_.lowest_order_components;
@@ -1198,6 +1399,22 @@ class PetscSolver final : public LinearSolver {
     }
     position = std::vector<int>();
     order = std::vector<PetscInt>();
+
+    // THE COARSE SPACE IS THE WHOLE BLOCK when a facet carries one moment per
+    // component -- diagonal_tpsa, and derham_rt's layout generally. The
+    // injection is then a PERMUTATION, and a two-level cycle over it is a cycle
+    // whose coarse problem is its fine one: every application pays for a
+    // smoother, a Galerkin product and a coarse solve of the same size, and the
+    // inner CG pays for it fifty times over. On a 22k-cell mesh that does not
+    // converge in any useful time.
+    //
+    // What the block actually is, in that case, is d COPIES of a
+    // one-unknown-per-facet space -- exactly what ADS takes -- so it is split
+    // by component and handed over directly, with no cycle at all.
+    if (local.cols == local.rows) {
+      split_by_component(pc, local, nc);
+      return;
+    }
 
     // THE COARSE SPACE, LAID OUT ON THE PARTITION.
     //
@@ -1754,6 +1971,7 @@ class PetscSolver final : public LinearSolver {
   SolverOptions opts_;
   double matrix_seconds_{0.0}, preconditioner_seconds_{0.0};
   SpaceNorm norm_;
+  std::vector<int> condensable_;
   std::vector<Mat> riesz_;  // the diagonal blocks of the Riesz map
   std::string prefix_;
   // the parallel layout: one process leaves these at [0, n) on PETSC_COMM_SELF

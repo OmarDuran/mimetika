@@ -106,6 +106,14 @@ struct SolveReport {
   // two rows of the same table are then two different methods. Reporting it is
   // what stops that from being invisible.
   std::string block_solver;
+
+  // WHETHER THE FIRST FIELD WAS ELIMINATED BEFORE THE SOLVE, and how much was
+  // left. A condensed run and a saddle-point run of the same model report the
+  // same answer and nothing else in common -- different matrix, different
+  // method, different iteration count -- so which one happened is not a detail
+  // to infer from the timings.
+  bool condensed{false};
+  std::size_t condensed_dofs{0};  // the size of S, when it was formed
 };
 
 class LinearSolver {

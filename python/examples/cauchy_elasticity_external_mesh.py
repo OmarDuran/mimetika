@@ -131,14 +131,19 @@ def formulation_for(product, asked):
     traction components and the product does not exist. Asking for the pair
     that cannot be built is refused here rather than deeper down.
     """
+    # OMITTED IS NOT THE SAME AS ASKED FOR. `asked` is None when the caller
+    # said nothing, and then the product decides: three fields for the BDM
+    # ones, four for diagonal_tpsa, which has no other form. Only an EXPLICIT
+    # --formulation weak_symmetry with diagonal_tpsa is a contradiction, and it
+    # is the only case refused.
     if product == "diagonal_tpsa":
         if asked == "weak_symmetry":
             raise SystemExit(
-                "--product diagonal_tpsa exists only in the four-field form: "
-                "pass --formulation weak_symmetry_total, or omit it"
+                "--product diagonal_tpsa exists only in the four-field form: drop "
+                "--formulation weak_symmetry, or pass weak_symmetry_total"
             )
         return mk.StressFormulation.weak_symmetry_total
-    return FORMULATIONS[asked]
+    return FORMULATIONS[asked or "weak_symmetry"]
 
 
 
@@ -265,8 +270,9 @@ def main():
     ap.add_argument("--mesh", help="the .vtu to solve on")
     ap.add_argument("--make-mesh", help="write a sample .vtu to this path and stop")
     ap.add_argument("--product", default="stabilized_bdm", choices=sorted(PRODUCTS))
-    ap.add_argument("--formulation", default="weak_symmetry", choices=sorted(FORMULATIONS),
-                    help="three fields, or four with the total pressure p = lambda div u")
+    ap.add_argument("--formulation", default=None, choices=sorted(FORMULATIONS),
+                    help="three fields, or four with the total pressure p = lambda div u; "
+                         "the default follows the product")
     ap.add_argument(
         "--nu", type=float, default=None, help="Poisson ratio (default lam = mu = 1)"
     )
