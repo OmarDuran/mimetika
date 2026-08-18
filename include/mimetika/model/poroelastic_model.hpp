@@ -102,11 +102,11 @@ class PoroelasticModel {
   // follow it.
   //
   //   bdm             d moments per facet: flux d per facet, stress d^2, both
-  //                   de Rham -- derham_bdm under derham_afw. The
+  //                   de Rham -- derham_bdm under derham_bdm. The
   //                   mimetic-AFW-BDM formulation. Any cell type, either
   //                   dimension.
   //   bdm_stabilized  the SAME layout and the same flux, with the stress star
-  //                   realized as stabilized_afw: the full linear tensor
+  //                   realized as stabilized_bdm: the full linear tensor
   //                   reconstruction, stabilized on ker(N^T) where a polytope
   //                   leaves one. On a simplex mesh it coincides with `bdm`
   //                   cell by cell, since the stabilization vanishes and both
@@ -153,16 +153,17 @@ class PoroelasticModel {
     // ONE de Rham selection for both products; it does not know the material
     const bool bdm = layer_ != Layer::rt;  // both bdm layers share the layout and the flux
     // the K-independent mode selection, shared by the de Rham flux and the
-    // derham_afw stress; the stabilized stress builds without it
+    // derham_bdm stress; the stabilized stress builds without it
     if (bdm) geometry_ = exokal::hodge::DeRhamGeometryCache::build(*mesh_, dim_);
     const auto stress_how =
-        layer_ == Layer::bdm ? exokal::hodge::StressOperators::Realization::derham_afw
+        layer_ == Layer::bdm ? exokal::hodge::StressOperators::Realization::derham_bdm
                              : (layer_ == Layer::bdm_stabilized
-                                    ? exokal::hodge::StressOperators::Realization::stabilized_afw
-                                    : exokal::hodge::StressOperators::Realization::derham_afw_rt);
-    stress_ = exokal::hodge::StressOperators::build(*mesh_, dim_, material_.shear, material_.lame,
-                                                    stress_how,
-                                                    layer_ == Layer::bdm ? &geometry_ : nullptr);
+                                    ? exokal::hodge::StressOperators::Realization::stabilized_bdm
+                                    : exokal::hodge::StressOperators::Realization::derham_rt);
+    stress_ = exokal::hodge::StressOperators::build(
+        *mesh_, dim_, material_.shear, material_.lame, stress_how,
+        exokal::hodge::StressOperators::Formulation::weak_symmetry,
+        layer_ == Layer::bdm ? &geometry_ : nullptr);
     // BACKWARD EULER WITHOUT STEPPING MACHINERY: the flux over a step is
     // q~ = dt q, which is the Darcy mobility set to dt
     flux_ = exokal::hodge::FluxOperators::build(

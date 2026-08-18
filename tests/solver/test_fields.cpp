@@ -75,7 +75,7 @@ MIMETIKA_TEST(the_flow_blocks_are_the_flux_and_the_pressure) {
 MIMETIKA_TEST(one_stratum_gives_each_field_a_single_run) {
   const auto m = mimetika::mesh::annulus(4, 2, 2, mimetika::mesh::Family::simplex, 1.0, 10.0, 1.0);
   mimetika::CauchyElasticityModel model(m, 2, mimetika::ElasticMaterial(1.0, 1.0),
-                                        exokal::hodge::StressOperators::Realization::derham_afw);
+                                        exokal::hodge::StressOperators::Realization::derham_bdm);
   model.build();
   const auto& e = model.simulation().epoch();
   CHECK(e.n_strata() == 1);
@@ -99,7 +99,7 @@ MIMETIKA_TEST(one_stratum_gives_each_field_a_single_run) {
 MIMETIKA_TEST(the_runs_are_contiguous_and_ordered) {
   const auto m = mimetika::mesh::annulus(4, 2, 3, mimetika::mesh::Family::simplex, 1.0, 10.0, 1.0);
   mimetika::CauchyElasticityModel model(m, 3, mimetika::ElasticMaterial(1.0, 1.0),
-                                        exokal::hodge::StressOperators::Realization::derham_afw);
+                                        exokal::hodge::StressOperators::Realization::derham_bdm);
   model.build();
   const auto atoms = stratum_field_blocks(model.simulation().epoch());
 

@@ -72,7 +72,7 @@ def patch(nr, dim=2):
     lo = [min(p[k] for p in pts) for k in range(3)]
     length = max(max(p[k] for p in pts) - lo[k] for k in range(dim))
     model = mk.CauchyElasticityModel(
-        mesh, dim, mk.ElasticMaterial(MU, LAM), mk.StressRealization.stabilized_afw
+        mesh, dim, mk.ElasticMaterial(MU, LAM), mk.StressRealization.stabilized_bdm
     )
     gradient = [0.0] * 9
     for k in range(dim):

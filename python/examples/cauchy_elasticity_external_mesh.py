@@ -76,7 +76,7 @@ def solvers(rtol):
         # refinement to 100k unknowns) even though the iteration count does
         # not.
         #
-        # ADS wants ONE unknown per facet and the stabilized_afw facet carries
+        # ADS wants ONE unknown per facet and the stabilized_bdm facet carries
         # d^2 -- d traction components, each against the d functions of the
         # facet P_1 basis. The route to it is the facet-CONSTANT subspace:
         # those moments are a subset of the unknowns, so the injection into
@@ -103,10 +103,43 @@ DEFAULT_RTOL = 1e-9
 
 
 PRODUCTS = {
-    "derham_afw": mk.StressRealization.derham_afw,
-    "derham_afw_rt": mk.StressRealization.derham_afw_rt,
-    "stabilized_afw": mk.StressRealization.stabilized_afw,
+    "derham_bdm": mk.StressRealization.derham_bdm,
+    "derham_rt": mk.StressRealization.derham_rt,
+    "stabilized_bdm": mk.StressRealization.stabilized_bdm,
+    # NO RECONSTRUCTION: d per facet, one constant traction vector, and M the
+    # diagonal primal-dual star -- the two-point stress. Half the unknowns of
+    # the BDM products and an eighth of the matrix entries, on every mesh; it
+    # is CONSISTENT only where the mesh is face-orthogonal, which a box of
+    # hexahedra is and a tetrahedral or polyhedral one is not.
+    #
+    # It exists in four fields only, so --formulation is set for it rather than
+    # asked of the caller.
+    "diagonal_tpsa": mk.StressRealization.diagonal_tpsa,
 }
+
+FORMULATIONS = {
+    "weak_symmetry": mk.StressFormulation.weak_symmetry,
+    "weak_symmetry_total": mk.StressFormulation.weak_symmetry_total,
+}
+
+
+def formulation_for(product, asked):
+    """Three fields or four, with the one product that has no choice honoured.
+
+    diagonal_tpsa is diagonal only when the compliance is (2 mu)^-1, which is
+    what the total-pressure form gives; in three fields the trace couples the
+    traction components and the product does not exist. Asking for the pair
+    that cannot be built is refused here rather than deeper down.
+    """
+    if product == "diagonal_tpsa":
+        if asked == "weak_symmetry":
+            raise SystemExit(
+                "--product diagonal_tpsa exists only in the four-field form: "
+                "pass --formulation weak_symmetry_total, or omit it"
+            )
+        return mk.StressFormulation.weak_symmetry_total
+    return FORMULATIONS[asked]
+
 
 
 def fmt(v):
@@ -231,7 +264,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--mesh", help="the .vtu to solve on")
     ap.add_argument("--make-mesh", help="write a sample .vtu to this path and stop")
-    ap.add_argument("--product", default="stabilized_afw", choices=sorted(PRODUCTS))
+    ap.add_argument("--product", default="stabilized_bdm", choices=sorted(PRODUCTS))
+    ap.add_argument("--formulation", default="weak_symmetry", choices=sorted(FORMULATIONS),
+                    help="three fields, or four with the total pressure p = lambda div u")
     ap.add_argument(
         "--nu", type=float, default=None, help="Poisson ratio (default lam = mu = 1)"
     )
@@ -307,13 +342,15 @@ def main():
     )
     print(f"  characteristic length L = {length:.6g}")
     print(f"  mu = {mat.shear}, lam = {mat.lame}  (nu = {mat.poisson():.4f})")
-    print(f"  {mk.stress_realization_name(how)}, {args.solver} solver")
+    form = formulation_for(args.product, args.formulation)
+    print(f"  {mk.stress_realization_name(how)}, {mk.stress_formulation_name(form)}, "
+          f"{args.solver} solver")
     report_processes(mesh, dim)
     print()
 
     gradient = gradient_of(dim, length, args.spin)
     with stage("creating the model"):
-        model = mk.CauchyElasticityModel(mesh, dim, mat, how)
+        model = mk.CauchyElasticityModel(mesh, dim, mat, how, form)
     with stage("prescribing u on the boundary"):
         n_facets = prescribe_linear_displacement(model, mesh, dim, lo, gradient)
     if args.assemble_only:

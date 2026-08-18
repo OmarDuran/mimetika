@@ -22,9 +22,9 @@ from _meshes import cube, square
 
 MU, LAM, LOAD = 1.0, 1.0, 1.0
 
-DERHAM = mk.StressRealization.derham_afw
-DERHAM_RT = mk.StressRealization.derham_afw_rt
-STABILIZED = mk.StressRealization.stabilized_afw
+DERHAM = mk.StressRealization.derham_bdm
+DERHAM_RT = mk.StressRealization.derham_rt
+STABILIZED = mk.StressRealization.stabilized_bdm
 
 
 class Result:
@@ -129,7 +129,7 @@ def test_the_rt_layer_is_locally_sound_but_globally_unstable():
 
     # LOCAL soundness: the stacked constraint block [Dv; As] has full row rank
     # on both stars, so neither is locally deficient
-    for how, label in ((DERHAM, "derham_afw"), (DERHAM_RT, "derham_afw_rt")):
+    for how, label in ((DERHAM, "derham_bdm"), (DERHAM_RT, "derham_rt")):
         prob = mk.ElasticityProblem(cube(2, True), 3, MU, LAM, how)
         b = prob.constraint_block(0)
         scale = np.max(np.abs(b))
@@ -152,7 +152,7 @@ def test_the_rt_layer_is_locally_sound_but_globally_unstable():
 
 
 @pytest.mark.parametrize("name,mesh,dim,cells,stab", CASES, ids=IDS)
-def test_the_stabilized_afw_is_exact_in_every_dimension_and_family(
+def test_the_stabilized_bdm_is_exact_in_every_dimension_and_family(
     name, mesh, dim, cells, stab
 ):
     r = confined(mesh(), dim, STABILIZED)

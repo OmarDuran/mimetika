@@ -81,11 +81,11 @@ def test_the_poroelastic_system_is_a_saddle_point_with_adjoint_couplings():
     # nothing left for a stabilization to see -- on hexahedra as on simplices.
     # The AFW realization reconstructs on the full linear tensor space, whose
     # moments a hexahedron does not determine, so there every cell stabilizes.
-    size, stabilized = mk.stress_operator_counts(m, 3, MU, LAM, mk.StressRealization.derham_afw)
+    size, stabilized = mk.stress_operator_counts(m, 3, MU, LAM, mk.StressRealization.derham_bdm)
     assert size == m.count(3)
     assert stabilized == 0
     afw_size, afw_stab = mk.stress_operator_counts(
-        m, 3, MU, LAM, mk.StressRealization.stabilized_afw
+        m, 3, MU, LAM, mk.StressRealization.stabilized_bdm
     )
     assert afw_stab == afw_size
 

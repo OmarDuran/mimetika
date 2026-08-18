@@ -17,8 +17,11 @@ inline const physics::RegisterModel linear_elasticity{
     "linear_elasticity", "Weakly-symmetric mixed elasticity (Hellinger-Reissner)",
     [](const physics::ModelOptions& o) {
       physics::Composition c;
-      c.emplace<physics::Mechanics>(
-          physics::MechanicsOptions{"mixed_elasticity_cell", o.traction_moments});
+      // THE TERM FOLLOWS THE FORMULATION, not the other way round: four fields
+      // is a different pairing, not the same one with a field appended.
+      c.emplace<physics::Mechanics>(physics::MechanicsOptions{
+          o.total_pressure ? "mixed_elasticity_total_cell" : "mixed_elasticity_cell",
+          o.traction_moments, o.total_pressure, o.shear_modulus});
       return c;
     }};
 

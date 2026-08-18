@@ -14,9 +14,9 @@ import mimetika_cxx as mk
 
 MU, LAM = 1.0, 1.0
 
-DERHAM = mk.StressRealization.derham_afw
-DERHAM_RT = mk.StressRealization.derham_afw_rt
-STABILIZED = mk.StressRealization.stabilized_afw
+DERHAM = mk.StressRealization.derham_bdm
+DERHAM_RT = mk.StressRealization.derham_rt
+STABILIZED = mk.StressRealization.stabilized_bdm
 
 FAMILIES = [mk.Family.cartesian, mk.Family.simplex, mk.Family.prism]
 PRODUCTS = [DERHAM, STABILIZED]
@@ -203,8 +203,8 @@ def test_the_two_products_are_one_element_on_a_simplex_mesh(dim):
         b = annulus_case(6, 3, dim, mk.Family.simplex, DERHAM, mat)
         a = annulus_case(6, 3, dim, mk.Family.simplex, STABILIZED, mat)
         print(
-            f"  {dim}D simplex   nu {mat.poisson():.4f}   derham_afw {b.max_err:.12e}"
-            f"   stabilized_afw {a.max_err:.12e}  |diff| {abs(b.max_err - a.max_err):.2e}"
+            f"  {dim}D simplex   nu {mat.poisson():.4f}   derham_bdm {b.max_err:.12e}"
+            f"   stabilized_bdm {a.max_err:.12e}  |diff| {abs(b.max_err - a.max_err):.2e}"
         )
         assert abs(b.max_err - a.max_err) < 1e-10
         assert abs(b.rms_err - a.rms_err) < 1e-10
@@ -215,8 +215,8 @@ def test_the_two_products_are_one_element_on_a_simplex_mesh(dim):
     cb = annulus_case(6, 3, dim, mk.Family.cartesian, DERHAM)
     ca = annulus_case(6, 3, dim, mk.Family.cartesian, STABILIZED)
     print(
-        f"  {dim}D cartesian derham_afw {cb.max_err:.12e}   "
-        f"stabilized_afw {ca.max_err:.12e}  |diff| {abs(cb.max_err - ca.max_err):.2e}"
+        f"  {dim}D cartesian derham_bdm {cb.max_err:.12e}   "
+        f"stabilized_bdm {ca.max_err:.12e}  |diff| {abs(cb.max_err - ca.max_err):.2e}"
     )
     assert cb.stabilized == 0  # enriched to unisolvence instead
     assert ca.stabilized == ca.cells  # stabilized on ker(N^T)

@@ -198,7 +198,7 @@ def patch(nr, dim=2, family=None):
     lo = [min(p[k] for p in pts) for k in range(3)]
     length = max(max(p[k] for p in pts) - lo[k] for k in range(dim))
     model = mk.CauchyElasticityModel(
-        mesh, dim, mk.ElasticMaterial(MU, LAM), mk.StressRealization.stabilized_afw
+        mesh, dim, mk.ElasticMaterial(MU, LAM), mk.StressRealization.stabilized_bdm
     )
     gradient = [0.0] * 9
     for k in range(dim):
@@ -224,7 +224,7 @@ def test_the_elasticity_count_does_not_grow_under_refinement():
 
 # THE STRESS BLOCK REACHES ADS THROUGH ITS FACET CONSTANTS.
 #
-# stabilized_afw puts d^2 unknowns on a facet -- d traction components, each
+# stabilized_bdm puts d^2 unknowns on a facet -- d traction components, each
 # against the d functions of the facet P_1 basis -- and ADS wants one. The
 # constants are a SUBSET of those unknowns, so the injection into them is exact
 # rather than interpolated; the divergence sees only them, and what is left is

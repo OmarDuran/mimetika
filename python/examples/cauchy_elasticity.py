@@ -22,7 +22,7 @@ condition is a constant tensor even though the solution is curved.
 Run it:
 
     PYTHONPATH=.. python cauchy_elasticity.py
-    PYTHONPATH=.. python cauchy_elasticity.py --dim 3 --product stabilized_afw
+    PYTHONPATH=.. python cauchy_elasticity.py --dim 3 --product stabilized_bdm
 """
 
 import argparse
@@ -102,9 +102,39 @@ def require_three_dimensions(solver, dim):
 
 
 PRODUCTS = {
-    "derham_afw": mk.StressRealization.derham_afw,
-    "stabilized_afw": mk.StressRealization.stabilized_afw,
+    "derham_bdm": mk.StressRealization.derham_bdm,
+    "stabilized_bdm": mk.StressRealization.stabilized_bdm,
+    # NO RECONSTRUCTION: d per facet, one constant traction vector, and M the
+    # diagonal primal-dual star -- the two-point stress. Half the unknowns and
+    # an eighth of the matrix entries of the products above, on any mesh, and
+    # CONSISTENT only where the mesh is face-orthogonal. The Lame annulus is
+    # not, so run it here to see what that costs rather than to be exact.
+    #
+    # It exists in four fields only, which formulation_for enforces.
+    "diagonal_tpsa": mk.StressRealization.diagonal_tpsa,
 }
+
+FORMULATIONS = {
+    "weak_symmetry": mk.StressFormulation.weak_symmetry,
+    "weak_symmetry_total": mk.StressFormulation.weak_symmetry_total,
+}
+
+
+def formulation_for(product, asked):
+    """Three fields, or four with the total pressure p = lambda div u.
+
+    diagonal_tpsa is diagonal only when the compliance is (2 mu)^-1, which is
+    what the total-pressure form gives; in three fields the trace couples the
+    traction components and the product does not exist.
+    """
+    if product == "diagonal_tpsa":
+        if asked == "weak_symmetry":
+            raise SystemExit(
+                "--product diagonal_tpsa exists only in the four-field form: "
+                "pass --formulation weak_symmetry_total, or omit it"
+            )
+        return mk.StressFormulation.weak_symmetry_total
+    return FORMULATIONS[asked]
 
 
 class Lame:
@@ -133,8 +163,9 @@ def isotropic(value):
     return s
 
 
-def solve(nr, nt, dim, family, how, mat, solver="riesz", rtol=DEFAULT_RTOL):
+def solve(nr, nt, dim, family, how, mat, form=None, solver="riesz", rtol=DEFAULT_RTOL):
     """Build the annulus, impose the three conditions, solve, measure."""
+    form = mk.StressFormulation.weak_symmetry if form is None else form
     mesh = mk.annulus(nr, nt, dim, family, A_IN, B_OUT, HZ)
 
     rmid = math.sqrt(A_IN * B_OUT)
@@ -153,7 +184,7 @@ def solve(nr, nt, dim, family, how, mat, solver="riesz", rtol=DEFAULT_RTOL):
         else:
             outer.append(f)
 
-    model = mk.CauchyElasticityModel(mesh, dim, mat, how)
+    model = mk.CauchyElasticityModel(mesh, dim, mat, how, form)
     model.add_traction(inner, isotropic(-P_INNER))
     model.add_traction(outer, isotropic(-P_OUTER))
     model.add_free_slip(symmetry)  # rollers: no normal displacement, no shear
@@ -189,7 +220,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--dim", type=int, default=2, choices=(2, 3))
     ap.add_argument("--family", default="simplex", choices=sorted(FAMILIES))
-    ap.add_argument("--product", default="stabilized_afw", choices=sorted(PRODUCTS))
+    ap.add_argument("--product", default="stabilized_bdm", choices=sorted(PRODUCTS))
+    ap.add_argument("--formulation", default="weak_symmetry", choices=sorted(FORMULATIONS),
+                    help="three fields, or four with the total pressure p = lambda div u")
     ap.add_argument("--nr", type=int, default=6, help="radial divisions of the coarse mesh")
     ap.add_argument("--nu", type=float, default=None, help="Poisson ratio (default lam = mu = 1)")
     ap.add_argument("--vtu", help="write the coarse solution to this .vtu")
@@ -205,12 +238,14 @@ def main():
 
     family, how = FAMILIES[args.family], PRODUCTS[args.product]
     require_three_dimensions(args.solver, args.dim)
-    print(f"Lame tube, {args.dim}D {args.family}, {mk.stress_realization_name(how)}")
+    form = formulation_for(args.product, args.formulation)
+    print(f"Lame tube, {args.dim}D {args.family}, {mk.stress_realization_name(how)}, "
+          f"{mk.stress_formulation_name(form)}")
     print(f"  a = {A_IN}, b = {B_OUT},  p(a) = {P_INNER}, p(b) = {P_OUTER}")
     print(f"  mu = {mat.shear}, lam = {mat.lame}  (nu = {mat.poisson():.4f})\n")
 
     # ---- the profile on one mesh ------------------------------------------
-    model, mesh, ex, worst, rms = solve(args.nr, args.nr // 2, args.dim, family, how, mat, args.solver, args.rtol)
+    model, mesh, ex, worst, rms = solve(args.nr, args.nr // 2, args.dim, family, how, mat, form, args.solver, args.rtol)
     print(f"  {model.n_cells} cells, {model.n_dofs} dofs, {model.n_stabilized} stabilized\n")
     print(f"  {'r':>8}  {'u_r (computed)':>16}  {'u_r (Lame)':>12}  {'error':>10}"
           f"  {'sigma_rr (Lame)':>16}")
@@ -252,7 +287,7 @@ def main():
     print(f"\n  {'cells':>8}  {'max error':>11}  {'rms error':>11}  {'rate':>6}")
     previous = None
     for nr in (args.nr, 2 * args.nr, 4 * args.nr):
-        m, _, _, worst, rms = solve(nr, nr // 2, args.dim, family, how, mat, args.solver, args.rtol)
+        m, _, _, worst, rms = solve(nr, nr // 2, args.dim, family, how, mat, form, args.solver, args.rtol)
         rate = "" if previous is None else f"{math.log2(previous / rms):6.2f}"
         print(f"  {m.n_cells:8d}  {worst:11.3e}  {rms:11.3e}  {rate:>6}")
         previous = rms

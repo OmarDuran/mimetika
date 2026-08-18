@@ -159,7 +159,7 @@ struct Field {
 };
 
 Field finite_reservoir(const Parameters& p, int nx, int ny,
-                       Realization how = Realization::derham_afw) {
+                       Realization how = Realization::derham_bdm) {
   const int dim = 2;
   const double half = 0.5 * p.reservoir_height();
   const double spacing = p.height / ny;
@@ -400,7 +400,7 @@ MIMETIKA_TEST(a_vertical_fault_sees_the_horizontal_stress_and_no_shear) {
 // reproduces it exactly or it does not reproduce it at all.
 MIMETIKA_TEST(the_depletion_response_is_the_uniaxial_closed_form) {
   const Parameters p;
-  for (const Realization how : {Realization::derham_afw, Realization::stabilized_afw}) {
+  for (const Realization how : {Realization::derham_bdm, Realization::stabilized_bdm}) {
     const Response r = depletion_response(p, 6, how);
     std::printf("  %-16s eps_yy %+.8e (%+.8e)   Dh %+.4f m (%.2f)\n",
                 exokal::hodge::StressOperators::name(how), r.vertical_strain, p.vertical_strain(),
@@ -426,7 +426,7 @@ MIMETIKA_TEST(the_depletion_response_is_the_uniaxial_closed_form) {
 MIMETIKA_TEST(the_response_is_mesh_independent) {
   const Parameters p;
   for (const int n : {3, 6, 12}) {
-    const Response r = depletion_response(p, n, Realization::derham_afw);
+    const Response r = depletion_response(p, n, Realization::derham_bdm);
     std::printf("  %2d x %-2d cells   eps_yy %+.10e\n", n, n, r.vertical_strain);
     CHECK(close(r.vertical_strain, p.vertical_strain(), 1e-9));
   }
@@ -440,8 +440,8 @@ MIMETIKA_TEST(the_response_is_mesh_independent) {
 // alternative -- and it gives a visibly different answer.
 MIMETIKA_TEST(rollers_are_what_make_the_response_uniaxial) {
   const Parameters p;
-  const Response rolling = depletion_response(p, 4, Realization::derham_afw, false);
-  const Response clamped = depletion_response(p, 4, Realization::derham_afw, true);
+  const Response rolling = depletion_response(p, 4, Realization::derham_bdm, false);
+  const Response clamped = depletion_response(p, 4, Realization::derham_bdm, true);
   std::printf("  rolling sigma_xx %+.6e   clamped %+.6e\n", rolling.sigma_xx_total,
               clamped.sigma_xx_total);
   CHECK(std::abs(rolling.sigma_xx_total - clamped.sigma_xx_total) >

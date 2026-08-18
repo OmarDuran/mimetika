@@ -31,6 +31,21 @@ import numpy as np
 
 FAMILIES = {"cartesian": mk.Family.cartesian, "simplex": mk.Family.simplex,
             "prism": mk.Family.prism}
+
+# THE PRODUCT IS PART OF THE MEASUREMENT, not a constant. Two realizations of
+# the same space cost very different amounts -- diagonal_tpfa's M is diagonal
+# where stabilized_rt's is dense per cell -- so a scaling curve belongs to a
+# product as much as to a mesh.
+FLUX_PRODUCTS = {
+    "derham_bdm": mk.FluxRealization.derham_bdm,
+    "derham_rt": mk.FluxRealization.derham_rt,
+    "stabilized_rt": mk.FluxRealization.stabilized_rt,
+    "diagonal_tpfa": mk.FluxRealization.diagonal_tpfa,
+}
+STRESS_PRODUCTS = {
+    "derham_bdm": mk.StressRealization.derham_bdm,
+    "stabilized_bdm": mk.StressRealization.stabilized_bdm,
+}
 SOLVERS = ("direct", "riesz", "ads")
 MU, LAM = 1.0, 1.0
 
@@ -54,19 +69,19 @@ def solver_options(name, rtol, block_its, block_rtol):
     return mk.SolverOptions(**common)
 
 
-def flow(mesh, dim, lo, direction, length):
+def flow(mesh, dim, lo, direction, length, product):
     """p = ((x - x_min).n)/L on every boundary facet."""
-    model = mk.SinglePhaseModel(mesh, dim, 1.0, mk.FluxRealization.stabilized_rt)
+    model = mk.SinglePhaseModel(mesh, dim, 1.0, FLUX_PRODUCTS[product])
     for f in mk.boundary_facets(mesh, dim):
         x = mk.centroid(mesh, dim - 1, f)
         model.add_pressure([f], float(np.dot(np.asarray(x)[:dim] - lo[:dim], direction) / length))
     return model
 
 
-def elasticity(mesh, dim, lo, direction, length):
+def elasticity(mesh, dim, lo, direction, length, product):
     """u = (x - x_min)/L on every boundary facet, as an affine datum."""
     model = mk.CauchyElasticityModel(mesh, dim, mk.ElasticMaterial(MU, LAM),
-                                     mk.StressRealization.stabilized_afw)
+                                     STRESS_PRODUCTS[product])
     gradient = [0.0] * 9
     for k in range(dim):
         gradient[k * 3 + k] = 1.0 / length
@@ -97,6 +112,9 @@ def main():
     ap.add_argument("--dim", type=int, default=3, choices=(2, 3))
     ap.add_argument("--family", default="cartesian", choices=sorted(FAMILIES))
     ap.add_argument("--physics", default="flow", choices=("flow", "elasticity"))
+    ap.add_argument("--product", default=None,
+                    help="flux or stress realization; the default is the "
+                         "lowest-order stabilized one of the physics chosen")
     ap.add_argument("--solver", default="riesz", choices=sorted(SOLVERS))
     ap.add_argument("--rtol", type=float, default=1e-9)
     ap.add_argument("--block-its", type=int, default=0,
@@ -116,14 +134,20 @@ def main():
     direction = np.ones(args.dim) / np.sqrt(args.dim)
     length = 1.0
 
+    known = FLUX_PRODUCTS if args.physics == "flow" else STRESS_PRODUCTS
+    product = args.product or ("stabilized_rt" if args.physics == "flow" else "stabilized_bdm")
+    if product not in known:
+        raise SystemExit(f"--product {product} is not a {args.physics} realization; "
+                         f"choose from {', '.join(sorted(known))}")
     build = flow if args.physics == "flow" else elasticity
-    model = build(mesh, args.dim, lo, direction, length)
+    model = build(mesh, args.dim, lo, direction, length, product)
     report = model.solve(
         options=solver_options(args.solver, args.rtol, args.block_its, args.block_rtol))
     error = error_of(args.physics, model, mesh, args.dim, lo, direction, length)
 
     block = f", block {report.block_solver}" if report.block_solver else ""
-    print(f"  {args.physics}, {args.family}, {args.solver}{block}, {mk.mpi_size()} process(es)")
+    print(f"  {args.physics}, {product}, {args.family}, {args.solver}{block}, "
+          f"{mk.mpi_size()} process(es)")
     print(f"  {mesh.count(args.dim)} cells, {model.n_dofs} dofs")
     print(f"  {'assembly':<16}{report.assembly_seconds:8.2f} s")
     print(f"  {'matrix':<16}{report.matrix_seconds:8.2f} s")

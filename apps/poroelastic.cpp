@@ -215,7 +215,7 @@ void march(PoroelasticModel& prob, const std::vector<double>& report_at, double 
 int main(int argc, char** argv) {
   const std::string which = argc > 1 ? argv[1] : "consolidation";
   // an optional trailing realization flag: `stabilized` selects the
-  // stabilized_afw stress star on the same bdm flux pairing
+  // stabilized_bdm stress star on the same bdm flux pairing
   PoroelasticModel::Layer layer = PoroelasticModel::Layer::bdm;
   for (int a = 1; a < argc; ++a) {
     if (std::string(argv[a]) == "stabilized") layer = PoroelasticModel::Layer::bdm_stabilized;

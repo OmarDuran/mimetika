@@ -111,7 +111,8 @@ int main(int argc, char** argv) {
     const double t_select = since(t);
 
     const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(
-        m, 3, mu, lam, exokal::hodge::StressOperators::Realization::derham_afw, &geo);
+        m, 3, mu, lam, exokal::hodge::StressOperators::Realization::derham_bdm,
+        exokal::hodge::StressOperators::Formulation::weak_symmetry, &geo);
     const double t_stress = since(t);
 
     const exokal::hodge::FluxOperators hodge = exokal::hodge::FluxOperators::build(

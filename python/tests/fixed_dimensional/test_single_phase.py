@@ -15,6 +15,7 @@ import mimetika_cxx as mk
 BDM = mk.FluxRealization.derham_bdm
 RT = mk.FluxRealization.derham_rt
 STABILIZED = mk.FluxRealization.stabilized_rt
+TPFA = mk.FluxRealization.diagonal_tpfa
 
 FAMILIES = [mk.Family.cartesian, mk.Family.simplex, mk.Family.prism]
 PRODUCTS = [BDM, RT, STABILIZED]
@@ -155,6 +156,44 @@ def test_the_annulus_reproduces_dupuit(how, dim, family):
 # THE SPACES ARE NOT THE SAME SIZE, which is the concrete content of "different
 # discretizations": d moments per facet against one, and all three exact on a
 # linear pressure.
+# ---- the two-point product --------------------------------------------------
+#
+# diagonal_tpfa is exokal's, and so is the question of where it is consistent:
+# it reconstructs nothing, its M is the diagonal primal-dual star, and it is
+# strongly consistent only where the mesh is K-ORTHOGONAL. exokal tests that.
+# What is tested here is that the PYTHON INTERFACE reaches it -- that the enum
+# maps to the realization it names and the model built from it lays out the
+# space it should.
+#
+# Its space is RT's -- one flux per facet -- so a binding that mixed the two up
+# would still assemble, still solve, and only the count would notice.
+@pytest.mark.parametrize("dim", [2, 3])
+@pytest.mark.parametrize("family", FAMILIES, ids=lambda f: str(f).split(".")[-1])
+def test_the_two_point_product_lays_out_one_flux_per_facet(dim, family):
+    tpfa = column_case(6, dim, family, TPFA)
+    rt = column_case(6, dim, family, RT)
+    print(
+        f"  tpfa    {dim}D {mk.family_name(family):<10} {tpfa.dofs:6d} dofs "
+        f"(rt {rt.dofs})   max {tpfa.max_err:.2e}"
+    )
+    assert tpfa.dofs == rt.dofs
+    assert tpfa.cells == rt.cells
+
+
+# AND IT REPRODUCES A LINEAR PRESSURE WHERE IT CLAIMS TO: the hexahedral and
+# prismatic columns are K-orthogonal, the tetrahedral one is not. That boundary
+# is exokal's to test against the geometry; this asserts only the half mimetika
+# depends on.
+@pytest.mark.parametrize("dim", [2, 3])
+@pytest.mark.parametrize(
+    "family", [mk.Family.cartesian, mk.Family.prism], ids=["cartesian", "prism"]
+)
+def test_the_two_point_product_is_exact_where_the_column_is_orthogonal(dim, family):
+    o = column_case(6, dim, family, TPFA)
+    print(f"  tpfa    {dim}D {mk.family_name(family):<10}   max {o.max_err:.2e}")
+    assert o.max_err < 1e-10
+
+
 def test_the_products_lay_out_different_spaces():
     bdm = column_case(6, 3, mk.Family.simplex, BDM)
     rt = column_case(6, 3, mk.Family.simplex, RT)

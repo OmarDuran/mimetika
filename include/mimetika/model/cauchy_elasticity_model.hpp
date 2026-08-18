@@ -75,7 +75,7 @@ class CauchyElasticityModel {
   //                   fold-back. Consistency-only: the scalar layer is
   //                   unisolvent, so N is square and nothing is stabilized.
   //                   Any cell type, either dimension.
-  //   stabilized_afw  the same d^2 degrees of freedom reconstructed on the FULL
+  //   stabilized_bdm  the same d^2 degrees of freedom reconstructed on the FULL
   //                   linear tensor space [P_1]^{dxd}, m = d^2(d+1) modes. On a
   //                   simplex D = m and the stabilization VANISHES -- there it
   //                   is the conforming AFW/BDM_1 element, checked by congruence
@@ -90,15 +90,47 @@ class CauchyElasticityModel {
   // would be offering a model that does not solve. See
   // tests/model/test_dimensions.cpp, which pins exactly that.
   using Realization = exokal::hodge::StressOperators::Realization;
+  using Formulation = exokal::hodge::StressOperators::Formulation;
 
   CauchyElasticityModel(const exokal::Mesh& mesh, int cell_dim, ElasticMaterial material,
-                        Realization how = Realization::derham_afw)
-      : mesh_(&mesh), dim_(cell_dim), material_(material), how_(how) {
-    if (how != Realization::derham_afw && how != Realization::stabilized_afw) {
+                        Realization how = Realization::derham_bdm,
+                        Formulation form = Formulation::weak_symmetry)
+      : mesh_(&mesh), dim_(cell_dim), material_(material), how_(how), form_(form) {
+    // derham_rt is unisolvent and still refused: d per facet cannot control the
+    // rigid rotations across a mesh, so the weak-symmetry inf-sup degenerates
+    // and the saddle point comes out singular.
+    //
+    // diagonal_tpsa carries the same d per facet and is NOT refused, because it
+    // is a different scheme rather than a coarser space: its face rotation is a
+    // convention rather than an inf-sup, and exokal admits it in four fields
+    // only, which is where its M is diagonal.
+    if (how == Realization::derham_rt) {
       throw std::invalid_argument(
-          "CauchyElasticityModel: only the derham and stabilized_afw stress products are "
-          "elements; derham_rt is unisolvent but its weak-symmetry inf-sup degenerates");
+          "CauchyElasticityModel: derham_rt is unisolvent but its weak-symmetry inf-sup "
+          "degenerates; use derham_bdm, stabilized_bdm, or diagonal_tpsa");
     }
+    if (how == Realization::diagonal_tpsa && form != Formulation::weak_symmetry_total) {
+      throw std::invalid_argument(
+          "CauchyElasticityModel: diagonal_tpsa needs the total-pressure formulation -- the "
+          "three-field compliance couples traction components through the trace");
+    }
+  }
+
+  Formulation formulation() const { return form_; }
+
+  // THE TOTAL PRESSURE p = lambda div u, one scalar per cell, and a FIELD in
+  // the four-field formulation rather than a post-processing of the stress.
+  // Asking for it in three fields asks for something that was never solved for.
+  double total_pressure(Index cell) const {
+    if (form_ != Formulation::weak_symmetry_total) {
+      throw std::logic_error(
+          "CauchyElasticityModel::total_pressure: the three-field formulation has no total "
+          "pressure; build with Formulation::weak_symmetry_total");
+    }
+    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& mp = sp.map(sp.index_of("p_0"));
+    return state_[static_cast<std::size_t>(sp.offset(sp.index_of("p_0"))) +
+                  static_cast<std::size_t>(mp.global(dim_, cell, 0, 0))];
   }
 
   MechanicsBoundary& mechanics() { return mechanics_; }
@@ -141,10 +173,11 @@ class CauchyElasticityModel {
     const std::vector<char>* only =
         distribution_.assembled_cells.empty() ? nullptr : &distribution_.assembled_cells;
     // the K-independent mode selection, which only the de Rham product has
-    const bool derham = how_ == Realization::derham_afw;
+    const bool derham = how_ == Realization::derham_bdm;
     if (derham) geometry_ = exokal::hodge::DeRhamGeometryCache::build(*mesh_, dim_);
     stress_ = exokal::hodge::StressOperators::build(*mesh_, dim_, material_.shear, material_.lame,
-                                                    how_, derham ? &geometry_ : nullptr, only);
+                                                    how_, form_, derham ? &geometry_ : nullptr,
+                                                    only);
     ctx_.provide("stress_operators", stress_);
 
     displacement_data_ = BoundaryVectorData(static_cast<std::size_t>(c.count(dim_ - 1)));
@@ -162,6 +195,13 @@ class CauchyElasticityModel {
     // product cannot drift apart.
     physics::ModelOptions o;
     o.traction_moments = stress_.moments_per_facet();
+    // AND THE FIELD COUNT FOLLOWS THE FORMULATION, read off the operators for
+    // the same reason: three fields or four is a property of the product that
+    // was built, not a second choice made here.
+    o.total_pressure = stress_.formulation() == Formulation::weak_symmetry_total;
+    // the four-field term keeps (2 mu)^-1 as its compliance, so mu travels with
+    // the composition rather than being looked up from a slot
+    o.shear_modulus = material_.shear;
     sim_ = std::make_unique<Simulation>(
         physics::Catalogue::instance().build("linear_elasticity", o),
         std::vector<StratumSpec>{StratumSpec{"ambient", &c, dim_, 0}}, ctx_);
@@ -684,6 +724,7 @@ class CauchyElasticityModel {
   int dim_;
   ElasticMaterial material_;
   Realization how_;
+  Formulation form_{Formulation::weak_symmetry};
   MechanicsBoundary mechanics_;
 
   exokal::hodge::DeRhamGeometryCache geometry_;

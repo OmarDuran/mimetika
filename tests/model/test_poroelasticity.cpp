@@ -95,7 +95,7 @@ MIMETIKA_TEST(the_poroelastic_system_is_a_saddle_point_with_adjoint_couplings) {
   // moments a hexahedron does not determine, so there every cell stabilizes.
   CHECK(ops.n_stabilized() == 0);
   const StressOperators afw =
-      StressOperators::build(m, 3, 1.0, 1.0, StressOperators::Realization::stabilized_afw);
+      StressOperators::build(m, 3, 1.0, 1.0, StressOperators::Realization::stabilized_bdm);
   CHECK(afw.n_stabilized() == afw.size());
 
   const exokal::hodge::FluxOperators hodge =

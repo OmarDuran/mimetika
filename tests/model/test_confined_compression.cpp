@@ -182,14 +182,15 @@ exokal::numerics::Dense constraint_block(const StressOperators& ops, Index e) {
 
 // Solve confined compression on `m` and measure both closed-form quantities.
 Result confined(const exokal::Mesh& m, int d,
-                StressOperators::Realization how = StressOperators::Realization::derham_afw) {
+                StressOperators::Realization how = StressOperators::Realization::derham_bdm) {
   const graphos::Complex& c = m.topology();
   const int axis = d - 1;  // the column axis is the last coordinate
 
-  const bool bdm = how != StressOperators::Realization::derham_afw_rt;
+  const bool bdm = how != StressOperators::Realization::derham_rt;
   DeRhamGeometryCache geo;
   if (bdm) geo = DeRhamGeometryCache::build(m, d);
-  const StressOperators ops = StressOperators::build(m, d, kMu, kLam, how, bdm ? &geo : nullptr);
+  const StressOperators ops = StressOperators::build(
+      m, d, kMu, kLam, how, StressOperators::Formulation::weak_symmetry, bdm ? &geo : nullptr);
   exokal::forms::TermContext ctx;
   ctx.provide("stress_operators", ops);
 
@@ -347,9 +348,10 @@ MIMETIKA_TEST(the_rt_layer_is_locally_sound_but_globally_unstable) {
 
   // -- local: both constraint blocks are surjective -------------------------
   for (const auto how :
-       {StressOperators::Realization::derham_afw, StressOperators::Realization::derham_afw_rt}) {
-    const bool bdm = how == StressOperators::Realization::derham_afw;
-    const StressOperators ops = StressOperators::build(m, 3, kMu, kLam, how, bdm ? &geo : nullptr);
+       {StressOperators::Realization::derham_bdm, StressOperators::Realization::derham_rt}) {
+    const bool bdm = how == StressOperators::Realization::derham_bdm;
+    const StressOperators ops = StressOperators::build(
+        m, 3, kMu, kLam, how, StressOperators::Formulation::weak_symmetry, bdm ? &geo : nullptr);
     const auto B = constraint_block(ops, 0);
     std::printf("  %-10s local [Dv; As] %zux%zu   rank %d of %zu needed\n",
                 StressOperators::name(how), B.rows(), B.cols(), rank_of(B), B.rows());
@@ -357,8 +359,8 @@ MIMETIKA_TEST(the_rt_layer_is_locally_sound_but_globally_unstable) {
   }
 
   // -- global: only the BDM layer gives a solvable system -------------------
-  const Result bdm = confined(m, 3, StressOperators::Realization::derham_afw);
-  const Result rt = confined(m, 3, StressOperators::Realization::derham_afw_rt);
+  const Result bdm = confined(m, 3, StressOperators::Realization::derham_bdm);
+  const Result rt = confined(m, 3, StressOperators::Realization::derham_rt);
   std::printf("  derham    %6zu dofs   %-22s sigma_lat %.2e   u %.2e\n", bdm.n_dofs,
               bdm.solvable ? "solved" : bdm.reason.c_str(), bdm.sigma_lateral, bdm.displacement);
   std::printf("  derham_rt %6zu dofs   %-22s (no solution to measure)\n", rt.n_dofs,
@@ -386,7 +388,7 @@ MIMETIKA_TEST(the_rt_layer_is_locally_sound_but_globally_unstable) {
 // and a linear displacement lie in every one of these spaces, so a stabilized
 // cell must reproduce them as exactly as a simplex does. That the penalty term
 // does not disturb consistency is the whole reason it is built on ker(N^T).
-MIMETIKA_TEST(the_stabilized_afw_is_exact_in_every_dimension_and_family) {
+MIMETIKA_TEST(the_stabilized_bdm_is_exact_in_every_dimension_and_family) {
   struct Case {
     const char* name;
     exokal::Mesh mesh;
@@ -400,7 +402,7 @@ MIMETIKA_TEST(the_stabilized_afw_is_exact_in_every_dimension_and_family) {
   cases.push_back({"3D tetrahedron", cube(2, true), 3, 48, 0});
 
   for (const Case& k : cases) {
-    const Result r = confined(k.mesh, k.dim, StressOperators::Realization::stabilized_afw);
+    const Result r = confined(k.mesh, k.dim, StressOperators::Realization::stabilized_bdm);
     std::printf("  %-18s %6zu dofs   sigma_lat %.2e   u %.2e   stabilized %zu of %zu cells\n",
                 k.name, r.n_dofs, r.sigma_lateral, r.displacement, r.n_stabilized, k.cells);
     CHECK(r.solvable);

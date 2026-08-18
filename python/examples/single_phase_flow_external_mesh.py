@@ -117,6 +117,13 @@ PRODUCTS = {
     "derham_bdm": mk.FluxRealization.derham_bdm,
     "derham_rt": mk.FluxRealization.derham_rt,
     "stabilized_rt": mk.FluxRealization.stabilized_rt,
+    # ONE FLUX PER FACET AND NO RECONSTRUCTION: M is the diagonal primal-dual
+    # star, M_ff = (|sigma*|/|sigma|) / (n.K n), which is the two-point flux
+    # approximation. The same space as derham_rt and stabilized_rt -- one
+    # unknown per facet -- and a different operator: it is strongly consistent
+    # only where the mesh is K-ORTHOGONAL, so on a box it reproduces a linear
+    # pressure to round-off and on a curved or polytopal one it does not.
+    "diagonal_tpfa": mk.FluxRealization.diagonal_tpfa,
 }
 
 
@@ -326,6 +333,15 @@ def main():
         print(
             "\n  exact: the datum is a facet constant and the facet carries one moment"
         )
+    elif args.product == "diagonal_tpfa":
+        # NOT A DEFECT, AND NOT THE DATUM: the two-point flux reconstructs
+        # nothing, and is strongly consistent only where the segment joining two
+        # cell centroids meets their shared facet squarely. Off that condition
+        # it loses the linear field, which is the price of a diagonal M.
+        print(f"\n  NOT exact ({worst:.3e}), and this is what diagonal_tpfa claims: the")
+        print("  two-point flux is consistent only where the mesh is K-ORTHOGONAL, and")
+        print("  this one is not. Run --product stabilized_rt on the same mesh to see")
+        print("  the same space reproduce the field exactly.")
     elif model.moments_per_facet == 1:
         print(
             f"\n  NOT exact ({worst:.3e}), and the datum is not the reason: the facet"

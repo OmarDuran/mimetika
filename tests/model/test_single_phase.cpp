@@ -238,6 +238,46 @@ MIMETIKA_TEST(the_annulus_reproduces_dupuit) {
   }
 }
 
+// ---- THE TWO-POINT PRODUCT --------------------------------------------------
+//
+// diagonal_tpfa is exokal's, and so is the question of where it is consistent:
+// it reconstructs nothing, its M is the diagonal primal-dual star, and it is
+// strongly consistent only where the mesh is K-ORTHOGONAL. exokal tests that.
+// What is tested HERE is that mimetika reaches it -- that a model built with it
+// lays out the space it should and solves the problem it claims.
+//
+// Its space is RT's: one flux per facet, so a model that mixed the two up
+// would still assemble and still converge, and only the count would say so.
+MIMETIKA_TEST(the_two_point_product_lays_out_one_flux_per_facet) {
+  for (const int dim : {2, 3}) {
+    for (const Family f : kFamilies) {
+      const Outcome tpfa = column_case(6, dim, f, Realization::diagonal_tpfa);
+      const Outcome rt = column_case(6, dim, f, Realization::derham_rt);
+      std::printf("  tpfa    %dD %-10s %7zu dofs (rt %zu)   max %.2e\n", dim,
+                  mimetika::mesh::name(f), tpfa.dofs, rt.dofs, tpfa.max_err);
+      CHECK(tpfa.dofs == rt.dofs);
+      CHECK(tpfa.cells == rt.cells);
+    }
+  }
+}
+
+// AND IT REPRODUCES A LINEAR PRESSURE WHERE IT CLAIMS TO. The hexahedral and
+// prismatic columns are K-orthogonal -- the segment between two cell centroids
+// meets their shared facet squarely -- and there the two-point flux is exact.
+// The tetrahedral column is not, and is not asserted here: that boundary
+// belongs to exokal, which tests it against the geometry rather than against a
+// model.
+MIMETIKA_TEST(the_two_point_product_is_exact_where_the_column_is_orthogonal) {
+  for (const int dim : {2, 3}) {
+    for (const Family f : {Family::cartesian, Family::prism}) {
+      const Outcome o = column_case(6, dim, f, Realization::diagonal_tpfa);
+      std::printf("  tpfa    %dD %-10s   max %.2e   rms %.2e\n", dim, mimetika::mesh::name(f),
+                  o.max_err, o.rms_err);
+      CHECK(o.max_err < 1e-10);
+    }
+  }
+}
+
 // ---- HOW THE THREE PRODUCTS DIFFER ----------------------------------------
 
 // THE SPACES ARE NOT THE SAME SIZE, which is the concrete content of "different

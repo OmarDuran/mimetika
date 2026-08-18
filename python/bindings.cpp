@@ -94,9 +94,11 @@ class ElasticityProblem {
                     StressOperators::Realization how, const std::string& model)
       : mesh_(std::move(mesh)), dim_(cell_dim) {
     // the RT star carries no de Rham geometry; the BDM ones do
-    const bool bdm = how != StressOperators::Realization::derham_afw_rt;
+    const bool bdm = how != StressOperators::Realization::derham_rt;
     if (bdm) geo_ = DeRhamGeometryCache::build(mesh_, cell_dim);
-    ops_ = StressOperators::build(mesh_, cell_dim, mu, lam, how, bdm ? &geo_ : nullptr);
+    ops_ = StressOperators::build(mesh_, cell_dim, mu, lam, how,
+                                  StressOperators::Formulation::weak_symmetry,
+                                  bdm ? &geo_ : nullptr);
     ctx_.provide("stress_operators", ops_);
 
     // THE SPACE FOLLOWS THE STAR: the layout is read off the operators rather
@@ -224,7 +226,8 @@ class AssembledModel {
                  FluxOperators::Realization flux_how)
       : mesh_(std::move(mesh)), dim_(cell_dim) {
     geo_ = DeRhamGeometryCache::build(mesh_, cell_dim);
-    stress_ = StressOperators::build(mesh_, cell_dim, mu, lam, stress_how, &geo_);
+    stress_ = StressOperators::build(mesh_, cell_dim, mu, lam, stress_how,
+                                     StressOperators::Formulation::weak_symmetry, &geo_);
     flux_ = FluxOperators::build(mesh_, exokal::hodge::Coefficient::uniform(mobility), flux_how);
     ctx_.provide("stress_operators", stress_);
     ctx_.provide("flux_operators", flux_);
@@ -934,11 +937,34 @@ PYBIND11_MODULE(_core, m) {
 
   // ---- the stress star -----------------------------------------------------
   py::enum_<StressOperators::Realization>(m, "StressRealization")
-      .value("derham_afw", StressOperators::Realization::derham_afw)
-      .value("derham_afw_rt", StressOperators::Realization::derham_afw_rt)
-      .value("stabilized_afw", StressOperators::Realization::stabilized_afw);
+      .value("derham_bdm", StressOperators::Realization::derham_bdm)
+      .value("derham_rt", StressOperators::Realization::derham_rt)
+      .value("stabilized_bdm", StressOperators::Realization::stabilized_bdm)
+      // NO RECONSTRUCTION: d per facet, one constant traction vector, and M the
+      // diagonal primal-dual star at K = 2 mu -- the two-point stress. It needs
+      // four fields, where the compliance is (2 mu)^-1 and applies
+      // componentwise; in three the trace couples the components and no mesh
+      // makes M diagonal. Consistent where the mesh is FACE-ORTHOGONAL, and
+      // solvable everywhere: half the unknowns of the BDM products and an
+      // eighth of the matrix entries.
+      .value("diagonal_tpsa", StressOperators::Realization::diagonal_tpsa);
 
-  m.def("stress_realization_name", &StressOperators::name, py::arg("realization"));
+  // THREE FIELDS OR FOUR, which is a discretization and not a solver setting.
+  // weak_symmetry carries the volumetric response in the compliance;
+  // weak_symmetry_total gives the total pressure p = lambda div u a field of
+  // its own, one scalar per cell, and the compliance is then lambda-free --
+  // uniform in the incompressible limit, and the only form diagonal_tpsa has.
+  py::enum_<StressOperators::Formulation>(m, "StressFormulation")
+      .value("weak_symmetry", StressOperators::Formulation::weak_symmetry)
+      .value("weak_symmetry_total", StressOperators::Formulation::weak_symmetry_total);
+
+  m.def("stress_formulation_name",
+        static_cast<const char* (*)(StressOperators::Formulation)>(&StressOperators::name),
+        py::arg("formulation"));
+
+  m.def("stress_realization_name",
+        static_cast<const char* (*)(StressOperators::Realization)>(&StressOperators::name),
+        py::arg("realization"));
 
   // the static overload: what the space would carry, without building anything
   m.def(
@@ -953,7 +979,7 @@ PYBIND11_MODULE(_core, m) {
       .def(py::init<exokal::Mesh, int, double, double, StressOperators::Realization,
                     const std::string&>(),
            py::arg("mesh"), py::arg("cell_dim"), py::arg("mu") = 1.0, py::arg("lam") = 1.0,
-           py::arg("realization") = StressOperators::Realization::derham_afw,
+           py::arg("realization") = StressOperators::Realization::derham_bdm,
            py::arg("model") = "linear_elasticity")
       .def_property_readonly("dim", &ElasticityProblem::dim)
       .def_property_readonly("n_dofs", &ElasticityProblem::n_dofs)
@@ -1028,10 +1054,16 @@ PYBIND11_MODULE(_core, m) {
   // Adding a condition here is the only change a new one needs.
   py::class_<mimetika::CauchyElasticityModel>(m, "CauchyElasticityModel")
       .def(py::init<const exokal::Mesh&, int, mimetika::ElasticMaterial,
-                    StressOperators::Realization>(),
+                    StressOperators::Realization, StressOperators::Formulation>(),
            py::arg("mesh"), py::arg("cell_dim"), py::arg("material"),
-           py::arg("realization") = StressOperators::Realization::derham_afw,
+           py::arg("realization") = StressOperators::Realization::derham_bdm,
+           py::arg("formulation") = StressOperators::Formulation::weak_symmetry,
            py::keep_alive<1, 2>())  // the mesh must outlive the model
+      .def_property_readonly("formulation", &mimetika::CauchyElasticityModel::formulation)
+      // p = lambda div u, the fourth unknown. It is SOLVED FOR rather than
+      // reconstructed, so it exists only in the four-field formulation and
+      // asking for it in three raises rather than returning a guess.
+      .def("total_pressure", &mimetika::CauchyElasticityModel::total_pressure, py::arg("cell"))
       .def(
           "add_traction",
           [](mimetika::CauchyElasticityModel& s, const std::vector<Index>& facets,
@@ -1093,7 +1125,11 @@ PYBIND11_MODULE(_core, m) {
   py::enum_<FluxOperators::Realization>(m, "FluxRealization")
       .value("derham_bdm", FluxOperators::Realization::derham_bdm)
       .value("derham_rt", FluxOperators::Realization::derham_rt)
-      .value("stabilized_rt", FluxOperators::Realization::stabilized_rt);
+      .value("stabilized_rt", FluxOperators::Realization::stabilized_rt)
+      // ONE FLUX PER FACET AND NO RECONSTRUCTION: M is the diagonal
+      // primal-dual star, which is the two-point flux approximation. Exact
+      // where the mesh is K-ORTHOGONAL and only there -- see the flow example.
+      .value("diagonal_tpfa", FluxOperators::Realization::diagonal_tpfa);
 
   // HOW MANY PROCESSES THE SOLVER WILL USE, which is a question worth being
   // able to ask: launched under mpirun with a mismatched runtime, MPI falls
@@ -1219,7 +1255,7 @@ PYBIND11_MODULE(_core, m) {
                     StressOperators::Realization, double, FluxOperators::Realization>(),
            py::arg("mesh"), py::arg("cell_dim"), py::arg("model"), py::arg("mu") = 1.0,
            py::arg("lam") = 1.0,
-           py::arg("stress_realization") = StressOperators::Realization::derham_afw,
+           py::arg("stress_realization") = StressOperators::Realization::derham_bdm,
            py::arg("mobility") = 1.0,
            py::arg("flux_realization") = FluxOperators::Realization::derham_bdm)
       .def_property_readonly("n_dofs", &AssembledModel::n_dofs)
@@ -1298,11 +1334,12 @@ PYBIND11_MODULE(_core, m) {
       [](const exokal::Mesh& mesh, int cell_dim, double mu, double lam,
          StressOperators::Realization how) {
         DeRhamGeometryCache geo = DeRhamGeometryCache::build(mesh, cell_dim);
-        const StressOperators ops = StressOperators::build(mesh, cell_dim, mu, lam, how, &geo);
+        const StressOperators ops = StressOperators::build(
+            mesh, cell_dim, mu, lam, how, StressOperators::Formulation::weak_symmetry, &geo);
         return py::make_tuple(ops.size(), ops.n_stabilized());
       },
       py::arg("mesh"), py::arg("cell_dim"), py::arg("mu") = 1.0, py::arg("lam") = 1.0,
-      py::arg("realization") = StressOperators::Realization::derham_afw);
+      py::arg("realization") = StressOperators::Realization::derham_bdm);
 
   m.def("catalogue_names", [] { return Catalogue::instance().names(); });
 }

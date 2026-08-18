@@ -38,6 +38,10 @@ struct ModelOptions {
   int flux_moments{0};
   // traction moments per facet per component of the stress space; 0 means d
   int traction_moments{0};
+  // the total pressure as an independent field: exokal's weak_symmetry_total,
+  // four fields rather than three
+  bool total_pressure{false};
+  double shear_modulus{1.0};
 };
 
 struct ModelEntry {

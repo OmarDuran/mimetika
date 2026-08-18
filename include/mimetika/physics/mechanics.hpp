@@ -101,6 +101,87 @@ class MixedElasticityCell {
 inline const exokal::forms::RegisterTerm<MixedElasticityCell> register_mixed_elasticity{
     "mixed_elasticity_cell", exokal::forms::Coupling::closure, {"s", "u", "g"}};
 
+// THE SAME PAIRING WITH THE TOTAL PRESSURE INDEPENDENT.
+//
+// p = lambda div u is carried as a field of its own, one scalar per cell, and
+// the compliance is then lambda-free: a tr(sigma) is exactly p, so C^-1
+// reduces to (2 mu)^-1 -- the same construction at a = 0. The two extra rows
+// are exokal's:
+//
+//     sigma-row:  ... - (2 mu)^-1 T^T p
+//     p-row:      (2 mu)^-1 T sigma - c_p |E| p = 0 ,  c_p = d/(2 mu) + 1/lambda
+//
+// WHY IT IS NOT AN OPTION BUT A DIFFERENT DISCRETIZATION: condensing p does not
+// return the three-field operator. p is one scalar per cell, so the volumetric
+// response is resolved to P0 and the Schur complement is a rank-one fold-back,
+// where the three-field pairing has rank d+1. They agree only where tr sigma is
+// constant on a cell. A cell-centred p is also what a two-point realization
+// needs, which is why diagonal_tpsa exists only here.
+class MixedElasticityTotalCell {
+ public:
+  MixedElasticityTotalCell() = default;
+  // The compliance the four-field form keeps is (2 mu)^-1, and mu is the only
+  // material number this term needs: lambda is gone from M and survives only
+  // in c_p, which the operators already carry.
+  MixedElasticityTotalCell(const Params& p, const TermContext& ctx)
+      : ops_(&ctx.require<exokal::hodge::StressOperators>("stress_operators")),
+        half_(1.0 / (2.0 * p.get("shear_modulus", 1.0))) {}
+
+  static constexpr std::size_t kS = 0;  // stress
+  static constexpr std::size_t kU = 1;  // displacement
+  static constexpr std::size_t kG = 2;  // rotation
+  static constexpr std::size_t kP = 3;  // total pressure
+
+  std::vector<std::string> fields() const { return {"s", "u", "g", "p"}; }
+
+  template <class T>
+  void operator()(const Stencil& st, const std::vector<T>& a, std::vector<T>& r) const {
+    const auto& S = st.field(kS);
+    const auto& U = st.field(kU);
+    const auto& G = st.field(kG);
+    const auto& P = st.field(kP);
+    const auto& c = ops_->cell(st.support);
+    const std::size_t D = S.end - S.begin;
+    if (D != c.M.rows()) {
+      throw std::invalid_argument(
+          "MixedElasticityTotalCell: the stress block and the operators "
+          "disagree on the degree-of-freedom count");
+    }
+    const std::size_t nu = c.Dv.rows();
+    const std::size_t ng = c.As.rows();
+    // the cell's own measure is on the operators, so no geometry is consulted
+    const double half = half_;
+    const double mass = ops_->pressure_mass() * c.volume;
+
+    for (std::size_t i = 0; i < D; ++i) {
+      const std::size_t ri = S.begin + i;
+      for (std::size_t j = 0; j < D; ++j) {
+        exokal::axpy(r[ri], c.M(i, j), a[S.begin + j]);
+      }
+      for (std::size_t k = 0; k < nu; ++k) {
+        exokal::axpy(r[ri], -c.Dv(k, i), a[U.begin + k]);
+        exokal::axpy(r[U.begin + k], c.Dv(k, i), a[ri]);
+      }
+      for (std::size_t k = 0; k < ng; ++k) {
+        exokal::axpy(r[ri], -c.As(k, i), a[G.begin + k]);
+        exokal::axpy(r[G.begin + k], c.As(k, i), a[ri]);
+      }
+      // -(2 mu)^-1 T^T p, and its adjoint (2 mu)^-1 T sigma in the p row
+      exokal::axpy(r[ri], -half * c.T(0, i), a[P.begin]);
+      exokal::axpy(r[P.begin], half * c.T(0, i), a[ri]);
+    }
+    // and the cell's own mass, which closes the system: c_p |E| p
+    exokal::axpy(r[P.begin], -mass, a[P.begin]);
+  }
+
+ private:
+  const exokal::hodge::StressOperators* ops_{nullptr};
+  double half_{0.5};
+};
+
+inline const exokal::forms::RegisterTerm<MixedElasticityTotalCell> register_mixed_elasticity_total{
+    "mixed_elasticity_total_cell", exokal::forms::Coupling::closure, {"s", "u", "g", "p"}};
+
 }  // namespace terms
 
 struct MechanicsOptions {
@@ -115,6 +196,12 @@ struct MechanicsOptions {
   // match whatever star lands on it; the driver derives both from one
   // realization so they cannot disagree.
   int traction_moments{0};
+  // THE TOTAL PRESSURE AS A FIELD OF ITS OWN, which is exokal's
+  // weak_symmetry_total. It adds one scalar per cell and changes the term, so
+  // the package cannot infer it from the layout: the driver derives this and
+  // the realization from one formulation, as it does for the moments.
+  bool total_pressure{false};
+  double shear_modulus{1.0};
 };
 
 class Mechanics final : public Package {
@@ -138,13 +225,21 @@ class Mechanics final : public Package {
                       dim, dim - 1, opt_.traction_moments > 0 ? opt_.traction_moments : dim, dim)});
     r.fields.push_back({at("u"), DofLayout::cell_wise(dim, 1, dim)});
     r.fields.push_back({at("g"), DofLayout::cell_wise(dim, 1, dim * (dim - 1) / 2)});
+    // p = lambda div u, one scalar per cell: the volumetric response resolved
+    // to P0 rather than to the trace of the stress space
+    if (opt_.total_pressure) {
+      r.fields.push_back({at("p"), DofLayout::cell_wise(dim, 1, 1)});
+    }
     r.provides = {"displacement", "momentum_balance", "stress"};
+    if (opt_.total_pressure) r.provides.push_back("total_pressure");
     r.slots = {{"shear_modulus", Scope::rock}, {"poisson", Scope::rock}};
     return r;
   }
 
   void attach(exokal::forms::Model& model, const exokal::forms::TermContext&) const override {
-    model.add(opt_.term, exokal::forms::On::all());
+    exokal::forms::Params p;
+    p.set("shear_modulus", opt_.shear_modulus);
+    model.add(opt_.term, exokal::forms::On::all(), p);
   }
 
  private:
