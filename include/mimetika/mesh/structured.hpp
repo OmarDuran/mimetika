@@ -54,8 +54,12 @@ inline exokal::Mesh extrude(std::vector<Point> plane, const std::vector<std::vec
                             double h, int layers, Family family) {
   const auto n = static_cast<Index>(plane.size());
   std::vector<Point> pts;
+  // THE PLANE'S OWN HEIGHT IS WHERE THE EXTRUSION STARTS. Dropping q[2] and
+  // starting at zero costs nothing while every caller hands in a plane at the
+  // origin, and silently moves the mesh for the one that does not -- a box
+  // asked for at z = 0.25 came back at z = 0.
   for (int L = 0; L <= layers; ++L) {
-    for (const Point& q : plane) pts.push_back({q[0], q[1], L * h / layers});
+    for (const Point& q : plane) pts.push_back({q[0], q[1], q[2] + L * h / layers});
   }
   const auto at = [n](Index v, int L) { return v + static_cast<Index>(L) * n; };
 
@@ -150,7 +154,7 @@ inline exokal::Mesh column(int n, int dim, Family family, double height = 1.0, d
 // the reservoir, resolved coarsely across and finely down, because the answer
 // varies only with depth and steps sharply at the reservoir edges.
 inline exokal::Mesh box(const std::array<int, 3>& n, int dim, Family family,
-                        const std::array<double, 3>& lengths,
+                        const std::array<double, 3>& lengths = {1.0, 1.0, 1.0},
                         const std::array<double, 3>& origin = {0.0, 0.0, 0.0}) {
   for (int k = 0; k < dim; ++k) {
     if (n[static_cast<std::size_t>(k)] < 1) throw std::invalid_argument("box: resolution");
@@ -160,7 +164,11 @@ inline exokal::Mesh box(const std::array<int, 3>& n, int dim, Family family,
   }
   const int nx = n[0], ny = n[1];
   const double lx = lengths[0], ly = lengths[1];
-  const bool tri = family == Family::simplex;
+  // THE PLANE IS TRIANGULATED FOR EVERYTHING BUT CARTESIAN, which is the same
+  // rule `column` follows: a prism is a triangle extruded, so a quadrilateral
+  // plane would have produced hexahedra under the name `prism` -- quietly, the
+  // count being the same either way.
+  const bool tri = family != Family::cartesian;
 
   std::vector<Point> plane;
   const auto vid = [nx](int i, int j) { return static_cast<Index>(j * (nx + 1) + i); };

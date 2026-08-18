@@ -756,9 +756,9 @@ PYBIND11_MODULE(_core, m) {
                                                     max_iterations};
            }),
            py::arg("method") = "direct", py::arg("factorization") = "superlu",
-           py::arg("preconditioner") = "lu", py::arg("riesz_block_pc") = "", py::arg("riesz_block_factorization") = "petsc",
+           py::arg("preconditioner") = "lu", py::arg("riesz_block_pc") = "", py::arg("riesz_block_factorization") = "mumps",
            py::arg("riesz_block_its") = -1, py::arg("riesz_block_rtol") = 1e-4,
-           py::arg("riesz_exact_limit") = 400000, py::arg("riesz_ads_limit") = 25000,
+           py::arg("riesz_exact_limit") = 400000, py::arg("riesz_ads_limit") = 400000,
            py::arg("partition") = true, py::arg("rtol") = 1e-10,
            py::arg("atol") = 1e-50, py::arg("max_iterations") = 1000)
       .def_readwrite("riesz_block_pc", &mimetika::solver::SolverOptions::riesz_block_pc)
@@ -810,6 +810,7 @@ PYBIND11_MODULE(_core, m) {
                     &mimetika::solver::SolveReport::preconditioner_seconds)
       .def_readonly("solve_seconds", &mimetika::solver::SolveReport::solve_seconds)
       .def_readonly("off_rank_fraction", &mimetika::solver::SolveReport::off_rank_fraction)
+      .def_readonly("block_solver", &mimetika::solver::SolveReport::block_solver)
       .def("__repr__", [](const mimetika::solver::SolveReport& r) {
         return "SolveReport(converged=" + std::string(r.converged ? "True" : "False") +
                ", iterations=" + std::to_string(r.iterations) + ", reason='" + r.reason + "')";
@@ -983,6 +984,20 @@ PYBIND11_MODULE(_core, m) {
   m.def("family_name", &mimetika::mesh::name, py::arg("family"));
   m.def("column", &mimetika::mesh::column, py::arg("n"), py::arg("dim"), py::arg("family"),
         py::arg("height") = 1.0, py::arg("width") = 1.0);
+  // A BOX, WHICH IS THE MESH A SCALING STUDY WANTS: the resolution is a
+  // number per axis, the shape is a choice, and nothing about the geometry
+  // varies as it is refined. The annulus curves and grades, so refining it
+  // changes the conditioning as well as the size; a box changes only the size,
+  // which is what makes a timing at two resolutions comparable.
+  //
+  // Cartesian gives one hexahedron per cell of the grid, simplex gives six
+  // tetrahedra (the Freudenthal cut of the cube), and both are 2D as well:
+  // quadrilaterals and two triangles.
+  m.def("box", &mimetika::mesh::box, py::arg("n"), py::arg("dim"), py::arg("family"),
+        py::arg("lengths") = std::array<double, 3>{1.0, 1.0, 1.0},
+        py::arg("origin") = std::array<double, 3>{0.0, 0.0, 0.0},
+        "a structured box of n[k] cells along each axis");
+
   m.def("annulus", &mimetika::mesh::annulus, py::arg("nr"), py::arg("nt"), py::arg("dim"),
         py::arg("family"), py::arg("a") = 1.0, py::arg("b") = 10.0, py::arg("height") = 1.0,
         py::arg("layers") = 1);

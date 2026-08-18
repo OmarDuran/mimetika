@@ -101,6 +101,11 @@ struct SolveReport {
   // the share of the matrix whose columns another process owns: zero on one
   // process, and on several the price of the layout
   double off_rank_fraction{0.0};
+  // WHICH SOLVER THE RIESZ BLOCK ACTUALLY GOT. It is chosen from the size of
+  // that block, so a sweep over mesh sizes crosses the threshold somewhere and
+  // two rows of the same table are then two different methods. Reporting it is
+  // what stops that from being invisible.
+  std::string block_solver;
 };
 
 class LinearSolver {

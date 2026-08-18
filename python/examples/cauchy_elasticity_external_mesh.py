@@ -99,7 +99,7 @@ def solvers(rtol):
 
 
 SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg")
-DEFAULT_RTOL = 1e-12
+DEFAULT_RTOL = 1e-9
 
 
 PRODUCTS = {

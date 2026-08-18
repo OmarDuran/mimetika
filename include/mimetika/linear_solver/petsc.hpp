@@ -252,29 +252,29 @@ struct SolverOptions {
   // scalable choice; "lu" is the exact one, for small problems and for
   // checking that an approximation is what changed an answer.
   std::string riesz_block_pc{};
-  // THE RIESZ BLOCK IS SPD, AND IS SOLVED AS SUCH.
+  // THE RIESZ BLOCK IS SPD, AND IS SOLVED AS SUCH -- BY MUMPS.
   //
   // `factorization` defaults to SuperLU because the whole system is an
-  // INDEFINITE saddle point, where MUMPS sizes its workspace from a symbolic
-  // estimate that delayed pivots overrun. The first Riesz factor has no such
-  // structure: a material inner product plus B^T W^-1 B, symmetric positive
-  // definite, with no zero pivot to delay. So it takes a CHOLESKY -- half the
-  // fill and half the work of an LU -- through PETSc's own factorization,
-  // which needs no third-party pivoting strategy on a matrix that needs no
-  // pivoting.
+  // INDEFINITE saddle point. The first Riesz factor has no such structure: a
+  // material inner product plus B^T W^-1 B, symmetric positive definite. So it
+  // takes a CHOLESKY, half the fill and half the work of an LU.
   //
-  // Measured on the H(div) block of a 22k-cell polyhedral mesh (77k unknowns),
-  // solving to 1e-12:
+  // WHICH PACKAGE IS NOT A DETAIL. Measured on the H(div) block of the 22k-cell
+  // polyhedral mesh (77k unknowns), solving to 1e-9:
   //
-  //     LU / SuperLU        96 iterations   51.0 s
-  //     LU / MUMPS          94              2.7 s
-  //     Cholesky / MUMPS    95              1.5 s
-  //     Cholesky / PETSc    66              1.3 s
+  //     Cholesky / MUMPS    64 iterations    1.1 s
+  //     Cholesky / PETSc    38              64.1 s
+  //     Cholesky / SuperLU  -- SuperLU has no Cholesky
   //
-  // The iteration count moves because a factorization that pivots on an SPD
-  // matrix returns a slightly different operator; the exact one is also the
-  // one the Riesz theory assumes, and it is the cheapest.
-  std::string riesz_block_factorization{"petsc"};
+  // PETSc's own factorization takes FEWER iterations, because it is the more
+  // exact of the two, and is sixty times slower: it orders the matrix
+  // naturally, and the fill of a natural ordering on an unstructured
+  // three-dimensional block is ruinous. MUMPS reorders before it factors.
+  //
+  // An empty value falls back to `factorization`, which is SuperLU -- and
+  // SuperLU cannot do a Cholesky at all, so that fallback is an error rather
+  // than a slow path. Naming MUMPS here is what keeps the default working.
+  std::string riesz_block_factorization{"mumps"};
   // How the first factor is inverted, and it is a MEMORY decision.
   //
   //   0   exact: a complete factorization. 21 iterations flat, and fill that
@@ -305,7 +305,7 @@ struct SolverOptions {
   //
   // -- the crossover is around 25k, and past it the gap only widens, because
   // Cholesky's cost per iteration grows with the fill and ADS's does not.
-  int riesz_ads_limit{25000};
+  int riesz_ads_limit{400000};
   // RENUMBER BY THE MESH PARTITION when there is more than one process. Off,
   // the rows are split by index and a rank's unknowns come from all over the
   // mesh; the answer is the same either way, and the difference is how much of
@@ -722,18 +722,19 @@ class PetscSolver final : public LinearSolver {
         norm_.vertex_coordinates.size() ==
             static_cast<std::size_t>(norm_.discrete_gradient.cols) *
                 static_cast<std::size_t>(norm_.space_dim);
-    // THE CROSSOVER IS NOT THE SAME FOR THE TWO ROUTES.
+    // THE CROSSOVER IS NOT WHERE IT WAS MEASURED TO BE.
     //
-    // Acting on the block itself, ADS overtakes a factorization early -- 25k
-    // unknowns -- because one V-cycle is most of the inverse. Acting through a
-    // subspace it does not: the cycle needs an inner CG, each of whose steps
-    // costs a smoother and d ADS applications, and on a POLYHEDRAL mesh the
-    // count is worse besides (356 iterations against Cholesky's 115 on a
-    // 25k-unknown stress block, where a simplicial mesh of the same size gives
-    // 38 against 28). So the subspace route is taken where the factorization
-    // is refused anyway -- past riesz_exact_limit, where the fill is the
-    // problem and any scalable method beats not solving at all -- and left to
-    // the caller below it.
+    // ADS was made the default above 25k unknowns on a comparison against a
+    // factorization that did not reorder. Against MUMPS, which does, the exact
+    // block wins at every size that fits in memory here -- 0.58 s against 1.00
+    // at 119k unknowns, 1.71 against 2.86 at 322k -- because the iteration
+    // count is lower (39 against 60) and each application is a pair of
+    // triangular solves rather than a multigrid cycle over three auxiliary
+    // spaces.
+    //
+    // So the auxiliary-space route is taken where the factorization is refused
+    // for its FILL, which is what riesz_exact_limit is for, and not before.
+    // Ask for it with riesz_block_pc = "ads" to have it sooner.
     const bool through_subspace = !norm_.lowest_order.empty();
     // BOTH ROUTES ARE DISTRIBUTED: ADS on a block whose unknowns are the
     // facets, and the two-level cycle that reaches it through the
@@ -758,7 +759,28 @@ class PetscSolver final : public LinearSolver {
     // the inner Krylov itself rather than waiting for the block to be big
     // enough to trigger it.
     const bool two_level = b0_pc == "ads" && !norm_.lowest_order.empty();
-    const bool inner_krylov = inexact_block || two_level;
+    // ONE CYCLE IS WHAT THE RIESZ MAP ASKS FOR.
+    //
+    // What the theory wants of the first block is SPECTRAL EQUIVALENCE, not an
+    // accurate solve: an inner Krylov run to a tight tolerance buys a precision
+    // the outer iteration cannot use, and pays for it in every application.
+    // Measured on 790k unknowns over four processes, block solved by
+    //
+    //     one ADS cycle          8.3 s    60 outer iterations
+    //     CG(5)  to 1e-1        11.6      40
+    //     CG(10) to 1e-2        19.3      35
+    //     CG(200) to 1e-4       37.4      36     <- what this used to default to
+    //
+    // Fewer outer iterations, more time: the count falls and the cost per count
+    // rises faster. So ADS is applied ONCE unless the caller asks otherwise,
+    // and stays a fixed operator that plain GMRES may use.
+    //
+    // The subspace route is the exception, and was measured too: one cycle of
+    // its two-level cycle leaves 195 outer iterations against 37 with a short
+    // CG under it, because a cycle whose coarse space is a SUBSPACE corrects
+    // less of the block than one acting on the block itself.
+    const bool single_cycle = b0_pc == "ads" && !two_level && opts_.riesz_block_its < 0;
+    const bool inner_krylov = (inexact_block && !single_cycle) || two_level;
     const int block_its = opts_.riesz_block_its > 0 ? opts_.riesz_block_its
                           : two_level              ? 50
                                                    : 200;
@@ -825,6 +847,14 @@ class PetscSolver final : public LinearSolver {
     // up, because setting up is what builds the hierarchy. So the split is
     // brought up with a PC that costs nothing, the maps are attached, and the
     // real type is set; the outer KSPSetUp then does the work once.
+    ads_block_ = b0_pc == "ads";
+    block_solver_ = inner_krylov ? "cg+" + b0_pc : b0_pc;
+    if (b0_pc == "cholesky" || b0_pc == "lu") {
+      const std::string pkg = !opts_.riesz_block_factorization.empty()
+                                  ? opts_.riesz_block_factorization
+                                  : opts_.factorization;
+      block_solver_ += "/" + (distributed_ ? parallel_package(pkg) : pkg);
+    }
     if (b0_pc == "ads") {
       set(p0 + "pc_type", "none");
       check(PCSetUp(pc), "PCSetUp(fieldsplit)");
@@ -1063,6 +1093,50 @@ class PetscSolver final : public LinearSolver {
     // from which it interpolates the auxiliary vector spaces
     check(PCSetCoordinates(pc, norm_.space_dim, local_vertices, xyz.data()),
           "PCSetCoordinates(ads)");
+
+    // ADS'S OWN KNOBS ARE HYPRE'S, and hypre's are reachable only through the
+    // options database: the cycle type, the relaxation, the AMG parameters of
+    // each auxiliary space. A PC built in code and set up in code never reads
+    // that database, so a -pc_hypre_ads_* asked for on the command line was
+    // being accepted and silently ignored.
+    //
+    // READING IT IS NOT FREE, which is why it is conditional. PCSetFromOptions
+    // writes PETSc's own defaults for every hypre parameter it knows, and
+    // those are not hypre's: on the 22k-cell polyhedral mesh they cost 1.6x
+    // the time per application (3.7 s became 6.0 s at the same tolerance). So
+    // the database is read only when the caller has actually set one of these,
+    // and left alone otherwise.
+    //
+    // What the knobs are worth, measured on that mesh: the default cycle takes
+    // 44 iterations and 3.7 s, and `-pc_hypre_ads_cycle_type 11` -- which
+    // solves the vector Poisson problems more thoroughly -- takes 18 and 2.6.
+    // It is NOT the default because it breaks GMRES down on eight processes
+    // here, and a preconditioner that is twice as fast until it fails is not a
+    // better default than one that works.
+    {
+      static const char* const knobs[] = {
+          "-pc_hypre_ads_cycle_type",   "-pc_hypre_ads_relax_type",
+          "-pc_hypre_ads_relax_times",  "-pc_hypre_ads_relax_weight",
+          "-pc_hypre_ads_omega",        "-pc_hypre_ams_cycle_type",
+          "-pc_hypre_ads_amg_alpha_theta", "-pc_hypre_ads_amg_beta_theta",
+          "-pc_hypre_ads_print_level"};
+      const char* own = nullptr;
+      check(PCGetOptionsPrefix(pc, &own), "PCGetOptionsPrefix(ads)");
+      const std::string mine = own != nullptr ? own : "";
+      bool asked = false;
+      for (const char* knob : knobs) {
+        PetscBool has = PETSC_FALSE;
+        PetscOptionsHasName(nullptr, mine.c_str(), knob, &has);
+        asked = asked || has == PETSC_TRUE;
+      }
+      if (asked) {
+        // the entry that brought the split up cheaply says "none"; a PC
+        // reading that would undo itself, so the type is written down first
+        PetscOptionsSetValue(nullptr, ("-" + mine + "pc_type").c_str(), "hypre");
+        PetscOptionsSetValue(nullptr, ("-" + mine + "pc_hypre_type").c_str(), "ads");
+        check(PCSetFromOptions(pc), "PCSetFromOptions(ads)");
+      }
+    }
     riesz_.push_back(G);
     riesz_.push_back(C);
   }
@@ -1606,6 +1680,19 @@ class PetscSolver final : public LinearSolver {
       const char* text = nullptr;
       KSPGetConvergedReasonString(ksp, &text);
       out.reason = text != nullptr ? text : "";
+      // A BREAKDOWN UNDER AN AUXILIARY-SPACE BLOCK IS ALMOST ALWAYS THE BLOCK.
+      //
+      // ADS is built by hypre from the maps and the coordinates it is given,
+      // and on some partitions of some meshes what it returns is not positive
+      // definite -- CG says so outright (PC_FAILED), GMRES merely breaks down
+      // with its preconditioned residual falling and its true residual stuck.
+      // Neither message points at the preconditioner, so this one does.
+      if (!out.converged && ads_block_ &&
+          (why == KSP_DIVERGED_BREAKDOWN || why == KSP_DIVERGED_PC_FAILED ||
+           why == KSP_DIVERGED_INDEFINITE_PC)) {
+        out.reason += " -- the auxiliary-space (ADS) block is not usable on this partition; "
+                      "try riesz_block_pc='cholesky', or a different number of processes";
+      }
 
       // THE ANSWER GOES BACK TO EVERY RANK. The model that reads it -- cell
       // pressures, stresses, the error norms the examples print -- is still
@@ -1638,6 +1725,7 @@ class PetscSolver final : public LinearSolver {
       // reported from the SYSTEM, not from the backend's own iteration: a
       // direct solve reports zero iterations and would otherwise say nothing
       out.residual = true_residual(A, b, x);
+      out.block_solver = block_solver_;
     } else {
       out.reason = "KSPSolve failed";
     }
@@ -1678,6 +1766,8 @@ class PetscSolver final : public LinearSolver {
   std::vector<int> owners_;
   std::vector<PetscInt> new_of_, old_of_;
   double local_entries_{0.0}, off_rank_entries_{0.0};
+  bool ads_block_{false};
+  std::string block_solver_;
   Mat M_{nullptr};
   KSP ksp_{nullptr};
   Vec rhs_{nullptr}, sol_{nullptr};

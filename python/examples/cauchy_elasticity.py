@@ -85,7 +85,7 @@ def solvers(rtol):
 
 
 SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg")
-DEFAULT_RTOL = 1e-12
+DEFAULT_RTOL = 1e-9
 
 # ADS IS A THREE-DIMENSIONAL CONSTRUCTION. Its auxiliary spaces are built from
 # the discrete gradient and curl, d_1 and d_2, and in two dimensions the

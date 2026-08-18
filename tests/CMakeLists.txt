@@ -1,5 +1,6 @@
 # tests mirror include/mimetika/: one test file per header
 set(MIMETIKA_UNIT_TESTS
+  mesh/test_box
   physics/test_package
   physics/test_flow
   physics/test_darcy_term

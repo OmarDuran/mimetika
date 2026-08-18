@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""How the solve scales, on a mesh that changes only in size.
+
+A scaling study needs a mesh whose SHAPE is fixed under refinement. The annulus
+curves and grades, so refining it changes the conditioning as well as the
+count, and a timing at two resolutions is then two different problems. A box
+changes only the size.
+
+    python scaling.py --n 16                      # 16^3 cells
+    mpirun -n 4 python scaling.py --n 16          # the same problem, shared out
+    python scaling.py --n 16 --family simplex     # six tetrahedra per cell
+    python scaling.py --n 16 --physics elasticity
+
+The problem is the linear patch test of the corresponding external-mesh
+example: a linear field prescribed on the whole boundary, whose answer the
+mixed method reproduces exactly. So the ERROR COLUMN IS A CHECK, not a
+convergence study -- it must stay at the solver tolerance as the mesh grows,
+and anything else means the scaling was measured on a wrong answer.
+
+Defaults are deliberately small. A scaling curve is read from its SHAPE, and
+the shape is visible long before a mesh becomes inconvenient; raise --n when
+the times are large enough to compare.
+"""
+
+import argparse
+import os
+import sys
+
+import mimetika_cxx as mk
+import numpy as np
+
+FAMILIES = {"cartesian": mk.Family.cartesian, "simplex": mk.Family.simplex,
+            "prism": mk.Family.prism}
+SOLVERS = ("direct", "riesz", "ads")
+MU, LAM = 1.0, 1.0
+
+
+def solver_options(name, rtol, block_its, block_rtol):
+    """The solver, and HOW HARD THE BLOCK IS SOLVED, which is the lever.
+
+    The Riesz map needs the first block INVERTED, not solved: what the theory
+    asks of it is spectral equivalence, and an inner Krylov run to a tight
+    tolerance buys an accuracy the outer iteration cannot use. `block_its = 0`
+    applies one ADS cycle as a fixed operator -- the cheapest thing that is
+    still a Riesz map -- and anything larger is an inner CG, which makes the
+    preconditioner VARY and promotes the outer method to FGMRES.
+    """
+    if name == "direct":
+        return mk.SolverOptions()
+    common = dict(method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000)
+    if name == "ads":
+        inner = dict(riesz_block_its=block_its, riesz_block_rtol=block_rtol) if block_its else {}
+        return mk.SolverOptions(riesz_block_pc="ads", riesz_exact_limit=10**9, **inner, **common)
+    return mk.SolverOptions(**common)
+
+
+def flow(mesh, dim, lo, direction, length):
+    """p = ((x - x_min).n)/L on every boundary facet."""
+    model = mk.SinglePhaseModel(mesh, dim, 1.0, mk.FluxRealization.stabilized_rt)
+    for f in mk.boundary_facets(mesh, dim):
+        x = mk.centroid(mesh, dim - 1, f)
+        model.add_pressure([f], float(np.dot(np.asarray(x)[:dim] - lo[:dim], direction) / length))
+    return model
+
+
+def elasticity(mesh, dim, lo, direction, length):
+    """u = (x - x_min)/L on every boundary facet, as an affine datum."""
+    model = mk.CauchyElasticityModel(mesh, dim, mk.ElasticMaterial(MU, LAM),
+                                     mk.StressRealization.stabilized_afw)
+    gradient = [0.0] * 9
+    for k in range(dim):
+        gradient[k * 3 + k] = 1.0 / length
+    facets = mk.boundary_facets(mesh, dim)
+    for f, cell in zip(facets, mk.cofacets_of(mesh, dim, facets)):
+        x = mk.centroid(mesh, dim, int(cell))
+        constant = [float((x[k] - lo[k]) / length) for k in range(dim)] + [0.0] * (3 - dim)
+        model.prescribe_displacement([f], constant, gradient)
+    return model
+
+
+def error_of(physics, model, mesh, dim, lo, direction, length):
+    """The worst departure from the field that was prescribed."""
+    if physics == "flow":
+        return max(
+            abs(model.cell_pressure(e)
+                - float(np.dot(np.asarray(mk.centroid(mesh, dim, e))[:dim] - lo[:dim], direction)
+                        / length))
+            for e in range(model.n_cells))
+    return max(
+        abs(model.displacement(e, k) - float((mk.centroid(mesh, dim, e)[k] - lo[k]) / length))
+        for e in range(model.n_cells) for k in range(dim))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--n", type=int, default=12, help="cells along each axis")
+    ap.add_argument("--dim", type=int, default=3, choices=(2, 3))
+    ap.add_argument("--family", default="cartesian", choices=sorted(FAMILIES))
+    ap.add_argument("--physics", default="flow", choices=("flow", "elasticity"))
+    ap.add_argument("--solver", default="riesz", choices=sorted(SOLVERS))
+    ap.add_argument("--rtol", type=float, default=1e-9)
+    ap.add_argument("--block-its", type=int, default=0,
+                    help="inner CG iterations on the Riesz block; 0 applies one cycle")
+    ap.add_argument("--block-rtol", type=float, default=1e-2,
+                    help="tolerance of that inner CG")
+    ap.add_argument("--vtu", help="write the partition and the solution here")
+    args = ap.parse_args()
+
+    root = mk.mpi_rank() == 0
+    if not root:
+        sys.stdout = open(os.devnull, "w")
+
+    n = (args.n, args.n, args.n if args.dim == 3 else 1)
+    mesh = mk.box(n, args.dim, FAMILIES[args.family])
+    lo = np.zeros(3)
+    direction = np.ones(args.dim) / np.sqrt(args.dim)
+    length = 1.0
+
+    build = flow if args.physics == "flow" else elasticity
+    model = build(mesh, args.dim, lo, direction, length)
+    report = model.solve(
+        options=solver_options(args.solver, args.rtol, args.block_its, args.block_rtol))
+    error = error_of(args.physics, model, mesh, args.dim, lo, direction, length)
+
+    block = f", block {report.block_solver}" if report.block_solver else ""
+    print(f"  {args.physics}, {args.family}, {args.solver}{block}, {mk.mpi_size()} process(es)")
+    print(f"  {mesh.count(args.dim)} cells, {model.n_dofs} dofs")
+    print(f"  {'assembly':<16}{report.assembly_seconds:8.2f} s")
+    print(f"  {'matrix':<16}{report.matrix_seconds:8.2f} s")
+    print(f"  {'preconditioner':<16}{report.preconditioner_seconds:8.2f} s")
+    print(f"  {'iteration':<16}{report.solve_seconds:8.2f} s   {report.iterations} iterations")
+    if mk.mpi_size() > 1:
+        print(f"  {'off-rank':<16}{100 * report.off_rank_fraction:8.1f} %")
+    print(f"  {'max error':<16}{error:8.1e}")
+
+    if args.vtu and root:
+        fields = {"rank": mk.cell_ranks(mesh, args.dim, max(mk.mpi_size(), 2)).astype(float)}
+        if args.physics == "flow":
+            fields["pressure"] = np.array([model.cell_pressure(e) for e in range(model.n_cells)])
+        mk.write_vtu(mesh, args.vtu, fields)
+        print(f"  wrote {args.vtu}")
+
+
+if __name__ == "__main__":
+    main()
