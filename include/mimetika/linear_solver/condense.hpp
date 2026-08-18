@@ -70,6 +70,7 @@ struct Condensation {
       x[static_cast<std::size_t>(rest[i])] = y[i];
     }
     for (std::size_t k = 0; k < first.size(); ++k) {
+      if (inv[k] == 0.0) continue;  // not this rank's row to recover
       double acc = b[static_cast<std::size_t>(first[k])];
       for (Index e = row_begin[k]; e < row_begin[k + 1]; ++e) {
         acc -= row_val[static_cast<std::size_t>(e)] * y[static_cast<std::size_t>(
@@ -100,8 +101,22 @@ inline bool block_is_diagonal(const SparseSystem& A, const std::vector<int>& fir
 // Build S and s. Throws rather than returning a wrong system: a caller asking
 // for the condensation of a block that is not diagonal, or that has a zero on
 // its diagonal, has named the wrong field.
+//
+// ON SEVERAL PROCESSES, `owners` NAMES WHO EMITS WHAT. Distributed assembly
+// gives a rank complete rows for the unknowns it owns and for its halo, so:
+//
+//   a reduced row is emitted by the rank that OWNS it, once. Row i of S sums
+//   A(i,g) M_gg^-1 A(g,.) over the eliminated unknowns g in row i, and those
+//   are the facets of an owned cell -- halo, therefore complete here. No
+//   contribution ever lands on another rank's row, so nothing is stashed.
+//
+//   the eliminated field is recovered wherever its row is complete, which is
+//   owned AND halo: exactly the unknowns a cell's stress reconstruction reads.
+//
+// Serially `owners` is null and every row is this one's.
 inline Condensation condense(const SparseSystem& A, const std::vector<double>& b,
-                             std::vector<int> first) {
+                             std::vector<int> first, const std::vector<int>* owners = nullptr,
+                             int rank = 0) {
   Condensation c;
   c.first = std::move(first);
   c.slot.assign(A.n, -1);
@@ -135,12 +150,21 @@ inline Condensation condense(const SparseSystem& A, const std::vector<double>& b
       throw std::invalid_argument("condense: the block named is not diagonal");
     }
   }
-  c.inv.resize(c.first.size());
+  // A ZERO DIAGONAL IS A ROW THIS RANK DOES NOT HOLD, not a singular star.
+  // Serially there is no such row and a zero is the error it always was;
+  // distributed, an unknown outside this rank's owned and halo sets has no
+  // entries here at all, and is simply not this rank's to eliminate.
+  c.inv.assign(c.first.size(), 0.0);
+  std::vector<char> usable(c.first.size(), 0);
   for (std::size_t k = 0; k < c.first.size(); ++k) {
     if (diag[k] == 0.0) {
-      throw std::invalid_argument("condense: a zero on the diagonal of the eliminated block");
+      if (owners == nullptr) {
+        throw std::invalid_argument("condense: a zero on the diagonal of the eliminated block");
+      }
+      continue;
     }
     c.inv[k] = 1.0 / diag[k];
+    usable[k] = 1;
   }
 
   // the rows A(g, rest), counted then filled: one pass each, no map
@@ -198,20 +222,34 @@ inline Condensation condense(const SparseSystem& A, const std::vector<double>& b
   c.reduced.row.reserve(entries + A.nnz());
   c.reduced.col.reserve(entries + A.nnz());
   c.reduced.value.reserve(entries + A.nnz());
+  const auto ours = [&](int reduced_row) {
+    return owners == nullptr ||
+           (*owners)[static_cast<std::size_t>(c.rest[static_cast<std::size_t>(reduced_row)])] ==
+               rank;
+  };
   for (std::size_t k = 0; k < A.nnz(); ++k) {
     if (mine[static_cast<std::size_t>(A.row[k])] != 0 ||
         mine[static_cast<std::size_t>(A.col[k])] != 0) {
       continue;
     }
-    c.reduced.row.push_back(c.slot[static_cast<std::size_t>(A.row[k])]);
+    const int r = c.slot[static_cast<std::size_t>(A.row[k])];
+    if (!ours(r)) continue;
+    c.reduced.row.push_back(r);
     c.reduced.col.push_back(c.slot[static_cast<std::size_t>(A.col[k])]);
     c.reduced.value.push_back(A.value[k]);
   }
   for (std::size_t k = 0; k < c.first.size(); ++k) {
     for (Index a = col_begin[k]; a < col_begin[k + 1]; ++a) {
+      const int r = col_row[static_cast<std::size_t>(a)];
+      if (!ours(r)) continue;
+      if (usable[k] == 0) {
+        throw std::invalid_argument(
+            "condense: an eliminated unknown reaches a row this rank owns, and its own row is "
+            "not here -- the halo does not cover the facets of an owned cell");
+      }
       const double left = col_val[static_cast<std::size_t>(a)] * c.inv[k];
       for (Index e = c.row_begin[k]; e < c.row_begin[k + 1]; ++e) {
-        c.reduced.row.push_back(col_row[static_cast<std::size_t>(a)]);
+        c.reduced.row.push_back(r);
         c.reduced.col.push_back(c.row_col[static_cast<std::size_t>(e)]);
         c.reduced.value.push_back(-left * c.row_val[static_cast<std::size_t>(e)]);
       }
@@ -220,13 +258,15 @@ inline Condensation condense(const SparseSystem& A, const std::vector<double>& b
 
   c.rhs.assign(c.rest.size(), 0.0);
   for (std::size_t i = 0; i < c.rest.size(); ++i) {
-    c.rhs[i] = b[static_cast<std::size_t>(c.rest[i])];
+    if (ours(static_cast<int>(i))) c.rhs[i] = b[static_cast<std::size_t>(c.rest[i])];
   }
   for (std::size_t k = 0; k < c.first.size(); ++k) {
+    if (usable[k] == 0) continue;
     const double weighted = c.inv[k] * b[static_cast<std::size_t>(c.first[k])];
     for (Index a = col_begin[k]; a < col_begin[k + 1]; ++a) {
-      c.rhs[static_cast<std::size_t>(col_row[static_cast<std::size_t>(a)])] -=
-          col_val[static_cast<std::size_t>(a)] * weighted;
+      const int r = col_row[static_cast<std::size_t>(a)];
+      if (!ours(r)) continue;
+      c.rhs[static_cast<std::size_t>(r)] -= col_val[static_cast<std::size_t>(a)] * weighted;
     }
   }
   return c;

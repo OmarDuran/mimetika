@@ -69,8 +69,7 @@
 //                   -(div u, p'). Both are asserted below.
 //
 //                   On TETRAHEDRA it is invertible but not quasi-definite --
-//                   see Case below for the ratio that decides it -- so MINRES
-//                   is what applies in general.
+//                   see Case below for the ratio that decides it.
 //
 // BOUNDARY DATA. The cases here prescribe the pressure and the displacement,
 // which are natural in a mixed form. An ESSENTIAL condition on the first field

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <functional>
 
 #include <memory>
@@ -174,6 +175,7 @@ class SinglePhaseModel {
                     : -r[i];
     }
     p_offset_ = static_cast<std::size_t>(sp.offset(sp.index_of("p_0")));
+    q_offset_ = static_cast<std::size_t>(sp.offset(sp.index_of("q_0")));
     n_cells_ = static_cast<std::size_t>(c.count(dim_));
   }
 
@@ -181,6 +183,46 @@ class SinglePhaseModel {
 
   void accept(std::vector<double> x) { state_ = std::move(x); }
   double cell_pressure(Index e) const { return state_[p_offset_ + static_cast<std::size_t>(e)]; }
+
+  // THE CELL'S FLUX VECTOR, FROM THE FACET FLUXES THAT ARE THE UNKNOWNS.
+  //
+  // The unknown on a facet is the moment int_f q.n against the CANONICAL
+  // normal, so a cell reads it through its own incidence to get an outward
+  // flux, and
+  //
+  //     q_E = |E|^-1 sum_f (q_f n_f) (x_f - x_E)
+  //
+  // is the cell average of any field whose divergence is constant -- the
+  // divergence theorem applied to q (x - x_E)^T, whose divergence is
+  // q + (div q)(x - x_E). It is the flow's cell_stress: the same lever arm
+  // against the same leading moment, with a scalar in place of a traction.
+  //
+  // The FACETS COME FROM THE TOPOLOGY rather than from the product, because
+  // FluxOperators::cell is the dense inner product alone -- it carries no face
+  // list, where StressOperators::Cell does.
+  std::array<double, 3> cell_flux(Index e) const {
+    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& mq = sp.map(sp.index_of("q_0"));
+    const exokal::Point xE = exokal::centroid(*mesh_, dim_, e);
+    const double volume = exokal::measure(*mesh_, dim_, e);
+    const graphos::BoundaryOperator& d = mesh_->topology().boundary(dim_);
+    std::array<double, 3> out{};
+    for (Index k = d.offsets[static_cast<std::size_t>(e)];
+         k < d.offsets[static_cast<std::size_t>(e) + 1]; ++k) {
+      const Index f = d.indices[static_cast<std::size_t>(k)];
+      const FacetFrame fr = FacetFrame::of(*mesh_, dim_, e, f);
+      const exokal::Point xf = exokal::centroid(*mesh_, dim_ - 1, f);
+      const double q =
+          fr.incidence *
+          state_[q_offset_ + static_cast<std::size_t>(mq.global(dim_ - 1, f, 0, 0))];
+      for (int j = 0; j < dim_; ++j) {
+        out[static_cast<std::size_t>(j)] += q * (xf[static_cast<std::size_t>(j)] -
+                                                 xE[static_cast<std::size_t>(j)]);
+      }
+    }
+    for (int j = 0; j < dim_; ++j) out[static_cast<std::size_t>(j)] /= volume;
+    return out;
+  }
 
  private:
   const exokal::Mesh* mesh_;
@@ -200,7 +242,7 @@ class SinglePhaseModel {
   std::function<void(std::vector<double>&)> reduce_;
   Distribution distribution_;
   std::vector<double> rhs_, state_;
-  std::size_t p_offset_{0}, n_cells_{0};
+  std::size_t p_offset_{0}, q_offset_{0}, n_cells_{0};
 };
 
 }  // namespace mimetika

@@ -357,6 +357,18 @@ def main():
             "  facet is dropped. First order, and it looks like a discretization error."
         )
 
+    # THE FLUX IS RECONSTRUCTED PER CELL, AND THE GATHER IS COLLECTIVE.
+    #
+    # A rank reconstructs only the cells it owns, so the field is summed over
+    # the processes -- and that sum is an MPI_Allreduce, which EVERY rank has to
+    # reach. Computing it inside the `and root` branch below deadlocks the run:
+    # rank 0 waits in the reduction for ranks that already went on to exit.
+    flux = None
+    if args.vtu:
+        flux = mk.gather_cells(
+            model, np.array([model.cell_flux(e) for e in range(model.n_cells)])
+        )
+
     if args.vtu and root:
         with stage(f"writing {args.vtu}"):
             n = model.n_cells
@@ -367,7 +379,7 @@ def main():
                     for e in range(n)
                 ]
             )
-            fields = {"pressure": p, "pressure_exact": q, "error": p - q}
+            fields = {"pressure": p, "pressure_exact": q, "error": p - q, "flux": flux}
             fields.update(partition_field(mesh, dim, args.partition))
             mk.write_vtu(mesh, args.vtu, fields)
 

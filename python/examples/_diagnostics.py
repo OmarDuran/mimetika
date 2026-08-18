@@ -31,13 +31,13 @@ def write_report(mesh_path, out_dir, degeneracy_percent=0.1):
     rows = mk.degenerate_cells(mesh_path, degeneracy_percent)
     with open(os.path.join(out_dir, "degenerate_cells.csv"), "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["vtk_cell_id", "measure", "neighborhood_mean", "percent"])
+        w.writerow(["vtk_cell_id", "measure", "neighborhood", "percent"])
         for r in sorted(rows, key=lambda r: r["percent"]):
             w.writerow(
                 [
                     r["vtk_cell_id"],
                     f"{r['measure']:.6e}",
-                    f"{r['neighborhood_mean']:.6e}",
+                    f"{r['neighborhood']:.6e}",
                     f"{r['percent']:.6f}",
                 ]
             )

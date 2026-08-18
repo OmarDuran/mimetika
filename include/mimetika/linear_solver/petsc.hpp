@@ -480,6 +480,44 @@ class PetscSolver final : public LinearSolver {
     r.matrix_seconds = matrix_seconds_;
     r.preconditioner_seconds = preconditioner_seconds_;
     r.off_rank_fraction = off_rank_fraction();
+    return checked(A, b, x, r);
+  }
+
+  // A RESIDUAL THIS LARGE IS NOT A CONVERGED SOLVE, WHATEVER THE
+  // FACTORIZATION SAID.
+  //
+  // A direct solver handed a SINGULAR matrix returns a vector, reports
+  // CONVERGED, and leaves 1e18 in the answer -- measured, on diagonal_tpsa
+  // under an essential stress condition (relative residual 9.4e3) and on the
+  // Kuhn tetrahedra (5.8e3). The residual is one pass over the triplets, which
+  // is nothing beside a factorization, and it is the only thing that
+  // distinguishes an answer from a vector.
+  //
+  // THE BOUND IS ONE, and it is not a tuned number: a relative residual of 1 is
+  // what the answer x = 0 leaves, so anything at or above it is not a solution
+  // by any reading. The singular cases measured are 9.4e3, 5.8e3 and 3e20; a
+  // converged condensed solve leaves 8e-3, because recovering the eliminated
+  // field divides by a small diagonal and amplifies whatever the reduced solve
+  // left. A tighter bound would call that a failure, and it is not one.
+  //
+  // NOT ON SEVERAL PROCESSES. A rank holds its own rows and its halo, and the
+  // eliminated field is recovered only where its row is here, so the sum below
+  // is over rows whose columns this rank cannot all evaluate. The number would
+  // be large and mean nothing.
+  SolveReport checked(const SparseSystem& A, const std::vector<double>& b,
+                      const std::vector<double>& x, SolveReport r) const {
+    PetscMPIInt size = 1;
+    MPI_Comm_size(PETSC_COMM_WORLD, &size);
+    if (!r.converged || size > 1) return r;
+    r.residual = true_residual(A, b, x);
+    if (!(r.residual < 1.0)) {
+      r.converged = false;
+      char said[64];
+      std::snprintf(said, sizeof(said), "%.2e", r.residual);
+      r.reason = "the operator is singular, or the factorization failed: the answer leaves a "
+                 "relative residual of " +
+                 std::string(said);
+    }
     return r;
   }
 
@@ -501,19 +539,30 @@ class PetscSolver final : public LinearSolver {
   // before this existed.
   SolveReport solve_condensed(const SparseSystem& A, const std::vector<double>& b,
                               std::vector<double>& x) {
-    PetscMPIInt size = 1;
-    MPI_Comm_size(comm_, &size);
-    if (size > 1) {
+    // PETSC_COMM_WORLD, NOT comm_: comm_ is chosen inside factorize(), which
+    // has not run yet, so it still says SELF here.
+    PetscMPIInt size = 1, rank = 0;
+    MPI_Comm_size(PETSC_COMM_WORLD, &size);
+    MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
+    const bool spread = size > 1;
+
+    // WITHOUT AN OWNERSHIP THERE IS NOTHING TO CONDENSE ON SEVERAL PROCESSES.
+    // Each rank holds its own rows and its halo, so a rank that cannot tell
+    // which reduced rows are its own would emit some twice and some never. A
+    // caller that distributes without set_owners gets the saddle point, which
+    // is correct and is what it had before.
+    if (spread && owners_.size() != static_cast<std::size_t>(A.n)) {
       if (bound_ != &A) factorize(A);
       SolveReport r = solve(b, x);
       r.matrix_seconds = matrix_seconds_;
       r.preconditioner_seconds = preconditioner_seconds_;
       r.off_rank_fraction = off_rank_fraction();
-      return r;
+      return checked(A, b, x, r);
     }
-
     const auto t0 = std::chrono::steady_clock::now();
-    const Condensation c = condense(A, b, condensable_);
+    const Condensation c =
+        condense(A, b, condensable_, spread ? &owners_ : nullptr, static_cast<int>(rank));
+
     const auto t1 = std::chrono::steady_clock::now();
 
     SolverOptions inner = opts_;
@@ -537,6 +586,15 @@ class PetscSolver final : public LinearSolver {
       if (inner.direct()) inner.method = "gmres";
     }
     PetscSolver sub(inner);
+    if (spread) {
+      // the reduced unknowns inherit the partition they came from: a cell's
+      // pressure, displacement and rotation belong to whoever owned the cell
+      std::vector<int> reduced_owners(c.rest.size(), 0);
+      for (std::size_t i = 0; i < c.rest.size(); ++i) {
+        reduced_owners[i] = owners_[static_cast<std::size_t>(c.rest[i])];
+      }
+      sub.set_owners(std::move(reduced_owners));
+    }
     std::vector<double> y;
     SolveReport r = sub.solve(c.reduced, c.rhs, y);
     x = c.expand(y, b);
@@ -544,11 +602,10 @@ class PetscSolver final : public LinearSolver {
     r.condensed = true;
     r.condensed_dofs = c.size();
     if (r.block_solver.empty()) r.block_solver = inner.preconditioner;
-    r.matrix_seconds += std::chrono::duration<double>(t1 - t0).count();
     // the residual the caller is owed is the ORIGINAL system's, not the
-    // reduced one's: they differ by however well the recovery went, and that
-    // is the number worth reporting
-    r.residual = true_residual(A, b, x);
+    // reduced one's, and the same bound applies to it
+    r = checked(A, b, x, r);
+
     return r;
   }
 

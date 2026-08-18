@@ -1200,6 +1200,33 @@ PYBIND11_MODULE(_core, m) {
       py::arg("model"), py::arg("values"),
       "sum a per-cell field over the processes, each contributing the cells it owns");
 
+  // the same for the flow model, whose flux is reconstructed per cell too
+  m.def(
+      "gather_cells",
+      [](const mimetika::SinglePhaseModel& model, py::array_t<double> values) {
+        const auto& owned = model.distribution().owned_cells;
+        if (owned.empty()) return values;
+        auto v = values.mutable_unchecked();
+        const auto rows = static_cast<std::size_t>(values.shape(0));
+        if (rows != owned.size()) {
+          throw std::invalid_argument("gather_cells: not one row per cell");
+        }
+        const auto width = values.ndim() == 1
+                               ? std::size_t{1}
+                               : static_cast<std::size_t>(values.shape(1));
+        double* data = values.mutable_data();
+        for (std::size_t e = 0; e < rows; ++e) {
+          if (owned[e] != 0) continue;
+          for (std::size_t k = 0; k < width; ++k) data[e * width + k] = 0.0;
+        }
+        MPI_Allreduce(MPI_IN_PLACE, data, static_cast<int>(rows * width), MPI_DOUBLE, MPI_SUM,
+                      PETSC_COMM_WORLD);
+        (void)v;
+        return values;
+      },
+      py::arg("model"), py::arg("values"),
+      "sum a per-cell field over the processes, each contributing the cells it owns");
+
   // THE PARTITION AS A FIELD, so it can be looked at rather than trusted.
   //
   // The same geometric bisection the solver uses, asked for any number of
@@ -1255,7 +1282,8 @@ PYBIND11_MODULE(_core, m) {
           "n_dofs", [](const mimetika::SinglePhaseModel& s) { return s.simulation().n_dofs(); })
       .def_property_readonly("moments_per_facet", &mimetika::SinglePhaseModel::moments_per_facet)
       .def_property_readonly("realization_name", &mimetika::SinglePhaseModel::realization_name)
-      .def("cell_pressure", &mimetika::SinglePhaseModel::cell_pressure, py::arg("cell"));
+      .def("cell_pressure", &mimetika::SinglePhaseModel::cell_pressure, py::arg("cell"))
+      .def("cell_flux", &mimetika::SinglePhaseModel::cell_flux, py::arg("cell"));
 
   // ---- the assembled model, for the structural checks ---------------------
   py::class_<AssembledModel>(m, "AssembledModel")
