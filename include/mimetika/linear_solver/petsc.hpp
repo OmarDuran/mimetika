@@ -1690,8 +1690,8 @@ class PetscSolver final : public LinearSolver {
       if (!out.converged && ads_block_ &&
           (why == KSP_DIVERGED_BREAKDOWN || why == KSP_DIVERGED_PC_FAILED ||
            why == KSP_DIVERGED_INDEFINITE_PC)) {
-        out.reason += " -- the auxiliary-space (ADS) block is not usable on this partition; "
-                      "try riesz_block_pc='cholesky', or a different number of processes";
+        out.reason += " -- the auxiliary-space (ADS) block is not usable on this mesh"
+                      "; try riesz_block_pc='cholesky'";
       }
 
       // THE ANSWER GOES BACK TO EVERY RANK. The model that reads it -- cell
