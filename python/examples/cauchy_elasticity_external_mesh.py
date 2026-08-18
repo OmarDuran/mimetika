@@ -206,6 +206,19 @@ def make_mesh(path):
 # without this the report appears N times and N processes race to write the
 # same .vtu. The solve itself is unaffected: every rank takes part in it, and
 # every rank ends up with the whole answer.
+# WHAT THE RUN IS SHARED OUT OVER, said once rather than inferred from eight
+# copies of the output. The balance is the partition's own report: a bisection
+# that has gone wrong shows up here as a rank holding most of the mesh, long
+# before it shows up as a timing.
+def report_processes(mesh, dim):
+    size = mk.mpi_size()
+    if size < 2:
+        return
+    ranks = mk.cell_ranks(mesh, dim, size)
+    counts = np.bincount(ranks, minlength=size)
+    print(f"  {size} processes, {counts.min()}..{counts.max()} cells each")
+
+
 def only_root():
     if mk.mpi_rank() == 0:
         return True
@@ -294,10 +307,12 @@ def main():
     )
     print(f"  characteristic length L = {length:.6g}")
     print(f"  mu = {mat.shear}, lam = {mat.lame}  (nu = {mat.poisson():.4f})")
-    print(f"  {mk.stress_realization_name(how)}, {args.solver} solver\n")
+    print(f"  {mk.stress_realization_name(how)}, {args.solver} solver")
+    report_processes(mesh, dim)
+    print()
 
     gradient = gradient_of(dim, length, args.spin)
-    with stage("building the stress operators"):
+    with stage("creating the model"):
         model = mk.CauchyElasticityModel(mesh, dim, mat, how)
     with stage("prescribing u on the boundary"):
         n_facets = prescribe_linear_displacement(model, mesh, dim, lo, gradient)

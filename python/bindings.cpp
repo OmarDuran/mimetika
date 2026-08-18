@@ -318,9 +318,31 @@ class AssembledModel {
 // the process exits -- which is exactly the case the reporting exists for, and
 // exactly when it says nothing. Python's own output is flushed first so the
 // two streams stay in order.
+// PROGRESS IS ONE PROCESS'S JOB. Every rank runs the same script and reaches
+// the same stages at slightly different moments; eight of them writing to an
+// unbuffered stderr produces "assembling ... assembling ... assembling ..." on
+// one line and their timings on the next eight. The stage lines are a picture
+// of the run, so rank 0 draws it and the others stay quiet.
 class Stage {
  public:
-  explicit Stage(bool on) : on_(on) {}
+  explicit Stage(bool on) : on_(on && is_root()) {}
+
+  // the same for a phase timed out here: the model's build
+  static double slowest(double seconds) {
+    PetscMPIInt size = 1;
+    MPI_Comm_size(PETSC_COMM_WORLD, &size);
+    if (size > 1) {
+      MPI_Allreduce(MPI_IN_PLACE, &seconds, 1, MPI_DOUBLE, MPI_MAX, PETSC_COMM_WORLD);
+    }
+    return seconds;
+  }
+
+  static bool is_root() {
+    mimetika::solver::PetscSession::instance();
+    PetscMPIInt rank = 0;
+    MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
+    return rank == 0;
+  }
 
   void begin(const char* what) {
     if (!on_) return;
@@ -577,8 +599,8 @@ mimetika::solver::SolveReport assemble_only(Model& m, bool progress,
   stage.begin("assembling");
   const auto t_build = std::chrono::steady_clock::now();
   m.build();
-  const double assembly_seconds =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count();
+  const double assembly_seconds = Stage::slowest(
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count());
   stage.end();
   mimetika::solver::PetscSolver petsc(opts);
   attach_partition(petsc, m);
@@ -607,8 +629,8 @@ mimetika::solver::SolveReport solve_elasticity(mimetika::CauchyElasticityModel& 
   stage.begin("assembling");
   const auto t_build = std::chrono::steady_clock::now();
   m.build();
-  const double assembly_seconds =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count();
+  const double assembly_seconds = Stage::slowest(
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count());
   stage.end();
   mimetika::solver::PetscSolver petsc(opts);
   attach_partition(petsc, m);
@@ -637,8 +659,8 @@ mimetika::solver::SolveReport solve_single_phase(mimetika::SinglePhaseModel& m, 
   stage.begin("assembling");
   const auto t_build = std::chrono::steady_clock::now();
   m.build();
-  const double assembly_seconds =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count();
+  const double assembly_seconds = Stage::slowest(
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count());
   stage.end();
   mimetika::solver::PetscSolver petsc(opts);
   attach_partition(petsc, m);

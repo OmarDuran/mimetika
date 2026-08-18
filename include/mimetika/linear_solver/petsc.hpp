@@ -428,8 +428,8 @@ class PetscSolver final : public LinearSolver {
     check(KSPSetUp(ksp_), "KSPSetUp");
     measure_locality();
     const auto t2 = std::chrono::steady_clock::now();
-    matrix_seconds_ = std::chrono::duration<double>(t1 - t0).count();
-    preconditioner_seconds_ = std::chrono::duration<double>(t2 - t1).count();
+    matrix_seconds_ = slowest(std::chrono::duration<double>(t1 - t0).count());
+    preconditioner_seconds_ = slowest(std::chrono::duration<double>(t2 - t1).count());
     bound_ = &A;
   }
 
@@ -1363,6 +1363,16 @@ class PetscSolver final : public LinearSolver {
 
   bool owns(PetscInt i) const { return i >= own_begin_ && i < own_end_; }
 
+  // A PHASE TAKES AS LONG AS ITS SLOWEST PROCESS, and a report from one of them
+  // is a sample rather than a duration -- the ranks of a partitioned solve
+  // differ by whatever their subdomains differ by. So what is reported is the
+  // maximum, which is also what the wall clock outside measures.
+  double slowest(double seconds) const {
+    if (!distributed_) return seconds;
+    MPI_Allreduce(MPI_IN_PLACE, &seconds, 1, MPI_DOUBLE, MPI_MAX, comm_);
+    return seconds;
+  }
+
   // the two halves of an MPIAIJ row, summed over the ranks
   void measure_locality() {
     local_entries_ = off_rank_entries_ = 0.0;
@@ -1585,7 +1595,7 @@ class PetscSolver final : public LinearSolver {
     const auto t0 = std::chrono::steady_clock::now();
     const PetscErrorCode e = KSPSolve(ksp, rhs_, sol);
     out.solve_seconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        slowest(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
     if (e == 0) {
       KSPConvergedReason why = KSP_CONVERGED_ITERATING;
       KSPGetConvergedReason(ksp, &why);
