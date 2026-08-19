@@ -475,12 +475,7 @@ class PetscSolver final : public LinearSolver {
     if (opts_.condense && !condensable_.empty() && block_is_diagonal(A, condensable_)) {
       return solve_condensed(A, b, x);
     }
-    if (bound_ != &A) factorize(A);
-    SolveReport r = solve(b, x);
-    r.matrix_seconds = matrix_seconds_;
-    r.preconditioner_seconds = preconditioner_seconds_;
-    r.off_rank_fraction = off_rank_fraction();
-    return checked(A, b, x, r);
+    return ordinary(A, b, x);
   }
 
   // A RESIDUAL THIS LARGE IS NOT A CONVERGED SOLVE, WHATEVER THE
@@ -522,6 +517,36 @@ class PetscSolver final : public LinearSolver {
   }
 
  private:
+  // THE ORDINARY PATH, WITH THE ONE RETRY IT OWNS.
+  //
+  // hypre builds the auxiliary-space block from the maps and coordinates it is
+  // given, and on some partitions of some meshes the cycle it returns is
+  // near-singular -- measured on the 22k-cell polyhedral mesh: fine serially
+  // and at 2..7, 9 and 10 ranks, stagnation and then breakdown at 8, 11 and
+  // 12, with no hypre knob (relaxation, cycle type, AMG thresholds) changing
+  // the outcome. That is a property of the partition rather than of the
+  // problem -- the same block under the exact factorization takes its usual
+  // count -- so the failure is not handed back: the block is replaced by the
+  // exact one, the solve is repeated once, and the report SAYS SO. A fallback
+  // taken silently would bury the one fact worth acting on.
+  SolveReport ordinary(const SparseSystem& A, const std::vector<double>& b,
+                       std::vector<double>& x) {
+    if (bound_ != &A) factorize(A);
+    SolveReport r = solve(b, x);
+    if (!r.converged && ads_failed_) {
+      const std::string why = r.reason.substr(0, r.reason.find(" -- "));
+      opts_.riesz_block_pc = "cholesky";
+      factorize(A);
+      r = solve(b, x);
+      r.reason += " -- the auxiliary-space (ADS) block was unusable on this partition (" + why +
+                  ") and was replaced by the exact one";
+    }
+    r.matrix_seconds = matrix_seconds_;
+    r.preconditioner_seconds = preconditioner_seconds_;
+    r.off_rank_fraction = off_rank_fraction();
+    return checked(A, b, x, r);
+  }
+
   // THE CONDENSED SOLVE, WHICH IS THE SAME SOLVER ON A SMALLER PROBLEM.
   //
   // S is handed to a second PetscSolver with this one's options and NO
@@ -552,12 +577,7 @@ class PetscSolver final : public LinearSolver {
     // caller that distributes without set_owners gets the saddle point, which
     // is correct and is what it had before.
     if (spread && owners_.size() != static_cast<std::size_t>(A.n)) {
-      if (bound_ != &A) factorize(A);
-      SolveReport r = solve(b, x);
-      r.matrix_seconds = matrix_seconds_;
-      r.preconditioner_seconds = preconditioner_seconds_;
-      r.off_rank_fraction = off_rank_fraction();
-      return checked(A, b, x, r);
+      return ordinary(A, b, x);
     }
     const auto t0 = std::chrono::steady_clock::now();
     const Condensation c =
@@ -1940,6 +1960,7 @@ class PetscSolver final : public LinearSolver {
     Vec sol = sol_;
     const PetscInt n = n_;
     SolveReport out;
+    ads_failed_ = false;
     const auto t0 = std::chrono::steady_clock::now();
     const PetscErrorCode e = KSPSolve(ksp, rhs_, sol);
     out.solve_seconds =
@@ -1960,12 +1981,14 @@ class PetscSolver final : public LinearSolver {
       // and on some partitions of some meshes what it returns is not positive
       // definite -- CG says so outright (PC_FAILED), GMRES merely breaks down
       // with its preconditioned residual falling and its true residual stuck.
-      // Neither message points at the preconditioner, so this one does.
-      if (!out.converged && ads_block_ &&
-          (why == KSP_DIVERGED_BREAKDOWN || why == KSP_DIVERGED_PC_FAILED ||
-           why == KSP_DIVERGED_INDEFINITE_PC)) {
-        out.reason += " -- the auxiliary-space (ADS) block is not usable on this mesh"
-                      "; try riesz_block_pc='cholesky'";
+      // Neither message points at the preconditioner, so the flag does: the
+      // one-shot solve reads it and retries with the exact block; a caller on
+      // the bind-once path holds the operator and makes that call itself.
+      ads_failed_ = !out.converged && ads_block_ &&
+                    (why == KSP_DIVERGED_BREAKDOWN || why == KSP_DIVERGED_PC_FAILED ||
+                     why == KSP_DIVERGED_INDEFINITE_PC);
+      if (ads_failed_) {
+        out.reason += " -- the auxiliary-space (ADS) block is not usable on this partition";
       }
 
       // THE ANSWER GOES BACK TO EVERY RANK. The model that reads it -- cell
@@ -2026,6 +2049,7 @@ class PetscSolver final : public LinearSolver {
   }
 
   SolverOptions opts_;
+  bool ads_failed_{false};  // the last run died in the auxiliary-space block
   double matrix_seconds_{0.0}, preconditioner_seconds_{0.0};
   SpaceNorm norm_;
   std::vector<int> condensable_;
