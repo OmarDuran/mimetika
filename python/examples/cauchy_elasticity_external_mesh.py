@@ -292,8 +292,8 @@ def main():
     ap.add_argument(
         "--degeneracy-percent",
         type=float,
-        default=0.1,
-        help="a cell is degenerate below this percent of its neighborhood mean measure",
+        default=None,
+        help="a cell is degenerate below this percent of its node-star mean; defaults to exokal's default_degeneracy_percent",
     )
     ap.add_argument(
         "--assemble-only",

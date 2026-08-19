@@ -906,7 +906,8 @@ PYBIND11_MODULE(_core, m) {
                         py::arg("cells_checked") = static_cast<long long>(d.quality.cells_checked),
                         py::arg("degenerate") = degenerate);
       },
-      py::arg("path"), py::arg("degeneracy_percent") = 0.1);
+      py::arg("path"), py::arg("degeneracy_percent") = exokal::default_degeneracy_percent);
+  m.attr("default_degeneracy_percent") = py::float_(exokal::default_degeneracy_percent);
 
   // the one cell a boundary facet bounds; the affine datum is written about
   // that cell's centroid

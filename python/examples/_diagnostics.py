@@ -21,13 +21,15 @@ import os
 import mimetika_cxx as mk
 
 
-def write_report(mesh_path, out_dir, degeneracy_percent=0.1):
+def write_report(mesh_path, out_dir, degeneracy_percent=None):
     """Write diagnostics.txt and degenerate_cells.csv into `out_dir`.
 
     Returns (n_violations, n_warnings, n_degenerate).
     """
     os.makedirs(out_dir, exist_ok=True)
 
+    if degeneracy_percent is None:
+        degeneracy_percent = mk.default_degeneracy_percent
     d = mk.diagnose_vtu(mesh_path, degeneracy_percent)
     text = d["report"] + "\n" + d["quality"]
     with open(os.path.join(out_dir, "diagnostics.txt"), "w") as f:
