@@ -859,51 +859,52 @@ PYBIND11_MODULE(_core, m) {
 
   // ---- what the mesh is, before anything is solved on it -------------------
   //
-  // Both of these are exokal's own diagnostics; nothing is recomputed here.
-  // `diagnostics_report` is the same text the preprocessor writes, and
-  // `degenerate_cells` is the scan behind its metric-degeneracy finding, with
-  // the witnesses returned as numbers rather than formatted into the message.
+  // One call into exokal's consumer primitive diagnose_vtu: the formal
+  // findings annotated to the file's own cell ids, the shape-regularity
+  // classification at the library constants, and the metric-degeneracy
+  // witnesses. One read of the file, one judge, nothing recomputed here.
+  //
+  // percent = 100 |s| / mean over the node star, so a uniform mesh reports 100
+  // at every cell whatever its valence; neighborhood_total is carried for a
+  // volume-weighted consumer and is not the denominator. vtk_cell_id is the id
+  // of the ORIGINAL file -- the cell ParaView selects.
   m.def(
-      "diagnostics_report",
+      "diagnose_vtu",
       [](const std::string& path, double degeneracy_percent) {
-        const exokal::VtuFile file = exokal::read_vtu_file(path);
-        exokal::DiagnosticReport r = exokal::diagnose(file.mesh, degeneracy_percent);
-        exokal::annotate_vtk_cell_ids(r, file);
-        const exokal::Mesh& mesh = file.mesh;
-        std::ostringstream out;
-        out << "fundamental-principle diagnostics: " << path << "\n";
-        out << "complex: v " << mesh.count(0) << " e " << mesh.count(1) << " f " << mesh.count(2)
-            << " c " << mesh.count(3) << "\n\n";
-        out << "== ambient complex, realization, and induced full subcomplexes ==\n";
-        r.print(out);  // print() emits the per-section summary line itself
-        return out.str();
-      },
-      py::arg("path"), py::arg("degeneracy_percent") = 0.1);
+        exokal::VtuDiagnostics d = exokal::diagnose_vtu(path, degeneracy_percent);
+        const exokal::Mesh& mesh = d.file.mesh;
+        const int n = mesh.dim();
 
-  // the metric-degeneracy witnesses, addressed by the id of the ORIGINAL FILE
-  // -- the cell ParaView selects -- alongside the numbers that flagged them
-  m.def(
-      "degenerate_cells",
-      [](const std::string& path, double degeneracy_percent) {
-        const exokal::VtuFile file = exokal::read_vtu_file(path);
-        const auto rows = exokal::degenerate_cells(file.mesh, degeneracy_percent);
-        // ambient top-cell id -> file cell id, the inverse of file_cell_of
-        const int n = file.mesh.dim();
-        std::unordered_map<Index, long long> to_file;
-        for (std::size_t fc = 0; fc < file.file_cell_of.size(); ++fc) {
-          const auto sid = file.file_cell_of[fc];
-          if (sid.dim == n) to_file.emplace(sid.id, static_cast<long long>(fc));
+        std::ostringstream report;
+        report << "fundamental-principle diagnostics: " << path << "\n";
+        report << "complex: v " << mesh.count(0) << " e " << mesh.count(1) << " f "
+               << mesh.count(2) << " c " << mesh.count(3) << "\n\n";
+        report << "== ambient complex, realization, and induced full subcomplexes ==\n";
+        d.report.print(report);
+
+        std::ostringstream quality;
+        exokal::write_mesh_quality_report(quality, d.quality);
+
+        const std::vector<long long> ids = exokal::file_cell_ids(d.file, n);
+        py::list degenerate;
+        for (const auto& r : d.degenerate) {
+          const auto i = static_cast<std::size_t>(r.cell);
+          degenerate.append(
+              py::dict(py::arg("vtk_cell_id") = i < ids.size() ? ids[i] : -1,
+                       py::arg("cell") = static_cast<int>(r.cell), py::arg("dim") = r.dim,
+                       py::arg("measure") = r.measure,
+                       py::arg("neighborhood_mean") = r.neighborhood_mean,
+                       py::arg("neighborhood_total") = r.neighborhood_total,
+                       py::arg("n_neighbors") = static_cast<int>(r.n_neighbors),
+                       py::arg("percent") = r.percent));
         }
-        py::list out;
-        for (const auto& d : rows) {
-          const auto it = to_file.find(d.cell);
-          out.append(py::dict(
-              py::arg("vtk_cell_id") = it == to_file.end() ? -1 : it->second,
-              py::arg("cell") = static_cast<int>(d.cell), py::arg("measure") = d.measure,
-              py::arg("neighborhood_mean") = d.neighborhood_mean,
-              py::arg("percent") = d.percent));
-        }
-        return out;
+        return py::dict(py::arg("report") = report.str(), py::arg("quality") = quality.str(),
+                        py::arg("classification") = exokal::mesh_class_name(d.quality.cls),
+                        py::arg("gamma_all") = d.quality.gamma_all,
+                        py::arg("gamma_minus_eps") = d.quality.gamma_minus_eps,
+                        py::arg("gamma_median") = d.quality.gamma_median,
+                        py::arg("cells_checked") = static_cast<long long>(d.quality.cells_checked),
+                        py::arg("degenerate") = degenerate);
       },
       py::arg("path"), py::arg("degeneracy_percent") = 0.1);
 

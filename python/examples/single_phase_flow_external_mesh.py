@@ -212,8 +212,8 @@ def main():
     ap.add_argument("--solver", default="riesz", choices=sorted(SOLVER_NAMES))
     ap.add_argument(
         "--output",
-        default="diagnostics",
-        help="folder for the mesh diagnostics; empty string to skip them",
+        default="",
+        help="folder for the mesh diagnostics; they are off unless this is given",
     )
     ap.add_argument(
         "--degeneracy-percent",
