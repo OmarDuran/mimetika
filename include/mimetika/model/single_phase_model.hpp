@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "exokal/geometry/degeneracy.hpp"
 #include "exokal/hodge/coefficient.hpp"
 #include "exokal/hodge/flux_operators.hpp"
 #include "mimetika/model/boundary_conditions.hpp"
@@ -54,6 +55,16 @@ class SinglePhaseModel {
   //               rather than stabilizing it.
   //   stabilized  one flux per facet on any polytope, consistency plus a
   //               stabilization -- not a de Rham construction.
+  //   diagonal_tpfa  one flux per facet and no reconstruction: the diagonal
+  //               primal-dual star, exact only where the mesh is K-orthogonal.
+  //   adaptive_rt one flux per facet: the per-cell SELECTION between the two
+  //               above, carried as eta in {0, 1}. Ones everywhere -- the
+  //               stabilized product -- and 0 on the cells the metric-
+  //               degeneracy scan flags, which take the diagonal star: a
+  //               reconstruction over a collapsed cell is what the selection
+  //               exists to avoid. The threshold is exokal's
+  //               default_degeneracy_percent unless set_degeneracy_percent()
+  //               names one.
   //
   // The realization decides the SPACE as well as the star, and the two must
   // agree on moments per facet or every index after the first facet is wrong.
@@ -72,6 +83,23 @@ class SinglePhaseModel {
 
   FlowBoundary& flow() { return flow_; }
   const FlowBoundary& flow() const { return flow_; }
+
+  // THE adaptive_rt THRESHOLD: scan for metrically degenerate cells at this
+  // percentage of the node-star mean and give them the diagonal star, eta = 0.
+  // eta is NOT a free field -- it is derived, ones with the flagged cells
+  // zeroed -- so what is set here is the one number the scan needs. Unset,
+  // exokal scans at its own default_degeneracy_percent.
+  void set_degeneracy_percent(double percent) { degeneracy_percent_ = percent; }
+
+  // The selection AS BUILT, one value per cell: 1 is the stabilized product,
+  // 0 the diagonal star. That is the field to write next to the solution,
+  // because it is the one the operator was actually assembled from.
+  const std::vector<double>& eta() const {
+    if (sim_ == nullptr) {
+      throw std::logic_error("SinglePhaseModel: not built yet; call build() or solve() first");
+    }
+    return flux_.eta();
+  }
 
   int dim() const { return dim_; }
   const exokal::Mesh& mesh() const { return *mesh_; }
@@ -120,11 +148,26 @@ class SinglePhaseModel {
     if (how_ == Realization::derham_bdm) {
       geometry_ = exokal::hodge::DeRhamGeometryCache::build(*mesh_, dim_);
     }
+    // THE SELECTION, DERIVED RATHER THAN GIVEN: ones, with 0 on the cells the
+    // scan flags at the caller's threshold. exokal forces its own default-
+    // threshold zeros on top either way, so a caller can only widen the set.
+    if (degeneracy_percent_ >= 0.0 && how_ != Realization::adaptive_rt) {
+      throw std::invalid_argument(
+          "SinglePhaseModel: the degeneracy threshold is adaptive_rt's cell selection");
+    }
+    std::vector<double> eta;
+    if (how_ == Realization::adaptive_rt && degeneracy_percent_ >= 0.0) {
+      eta.assign(static_cast<std::size_t>(c.count(dim_)), 1.0);
+      for (const Index e : exokal::degenerate_cell_ids(*mesh_, dim_, degeneracy_percent_)) {
+        eta[static_cast<std::size_t>(e)] = 0.0;
+      }
+    }
     flux_ = exokal::hodge::FluxOperators::build(
         *mesh_, dim_, exokal::hodge::Coefficient::uniform(mobility_), how_,
         how_ == Realization::derham_bdm ? &geometry_ : nullptr,
         exokal::hodge::default_enrichment_degree,
-        exokal::hodge::default_max_facets, only);
+        exokal::hodge::default_max_facets, only, nullptr,
+        eta.empty() ? nullptr : &eta);
     pressure_data_ = BoundaryData(static_cast<std::size_t>(c.count(dim_ - 1)));
     const bool any_pressure = flow_.fill_pressure(pressure_data_, *mesh_, dim_);
 
@@ -230,6 +273,7 @@ class SinglePhaseModel {
   double mobility_;
   Realization how_;
   FlowBoundary flow_;
+  double degeneracy_percent_{-1.0};  // adaptive_rt's scan threshold; negative is unset
 
   exokal::hodge::DeRhamGeometryCache geometry_;
   exokal::hodge::FluxOperators flux_;

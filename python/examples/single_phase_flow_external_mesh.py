@@ -124,6 +124,13 @@ PRODUCTS = {
     # only where the mesh is K-ORTHOGONAL, so on a box it reproduces a linear
     # pressure to round-off and on a curved or polytopal one it does not.
     "diagonal_tpfa": mk.FluxRealization.diagonal_tpfa,
+    # THE PER-CELL SELECTION between the two above, carried as eta in {0, 1}:
+    # the stabilized product everywhere (eta = 1) and the diagonal star on the
+    # cells the metric-degeneracy scan flags (eta = 0) -- a reconstruction
+    # over a collapsed cell is what the selection exists to avoid. The scan
+    # runs at exokal's default threshold unless --degeneracy-percent names
+    # one; the selection AS BUILT is the eta cell data written to the .vtu.
+    "adaptive_rt": mk.FluxRealization.adaptive_rt,
 }
 
 
@@ -276,6 +283,10 @@ def main():
 
     with stage("creating the model"):
         model = mk.SinglePhaseModel(mesh, dim, MOBILITY, how)
+        # the threshold reaches the model only where it is the model's: for
+        # any other product it stays what it always was, the diagnostics dial
+        if args.product == "adaptive_rt" and args.degeneracy_percent is not None:
+            model.set_degeneracy_percent(args.degeneracy_percent)
     with stage("prescribing p on the boundary"):
         n_facets = prescribe_linear_pressure(model, mesh, dim, lo, direction, length)
     if args.assemble_only:
@@ -310,6 +321,16 @@ def main():
         f"  {model.n_cells} cells, {model.n_dofs} dofs, "
         f"{model.moments_per_facet} moment(s) per facet\n"
     )
+    if args.product == "adaptive_rt":
+        # the selection as built: how many cells the scan actually handed to
+        # the diagonal star, which is the number that explains the error below
+        n_star = int((model.eta == 0.0).sum())
+        pct = args.degeneracy_percent
+        print(
+            f"  adaptive_rt: {n_star} cell(s) on the diagonal star, "
+            f"{model.n_cells - n_star} on the stabilized product "
+            f"(threshold {'default' if pct is None else f'{pct}%'})\n"
+        )
 
     with stage("measuring the pressure error"):
         worst = rms = 0.0
@@ -342,6 +363,14 @@ def main():
         print("  two-point flux is consistent only where the mesh is K-ORTHOGONAL, and")
         print("  this one is not. Run --product stabilized_rt on the same mesh to see")
         print("  the same space reproduce the field exactly.")
+    elif args.product == "adaptive_rt" and n_star > 0:
+        # the price of the selection, paid exactly where it was made: the
+        # flagged cells carry the two-point star, which loses the linear
+        # field off K-orthogonality. The eta field in the .vtu shows where.
+        print(f"\n  NOT exact ({worst:.3e}), and this is the selection's trade: "
+              f"{n_star} cell(s)")
+        print("  carry the two-point star, which is consistent only where the mesh is")
+        print("  K-orthogonal. The eta cell data locates them.")
     elif model.moments_per_facet == 1:
         print(
             f"\n  NOT exact ({worst:.3e}), and the datum is not the reason: the facet"
@@ -380,6 +409,8 @@ def main():
                 ]
             )
             fields = {"pressure": p, "pressure_exact": q, "error": p - q, "flux": flux}
+            if args.product == "adaptive_rt":
+                fields["eta"] = model.eta
             fields.update(partition_field(mesh, dim, args.partition))
             mk.write_vtu(mesh, args.vtu, fields)
 

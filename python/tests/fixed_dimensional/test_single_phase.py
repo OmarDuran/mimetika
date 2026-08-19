@@ -16,6 +16,7 @@ BDM = mk.FluxRealization.derham_bdm
 RT = mk.FluxRealization.derham_rt
 STABILIZED = mk.FluxRealization.stabilized_rt
 TPFA = mk.FluxRealization.diagonal_tpfa
+ADAPTIVE = mk.FluxRealization.adaptive_rt
 
 FAMILIES = [mk.Family.cartesian, mk.Family.simplex, mk.Family.prism]
 PRODUCTS = [BDM, RT, STABILIZED]
@@ -29,11 +30,13 @@ class Outcome:
         self.dofs = 0
 
 
-def run(m, dim, high, low, sealed, p_high, p_low, exact, how=BDM) -> Outcome:
+def run(m, dim, high, low, sealed, p_high, p_low, exact, how=BDM, degeneracy=None) -> Outcome:
     prob = mk.SinglePhaseModel(m, dim, 1.0, how)
     prob.add_normal_flux(sealed)
     prob.add_pressure(high, p_high)
     prob.add_pressure(low, p_low)
+    if degeneracy is not None:
+        prob.set_degeneracy_percent(degeneracy)
     prob.solve()
 
     out = Outcome()
@@ -49,7 +52,7 @@ def run(m, dim, high, low, sealed, p_high, p_low, exact, how=BDM) -> Outcome:
 
 
 # the facet sets of a column: the two ends, and everything else sealed
-def column_case(n, dim, family, how=BDM) -> Outcome:
+def column_case(n, dim, family, how=BDM, degeneracy=None) -> Outcome:
     h, p_hi, p_lo = 1.0, 2.0, 1.0
     m = mk.column(n, dim, family, h)
     axis = dim - 1
@@ -67,11 +70,12 @@ def column_case(n, dim, family, how=BDM) -> Outcome:
         m, dim, top, base, side, p_hi, p_lo,
         lambda x: p_lo + (p_hi - p_lo) * x[axis] / h,
         how,
+        degeneracy,
     )
 
 
 # the facet sets of a quarter annulus: the two radii, symmetry planes sealed
-def annulus_case(nr, nt, dim, family, how=BDM) -> Outcome:
+def annulus_case(nr, nt, dim, family, how=BDM, degeneracy=None) -> Outcome:
     a, b, hz, p_a, p_b = 1.0, 10.0, 1.0, 2.0, 1.0
     m = mk.annulus(nr, nt, dim, family, a, b, hz)
     rmid = math.sqrt(a * b)
@@ -94,6 +98,7 @@ def annulus_case(nr, nt, dim, family, how=BDM) -> Outcome:
         m, dim, inner, outer, sealed, p_a, p_b,
         lambda x: p_a + (p_b - p_a) * math.log(math.hypot(x[0], x[1]) / a) / math.log(b / a),
         how,
+        degeneracy,
     )
 
 
@@ -192,6 +197,96 @@ def test_the_two_point_product_is_exact_where_the_column_is_orthogonal(dim, fami
     o = column_case(6, dim, family, TPFA)
     print(f"  tpfa    {dim}D {mk.family_name(family):<10}   max {o.max_err:.2e}")
     assert o.max_err < 1e-10
+
+
+# ---- the adaptive product -------------------------------------------------
+#
+# adaptive_rt is exokal's per-cell SELECTION between the stabilized product
+# and the diagonal star, carried as eta in {0, 1}, and exokal tests its
+# algebra. What is tested here is the INTERFACE: that eta is DERIVED rather
+# than given -- ones by default, 0 on the cells the metric-degeneracy scan
+# flags at the threshold set_degeneracy_percent names -- and that the model
+# reports the selection as built.
+@pytest.mark.parametrize("dim", [2, 3])
+@pytest.mark.parametrize("family", FAMILIES, ids=lambda f: str(f).split(".")[-1])
+def test_the_default_selection_is_the_stabilized_product(dim, family):
+    # a structured annulus has no collapsed cell, so nothing is flagged and
+    # eta is ones: the stabilized product everywhere
+    ada = annulus_case(8, 4, dim, family, ADAPTIVE)
+    stab = annulus_case(8, 4, dim, family, STABILIZED)
+    print(
+        f"  adaptive {dim}D {mk.family_name(family):<10} "
+        f"max {ada.max_err:.6e} (stabilized {stab.max_err:.6e})"
+    )
+    assert abs(ada.max_err - stab.max_err) < 1e-12
+    assert ada.dofs == stab.dofs
+
+
+def test_a_total_selection_is_the_two_point_star():
+    # on a uniform mesh every cell sits at ~100% of its node-star mean, so a
+    # threshold above that flags them all: eta is zeros, and the operator is
+    # diagonal_tpfa everywhere
+    ada = annulus_case(8, 4, 3, mk.Family.simplex, ADAPTIVE, degeneracy=1e6)
+    tpfa = annulus_case(8, 4, 3, mk.Family.simplex, TPFA)
+    print(f"  adaptive 3D simplex all-flagged   max {ada.max_err:.6e} "
+          f"(tpfa {tpfa.max_err:.6e})")
+    assert abs(ada.max_err - tpfa.max_err) < 1e-12
+
+
+# THE SCAN FLAGS THE COLLAPSED CELL AND NO OTHER: a unit cube with a slab
+# 10^-6 of its height glued on top. The slab is 10^-4 % of its node-star mean
+# -- under exokal's default 0.01% -- so with NO threshold given it takes the
+# diagonal star and the cube keeps the stabilized product. The selection the
+# model reports is the one the operator was built from, which is the eta cell
+# data to write next to the solution.
+def two_cells_one_collapsed(t=1e-6):
+    pts = [[x, y, z] for z in (0.0, 1.0, 1.0 + t) for y in (0.0, 1.0) for x in (0.0, 1.0)]
+    hexa = lambda b: [  # noqa: E731 -- the six quads of layer pair (b, b+4)
+        [b + 0, b + 1, b + 3, b + 2], [b + 4, b + 6, b + 7, b + 5],
+        [b + 0, b + 4, b + 5, b + 1], [b + 2, b + 3, b + 7, b + 6],
+        [b + 0, b + 2, b + 6, b + 4], [b + 1, b + 5, b + 7, b + 3],
+    ]
+    return mk.Mesh.from_polyhedra(pts, [hexa(0), hexa(4)])
+
+
+def test_the_scan_flags_the_collapsed_cell():
+    m = two_cells_one_collapsed()
+    prob = mk.SinglePhaseModel(m, 3, 1.0, ADAPTIVE)
+    prob.add_pressure(mk.boundary_facets(m, 3), 1.0)
+    with pytest.raises(Exception):
+        prob.eta  # as built -- so not before the build
+    prob.solve()
+    print(f"  adaptive collapsed slab   eta = {list(prob.eta)}")
+    assert list(prob.eta) == [1.0, 0.0]
+    # and the constant pressure is reproduced across the seam
+    assert abs(prob.cell_pressure(0) - 1.0) < 1e-10
+    assert abs(prob.cell_pressure(1) - 1.0) < 1e-10
+
+    # a wider threshold flags the cube too: the scan is the caller's dial
+    prob = mk.SinglePhaseModel(m, 3, 1.0, ADAPTIVE)
+    prob.add_pressure(mk.boundary_facets(m, 3), 1.0)
+    prob.set_degeneracy_percent(1e9)
+    prob.solve()
+    assert list(prob.eta) == [0.0, 0.0]
+
+
+def test_the_selection_defaults_to_ones_on_a_sound_mesh():
+    m = mk.column(4, 3, mk.Family.cartesian, 1.0)
+    prob = mk.SinglePhaseModel(m, 3, 1.0, ADAPTIVE)
+    prob.add_pressure(mk.boundary_facets(m, 3), 1.0)
+    prob.solve()
+    assert list(prob.eta) == [1.0] * m.count(3)
+
+
+# THE THRESHOLD BELONGS TO adaptive_rt: named beside any other realization it
+# is refused at solve() rather than silently ignored.
+def test_the_threshold_is_refused_off_the_adaptive_product():
+    m = mk.column(4, 3, mk.Family.cartesian, 1.0)
+    prob = mk.SinglePhaseModel(m, 3, 1.0, STABILIZED)
+    prob.add_pressure(mk.boundary_facets(m, 3), 1.0)
+    prob.set_degeneracy_percent(1.0)
+    with pytest.raises(Exception):
+        prob.solve()
 
 
 def test_the_products_lay_out_different_spaces():

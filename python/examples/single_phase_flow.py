@@ -104,6 +104,14 @@ PRODUCTS = {
     # only where the mesh is K-ORTHOGONAL, so on a box it reproduces a linear
     # pressure to round-off and on a curved or polytopal one it does not.
     "diagonal_tpfa": mk.FluxRealization.diagonal_tpfa,
+    # THE PER-CELL SELECTION between the two above, carried as eta in {0, 1}:
+    # the stabilized product everywhere (eta = 1) and the diagonal star on the
+    # cells the metric-degeneracy scan flags (eta = 0) -- a reconstruction
+    # over a collapsed cell is what the selection exists to avoid. The scan
+    # runs at exokal's default threshold; --degeneracy-percent names another.
+    # The model reports the selection AS BUILT, and that is the eta cell data
+    # written to the .vtu.
+    "adaptive_rt": mk.FluxRealization.adaptive_rt,
 }
 
 
@@ -112,7 +120,7 @@ def exact(x):
     return P_INNER + (P_OUTER - P_INNER) * math.log(r / A) / math.log(B / A)
 
 
-def solve(nr, nt, dim, family, how, solver="riesz", rtol=DEFAULT_RTOL):
+def solve(nr, nt, dim, family, how, solver="riesz", rtol=DEFAULT_RTOL, degeneracy=None):
     """Build the annulus, impose the three conditions, solve, measure."""
     mesh = mk.annulus(nr, nt, dim, family, A, B, HZ)
 
@@ -139,6 +147,8 @@ def solve(nr, nt, dim, family, how, solver="riesz", rtol=DEFAULT_RTOL):
     model.add_normal_flux(sealed)  # no flow through the symmetry planes
     model.add_pressure(inner, P_INNER)
     model.add_pressure(outer, P_OUTER)
+    if degeneracy is not None:
+        model.set_degeneracy_percent(degeneracy)
     model.solve(options=solvers(rtol)[solver])
 
     worst = rms = 0.0
@@ -174,16 +184,24 @@ def main():
     ap.add_argument("--solver", default="riesz", choices=sorted(SOLVER_NAMES))
     ap.add_argument("--rtol", type=float, default=DEFAULT_RTOL,
                     help="residual tolerance of the iterative solver")
+    ap.add_argument("--degeneracy-percent", type=float, default=None,
+                    help="adaptive_rt's scan threshold: cells below this "
+                         "percentage of their node-star mean take the "
+                         "two-point star instead of the stabilized product")
     args = ap.parse_args()
 
     family, how = FAMILIES[args.family], PRODUCTS[args.product]
+    if args.degeneracy_percent is not None and args.product != "adaptive_rt":
+        raise SystemExit("--degeneracy-percent is adaptive_rt's cell selection; "
+                         "use --product adaptive_rt")
     require_three_dimensions(args.solver, args.dim)
     print(f"Dupuit annulus, {args.dim}D {args.family}, {mk.flux_realization_name(how)}")
     print(f"  a = {A}, b = {B},  p(a) = {P_INNER}, p(b) = {P_OUTER}\n")
 
     # ---- the profile on one mesh ------------------------------------------
     model, mesh, worst, rms = solve(
-        args.nr, args.nr // 2, args.dim, family, how, args.solver
+        args.nr, args.nr // 2, args.dim, family, how, args.solver,
+        degeneracy=args.degeneracy_percent,
     )
     print(f"  {model.n_cells} cells, {model.n_dofs} dofs\n")
     print(f"  {'r':>8}  {'p (computed)':>14}  {'p (Dupuit)':>12}  {'error':>10}")
@@ -200,14 +218,20 @@ def main():
         n = model.n_cells
         p = np.array([model.cell_pressure(e) for e in range(n)])
         q = np.array([exact(mk.centroid(mesh, args.dim, e)) for e in range(n)])
-        mk.write_vtu(mesh, args.vtu, {"pressure": p, "dupuit": q, "error": p - q})
+        fields = {"pressure": p, "dupuit": q, "error": p - q}
+        # the blend AS BUILT -- with the forced zeros -- next to the solution
+        # it produced, which is what makes a wrong cell attributable
+        if args.product == "adaptive_rt":
+            fields["eta"] = model.eta
+        mk.write_vtu(mesh, args.vtu, fields)
         print(f"\n  wrote {args.vtu}")
 
     # ---- and what refinement does to it ------------------------------------
     print(f"\n  {'cells':>8}  {'max error':>11}  {'rms error':>11}  {'rate':>6}")
     previous = None
     for nr in (args.nr, 2 * args.nr, 4 * args.nr):
-        m, _, worst, rms = solve(nr, nr // 2, args.dim, family, how, args.solver, args.rtol)
+        m, _, worst, rms = solve(nr, nr // 2, args.dim, family, how, args.solver, args.rtol,
+                                 degeneracy=args.degeneracy_percent)
         rate = "" if previous is None else f"{math.log2(previous / rms):6.2f}"
         print(f"  {m.n_cells:8d}  {worst:11.3e}  {rms:11.3e}  {rate:>6}")
         previous = rms

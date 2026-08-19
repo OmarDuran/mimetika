@@ -1139,7 +1139,15 @@ PYBIND11_MODULE(_core, m) {
       // ONE FLUX PER FACET AND NO RECONSTRUCTION: M is the diagonal
       // primal-dual star, which is the two-point flux approximation. Exact
       // where the mesh is K-ORTHOGONAL and only there -- see the flow example.
-      .value("diagonal_tpfa", FluxOperators::Realization::diagonal_tpfa);
+      .value("diagonal_tpfa", FluxOperators::Realization::diagonal_tpfa)
+      // THE PER-CELL SELECTION between the two products above, carried as
+      // eta in {0, 1}: ones everywhere -- the stabilized product -- and 0 on
+      // the cells the metric-degeneracy scan flags, which take the diagonal
+      // star instead of a reconstruction over a collapsed cell. The scan runs
+      // at exokal's default threshold, or at the percentage
+      // SinglePhaseModel.set_degeneracy_percent names; the model's .eta is
+      // the selection as built, one value per cell.
+      .value("adaptive_rt", FluxOperators::Realization::adaptive_rt);
 
   // HOW MANY PROCESSES THE SOLVER WILL USE, which is a question worth being
   // able to ask: launched under mpirun with a mismatched runtime, MPI falls
@@ -1269,6 +1277,19 @@ PYBIND11_MODULE(_core, m) {
             s.flow().emplace<mimetika::PressureBC>(facets, value);
           },
           py::arg("facets"), py::arg("value"))
+      .def("set_degeneracy_percent", &mimetika::SinglePhaseModel::set_degeneracy_percent,
+           py::arg("percent"),
+           "adaptive_rt's scan threshold: cells whose measure falls below this "
+           "percentage of their node-star mean take the diagonal star (eta = 0); "
+           "every other cell keeps the stabilized product (eta = 1)")
+      .def_property_readonly(
+          "eta",
+          [](const mimetika::SinglePhaseModel& s) {
+            const auto& e = s.eta();
+            return py::array_t<double>(static_cast<py::ssize_t>(e.size()), e.data());
+          },
+          "the adaptive_rt selection as built, one value per cell: "
+          "1 is stabilized_rt, 0 is diagonal_tpfa")
       .def(
           "assemble",
           [](mimetika::SinglePhaseModel& s, bool progress,
