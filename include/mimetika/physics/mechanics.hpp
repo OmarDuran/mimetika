@@ -58,9 +58,14 @@ class MixedElasticityCell {
     const auto& S = st.field(kS);
     const auto& U = st.field(kU);
     const auto& G = st.field(kG);
-    const auto& c = ops_->cell(st.support);
+    const auto& c = ops_->compact(st.support);
     const std::size_t D = S.end - S.begin;
-    if (D != c.M.rows()) {
+    // A DIAGONAL STAR STAYS DIAGONAL: the compact cell carries only diag, and
+    // reading M(i, j) here would materialize the dense zeros for every cell
+    // -- exactly the storage the compact form exists to avoid. One multiply
+    // per unknown, and the jacobian keeps the compact sparsity.
+    const bool diagonal = !c.diag.empty();
+    if (D != (diagonal ? c.diag.size() : c.M.rows())) {
       throw std::invalid_argument(
           "MixedElasticityCell: the stress block and the operators "
           "disagree on the degree-of-freedom count");
@@ -78,8 +83,12 @@ class MixedElasticityCell {
     for (std::size_t i = 0; i < D; ++i) {
       const std::size_t ri = S.begin + i;
       // M sigma
-      for (std::size_t j = 0; j < D; ++j) {
-        exokal::axpy(r[ri], c.M(i, j), a[S.begin + j]);
+      if (diagonal) {
+        exokal::axpy(r[ri], c.diag[i], a[S.begin + i]);
+      } else {
+        for (std::size_t j = 0; j < D; ++j) {
+          exokal::axpy(r[ri], c.M(i, j), a[S.begin + j]);
+        }
       }
       // -D^T u, with its adjoint in the displacement row
       for (std::size_t k = 0; k < nu; ++k) {
@@ -140,9 +149,14 @@ class MixedElasticityTotalCell {
     const auto& U = st.field(kU);
     const auto& G = st.field(kG);
     const auto& P = st.field(kP);
-    const auto& c = ops_->cell(st.support);
+    const auto& c = ops_->compact(st.support);
     const std::size_t D = S.end - S.begin;
-    if (D != c.M.rows()) {
+    // A DIAGONAL STAR STAYS DIAGONAL: the compact cell carries only diag, and
+    // reading M(i, j) here would materialize the dense zeros for every cell
+    // -- exactly the storage the compact form exists to avoid. One multiply
+    // per unknown, and the jacobian keeps the compact sparsity.
+    const bool diagonal = !c.diag.empty();
+    if (D != (diagonal ? c.diag.size() : c.M.rows())) {
       throw std::invalid_argument(
           "MixedElasticityTotalCell: the stress block and the operators "
           "disagree on the degree-of-freedom count");
@@ -155,8 +169,12 @@ class MixedElasticityTotalCell {
 
     for (std::size_t i = 0; i < D; ++i) {
       const std::size_t ri = S.begin + i;
-      for (std::size_t j = 0; j < D; ++j) {
-        exokal::axpy(r[ri], c.M(i, j), a[S.begin + j]);
+      if (diagonal) {
+        exokal::axpy(r[ri], c.diag[i], a[S.begin + i]);
+      } else {
+        for (std::size_t j = 0; j < D; ++j) {
+          exokal::axpy(r[ri], c.M(i, j), a[S.begin + j]);
+        }
       }
       for (std::size_t k = 0; k < nu; ++k) {
         exokal::axpy(r[ri], -c.Dv(k, i), a[U.begin + k]);
@@ -211,9 +229,14 @@ class StrongElasticityCell {
   void operator()(const Stencil& st, const std::vector<T>& a, std::vector<T>& r) const {
     const auto& S = st.field(kS);
     const auto& U = st.field(kU);
-    const auto& c = ops_->cell(st.support);
+    const auto& c = ops_->compact(st.support);
     const std::size_t D = S.end - S.begin;
-    if (D != c.M.rows()) {
+    // A DIAGONAL STAR STAYS DIAGONAL: the compact cell carries only diag, and
+    // reading M(i, j) here would materialize the dense zeros for every cell
+    // -- exactly the storage the compact form exists to avoid. One multiply
+    // per unknown, and the jacobian keeps the compact sparsity.
+    const bool diagonal = !c.diag.empty();
+    if (D != (diagonal ? c.diag.size() : c.M.rows())) {
       throw std::invalid_argument(
           "StrongElasticityCell: the stress block and the operators "
           "disagree on the degree-of-freedom count");
@@ -221,8 +244,12 @@ class StrongElasticityCell {
     const std::size_t nu = c.Dv.rows();
     for (std::size_t i = 0; i < D; ++i) {
       const std::size_t ri = S.begin + i;
-      for (std::size_t j = 0; j < D; ++j) {
-        exokal::axpy(r[ri], c.M(i, j), a[S.begin + j]);
+      if (diagonal) {
+        exokal::axpy(r[ri], c.diag[i], a[S.begin + i]);
+      } else {
+        for (std::size_t j = 0; j < D; ++j) {
+          exokal::axpy(r[ri], c.M(i, j), a[S.begin + j]);
+        }
       }
       for (std::size_t k = 0; k < nu; ++k) {
         exokal::axpy(r[ri], -c.Dv(k, i), a[U.begin + k]);
@@ -261,9 +288,14 @@ class StrongElasticityTotalCell {
     const auto& S = st.field(kS);
     const auto& U = st.field(kU);
     const auto& P = st.field(kP);
-    const auto& c = ops_->cell(st.support);
+    const auto& c = ops_->compact(st.support);
     const std::size_t D = S.end - S.begin;
-    if (D != c.M.rows()) {
+    // A DIAGONAL STAR STAYS DIAGONAL: the compact cell carries only diag, and
+    // reading M(i, j) here would materialize the dense zeros for every cell
+    // -- exactly the storage the compact form exists to avoid. One multiply
+    // per unknown, and the jacobian keeps the compact sparsity.
+    const bool diagonal = !c.diag.empty();
+    if (D != (diagonal ? c.diag.size() : c.M.rows())) {
       throw std::invalid_argument(
           "StrongElasticityTotalCell: the stress block and the operators "
           "disagree on the degree-of-freedom count");
@@ -273,8 +305,12 @@ class StrongElasticityTotalCell {
     const double mass = ops_->pressure_mass() * c.volume;
     for (std::size_t i = 0; i < D; ++i) {
       const std::size_t ri = S.begin + i;
-      for (std::size_t j = 0; j < D; ++j) {
-        exokal::axpy(r[ri], c.M(i, j), a[S.begin + j]);
+      if (diagonal) {
+        exokal::axpy(r[ri], c.diag[i], a[S.begin + i]);
+      } else {
+        for (std::size_t j = 0; j < D; ++j) {
+          exokal::axpy(r[ri], c.M(i, j), a[S.begin + j]);
+        }
       }
       for (std::size_t k = 0; k < nu; ++k) {
         exokal::axpy(r[ri], -c.Dv(k, i), a[U.begin + k]);

@@ -1143,6 +1143,11 @@ PYBIND11_MODULE(_core, m) {
       .def("normal_traction", &mimetika::CauchyElasticityModel::normal_traction, py::arg("facet"))
       .def("cell_stress", &mimetika::CauchyElasticityModel::cell_stress, py::arg("cell"))
       .def("facet_traction", &mimetika::CauchyElasticityModel::facet_traction, py::arg("facet"))
+      .def_property_readonly(
+          "n_invalid_star", &mimetika::CauchyElasticityModel::n_invalid_star,
+          "cells whose diagonal star carries a non-positive facet weight: the centroid "
+          "does not see that facet squarely, M is not positive there, and the condensed "
+          "solve is meaningless -- refuse or switch products when this is nonzero")
       .def("set_degeneracy_percent", &mimetika::CauchyElasticityModel::set_degeneracy_percent,
            py::arg("percent"),
            "adaptive_vem's scan threshold: cells whose measure falls below this "

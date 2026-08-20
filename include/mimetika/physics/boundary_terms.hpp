@@ -111,7 +111,7 @@ class PrescribedDisplacement {
     if (!data_->applies(st.support)) return;  // free: the homogeneous case
 
     const auto& S = st.field(kS);
-    const auto& c = ops_->cell(st.cells[0]);
+    const auto& c = ops_->compact(st.cells[0]);  // moments and grams: no dense M
     const std::size_t slot = st.support_slot[0];
     if (slot >= c.moment.size()) return;
     const exokal::numerics::Dense& mom = c.moment[slot];
@@ -236,7 +236,7 @@ class ReservoirPressurization {
     const double p = data_->at(st.support);
     if (p == 0.0) return;  // outside the reservoir: nothing to add
     const auto& S = st.field(kS);
-    const auto& c = ops_->cell(st.support);
+    const auto& c = ops_->compact(st.support);  // the trace row alone: no dense M
     const std::size_t D = S.end - S.begin;
     for (std::size_t i = 0; i < D; ++i) {
       r[S.begin + i] += alpha_ * c.T(0, i) * p;

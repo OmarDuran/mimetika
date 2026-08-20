@@ -457,6 +457,19 @@ def main():
             f"({per_cell} per cell), symmetric quasi-definite, "
             f"gmres + {report.block_solver}"
         )
+    # THE VALIDITY GATE OF THE DIAGONAL STAR, which exokal leaves to the
+    # consumer: a facet the cell centroid does not see squarely carries a
+    # non-positive weight, M is not positive there, and the elimination
+    # divides by it -- the answer then collapses toward zero while the
+    # residual still CONVERGES. That is worse than a wrong answer, so it is
+    # shouted rather than footnoted.
+    if args.product in ("diagonal_vem", "adaptive_vem"):
+        bad = model.n_invalid_star
+        if bad:
+            print(f"\n  *** {bad} cell(s) carry a NON-POSITIVE star weight: the diagonal")
+            print("  *** product is INVALID on this mesh -- the field below is meaningless.")
+            print("  *** Use stabilized_vem or adaptive_vem (whose default keeps the")
+            print("  *** stabilized product everywhere the scan does not flag).")
     print(f"\n  u = (I + W)(x - x_min)/L on all {n_facets} boundary facets, pure Dirichlet")
     print(f"  {model.n_cells} cells, {model.n_dofs} dofs, {model.n_stabilized} stabilized")
     if args.product == "adaptive_vem":

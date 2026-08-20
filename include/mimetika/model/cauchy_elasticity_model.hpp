@@ -161,6 +161,30 @@ class CauchyElasticityModel {
     return exokal::hodge::StressOperators::strongly_symmetric(how_);
   }
 
+  // THE VALIDITY GATE OF THE DIAGONAL STAR, which exokal states and leaves to
+  // the consumer: a facet the cell centroid does not see squarely carries a
+  // NON-POSITIVE weight -- delta = (x_f - x_E).n <= 0 -- and the assembled M
+  // is then not positive definite. Condensation divides by those entries and
+  // the solve collapses to a near-zero field that still reports CONVERGED:
+  // the one failure mode worse than a wrong answer. So the count is exposed,
+  // per cell with any offending facet, for the driver to refuse or report.
+  std::size_t n_invalid_star() const {
+    if (sim_ == nullptr) {
+      throw std::logic_error("CauchyElasticityModel: not built yet; call build() or solve() first");
+    }
+    std::size_t n = 0;
+    for (Index e = 0; e < static_cast<Index>(n_cells_); ++e) {
+      const auto& d = stress_.compact(e).diag;
+      for (const double v : d) {
+        if (!(v > 0.0)) {
+          ++n;
+          break;
+        }
+      }
+    }
+    return n;
+  }
+
   Formulation formulation() const { return form_; }
 
   // THE TOTAL PRESSURE p = lambda div u, one scalar per cell, and a FIELD in
@@ -365,9 +389,13 @@ class CauchyElasticityModel {
     std::size_t nnz = 0;
     const Index n_cells = mesh_->topology().count(dim_);
     for (Index e = 0; e < n_cells; ++e) {
-      const std::size_t d = stress_.cell(e).M.rows() + stress_.cell(e).Dv.rows() +
-                            stress_.cell(e).As.rows();
-      nnz += d * d;
+      // counted on the COMPACT cell: reading M here would materialize the
+      // dense zeros of every diagonal star just to know their size, and a
+      // diagonal block emits its diagonal alone
+      const auto& op = stress_.compact(e);
+      const std::size_t nb = op.diag.empty() ? op.M.rows() : op.diag.size();
+      const std::size_t d = nb + op.Dv.rows() + op.As.rows();
+      nnz += op.diag.empty() ? d * d : d * d - nb * (nb - 1);
     }
     jac.reserve(nnz);
     sim_->jacobian(jac);
@@ -828,7 +856,7 @@ class CauchyElasticityModel {
   std::array<double, 9> cell_stress(Index cell) const {
     const auto& sp = sim_->epoch().stratum(0).space();
     const auto& ms = sp.map(sp.index_of("s_0"));
-    const auto& op = stress_.cell(cell);
+    const auto& op = stress_.compact(cell);  // faces and orientation: no dense M
     const exokal::Point xE = exokal::centroid(*mesh_, dim_, cell);
     const double volume = exokal::measure(*mesh_, dim_, cell);
 

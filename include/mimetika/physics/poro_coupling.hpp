@@ -59,7 +59,7 @@ class BiotCouplingCell {
   void operator()(const Stencil& st, const std::vector<T>& a, std::vector<T>& r) const {
     const auto& S = st.field(kS);
     const auto& P = st.field(kP);
-    const auto& c = ops_->cell(st.support);
+    const auto& c = ops_->compact(st.support);  // the trace row alone: no dense M
     const std::size_t D = S.end - S.begin;
 
     for (std::size_t i = 0; i < D; ++i) {
