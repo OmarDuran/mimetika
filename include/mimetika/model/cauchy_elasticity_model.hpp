@@ -708,18 +708,92 @@ class CauchyElasticityModel {
   double rotation(Index cell, int p) const {
     const auto& sp = sim_->epoch().stratum(0).space();
     // STRONG SYMMETRY HAS NO MULTIPLIER: the rotation lives in the last three
-    // of the displacement's six rigid-motion coefficients. exokal orders them
-    // BY AXIS (e_x∧r, e_y∧r, e_z∧r) where the weak multiplier orders by
-    // (i < j) PLANE: pair p is the rotation about axis 2-p, and W_ij = -ω_axis
-    // for the xy and yz planes, +ω for xz -- the alternating sign of ε_ijk.
-    // Same measure scaling and multiplier sign as the weak accessor,
-    // verified against skw(grad u) of a prescribed affine field.
+    // of the displacement's six rigid-motion coefficients. Two conversions on
+    // top of the measure and multiplier sign:
+    //
+    //   * the ORDER. exokal's generators run BY AXIS (e_x∧r, e_y∧r, e_z∧r);
+    //     the weak multiplier runs by (i < j) PLANE. Pair p is the rotation
+    //     about axis 2-p, with the alternating sign of ε_ijk: W_ij = -ω_axis
+    //     for the xy and yz planes, +ω for xz.
+    //   * the STRAIN COUPLING. The coefficients are the L²-RM projection of
+    //     u, and on a cell whose centred second moment M₂ is anisotropic that
+    //     projection sees the strain: ω_proj = ω + J⁻¹ q(ε), with
+    //     J = tr(M₂)I - M₂ and q_a(ε) = ε_{lan} ε_lm (M₂)_nm. The strain is
+    //     C⁻¹σ from the cell stress -- exact for affine fields -- so
+    //     ω = ω_proj - J⁻¹ q(ε) restores skw(grad u) on ANY cell. On a cube
+    //     q vanishes, which is how reporting ω_proj raw passes every
+    //     structured test and fails a sheared polyhedron by O(shear).
     if (strongly_symmetric()) {
       const auto& mu = sp.map(sp.index_of("u_0"));
-      const double by_axis =
-          -state_[u_offset_ +
-                  static_cast<std::size_t>(mu.global(dim_, cell, 0, 3 + (2 - p)))] /
-          exokal::measure(*mesh_, dim_, cell);
+      const double volume = exokal::measure(*mesh_, dim_, cell);
+      std::array<double, 3> w_proj{};
+      for (std::size_t k = 0; k < 3; ++k) {
+        w_proj[k] = -state_[u_offset_ + static_cast<std::size_t>(
+                                            mu.global(dim_, cell, 0, 3 + static_cast<int>(k)))] /
+                    volume;
+      }
+
+      // the cell-average strain from the full stress: eps = (sigma - a tr I)/2mu
+      const std::array<double, 9> s = cell_stress(cell);
+      const double a = material_.lame / (2.0 * material_.shear + 3.0 * material_.lame);
+      const double trs = s[0] + s[4] + s[8];
+      std::array<double, 9> eps{};
+      for (std::size_t i = 0; i < 9; ++i) {
+        eps[i] = (s[i] - (i % 4 == 0 ? a * trs : 0.0)) / (2.0 * material_.shear);
+      }
+
+      // the centred second moments, by a rule exact for them
+      const exokal::Point xE = exokal::centroid(*mesh_, dim_, cell);
+      const exokal::QuadratureRule qr = exokal::cell_quadrature(*mesh_, dim_, cell, 2);
+      std::array<double, 9> m2{};
+      for (std::size_t pt = 0; pt < qr.weights.size(); ++pt) {
+        const exokal::Point& x = qr.points[pt];
+        const std::array<double, 3> r{x[0] - xE[0], x[1] - xE[1], x[2] - xE[2]};
+        for (std::size_t i = 0; i < 3; ++i) {
+          for (std::size_t j = 0; j < 3; ++j) m2[i * 3 + j] += qr.weights[pt] * r[i] * r[j];
+        }
+      }
+
+      // q_a = eps_{lan} E_lm M2_nm, J_ab = tr(M2) delta_ab - M2_ab
+      const auto lc = [](std::size_t i, std::size_t j, std::size_t k) -> double {
+        if (i == j || j == k || i == k) return 0.0;
+        return (j == (i + 1) % 3) ? 1.0 : -1.0;
+      };
+      std::array<double, 3> q{};
+      for (std::size_t axis = 0; axis < 3; ++axis) {
+        for (std::size_t l = 0; l < 3; ++l) {
+          for (std::size_t n = 0; n < 3; ++n) {
+            const double e = lc(l, axis, n);
+            if (e == 0.0) continue;
+            for (std::size_t mcol = 0; mcol < 3; ++mcol) {
+              q[axis] += e * eps[l * 3 + mcol] * m2[n * 3 + mcol];
+            }
+          }
+        }
+      }
+      const double trm = m2[0] + m2[4] + m2[8];
+      std::array<double, 9> J{};
+      for (std::size_t i = 0; i < 3; ++i) {
+        for (std::size_t j = 0; j < 3; ++j) {
+          J[i * 3 + j] = (i == j ? trm : 0.0) - m2[i * 3 + j];
+        }
+      }
+      // solve J c = q, 3x3, by Cramer: J is SPD on a non-degenerate cell
+      const auto det3 = [](const std::array<double, 9>& A) {
+        return A[0] * (A[4] * A[8] - A[5] * A[7]) - A[1] * (A[3] * A[8] - A[5] * A[6]) +
+               A[2] * (A[3] * A[7] - A[4] * A[6]);
+      };
+      const double dJ = det3(J);
+      std::array<double, 3> cvec{};
+      for (std::size_t col = 0; col < 3; ++col) {
+        std::array<double, 9> Jc = J;
+        for (std::size_t row = 0; row < 3; ++row) Jc[row * 3 + col] = q[row];
+        cvec[col] = det3(Jc) / dJ;
+      }
+      const std::array<double, 3> w{w_proj[0] - cvec[0], w_proj[1] - cvec[1],
+                                    w_proj[2] - cvec[2]};
+      // pair p spans plane (i, j) and is the rotation about axis 2-p
+      const double by_axis = w[static_cast<std::size_t>(2 - p)];
       return p == 1 ? by_axis : -by_axis;
     }
     const auto& mg = sp.map(sp.index_of("g_0"));

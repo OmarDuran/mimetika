@@ -438,6 +438,14 @@ def main():
     # left is round-off, or the residual tolerance of an iterative solve.
     u_hat = exact_rotation(gradient, dim)
     s_hat = exact_stress(gradient, mat, dim)
+    # THE SPLIT THE MATERIAL SEES: the volumetric stress is the mean of the
+    # diagonal, tr(sigma)/d, and the deviator is what is left. The split is a
+    # linear read of the same reconstruction, so each part inherits exactly
+    # the accuracy of the full tensor -- reported separately because a defect
+    # that lives in one part alone (a missing trace, a spurious deviator) is
+    # invisible in a single max-error number.
+    sm_hat = sum(s_hat[k * 3 + k] for k in range(dim)) / dim
+    d_hat = [s_hat[k] - (sm_hat if k in (0, 4, 8) and k // 3 < dim else 0.0) for k in range(9)]
     n_rot = model.n_rotations
 
     with stage("measuring displacement, rotation and stress"):
@@ -448,10 +456,11 @@ def main():
         stress = mk.gather_cells(
             model, np.array([model.cell_stress(e) for e in range(model.n_cells)])
         )
-        du = dr = ds = dso = 0.0
+        du = dr = ds = dso = dv = dd = 0.0
         got_u = [0.0] * dim
         got_r = [0.0] * n_rot
         got_s = [0.0] * 9
+        got_m = 0.0
         for e in range(model.n_cells):
             want_u = exact_displacement(mk.centroid(mesh, dim, e), lo, gradient, dim)
             for k in range(dim):
@@ -463,11 +472,15 @@ def main():
             s = stress[e]
             for k in range(9):
                 got_s[k] = s[k]
+            got_m = sum(s[k * 3 + k] for k in range(dim)) / dim
+            dv = max(dv, abs(got_m - sm_hat))
             for k in range(dim):
                 ds = max(ds, abs(s[k * 3 + k] - s_hat[k * 3 + k]))
+                dd = max(dd, abs((s[k * 3 + k] - got_m) - d_hat[k * 3 + k]))
                 for c in range(dim):
                     if k != c:
                         dso = max(dso, abs(s[k * 3 + c] - s_hat[k * 3 + c]))
+                        dd = max(dd, abs(s[k * 3 + c] - d_hat[k * 3 + c]))
     print()
 
     floor = "round-off" if args.solver == "direct" else f"the {args.solver} tolerance"
@@ -481,13 +494,29 @@ def main():
         ("displacement", exact_displacement(x_last, lo, gradient, dim), got_u, du),
         ("rotation", u_hat, got_r, dr),
         ("sigma diagonal", [s_hat[k] for k in diag], [got_s[k] for k in diag], ds),
+        ("sigma volumetric", [sm_hat], [got_m], dv),
+        ("sigma deviatoric", [d_hat[k] for k in diag], [got_s[k] - got_m for k in diag], dd),
         ("max |sigma_ij|", [0.0], [worst_off], dso),
     ]
     w = max(len(fmt(r[1])) for r in rows)
-    print(f"  {'field':15s} {'exact':>{w}s} {'numerical (last cell)':>{w}s} {'max error':>11s}")
+    print(f"  {'field':16s} {'exact':>{w}s} {'numerical (last cell)':>{w}s} {'max error':>11s}")
     for name, want, got, err in rows:
-        print(f"  {name:15s} {fmt(want):>{w}s} {fmt(got):>{w}s} {err:11.3e}")
-    print(f"\n  every error above is {floor}, not discretization")
+        print(f"  {name:16s} {fmt(want):>{w}s} {fmt(got):>{w}s} {err:11.3e}")
+    # THE VERDICT IS THE PRODUCT'S CLAIM, not a blanket promise: the two-point
+    # members are consistent only on face-orthogonal cells of isotropic second
+    # moment, so on a general mesh their error above is DISCRETIZATION and
+    # saying otherwise would hide exactly what those products trade away.
+    star_cells = (
+        model.n_cells if args.product in ("diagonal_tpsa", "diagonal_vem")
+        else int((model.eta == 0.0).sum()) if args.product == "adaptive_vem"
+        else 0
+    )
+    if star_cells == 0:
+        print(f"\n  every error above is {floor}, not discretization")
+    else:
+        print(f"\n  {star_cells} cell(s) carry a two-point star: their error is the star's")
+        print("  consistency claim -- exact only where the mesh is face-orthogonal with")
+        print(f"  isotropic second moment -- and the rest is {floor}")
 
     if args.vtu and root:
         with stage(f"writing {args.vtu}"):
@@ -509,6 +538,17 @@ def main():
                 # gather is collective, this block runs on one process only,
                 # and the others would wait for it forever.
                 sig[e] = stress[e]
+            # THE SPLIT, PER CELL: volumetric = tr(sigma)/d as a scalar, the
+            # deviator as the full tensor with that mean removed from the
+            # meshed diagonal. Both are linear reads of the same field, so
+            # their error columns locate WHERE a defect lives -- a wrong trace
+            # shows in the volumetric error alone, a wrong shear in the
+            # deviatoric one.
+            vol = np.array([sum(sig[e][k * 3 + k] for k in range(dim)) / dim for e in range(n)])
+            dev = sig.copy()
+            for k in range(dim):
+                dev[:, k * 3 + k] -= vol
+            dev_hat = np.array(d_hat)
             fields = {
                     "displacement": u,
                     "displacement_exact": u_exact,
@@ -519,6 +559,12 @@ def main():
                     "stress": sig,
                     "stress_exact": np.tile(np.array(s_hat), (n, 1)),
                     "stress_error": sig - np.array(s_hat),
+                    "stress_volumetric": vol,
+                    "stress_volumetric_exact": np.full(n, sm_hat),
+                    "stress_volumetric_error": vol - sm_hat,
+                    "stress_deviatoric": dev,
+                    "stress_deviatoric_exact": np.tile(dev_hat, (n, 1)),
+                    "stress_deviatoric_error": dev - dev_hat,
             }
             if args.product == "adaptive_vem":
                 fields["eta"] = model.eta
