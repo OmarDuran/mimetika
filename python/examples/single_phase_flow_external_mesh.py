@@ -203,6 +203,22 @@ def only_root():
     return False
 
 
+def report_complex(mesh):
+    """The complex's entity counts, stratum by stratum.
+
+    These are what every degree-of-freedom formula reads from: the lowest-order
+    flux space is f + c (one flux per facet, one pressure per cell), the BDM
+    layer d*f + c. Reported once so a count in the output can be checked
+    against the formula rather than trusted.
+    """
+    names = ["vertices", "edges", "faces", "cells"]
+    parts = [
+        f"{mesh.count(k)} {names[k] if k < mesh.dim else 'cells'}"
+        for k in range(mesh.dim + 1)
+    ]
+    print("  complex: " + ", ".join(parts))
+
+
 def main():
     root = only_root()
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -271,6 +287,7 @@ def main():
     how = PRODUCTS[args.product]
 
     print(f"{args.mesh}: {dim}D, {mesh.count(dim)} cells, {mesh.count(0)} vertices")
+    report_complex(mesh)
     print(
         f"  box  {np.array2string(lo[:dim], precision=4)} .. "
         f"{np.array2string(hi[:dim], precision=4)}"
@@ -299,6 +316,10 @@ def main():
             f"  {model.n_cells} cells, {model.n_dofs} dofs, "
             f"{model.moments_per_facet} moment(s) per facet"
         )
+        if report.condensed:
+            print(f"  flux eliminated exactly: {model.n_dofs} -> {report.condensed_dofs} "
+                  f"unknowns; the preconditioner built is the reduced system's "
+                  f"({report.block_solver})")
         return
     report = model.solve(progress=True, options=solvers(args.rtol)[args.solver])
     # THE TWO ASSEMBLIES, ALWAYS. They are what scales with the mesh, and they

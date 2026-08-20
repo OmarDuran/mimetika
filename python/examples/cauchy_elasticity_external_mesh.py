@@ -298,6 +298,22 @@ def only_root():
     return False
 
 
+def report_complex(mesh):
+    """The complex's entity counts, stratum by stratum.
+
+    These are what every degree-of-freedom formula reads from: the weak stress
+    space is d^2 f + (d + d(d-1)/2) c, the strong one 6f + 6c (plus c with the
+    total pressure). Reported once so a count in the output can be checked
+    against the formula rather than trusted.
+    """
+    names = ["vertices", "edges", "faces", "cells"]
+    parts = [
+        f"{mesh.count(k)} {names[k] if k < mesh.dim else 'cells'}"
+        for k in range(mesh.dim + 1)
+    ]
+    print("  complex: " + ", ".join(parts))
+
+
 def main():
     root = only_root()
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -376,6 +392,7 @@ def main():
     how = PRODUCTS[args.product]
 
     print(f"{args.mesh}: {dim}D, {mesh.count(dim)} cells, {mesh.count(0)} vertices")
+    report_complex(mesh)
     print(
         f"  box  {np.array2string(lo[:dim], precision=4)} .. "
         f"{np.array2string(hi[:dim], precision=4)}"
@@ -407,6 +424,10 @@ def main():
             f"preconditioner {report.preconditioner_seconds:.2f} s"
         )
         print(f"  {model.n_cells} cells, {model.n_dofs} dofs, {model.n_stabilized} stabilized")
+        if report.condensed:
+            print(f"  sigma eliminated exactly: {model.n_dofs} -> {report.condensed_dofs} "
+                  f"unknowns; the preconditioner built is the reduced system's "
+                  f"({report.block_solver})")
         return
     report = model.solve(progress=True, options=solvers(args.rtol)[args.solver])
     # THE TWO ASSEMBLIES, ALWAYS. They are what scales with the mesh, and they
@@ -421,6 +442,20 @@ def main():
         print(
             f"  {args.solver}: {report.iterations} iterations to rtol {args.rtol:.1e}"
             f", {report.reason} in {report.solve_seconds:.2f} s"
+        )
+    # WHAT WAS ACTUALLY SOLVED, when the stress left the system. A facet-
+    # diagonal star is eliminated exactly -- division, not factorization --
+    # and strong_symmetry_total (sigma, u, p) collapses from 6f + 7c unknowns
+    # to the 7c cell unknowns of (u, p): six rigid-motion coefficients and one
+    # total pressure per cell, a two-point system that is symmetric
+    # QUASI-DEFINITE (u positive, p negative -- the pressure mass c_p|E| rules
+    # out SPD), which is why it takes GMRES + BoomerAMG rather than CG.
+    if report.condensed:
+        per_cell = report.condensed_dofs // model.n_cells
+        print(
+            f"  sigma eliminated exactly: {model.n_dofs} -> {report.condensed_dofs} unknowns "
+            f"({per_cell} per cell), symmetric quasi-definite, "
+            f"gmres + {report.block_solver}"
         )
     print(f"\n  u = (I + W)(x - x_min)/L on all {n_facets} boundary facets, pure Dirichlet")
     print(f"  {model.n_cells} cells, {model.n_dofs} dofs, {model.n_stabilized} stabilized")

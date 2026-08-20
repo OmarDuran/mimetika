@@ -467,7 +467,14 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
   const bool on_facets = layout.carries(dim - 1) &&
                          blocks[0].size() == static_cast<std::size_t>(topo.count(dim - 1)) *
                                                  static_cast<std::size_t>(moments * copies);
-  if (dim == 3 && on_facets) {
+  // THE STRONG FAMILY IS NOT AN ADS SPACE, directly or through a subspace:
+  // its six moments per facet are one traction vector against a facet-
+  // intrinsic basis, not d copies of a scalar layout, so neither the curl's
+  // rows nor the facet-constant injection describe it. Supplying the maps
+  // anyway makes the solver believe a route exists and hands hypre a curl
+  // whose rows are not the block's -- the exact block is what solves here.
+  const bool strong_stress = copies == 1 && moments == 6;
+  if (dim == 3 && on_facets && !strong_stress) {
     const auto copy_out = [](const graphos::BoundaryOperator& b, int rows, int cols) {
       mimetika::solver::SpaceNorm::Incidence out;
       out.rows = rows;
@@ -610,18 +617,17 @@ mimetika::solver::SolveReport assemble_only(Model& m, bool progress,
   if (opts.preconditioner == "riesz") {
     attach_norm(petsc, m, m.mesh(), m.dim(), divergence_is_an_integral);
   }
+  // THE SAME GATE THE SOLVE USES: a facet-diagonal block is eliminated and
+  // the reduced system's preconditioner is what gets built -- measuring the
+  // saddle's instead reports a cost, in time and in memory, no solve pays.
+  petsc.set_condensable(mimetika::solver::first_field_dofs(m.simulation().epoch()));
   stage.begin("preconditioner");
-  petsc.factorize(m.system());
+  mimetika::solver::SolveReport r = petsc.prepare(m.system(), m.rhs());
   stage.end();
-  stage.done("  matrix", petsc.matrix_seconds());
-  stage.done(opts.direct() ? "  factorization" : "  preconditioner",
-             petsc.preconditioner_seconds());
-  mimetika::solver::SolveReport r;
-  r.converged = true;  // nothing was solved; the two builds finished
-  r.reason = "assembled";
+  stage.done("  matrix", r.matrix_seconds);
+  stage.done(opts.direct() && !r.condensed ? "  factorization" : "  preconditioner",
+             r.preconditioner_seconds);
   r.assembly_seconds = assembly_seconds;
-  r.matrix_seconds = petsc.matrix_seconds();
-  r.preconditioner_seconds = petsc.preconditioner_seconds();
   return r;
 }
 

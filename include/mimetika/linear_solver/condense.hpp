@@ -188,85 +188,96 @@ inline Condensation condense(const SparseSystem& A, const std::vector<double>& b
     }
   }
 
-  // and the columns A(rest, g), which the outer product needs on the left
-  std::vector<Index> col_begin(c.first.size() + 1, 0);
+  // THE COUPLINGS OF EACH KEPT ROW, gathered by row: its direct (rest, rest)
+  // entries and its (rest, g) reaches into the eliminated block.
+  //
+  // S = C - A10 M^-1 A01, and the outer-product form of that correction emits
+  // one triplet per (row, g, column) TRIPLE -- 196 per eliminated stress slot,
+  // gigabytes of duplicates on a few hundred thousand cells, for a matrix
+  // whose true row holds a few dozen entries. So S is formed ROW BY ROW
+  // instead: a scratch the size of the reduced system, stamped per row,
+  // accumulates every contribution in place and each row is emitted once,
+  // already merged. The peak is the merged matrix, not the algebra's
+  // intermediate.
+  const std::size_t n_rest = c.rest.size();
+  std::vector<Index> direct_begin(n_rest + 1, 0), to_g_begin(n_rest + 1, 0);
   for (std::size_t k = 0; k < A.nnz(); ++k) {
+    const auto r = static_cast<std::size_t>(A.row[k]);
+    if (mine[r] != 0) continue;
     const auto col = static_cast<std::size_t>(A.col[k]);
-    if (mine[col] == 0 || mine[static_cast<std::size_t>(A.row[k])] != 0) continue;
-    ++col_begin[static_cast<std::size_t>(place[col]) + 1];
+    ++(mine[col] != 0 ? to_g_begin : direct_begin)[static_cast<std::size_t>(c.slot[r]) + 1];
   }
-  for (std::size_t k = 0; k < c.first.size(); ++k) col_begin[k + 1] += col_begin[k];
-  std::vector<int> col_row(static_cast<std::size_t>(col_begin.back()));
-  std::vector<double> col_val(col_row.size());
+  for (std::size_t i = 0; i < n_rest; ++i) {
+    direct_begin[i + 1] += direct_begin[i];
+    to_g_begin[i + 1] += to_g_begin[i];
+  }
+  std::vector<int> direct_col(static_cast<std::size_t>(direct_begin[n_rest]));
+  std::vector<double> direct_val(direct_col.size());
+  std::vector<int> to_g(static_cast<std::size_t>(to_g_begin[n_rest]));
+  std::vector<double> to_g_val(to_g.size());
   {
-    std::vector<Index> at(col_begin.begin(), col_begin.end() - 1);
+    std::vector<Index> at_d(direct_begin.begin(), direct_begin.end() - 1);
+    std::vector<Index> at_g(to_g_begin.begin(), to_g_begin.end() - 1);
     for (std::size_t k = 0; k < A.nnz(); ++k) {
+      const auto r = static_cast<std::size_t>(A.row[k]);
+      if (mine[r] != 0) continue;
       const auto col = static_cast<std::size_t>(A.col[k]);
-      if (mine[col] == 0 || mine[static_cast<std::size_t>(A.row[k])] != 0) continue;
-      const auto put = static_cast<std::size_t>(at[static_cast<std::size_t>(place[col])]++);
-      col_row[put] = c.slot[static_cast<std::size_t>(A.row[k])];
-      col_val[put] = A.value[k];
+      const auto sr = static_cast<std::size_t>(c.slot[r]);
+      if (mine[col] != 0) {
+        const auto put = static_cast<std::size_t>(at_g[sr]++);
+        to_g[put] = place[col];
+        to_g_val[put] = A.value[k];
+      } else {
+        const auto put = static_cast<std::size_t>(at_d[sr]++);
+        direct_col[put] = c.slot[col];
+        direct_val[put] = A.value[k];
+      }
     }
   }
 
-  // S = C - A10 M^-1 A01, as triplets. C is copied entry by entry and the
-  // correction is one dense outer product per eliminated unknown -- fourteen
-  // by fourteen for a stress facet in space, and nothing is materialized in
-  // between.
-  c.reduced.n = c.rest.size();
-  std::size_t entries = 0;
-  for (std::size_t k = 0; k < c.first.size(); ++k) {
-    entries += static_cast<std::size_t>(col_begin[k + 1] - col_begin[k]) *
-               static_cast<std::size_t>(c.row_begin[k + 1] - c.row_begin[k]);
-  }
-  c.reduced.row.reserve(entries + A.nnz());
-  c.reduced.col.reserve(entries + A.nnz());
-  c.reduced.value.reserve(entries + A.nnz());
-  const auto ours = [&](int reduced_row) {
+  c.reduced.n = n_rest;
+  const auto ours = [&](std::size_t reduced_row) {
     return owners == nullptr ||
-           (*owners)[static_cast<std::size_t>(c.rest[static_cast<std::size_t>(reduced_row)])] ==
-               rank;
+           (*owners)[static_cast<std::size_t>(c.rest[reduced_row])] == rank;
   };
-  for (std::size_t k = 0; k < A.nnz(); ++k) {
-    if (mine[static_cast<std::size_t>(A.row[k])] != 0 ||
-        mine[static_cast<std::size_t>(A.col[k])] != 0) {
-      continue;
-    }
-    const int r = c.slot[static_cast<std::size_t>(A.row[k])];
+  std::vector<double> acc(n_rest, 0.0);
+  std::vector<int> last(n_rest, -1);
+  std::vector<int> touched;
+  c.rhs.assign(n_rest, 0.0);
+  for (std::size_t r = 0; r < n_rest; ++r) {
     if (!ours(r)) continue;
-    c.reduced.row.push_back(r);
-    c.reduced.col.push_back(c.slot[static_cast<std::size_t>(A.col[k])]);
-    c.reduced.value.push_back(A.value[k]);
-  }
-  for (std::size_t k = 0; k < c.first.size(); ++k) {
-    for (Index a = col_begin[k]; a < col_begin[k + 1]; ++a) {
-      const int r = col_row[static_cast<std::size_t>(a)];
-      if (!ours(r)) continue;
-      if (usable[k] == 0) {
+    touched.clear();
+    const auto put = [&](int cc, double v) {
+      const auto ci = static_cast<std::size_t>(cc);
+      if (last[ci] != static_cast<int>(r)) {
+        last[ci] = static_cast<int>(r);
+        acc[ci] = 0.0;
+        touched.push_back(cc);
+      }
+      acc[ci] += v;
+    };
+    for (Index k = direct_begin[r]; k < direct_begin[r + 1]; ++k) {
+      put(direct_col[static_cast<std::size_t>(k)], direct_val[static_cast<std::size_t>(k)]);
+    }
+    double rhs_r = b[static_cast<std::size_t>(c.rest[r])];
+    for (Index k = to_g_begin[r]; k < to_g_begin[r + 1]; ++k) {
+      const auto g = static_cast<std::size_t>(to_g[static_cast<std::size_t>(k)]);
+      if (usable[g] == 0) {
         throw std::invalid_argument(
             "condense: an eliminated unknown reaches a row this rank owns, and its own row is "
             "not here -- the halo does not cover the facets of an owned cell");
       }
-      const double left = col_val[static_cast<std::size_t>(a)] * c.inv[k];
-      for (Index e = c.row_begin[k]; e < c.row_begin[k + 1]; ++e) {
-        c.reduced.row.push_back(r);
-        c.reduced.col.push_back(c.row_col[static_cast<std::size_t>(e)]);
-        c.reduced.value.push_back(-left * c.row_val[static_cast<std::size_t>(e)]);
+      const double left = to_g_val[static_cast<std::size_t>(k)] * c.inv[g];
+      for (Index e = c.row_begin[g]; e < c.row_begin[g + 1]; ++e) {
+        put(c.row_col[static_cast<std::size_t>(e)], -left * c.row_val[static_cast<std::size_t>(e)]);
       }
+      rhs_r -= left * b[static_cast<std::size_t>(c.first[g])];
     }
-  }
-
-  c.rhs.assign(c.rest.size(), 0.0);
-  for (std::size_t i = 0; i < c.rest.size(); ++i) {
-    if (ours(static_cast<int>(i))) c.rhs[i] = b[static_cast<std::size_t>(c.rest[i])];
-  }
-  for (std::size_t k = 0; k < c.first.size(); ++k) {
-    if (usable[k] == 0) continue;
-    const double weighted = c.inv[k] * b[static_cast<std::size_t>(c.first[k])];
-    for (Index a = col_begin[k]; a < col_begin[k + 1]; ++a) {
-      const int r = col_row[static_cast<std::size_t>(a)];
-      if (!ours(r)) continue;
-      c.rhs[static_cast<std::size_t>(r)] -= col_val[static_cast<std::size_t>(a)] * weighted;
+    c.rhs[r] = rhs_r;
+    for (const int cc : touched) {
+      c.reduced.row.push_back(static_cast<Index>(r));
+      c.reduced.col.push_back(static_cast<Index>(cc));
+      c.reduced.value.push_back(acc[static_cast<std::size_t>(cc)]);
     }
   }
   return c;

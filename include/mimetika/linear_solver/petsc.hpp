@@ -478,6 +478,57 @@ class PetscSolver final : public LinearSolver {
     return ordinary(A, b, x);
   }
 
+  // BUILD WHAT A SOLVE WOULD BUILD, AND NOTHING MORE -- for the caller that
+  // measures the two assemblies without iterating. Measuring the
+  // factorization of a saddle the solve immediately eliminates reports a
+  // cost, in time AND in memory, that no run ever pays: on a facet-diagonal
+  // star the block is divided out and the preconditioner that matters is the
+  // REDUCED system's. So the same gate decides here as in solve(), and the
+  // report carries the same condensation facts.
+  SolveReport prepare(const SparseSystem& A, const std::vector<double>& b) {
+    SolveReport r;
+    r.converged = true;
+    r.reason = "assembled";
+    if (opts_.condense && !condensable_.empty() && block_is_diagonal(A, condensable_)) {
+      PetscMPIInt size = 1, rank = 0;
+      MPI_Comm_size(PETSC_COMM_WORLD, &size);
+      MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
+      const bool spread = size > 1;
+      if (!spread || owners_.size() == static_cast<std::size_t>(A.n)) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const Condensation c =
+            condense(A, b, condensable_, spread ? &owners_ : nullptr, static_cast<int>(rank));
+        const auto t1 = std::chrono::steady_clock::now();
+        SolverOptions inner = opts_;
+        inner.condense = false;
+        if (inner.preconditioner == "riesz" || inner.preconditioner == "exact") {
+          inner.preconditioner = "hypre";
+          if (inner.direct()) inner.method = "gmres";
+        }
+        PetscSolver sub(inner);
+        if (spread) {
+          std::vector<int> reduced_owners(c.rest.size(), 0);
+          for (std::size_t i = 0; i < c.rest.size(); ++i) {
+            reduced_owners[i] = owners_[static_cast<std::size_t>(c.rest[i])];
+          }
+          sub.set_owners(std::move(reduced_owners));
+        }
+        sub.factorize(c.reduced);
+        r.condensed = true;
+        r.condensed_dofs = c.size();
+        r.matrix_seconds = slowest(std::chrono::duration<double>(t1 - t0).count()) +
+                           sub.matrix_seconds();
+        r.preconditioner_seconds = sub.preconditioner_seconds();
+        r.block_solver = inner.preconditioner;
+        return r;
+      }
+    }
+    factorize(A);
+    r.matrix_seconds = matrix_seconds_;
+    r.preconditioner_seconds = preconditioner_seconds_;
+    return r;
+  }
+
   // A RESIDUAL THIS LARGE IS NOT A CONVERGED SOLVE, WHATEVER THE
   // FACTORIZATION SAID.
   //
@@ -919,6 +970,15 @@ class PetscSolver final : public LinearSolver {
         norm_.vertex_coordinates.size() ==
             static_cast<std::size_t>(norm_.discrete_gradient.cols) *
                 static_cast<std::size_t>(norm_.space_dim);
+    // ADS IS WRITTEN FOR ONE UNKNOWN PER FACET: the discrete curl's rows must
+    // BE the block's rows. The strongly-symmetric stress carries the
+    // six-component traction moment vector whole, so the two disagree row for
+    // row and the auxiliary decomposition does not exist -- neither directly
+    // nor through the facet-constant subspace, whose injection is written for
+    // d copies of a scalar layout.
+    const bool one_per_facet =
+        !norm_.discrete_curl.empty() &&
+        static_cast<std::size_t>(n0) == static_cast<std::size_t>(norm_.discrete_curl.rows);
     // THE CROSSOVER IS NOT WHERE IT WAS MEASURED TO BE.
     //
     // ADS was made the default above 25k unknowns on a comparison against a
@@ -939,12 +999,20 @@ class PetscSolver final : public LinearSolver {
     // partition, which is the one thing that must be supplied for it.
     const bool ads_possible_here =
         ads_possible && (!distributed_ || norm_.entity_owner.size() >= 3);
-    const bool use_ads = ads_possible_here &&
+    const bool use_ads = ads_possible_here && (one_per_facet || through_subspace) &&
                          (inexact_block || (!through_subspace && n0 > opts_.riesz_ads_limit));
     std::string b0_pc = !opts_.riesz_block_pc.empty() ? opts_.riesz_block_pc
                         : use_ads                     ? "ads"
                         : inexact_block               ? "icc"
                                                       : "cholesky";
+    // A NAMED 'ads' THAT CANNOT BE BUILT IS RE-DECIDED RATHER THAN OBEYED.
+    // Without the one-unknown-per-facet layout there is nothing to attach --
+    // hypre would be handed a curl whose rows are not the block's -- and
+    // throwing mid-setup fails a run the exact block solves. The same command
+    // then works on every product, and block_solver reports what actually ran.
+    if (b0_pc == "ads" && !(ads_possible_here && (one_per_facet || through_subspace))) {
+      b0_pc = inexact_block ? "icc" : "cholesky";
+    }
 
     // A TWO-LEVEL CYCLE IS NOT A COMPLETE SOLVER, and one application of it is
     // not enough. Where ADS acts on the block itself, a single V-cycle is
