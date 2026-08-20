@@ -46,6 +46,12 @@ struct FacetForm {
   double value{0.0};
 };
 
+// THE STRONG-SYMMETRY LAYOUT, recognized from the space rather than told: six
+// moments of one scalar layout is the signature no weak stress field has --
+// those carry d components -- so a condition can serve both families through
+// the one space it is resolved against.
+inline bool strong_layout(const FacetDofs& d) { return d.components == 1 && d.moments == 6; }
+
 // The base every condition shares. `resolve` is what turns parameters plus a
 // facet set into forms, and it needs the space because a form is a statement
 // about unknowns.
@@ -106,25 +112,53 @@ class TractionBC final : public BoundaryCondition {
   void resolve(const exokal::Mesh& mesh, int cell_dim, const exokal::spaces::ProductSpace& space,
                Index offset) override {
     forms_.clear();
-    for (const Index f : facets_) {
-      const FacetFrame fr = FacetFrame::of(mesh, cell_dim, cofacet_of(mesh, cell_dim, f), f);
+    // the coboundary is built ONCE for the batch: per facet it is O(mesh),
+    // and a resolve over the boundary of a large mesh then costs more than
+    // the assembly it serves
+    const std::vector<Index> cells = cofacets_of(mesh, cell_dim, facets_);
+    for (std::size_t fi = 0; fi < facets_.size(); ++fi) {
+      const Index f = facets_[fi];
+      const FacetFrame fr = FacetFrame::of(mesh, cell_dim, cells[fi], f);
       const FacetDofs d = facet_dofs(space, field_, cell_dim, f, offset);
+      // the traction against the CANONICAL normal, so the dof convention and
+      // the datum agree on orientation without the caller knowing either
+      std::array<double, 3> t{};
       for (int k = 0; k < cell_dim; ++k) {
-        double t = 0.0;
         for (int j = 0; j < cell_dim; ++j) {
-          t +=
+          t[static_cast<std::size_t>(k)] +=
               stress_[static_cast<std::size_t>(k * 3 + j)] * fr.normal[static_cast<std::size_t>(j)];
         }
+      }
+      if (strong_layout(d)) {
+        // THE SIX SLOTS OF THE STRONG FAMILY, in the facet's canonical frame:
+        // a uniform traction meets only the mean slots -- the rotation moment
+        // is centred and the chart's higher functions have zero mean -- so
+        // slots 0, 1 and 3 carry |f| times its frame components and 2, 4, 5
+        // are zero. The frame here is the one the discrete basis uses.
+        const std::array<double, 6> value = {
+            fr.measure * dot(t, fr.tangent[0]), fr.measure * dot(t, fr.tangent[1]), 0.0,
+            fr.measure * dot(t, fr.normal),     0.0,                                0.0};
+        for (int b = 0; b < 6; ++b) {
+          forms_.push_back(FacetForm{f, {d.at(0, b)}, {1.0}, value[static_cast<std::size_t>(b)]});
+        }
+        continue;
+      }
+      for (int k = 0; k < cell_dim; ++k) {
         // a uniform traction lands entirely on the constant moment, scaled by
         // the measure it is integrated against; the higher moments are zero
         for (int b = 0; b < d.moments; ++b) {
-          forms_.push_back(FacetForm{f, {d.at(k, b)}, {1.0}, b == 0 ? t * fr.measure : 0.0});
+          forms_.push_back(FacetForm{
+              f, {d.at(k, b)}, {1.0}, b == 0 ? t[static_cast<std::size_t>(k)] * fr.measure : 0.0});
         }
       }
     }
   }
 
  private:
+  static double dot(const std::array<double, 3>& a, const Point& b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  }
+
   std::array<double, 9> stress_;
   std::string field_{"s_0"};
 };
@@ -141,9 +175,20 @@ class FreeSlipBC final : public BoundaryCondition {
   void resolve(const exokal::Mesh& mesh, int cell_dim, const exokal::spaces::ProductSpace& space,
                Index offset) override {
     forms_.clear();
-    for (const Index f : facets_) {
-      const FacetFrame fr = FacetFrame::of(mesh, cell_dim, cofacet_of(mesh, cell_dim, f), f);
+    const std::vector<Index> cells = cofacets_of(mesh, cell_dim, facets_);
+    for (std::size_t fi = 0; fi < facets_.size(); ++fi) {
+      const Index f = facets_[fi];
+      const FacetFrame fr = FacetFrame::of(mesh, cell_dim, cells[fi], f);
       const FacetDofs d = facet_dofs(space, field_, cell_dim, f, offset);
+      if (strong_layout(d)) {
+        // the tangential traction is carried whole by slots 0, 1 and 2 -- the
+        // two mean components and the in-plane rotation moment -- so free
+        // slip pins exactly those and leaves the normal slots 3, 4, 5 free
+        for (const int b : {0, 1, 2}) {
+          forms_.push_back(FacetForm{f, {d.at(0, b)}, {1.0}, 0.0});
+        }
+        continue;
+      }
       for (int a = 0; a < fr.n_tangents; ++a) {
         const Point& t = fr.tangent[static_cast<std::size_t>(a)];
         for (int b = 0; b < d.moments; ++b) {
@@ -179,8 +224,10 @@ class NormalFluxBC final : public BoundaryCondition {
   void resolve(const exokal::Mesh& mesh, int cell_dim, const exokal::spaces::ProductSpace& space,
                Index offset) override {
     forms_.clear();
-    for (const Index f : facets_) {
-      const FacetFrame fr = FacetFrame::of(mesh, cell_dim, cofacet_of(mesh, cell_dim, f), f);
+    const std::vector<Index> cells = cofacets_of(mesh, cell_dim, facets_);
+    for (std::size_t fi = 0; fi < facets_.size(); ++fi) {
+      const Index f = facets_[fi];
+      const FacetFrame fr = FacetFrame::of(mesh, cell_dim, cells[fi], f);
       const FacetDofs d = facet_dofs(space, field_, cell_dim, f, offset);
       for (int b = 0; b < d.moments; ++b) {
         for (int k = 0; k < d.components; ++k) {
@@ -255,8 +302,10 @@ class RobinBC final : public BoundaryCondition {
     forms_.clear();
     const std::size_t ci = space.index_of(cell_field_);
     const exokal::spaces::DofMap& cmap = space.map(ci);
-    for (const Index f : facets_) {
-      const Index cell = cofacet_of(mesh, cell_dim, f);
+    const std::vector<Index> cells = cofacets_of(mesh, cell_dim, facets_);
+    for (std::size_t fi = 0; fi < facets_.size(); ++fi) {
+      const Index f = facets_[fi];
+      const Index cell = cells[fi];
       const FacetFrame fr = FacetFrame::of(mesh, cell_dim, cell, f);
       const FacetDofs d = facet_dofs(space, field_, cell_dim, f, offset);
       const Index p = space.offset(ci) + cmap.global(cell_dim, cell, 0, 0) + offset;

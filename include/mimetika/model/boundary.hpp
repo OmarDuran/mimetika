@@ -471,4 +471,30 @@ class BoundaryVectorData {
   std::vector<char> set_;
 };
 
+// THE PRESCRIBED DISPLACEMENT AS THE STRONG FAMILY'S SLOT COEFFICIENTS: the
+// expansion of u_D against the six-moment facet basis, one block per facet,
+// PRECOMPUTED by the model. The basis needs the facet's chart and second
+// moments, which the operators do not carry per cell -- and the datum is
+// affine, so a fixed quadrature evaluates the six integrals exactly once at
+// build. The term then reads numbers, as every other natural datum does.
+class StrongDisplacementCoefficients {
+ public:
+  StrongDisplacementCoefficients() = default;
+  explicit StrongDisplacementCoefficients(std::size_t n_facets)
+      : value_(n_facets * 6, 0.0), set_(n_facets, 0) {}
+
+  void set(Index f, const std::array<double, 6>& v) {
+    const auto i = static_cast<std::size_t>(f);
+    for (std::size_t b = 0; b < 6; ++b) value_[i * 6 + b] = v[b];
+    set_[i] = 1;
+  }
+
+  bool applies(Index f) const { return set_[static_cast<std::size_t>(f)] != 0; }
+  double at(Index f, std::size_t b) const { return value_[static_cast<std::size_t>(f) * 6 + b]; }
+
+ private:
+  std::vector<double> value_;
+  std::vector<char> set_;
+};
+
 }  // namespace mimetika

@@ -182,6 +182,120 @@ class MixedElasticityTotalCell {
 inline const exokal::forms::RegisterTerm<MixedElasticityTotalCell> register_mixed_elasticity_total{
     "mixed_elasticity_total_cell", exokal::forms::Coupling::closure, {"s", "u", "g", "p"}};
 
+// STRONG SYMMETRY: the rigid-motion ansatz (exokal's vem_operators), TWO
+// fields.
+//
+//     r_sigma = M sigma - Dv^T u
+//     r_u     = + Dv sigma
+//
+// Symmetry lives in the reconstruction space, so there is no rotation
+// multiplier: the displacement carries the whole of RM(E) -- six coefficients
+// per cell in space, translations and rotations at once -- and Dv is the full
+// rigid-motion pairing. The stress carries the six-component traction moment
+// vector per facet whole rather than d copies of a scalar layout.
+//
+// The sign convention is the shared one, [M, -B^T; +B, 0], as for every other
+// pairing in the catalogue.
+class StrongElasticityCell {
+ public:
+  StrongElasticityCell() = default;
+  StrongElasticityCell(const Params&, const TermContext& ctx)
+      : ops_(&ctx.require<exokal::hodge::StressOperators>("stress_operators")) {}
+
+  static constexpr std::size_t kS = 0;  // stress
+  static constexpr std::size_t kU = 1;  // displacement, as RM coefficients
+
+  std::vector<std::string> fields() const { return {"s", "u"}; }
+
+  template <class T>
+  void operator()(const Stencil& st, const std::vector<T>& a, std::vector<T>& r) const {
+    const auto& S = st.field(kS);
+    const auto& U = st.field(kU);
+    const auto& c = ops_->cell(st.support);
+    const std::size_t D = S.end - S.begin;
+    if (D != c.M.rows()) {
+      throw std::invalid_argument(
+          "StrongElasticityCell: the stress block and the operators "
+          "disagree on the degree-of-freedom count");
+    }
+    const std::size_t nu = c.Dv.rows();
+    for (std::size_t i = 0; i < D; ++i) {
+      const std::size_t ri = S.begin + i;
+      for (std::size_t j = 0; j < D; ++j) {
+        exokal::axpy(r[ri], c.M(i, j), a[S.begin + j]);
+      }
+      for (std::size_t k = 0; k < nu; ++k) {
+        exokal::axpy(r[ri], -c.Dv(k, i), a[U.begin + k]);
+        exokal::axpy(r[U.begin + k], c.Dv(k, i), a[ri]);
+      }
+    }
+  }
+
+ private:
+  const exokal::hodge::StressOperators* ops_{nullptr};
+};
+
+inline const exokal::forms::RegisterTerm<StrongElasticityCell> register_strong_elasticity{
+    "strong_elasticity_cell", exokal::forms::Coupling::closure, {"s", "u"}};
+
+// THE SAME ANSATZ WITH THE TOTAL PRESSURE INDEPENDENT: exokal's
+// strong_symmetry_total, and the only formulation the diagonal member of the
+// VEM family admits. The p rows are the ones the weak total form carries --
+// -(2 mu)^-1 T^T p in the stress row, (2 mu)^-1 T sigma - c_p |E| p = 0 to
+// close -- read off the same operators.
+class StrongElasticityTotalCell {
+ public:
+  StrongElasticityTotalCell() = default;
+  StrongElasticityTotalCell(const Params& p, const TermContext& ctx)
+      : ops_(&ctx.require<exokal::hodge::StressOperators>("stress_operators")),
+        half_(1.0 / (2.0 * p.get("shear_modulus", 1.0))) {}
+
+  static constexpr std::size_t kS = 0;  // stress
+  static constexpr std::size_t kU = 1;  // displacement, as RM coefficients
+  static constexpr std::size_t kP = 2;  // total pressure
+
+  std::vector<std::string> fields() const { return {"s", "u", "p"}; }
+
+  template <class T>
+  void operator()(const Stencil& st, const std::vector<T>& a, std::vector<T>& r) const {
+    const auto& S = st.field(kS);
+    const auto& U = st.field(kU);
+    const auto& P = st.field(kP);
+    const auto& c = ops_->cell(st.support);
+    const std::size_t D = S.end - S.begin;
+    if (D != c.M.rows()) {
+      throw std::invalid_argument(
+          "StrongElasticityTotalCell: the stress block and the operators "
+          "disagree on the degree-of-freedom count");
+    }
+    const std::size_t nu = c.Dv.rows();
+    const double half = half_;
+    const double mass = ops_->pressure_mass() * c.volume;
+    for (std::size_t i = 0; i < D; ++i) {
+      const std::size_t ri = S.begin + i;
+      for (std::size_t j = 0; j < D; ++j) {
+        exokal::axpy(r[ri], c.M(i, j), a[S.begin + j]);
+      }
+      for (std::size_t k = 0; k < nu; ++k) {
+        exokal::axpy(r[ri], -c.Dv(k, i), a[U.begin + k]);
+        exokal::axpy(r[U.begin + k], c.Dv(k, i), a[ri]);
+      }
+      exokal::axpy(r[ri], -half * c.T(0, i), a[P.begin]);
+      exokal::axpy(r[P.begin], half * c.T(0, i), a[ri]);
+    }
+    exokal::axpy(r[P.begin], -mass, a[P.begin]);
+  }
+
+ private:
+  const exokal::hodge::StressOperators* ops_{nullptr};
+  double half_{0.5};
+};
+
+inline const exokal::forms::RegisterTerm<StrongElasticityTotalCell>
+    register_strong_elasticity_total{"strong_elasticity_total_cell",
+                                     exokal::forms::Coupling::closure,
+                                     {"s", "u", "p"}};
+
 }  // namespace terms
 
 struct MechanicsOptions {
@@ -201,6 +315,11 @@ struct MechanicsOptions {
   // the package cannot infer it from the layout: the driver derives this and
   // the realization from one formulation, as it does for the moments.
   bool total_pressure{false};
+  // STRONG SYMMETRY: six traction moments per facet carried whole, six
+  // rigid-motion coefficients per cell for the displacement, no rotation
+  // field. A different space, so a different layout, not a re-parametrized
+  // one.
+  bool strong_symmetry{false};
   double shear_modulus{1.0};
 };
 
@@ -214,6 +333,22 @@ class Mechanics final : public Package {
   Requirements requirements(int dim, int codim = 0) const override {
     const auto at = [codim](std::string_view b) { return exokal::forms::field_at(b, codim); };
     Requirements r;
+    if (opt_.strong_symmetry) {
+      // the rigid-motion ansatz: the facet carries the six-component traction
+      // moment vector WHOLE -- six moments of one scalar layout, not d copies
+      // -- and the displacement is the six rigid-motion coefficients of the
+      // cell, translations and rotations at once. No rotation field: the
+      // symmetry lives in the reconstruction space.
+      r.fields.push_back({at("s"), DofLayout::moments(dim, dim - 1, 6, 1)});
+      r.fields.push_back({at("u"), DofLayout::cell_wise(dim, 1, 6)});
+      if (opt_.total_pressure) {
+        r.fields.push_back({at("p"), DofLayout::cell_wise(dim, 1, 1)});
+      }
+      r.provides = {"displacement", "momentum_balance", "stress"};
+      if (opt_.total_pressure) r.provides.push_back("total_pressure");
+      r.slots = {{"shear_modulus", Scope::rock}, {"poisson", Scope::rock}};
+      return r;
+    }
     // the stress carries part of the facet P_1 basis in each of d components:
     // all d of it for the BDM layer, so d^2 per facet, or the constant alone
     // for the RT layer, so d. The displacement and the rotation are cell-wise,

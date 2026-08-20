@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "exokal/geometry/degeneracy.hpp"
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/linear_solver/linear.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
@@ -114,6 +115,50 @@ class CauchyElasticityModel {
           "CauchyElasticityModel: diagonal_tpsa needs the total-pressure formulation -- the "
           "three-field compliance couples traction components through the trace");
     }
+    // THE SYMMETRY AXIS IS ONE DECISION: a strongly-symmetric realization
+    // under a weak formulation (or the reverse) is refused here as exokal
+    // refuses it at build, so the error arrives where the choice was made.
+    if (exokal::hodge::StressOperators::strongly_symmetric(how) !=
+        exokal::hodge::StressOperators::strongly_symmetric(form)) {
+      throw std::invalid_argument(
+          "CauchyElasticityModel: the realization and the formulation must agree on where the "
+          "symmetry lives -- the vem family builds strong_symmetry(_total), the rest the weak "
+          "pair");
+    }
+    // the rigid-motion ansatz is a three-dimensional construction: six
+    // traction moments per facet and the six rigid motions per cell
+    if (exokal::hodge::StressOperators::strongly_symmetric(how) && cell_dim != 3) {
+      throw std::invalid_argument(
+          "CauchyElasticityModel: the strongly-symmetric vem family is a 3D construction");
+    }
+    if ((how == Realization::diagonal_vem || how == Realization::adaptive_vem) &&
+        form != Formulation::strong_symmetry_total) {
+      throw std::invalid_argument(
+          std::string("CauchyElasticityModel: ") + exokal::hodge::StressOperators::name(how) +
+          " needs strong_symmetry_total -- the plain compliance couples traction components "
+          "through the trace and cannot be diagonal");
+    }
+  }
+
+  // THE adaptive_vem THRESHOLD: scan for metrically degenerate cells at this
+  // percentage of the node-star mean and give them the diagonal star, eta = 0.
+  // The same contract adaptive_rt carries for the flux: eta is DERIVED --
+  // ones, with the flagged cells zeroed -- never given as a field. Unset,
+  // exokal scans at its own default_degeneracy_percent.
+  void set_degeneracy_percent(double percent) { degeneracy_percent_ = percent; }
+
+  // The selection AS BUILT, one value per cell: 1 is the stabilized vem
+  // product, 0 the diagonal star. Empty unless the realization is
+  // adaptive_vem; the field to write next to the solution.
+  const std::vector<double>& eta() const {
+    if (sim_ == nullptr) {
+      throw std::logic_error("CauchyElasticityModel: not built yet; call build() or solve() first");
+    }
+    return stress_.eta();
+  }
+
+  bool strongly_symmetric() const {
+    return exokal::hodge::StressOperators::strongly_symmetric(how_);
   }
 
   Formulation formulation() const { return form_; }
@@ -122,10 +167,10 @@ class CauchyElasticityModel {
   // the four-field formulation rather than a post-processing of the stress.
   // Asking for it in three fields asks for something that was never solved for.
   double total_pressure(Index cell) const {
-    if (form_ != Formulation::weak_symmetry_total) {
+    if (form_ != Formulation::weak_symmetry_total && form_ != Formulation::strong_symmetry_total) {
       throw std::logic_error(
-          "CauchyElasticityModel::total_pressure: the three-field formulation has no total "
-          "pressure; build with Formulation::weak_symmetry_total");
+          "CauchyElasticityModel::total_pressure: this formulation has no total pressure; build "
+          "with weak_symmetry_total or strong_symmetry_total");
     }
     const auto& sp = sim_->epoch().stratum(0).space();
     const auto& mp = sp.map(sp.index_of("p_0"));
@@ -175,9 +220,24 @@ class CauchyElasticityModel {
     // the K-independent mode selection, which only the de Rham product has
     const bool derham = how_ == Realization::derham_bdm;
     if (derham) geometry_ = exokal::hodge::DeRhamGeometryCache::build(*mesh_, dim_);
+    // THE adaptive_vem SELECTION, DERIVED RATHER THAN GIVEN: ones, with 0 on
+    // the cells the scan flags at the caller's threshold. exokal forces its
+    // own default-threshold zeros on top either way, so a caller can only
+    // widen the set -- the same contract adaptive_rt carries for the flux.
+    if (degeneracy_percent_ >= 0.0 && how_ != Realization::adaptive_vem) {
+      throw std::invalid_argument(
+          "CauchyElasticityModel: the degeneracy threshold is adaptive_vem's cell selection");
+    }
+    std::vector<double> eta;
+    if (how_ == Realization::adaptive_vem && degeneracy_percent_ >= 0.0) {
+      eta.assign(static_cast<std::size_t>(c.count(dim_)), 1.0);
+      for (const Index e : exokal::degenerate_cell_ids(*mesh_, dim_, degeneracy_percent_)) {
+        eta[static_cast<std::size_t>(e)] = 0.0;
+      }
+    }
     stress_ = exokal::hodge::StressOperators::build(*mesh_, dim_, material_.shear, material_.lame,
                                                     how_, form_, derham ? &geometry_ : nullptr,
-                                                    only);
+                                                    only, eta.empty() ? nullptr : &eta);
     ctx_.provide("stress_operators", stress_);
 
     displacement_data_ = BoundaryVectorData(static_cast<std::size_t>(c.count(dim_ - 1)));
@@ -185,6 +245,35 @@ class CauchyElasticityModel {
       displacement_data_.set_affine(d.facets, d.constant, d.gradient);
     }
     ctx_.provide("boundary_displacement", displacement_data_);
+
+    // THE STRONG DATUM, EXPANDED AT BUILD: the six moments of the affine
+    // u_D = a + B (x - x_E) against the facet basis, divided by the |f| Gram.
+    // The operators do not carry the chart and second moments per cell, and
+    // the datum is affine, so a quadrature that is exact for these integrals
+    // runs once here and the boundary term reads numbers -- the affine datum
+    // stays EXACT, as it is in the weak family.
+    if (strongly_symmetric() && !displacement_facets_.empty()) {
+      strong_displacement_ =
+          StrongDisplacementCoefficients(static_cast<std::size_t>(c.count(dim_ - 1)));
+      // THE COBOUNDARY IS BUILT ONCE. cofacet_of rebuilds it per call, which
+      // is O(mesh) each time -- 5k boundary facets on a 22k-cell mesh then
+      // spend minutes recomputing the same operator that takes milliseconds
+      // to build once. The same lesson the python example already carries.
+      const graphos::CoboundaryOperator cob = graphos::coboundary(c, dim_ - 1);
+      for (const auto& d : displacement_facets_) {
+        for (const Index f : d.facets) {
+          const auto b = static_cast<std::size_t>(cob.offsets[static_cast<std::size_t>(f)]);
+          const auto e = static_cast<std::size_t>(cob.offsets[static_cast<std::size_t>(f) + 1]);
+          if (e - b != 1) {
+            throw std::invalid_argument(
+                "prescribe_displacement: facet " + std::to_string(f) + " is interior");
+          }
+          strong_displacement_.set(
+              f, strong_datum_coefficients(f, cob.indices[b], d.constant, d.gradient));
+        }
+      }
+      ctx_.provide("strong_boundary_displacement", strong_displacement_);
+    }
 
     reservoir_data_ = CellData(static_cast<std::size_t>(c.count(dim_)));
     for (const auto& r : reservoir_) reservoir_data_.set(r.cells, r.pressure);
@@ -196,9 +285,11 @@ class CauchyElasticityModel {
     physics::ModelOptions o;
     o.traction_moments = stress_.moments_per_facet();
     // AND THE FIELD COUNT FOLLOWS THE FORMULATION, read off the operators for
-    // the same reason: three fields or four is a property of the product that
-    // was built, not a second choice made here.
-    o.total_pressure = stress_.formulation() == Formulation::weak_symmetry_total;
+    // the same reason: the field roster is a property of the product that was
+    // built, not a second choice made here.
+    o.total_pressure = stress_.formulation() == Formulation::weak_symmetry_total ||
+                       stress_.formulation() == Formulation::strong_symmetry_total;
+    o.strong_symmetry = strongly_symmetric();
     // the four-field term keeps (2 mu)^-1 as its compliance, so mu travels with
     // the composition rather than being looked up from a slot
     o.shear_modulus = material_.shear;
@@ -207,7 +298,9 @@ class CauchyElasticityModel {
         std::vector<StratumSpec>{StratumSpec{"ambient", &c, dim_, 0}}, ctx_);
     // the natural displacement datum, attached only when one is actually given
     if (!displacement_facets_.empty()) {
-      sim_->model().add("prescribed_displacement", exokal::forms::On::all(), {});
+      sim_->model().add(
+          strongly_symmetric() ? "strong_prescribed_displacement" : "prescribed_displacement",
+          exokal::forms::On::all(), {});
     }
     if (!reservoir_.empty()) {
       exokal::forms::Params rp;
@@ -228,10 +321,13 @@ class CauchyElasticityModel {
     {
       const auto& ms = sp.map(sp.index_of("s_0"));
       const auto s_base = static_cast<std::size_t>(sp.offset(sp.index_of("s_0")));
+      // the strong family carries its six moments on ONE scalar layout, the
+      // weak one `moments` per each of d components
       const int nb = stress_.moments_per_facet();
+      const int nk = strongly_symmetric() ? 1 : dim_;
       for (const Index f : prescribed_) {
         for (int b = 0; b < nb; ++b) {
-          for (int k = 0; k < dim_; ++k) {
+          for (int k = 0; k < nk; ++k) {
             const auto d =
                 static_cast<Index>(s_base + static_cast<std::size_t>(ms.global(dim_ - 1, f, b, k)));
             prescribed_forms_.push_back(sim_->constraints().size());
@@ -307,7 +403,8 @@ class CauchyElasticityModel {
     work_.assign(sim_->n_dofs(), 0.0);
     s_offset_ = static_cast<std::size_t>(sp.offset(sp.index_of("s_0")));
     u_offset_ = static_cast<std::size_t>(sp.offset(sp.index_of("u_0")));
-    g_offset_ = static_cast<std::size_t>(sp.offset(sp.index_of("g_0")));
+    // the strong family has no rotation field: symmetry lives in the space
+    g_offset_ = strongly_symmetric() ? 0 : static_cast<std::size_t>(sp.offset(sp.index_of("g_0")));
     n_cells_ = static_cast<std::size_t>(c.count(dim_));
   }
 
@@ -393,6 +490,12 @@ class CauchyElasticityModel {
   // fracture, a material interface, a post-processing -- wants this functional.
   // PoroelasticModel carries the same method with the Biot term added.
   std::vector<double> trace(Index facet, const std::vector<double>& z) const {
+    // the contact machinery reads the weak family's (moment, component) facet
+    // blocks; the strong family's six-slot basis is not wired through it yet
+    if (strongly_symmetric()) {
+      throw std::logic_error(
+          "CauchyElasticityModel::trace: not implemented for the strongly-symmetric vem family");
+    }
     const graphos::Complex& c = mesh_->topology();
     const auto& sp = sim_->epoch().stratum(0).space();
     const auto& ms = sp.map(sp.index_of("s_0"));
@@ -540,7 +643,9 @@ class CauchyElasticityModel {
   // in the ProductSpace order (component fastest).
   const std::vector<double>& solution_operator(const std::vector<double>& moments) const {
     const std::size_t ndf =
-        static_cast<std::size_t>(dim_) * static_cast<std::size_t>(stress_.moments_per_facet());
+        strongly_symmetric()
+            ? std::size_t{6}
+            : static_cast<std::size_t>(dim_) * static_cast<std::size_t>(stress_.moments_per_facet());
     if (moments.size() != prescribed_.size() * ndf) {
       throw std::invalid_argument("solution_operator: one traction moment block per facet");
     }
@@ -602,6 +707,21 @@ class CauchyElasticityModel {
   // rotation, which is what makes it worth reporting next to the stress.
   double rotation(Index cell, int p) const {
     const auto& sp = sim_->epoch().stratum(0).space();
+    // STRONG SYMMETRY HAS NO MULTIPLIER: the rotation lives in the last three
+    // of the displacement's six rigid-motion coefficients. exokal orders them
+    // BY AXIS (e_x∧r, e_y∧r, e_z∧r) where the weak multiplier orders by
+    // (i < j) PLANE: pair p is the rotation about axis 2-p, and W_ij = -ω_axis
+    // for the xy and yz planes, +ω for xz -- the alternating sign of ε_ijk.
+    // Same measure scaling and multiplier sign as the weak accessor,
+    // verified against skw(grad u) of a prescribed affine field.
+    if (strongly_symmetric()) {
+      const auto& mu = sp.map(sp.index_of("u_0"));
+      const double by_axis =
+          -state_[u_offset_ +
+                  static_cast<std::size_t>(mu.global(dim_, cell, 0, 3 + (2 - p)))] /
+          exokal::measure(*mesh_, dim_, cell);
+      return p == 1 ? by_axis : -by_axis;
+    }
     const auto& mg = sp.map(sp.index_of("g_0"));
     return -state_[g_offset_ + static_cast<std::size_t>(mg.global(dim_, cell, 0, p))] /
            exokal::measure(*mesh_, dim_, cell);
@@ -642,11 +762,21 @@ class CauchyElasticityModel {
     for (const Index f : op.faces) {
       const FacetFrame fr = FacetFrame::of(*mesh_, dim_, cell, f);
       const exokal::Point xf = exokal::centroid(*mesh_, dim_ - 1, f);
+      // int_f (sigma n) against the CANONICAL normal: the leading moment per
+      // component for the weak family, and the three mean slots read through
+      // the facet frame for the strong one. The incidence turns it outward.
+      const std::array<double, 3> force =
+          strongly_symmetric() ? strong_facet_force(f, fr)
+                               : std::array<double, 3>{
+                                     state_[s_offset_ + static_cast<std::size_t>(
+                                                            ms.global(dim_ - 1, f, 0, 0))],
+                                     state_[s_offset_ + static_cast<std::size_t>(
+                                                            ms.global(dim_ - 1, f, 0, 1))],
+                                     dim_ > 2 ? state_[s_offset_ + static_cast<std::size_t>(
+                                                                       ms.global(dim_ - 1, f, 0, 2))]
+                                              : 0.0};
       for (int i = 0; i < dim_; ++i) {
-        // the leading moment is int_f (sigma n) against the CANONICAL normal;
-        // the incidence turns it outward from this cell
-        const double t = fr.incidence *
-                         state_[s_offset_ + static_cast<std::size_t>(ms.global(dim_ - 1, f, 0, i))];
+        const double t = fr.incidence * force[static_cast<std::size_t>(i)];
         for (int j = 0; j < dim_; ++j) {
           raw[static_cast<std::size_t>(i * 3 + j)] +=
               t * (xf[static_cast<std::size_t>(j)] - xE[static_cast<std::size_t>(j)]);
@@ -682,6 +812,16 @@ class CauchyElasticityModel {
     const auto& sp = sim_->epoch().stratum(0).space();
     const auto& ms = sp.map(sp.index_of("s_0"));
     const double area = exokal::measure(*mesh_, dim_ - 1, facet);
+    if (strongly_symmetric()) {
+      // interior-safe: any coface serves, since a volume facet's canonical
+      // frame does not read the cell
+      const graphos::CoboundaryOperator cob = graphos::coboundary(mesh_->topology(), dim_ - 1);
+      const Index cell = cob.indices[static_cast<std::size_t>(
+          cob.offsets[static_cast<std::size_t>(facet)])];
+      std::array<double, 3> t = strong_facet_force(facet, FacetFrame::of(*mesh_, dim_, cell, facet));
+      for (double& v : t) v /= area;
+      return t;
+    }
     std::array<double, 3> t{};
     for (int k = 0; k < dim_; ++k) {
       t[static_cast<std::size_t>(k)] =
@@ -697,6 +837,12 @@ class CauchyElasticityModel {
     const auto& sp = sim_->epoch().stratum(0).space();
     const auto& ms = sp.map(sp.index_of("s_0"));
     const FacetFrame fr = FacetFrame::of(*mesh_, dim_, cofacet_of(*mesh_, dim_, facet), facet);
+    if (strongly_symmetric()) {
+      // n . int_f (sigma n) is slot 3 alone: chi_0 = 1 and the tangential
+      // slots are orthogonal to the normal
+      return state_[s_offset_ + static_cast<std::size_t>(ms.global(dim_ - 1, facet, 3, 0))] /
+             fr.measure;
+    }
     double t = 0.0;
     for (int k = 0; k < dim_; ++k) {
       t += fr.normal[static_cast<std::size_t>(k)] *
@@ -711,6 +857,10 @@ class CauchyElasticityModel {
     const auto& sp = sim_->epoch().stratum(0).space();
     const auto& ms = sp.map(sp.index_of("s_0"));
     const FacetFrame fr = FacetFrame::of(*mesh_, dim_, cofacet_of(*mesh_, dim_, facet), facet);
+    if (strongly_symmetric()) {
+      const std::array<double, 3> force = strong_facet_force(facet, fr);
+      return (e[0] * force[0] + e[1] * force[1] + e[2] * force[2]) / fr.measure;
+    }
     double t = 0.0;
     for (int k = 0; k < dim_; ++k) {
       t += e[static_cast<std::size_t>(k)] *
@@ -719,16 +869,107 @@ class CauchyElasticityModel {
     return t / fr.measure;
   }
 
+  // int_f u_D . basis_b / |f| for the six strong-symmetry facet functionals,
+  // with u_D = a + B (x - x_E) about the facet's one cofacet. The basis is
+  // {t1, t2, n^(x-x_f)/rho, n chi_0, n chi_1, n chi_2} in the facet's
+  // CANONICAL frame -- the one FacetFrame::of shares with the discrete dofs --
+  // and the chart comes from the facet's own centred second moments, computed
+  // by the same quadrature that evaluates the moments. Degree 4 is exact for
+  // every integrand here, so the affine datum is reproduced rather than
+  // approximated.
+  std::array<double, 6> strong_datum_coefficients(Index f, Index cell,
+                                                  const std::array<double, 3>& a,
+                                                  const std::array<double, 9>& B) const {
+    const FacetFrame fr = FacetFrame::of(*mesh_, dim_, cell, f);
+    const exokal::Point xE = exokal::centroid(*mesh_, dim_, cell);
+    const exokal::Point xf = exokal::centroid(*mesh_, dim_ - 1, f);
+    const exokal::QuadratureRule qr = exokal::facet_quadrature(*mesh_, dim_, f, 4);
+
+    const auto xi = [&](const exokal::Point& x, int t) {
+      double s = 0.0;
+      for (std::size_t k = 0; k < 3; ++k) {
+        s += fr.tangent[static_cast<std::size_t>(t)][k] * (x[k] - xf[k]);
+      }
+      return s;
+    };
+    double area = 0.0, m11 = 0.0, m12 = 0.0, m22 = 0.0;
+    for (std::size_t p = 0; p < qr.weights.size(); ++p) {
+      const double w = qr.weights[p];
+      const double x1 = xi(qr.points[p], 0), x2 = xi(qr.points[p], 1);
+      area += w;
+      m11 += w * x1 * x1;
+      m12 += w * x1 * x2;
+      m22 += w * x2 * x2;
+    }
+    const exokal::hodge::FacetChart chart = exokal::hodge::facet_chart(area, m11, m12, m22, dim_);
+    const double rho = std::sqrt((m11 + m22) / area);
+
+    std::array<double, 6> v{};
+    for (std::size_t p = 0; p < qr.weights.size(); ++p) {
+      const double w = qr.weights[p];
+      const exokal::Point& x = qr.points[p];
+      std::array<double, 3> u{};
+      for (std::size_t i = 0; i < 3; ++i) {
+        u[i] = a[i];
+        for (std::size_t j = 0; j < 3; ++j) u[i] += B[i * 3 + j] * (x[j] - xE[j]);
+      }
+      const std::array<double, 3> dx{x[0] - xf[0], x[1] - xf[1], x[2] - xf[2]};
+      const std::array<double, 3> nxdx{fr.normal[1] * dx[2] - fr.normal[2] * dx[1],
+                                       fr.normal[2] * dx[0] - fr.normal[0] * dx[2],
+                                       fr.normal[0] * dx[1] - fr.normal[1] * dx[0]};
+      double ut1 = 0.0, ut2 = 0.0, un = 0.0, urot = 0.0;
+      for (std::size_t k = 0; k < 3; ++k) {
+        ut1 += fr.tangent[0][k] * u[k];
+        ut2 += fr.tangent[1][k] * u[k];
+        un += fr.normal[k] * u[k];
+        urot += nxdx[k] * u[k];
+      }
+      const double x1 = xi(x, 0), x2 = xi(x, 1);
+      const double chi1 = chart.a11 * x1;
+      const double chi2 = chart.a21 * x1 + chart.a22 * x2;
+      v[0] += w * ut1;
+      v[1] += w * ut2;
+      v[2] += w * urot / rho;
+      v[3] += w * un;
+      v[4] += w * un * chi1;
+      v[5] += w * un * chi2;
+    }
+    for (double& e : v) e /= area;
+    return v;
+  }
+
+  // int_f (sigma n) in ambient components against the CANONICAL normal, from
+  // the six strong-symmetry slots. The rotation and first-moment slots
+  // integrate to zero against a constant -- ∫chi_a = 0 for a >= 1 and the
+  // rotation basis is centred -- so the mean is carried by slots 0, 1 and 3
+  // in the facet's canonical frame, which FacetFrame::of shares with the
+  // discrete basis.
+  std::array<double, 3> strong_facet_force(Index facet, const FacetFrame& fr) const {
+    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& ms = sp.map(sp.index_of("s_0"));
+    const auto slot = [&](int b) {
+      return state_[s_offset_ + static_cast<std::size_t>(ms.global(dim_ - 1, facet, b, 0))];
+    };
+    const double s0 = slot(0), s1 = slot(1), s3 = slot(3);
+    std::array<double, 3> force{};
+    for (std::size_t k = 0; k < 3; ++k) {
+      force[k] = s0 * fr.tangent[0][k] + s1 * fr.tangent[1][k] + s3 * fr.normal[k];
+    }
+    return force;
+  }
+
  private:
   const exokal::Mesh* mesh_;
   int dim_;
   ElasticMaterial material_;
   Realization how_;
   Formulation form_{Formulation::weak_symmetry};
+  double degeneracy_percent_{-1.0};  // adaptive_vem's scan threshold; negative is unset
   MechanicsBoundary mechanics_;
 
   exokal::hodge::DeRhamGeometryCache geometry_;
   exokal::hodge::StressOperators stress_;
+  StrongDisplacementCoefficients strong_displacement_;
   exokal::forms::TermContext ctx_;
   // the partition, requested before the build and applied inside it
   int n_ranks_{1}, rank_{0};

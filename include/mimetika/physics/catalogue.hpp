@@ -41,6 +41,11 @@ struct ModelOptions {
   // the total pressure as an independent field: exokal's weak_symmetry_total,
   // four fields rather than three
   bool total_pressure{false};
+  // STRONG SYMMETRY: the rigid-motion ansatz. The stress carries six traction
+  // moments per facet whole, the displacement the six rigid-motion
+  // coefficients per cell, and there is no rotation field -- symmetry lives
+  // in the reconstruction space rather than against a multiplier.
+  bool strong_symmetry{false};
   double shear_modulus{1.0};
 };
 

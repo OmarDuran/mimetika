@@ -17,6 +17,12 @@ MU, LAM = 1.0, 1.0
 DERHAM = mk.StressRealization.derham_bdm
 DERHAM_RT = mk.StressRealization.derham_rt
 STABILIZED = mk.StressRealization.stabilized_bdm
+VEM = mk.StressRealization.stabilized_vem
+DIAGONAL_VEM = mk.StressRealization.diagonal_vem
+ADAPTIVE_VEM = mk.StressRealization.adaptive_vem
+WEAK = mk.StressFormulation.weak_symmetry
+STRONG = mk.StressFormulation.strong_symmetry
+STRONG_TOTAL = mk.StressFormulation.strong_symmetry_total
 
 FAMILIES = [mk.Family.cartesian, mk.Family.simplex, mk.Family.prism]
 PRODUCTS = [DERHAM, STABILIZED]
@@ -41,7 +47,7 @@ def _material(mu=MU, lam=LAM):
 # Rollers on the base and every side, a uniform compressive traction on top.
 # Confinement removes every lateral strain by geometry alone, so elasticity
 # gives the whole answer in closed form.
-def column_case(n, dim, family, how) -> Outcome:
+def column_case(n, dim, family, how, form=WEAK, degeneracy=None) -> Outcome:
     h, load = 1.0, 0.5
     m = mk.column(n, dim, family, h)
     axis = dim - 1
@@ -54,9 +60,11 @@ def column_case(n, dim, family, how) -> Outcome:
     applied = [0.0] * 9
     applied[axis * 3 + axis] = -load
 
-    model = mk.CauchyElasticityModel(m, dim, _material(), how)
+    model = mk.CauchyElasticityModel(m, dim, _material(), how, form)
     model.add_traction(loaded, applied)
     model.add_free_slip(confined)
+    if degeneracy is not None:
+        model.set_degeneracy_percent(degeneracy)
     model.solve()
 
     k_oed = model.material().oedometer()
@@ -95,7 +103,7 @@ class Lame:
         )
 
 
-def annulus_case(nr, nt, dim, family, how, mat=None) -> Outcome:
+def annulus_case(nr, nt, dim, family, how, mat=None, form=WEAK) -> Outcome:
     mat = mat if mat is not None else _material()
     a, b, hz, p_a, p_b = 1.0, 4.0, 1.0, 1.0, 0.25
     m = mk.annulus(nr, nt, dim, family, a, b, hz)
@@ -128,7 +136,7 @@ def annulus_case(nr, nt, dim, family, how, mat=None) -> Outcome:
         si[k * 3 + k] = -p_a
         so[k * 3 + k] = -p_b
 
-    model = mk.CauchyElasticityModel(m, dim, mat, how)
+    model = mk.CauchyElasticityModel(m, dim, mat, how, form)
     model.add_traction(inner, si)
     model.add_traction(outer, so)
     model.add_free_slip(sym)
@@ -257,3 +265,89 @@ def test_neither_product_locks_as_the_material_becomes_incompressible(how, dim, 
     # no degradation at the limit, and the rate holds
     assert hard_c.rms_err < 1.1 * soft_c.rms_err
     assert rate > 1.5
+
+
+# ---- the strongly-symmetric vem family ---------------------------------------
+#
+# exokal's rigid-motion ansatz (Dassi-Lovadina-Visinoni): six traction moments
+# per facet carried whole, the displacement as the six rigid-motion
+# coefficients per cell, no rotation multiplier -- symmetry lives in the
+# reconstruction space. exokal tests the operators; what is tested here is the
+# INTERFACE: the layout, the boundary conditions written in the six-slot facet
+# basis, the readbacks, and adaptive_vem's derived selection.
+
+STRONG_FAMILIES = [mk.Family.cartesian, mk.Family.simplex, mk.Family.prism]
+
+
+@pytest.mark.parametrize("form", [STRONG, STRONG_TOTAL],
+                         ids=["strong_symmetry", "strong_symmetry_total"])
+@pytest.mark.parametrize("family", STRONG_FAMILIES, ids=lambda f: str(f).split(".")[-1])
+def test_the_strong_column_reproduces_the_confined_solution_exactly(family, form):
+    o = column_case(4, 3, family, VEM, form)
+    print(
+        f"  column  stabilized_vem {str(form).split('.')[-1]:<22} "
+        f"{mk.family_name(family):<10} {o.cells:4d} cells {o.dofs:6d} dofs   "
+        f"max {o.max_err:.2e}   stress {o.stress_err:.2e}"
+    )
+    assert o.max_err < 1e-12
+    assert o.stress_err < 1e-12
+
+
+def test_the_diagonal_vem_star_is_exact_where_the_column_is_orthogonal():
+    # the cartesian column's cells are face-orthogonal with isotropic second
+    # moment, which is where the two-point member's resultants are consistent
+    o = column_case(4, 3, mk.Family.cartesian, DIAGONAL_VEM, STRONG_TOTAL)
+    print(f"  column  diagonal_vem cartesian   max {o.max_err:.2e}")
+    assert o.max_err < 1e-12
+
+
+def test_the_adaptive_vem_selection_matches_its_members_at_the_ends():
+    stab = column_case(4, 3, mk.Family.simplex, VEM, STRONG_TOTAL)
+    ones = column_case(4, 3, mk.Family.simplex, ADAPTIVE_VEM, STRONG_TOTAL)
+    star = column_case(4, 3, mk.Family.cartesian, DIAGONAL_VEM, STRONG_TOTAL)
+    allf = column_case(4, 3, mk.Family.cartesian, ADAPTIVE_VEM, STRONG_TOTAL, degeneracy=1e9)
+    print(
+        f"  adaptive_vem ends   default max {ones.max_err:.2e} (stab {stab.max_err:.2e})   "
+        f"all-flagged max {allf.max_err:.2e} (star {star.max_err:.2e})"
+    )
+    assert abs(ones.max_err - stab.max_err) < 1e-14
+    assert abs(allf.max_err - star.max_err) < 1e-14
+    assert ones.dofs == stab.dofs  # same mesh, same layout
+    assert allf.dofs == star.dofs
+
+
+def test_the_adaptive_vem_selection_is_reported_as_built():
+    m = mk.column(3, 3, mk.Family.cartesian, 1.0)
+    model = mk.CauchyElasticityModel(m, 3, _material(), ADAPTIVE_VEM, STRONG_TOTAL)
+    model.add_traction(mk.boundary_facets(m, 3), [0.0] * 9)
+    with pytest.raises(Exception):
+        model.eta  # as built -- so not before the build
+    model.solve()
+    assert list(model.eta) == [1.0] * model.n_cells
+
+
+# THE REFUSALS: the symmetry axis is one decision, the diagonal members demand
+# the total pressure, the ansatz is three-dimensional, and the threshold
+# belongs to adaptive_vem. Each is an exception where the choice was made.
+@pytest.mark.parametrize(
+    "how,form,dim",
+    [
+        (VEM, WEAK, 3),                                       # axis disagreement
+        (DERHAM, STRONG, 3),                                  # and the reverse
+        (DIAGONAL_VEM, STRONG, 3),                            # diagonal needs total
+        (ADAPTIVE_VEM, STRONG, 3),                            # the blend inherits it
+        (VEM, STRONG, 2),                                     # 3D construction
+    ],
+    ids=["strong-under-weak", "weak-under-strong", "diagonal-plain", "adaptive-plain", "2d"],
+)
+def test_the_strong_wiring_refuses_what_it_must(how, form, dim):
+    m = mk.column(2, dim, mk.Family.cartesian, 1.0)
+    with pytest.raises(Exception):
+        mk.CauchyElasticityModel(m, dim, _material(), how, form)
+
+
+def test_the_threshold_is_refused_off_the_adaptive_vem_product():
+    o = None
+    with pytest.raises(Exception):
+        o = column_case(3, 3, mk.Family.cartesian, VEM, STRONG, degeneracy=1.0)
+    assert o is None

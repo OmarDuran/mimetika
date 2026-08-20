@@ -115,11 +115,24 @@ PRODUCTS = {
     # It exists in four fields only, so --formulation is set for it rather than
     # asked of the caller.
     "diagonal_tpsa": mk.StressRealization.diagonal_tpsa,
+    # THE STRONGLY-SYMMETRIC FAMILY (Dassi-Lovadina-Visinoni): six traction
+    # moments per facet carried whole, the displacement as the cell's six
+    # rigid-motion coefficients, no rotation multiplier. stabilized_vem builds
+    # either strong formulation; diagonal_vem is its two-point member and
+    # adaptive_vem the per-cell selection between them, both under
+    # strong_symmetry_total only -- where M can be diagonal at all.
+    "stabilized_vem": mk.StressRealization.stabilized_vem,
+    "diagonal_vem": mk.StressRealization.diagonal_vem,
+    "adaptive_vem": mk.StressRealization.adaptive_vem,
 }
+
+STRONG_PRODUCTS = {"stabilized_vem", "diagonal_vem", "adaptive_vem"}
 
 FORMULATIONS = {
     "weak_symmetry": mk.StressFormulation.weak_symmetry,
     "weak_symmetry_total": mk.StressFormulation.weak_symmetry_total,
+    "strong_symmetry": mk.StressFormulation.strong_symmetry,
+    "strong_symmetry_total": mk.StressFormulation.strong_symmetry_total,
 }
 
 
@@ -137,12 +150,33 @@ def formulation_for(product, asked):
     # --formulation weak_symmetry with diagonal_tpsa is a contradiction, and it
     # is the only case refused.
     if product == "diagonal_tpsa":
-        if asked == "weak_symmetry":
+        if asked not in (None, "weak_symmetry_total"):
             raise SystemExit(
                 "--product diagonal_tpsa exists only in the four-field form: drop "
-                "--formulation weak_symmetry, or pass weak_symmetry_total"
+                "--formulation, or pass weak_symmetry_total"
             )
         return mk.StressFormulation.weak_symmetry_total
+    # the strong family: the symmetry axis is the product's, and the diagonal
+    # members demand the total pressure
+    if product in ("diagonal_vem", "adaptive_vem"):
+        if asked not in (None, "strong_symmetry_total"):
+            raise SystemExit(
+                f"--product {product} exists only under strong_symmetry_total: drop "
+                "--formulation, or pass strong_symmetry_total"
+            )
+        return mk.StressFormulation.strong_symmetry_total
+    if product == "stabilized_vem":
+        if asked in ("weak_symmetry", "weak_symmetry_total"):
+            raise SystemExit(
+                "--product stabilized_vem carries its symmetry in the space: use "
+                "strong_symmetry or strong_symmetry_total"
+            )
+        return FORMULATIONS[asked or "strong_symmetry"]
+    if asked in ("strong_symmetry", "strong_symmetry_total"):
+        raise SystemExit(
+            f"--product {product} imposes symmetry weakly: use weak_symmetry or "
+            "weak_symmetry_total, or a vem product"
+        )
     return FORMULATIONS[asked or "weak_symmetry"]
 
 
@@ -357,6 +391,10 @@ def main():
     gradient = gradient_of(dim, length, args.spin)
     with stage("creating the model"):
         model = mk.CauchyElasticityModel(mesh, dim, mat, how, form)
+        # the threshold reaches the model only where it is the model's: for
+        # any other product it stays what it always was, the diagnostics dial
+        if args.product == "adaptive_vem" and args.degeneracy_percent is not None:
+            model.set_degeneracy_percent(args.degeneracy_percent)
     with stage("prescribing u on the boundary"):
         n_facets = prescribe_linear_displacement(model, mesh, dim, lo, gradient)
     if args.assemble_only:
@@ -386,6 +424,12 @@ def main():
         )
     print(f"\n  u = (I + W)(x - x_min)/L on all {n_facets} boundary facets, pure Dirichlet")
     print(f"  {model.n_cells} cells, {model.n_dofs} dofs, {model.n_stabilized} stabilized")
+    if args.product == "adaptive_vem":
+        n_star = int((model.eta == 0.0).sum())
+        pct = args.degeneracy_percent
+        print(f"  adaptive_vem: {n_star} cell(s) on the diagonal star, "
+              f"{model.n_cells - n_star} on the stabilized vem product "
+              f"(threshold {'default' if pct is None else f'{pct}%'})")
 
     # ---- the three fields, each against the value the datum determines -------
     #
@@ -476,6 +520,8 @@ def main():
                     "stress_exact": np.tile(np.array(s_hat), (n, 1)),
                     "stress_error": sig - np.array(s_hat),
             }
+            if args.product == "adaptive_vem":
+                fields["eta"] = model.eta
             fields.update(partition_field(mesh, dim, args.partition))
             mk.write_vtu(mesh, args.vtu, fields)
 

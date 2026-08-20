@@ -957,7 +957,16 @@ PYBIND11_MODULE(_core, m) {
       // makes M diagonal. Consistent where the mesh is FACE-ORTHOGONAL, and
       // solvable everywhere: half the unknowns of the BDM products and an
       // eighth of the matrix entries.
-      .value("diagonal_tpsa", StressOperators::Realization::diagonal_tpsa);
+      .value("diagonal_tpsa", StressOperators::Realization::diagonal_tpsa)
+      // THE STRONGLY-SYMMETRIC FAMILY (Dassi-Lovadina-Visinoni): six traction
+      // moments per facet carried whole, reconstruction onto constant
+      // symmetric tensors, no rotation multiplier. stabilized_vem builds
+      // either strong formulation; diagonal_vem is the two-point member and
+      // adaptive_vem the per-cell selection between them -- both demand
+      // strong_symmetry_total, where M can be diagonal at all.
+      .value("stabilized_vem", StressOperators::Realization::stabilized_vem)
+      .value("diagonal_vem", StressOperators::Realization::diagonal_vem)
+      .value("adaptive_vem", StressOperators::Realization::adaptive_vem);
 
   // THREE FIELDS OR FOUR, which is a discretization and not a solver setting.
   // weak_symmetry carries the volumetric response in the compliance;
@@ -966,7 +975,12 @@ PYBIND11_MODULE(_core, m) {
   // uniform in the incompressible limit, and the only form diagonal_tpsa has.
   py::enum_<StressOperators::Formulation>(m, "StressFormulation")
       .value("weak_symmetry", StressOperators::Formulation::weak_symmetry)
-      .value("weak_symmetry_total", StressOperators::Formulation::weak_symmetry_total);
+      .value("weak_symmetry_total", StressOperators::Formulation::weak_symmetry_total)
+      // THE RIGID-MOTION ANSATZ: symmetry lives in the reconstruction space,
+      // so there is no rotation field -- sigma and u, with the total pressure
+      // independent in the _total form. The vem realizations build these.
+      .value("strong_symmetry", StressOperators::Formulation::strong_symmetry)
+      .value("strong_symmetry_total", StressOperators::Formulation::strong_symmetry_total);
 
   m.def("stress_formulation_name",
         static_cast<const char* (*)(StressOperators::Formulation)>(&StressOperators::name),
@@ -1122,7 +1136,20 @@ PYBIND11_MODULE(_core, m) {
       .def_property_readonly("n_rotations", &mimetika::CauchyElasticityModel::n_rotations)
       .def("normal_traction", &mimetika::CauchyElasticityModel::normal_traction, py::arg("facet"))
       .def("cell_stress", &mimetika::CauchyElasticityModel::cell_stress, py::arg("cell"))
-      .def("facet_traction", &mimetika::CauchyElasticityModel::facet_traction, py::arg("facet"));
+      .def("facet_traction", &mimetika::CauchyElasticityModel::facet_traction, py::arg("facet"))
+      .def("set_degeneracy_percent", &mimetika::CauchyElasticityModel::set_degeneracy_percent,
+           py::arg("percent"),
+           "adaptive_vem's scan threshold: cells whose measure falls below this "
+           "percentage of their node-star mean take the diagonal star (eta = 0); "
+           "every other cell keeps the stabilized vem product (eta = 1)")
+      .def_property_readonly(
+          "eta",
+          [](const mimetika::CauchyElasticityModel& s) {
+            const auto& e = s.eta();
+            return py::array_t<double>(static_cast<py::ssize_t>(e.size()), e.data());
+          },
+          "the adaptive_vem selection as built, one value per cell: "
+          "1 is stabilized_vem, 0 is diagonal_vem");
 
   m.def(
       "boundary_facets",

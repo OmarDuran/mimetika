@@ -159,6 +159,44 @@ class PrescribedDisplacement {
 inline const exokal::forms::RegisterTerm<PrescribedDisplacement> register_prescribed_displacement{
     "prescribed_displacement", Coupling::boundary, {"s"}};
 
+// THE SAME DATUM FOR THE STRONG FAMILY, whose facet carries the six-component
+// traction moment vector whole. The model precomputes the expansion
+// coefficients of u_D against that basis -- Gram |f| I, so coefficient_b =
+// (1/|f|) int_f u_D . basis_b, exact for the affine datum -- and this term
+// places them where -Dv^T u stood, with the facet's incidence for the side it
+// is seen from.
+class StrongPrescribedDisplacement {
+ public:
+  StrongPrescribedDisplacement() = default;
+  StrongPrescribedDisplacement(const Params&, const TermContext& ctx)
+      : data_(&ctx.require<StrongDisplacementCoefficients>("strong_boundary_displacement")) {}
+
+  static constexpr std::size_t kS = 0;
+
+  std::vector<std::string> fields() const { return {"s"}; }
+
+  template <class T>
+  void operator()(const Stencil& st, const std::vector<T>& a, std::vector<T>& r) const {
+    (void)a;
+    if (st.n_cofacets != 1) return;
+    if (!data_->applies(st.support)) return;  // free: the homogeneous case
+
+    const auto& S = st.field(kS);
+    const std::size_t slot = st.support_slot[0];
+    for (std::size_t b = 0; b < 6; ++b) {
+      const std::size_t i = S.begin + slot * 6 + b;
+      if (i < S.end) r[i] -= st.incidence[0] * data_->at(st.support, b);
+    }
+  }
+
+ private:
+  const StrongDisplacementCoefficients* data_{nullptr};
+};
+
+inline const exokal::forms::RegisterTerm<StrongPrescribedDisplacement>
+    register_strong_prescribed_displacement{"strong_prescribed_displacement", Coupling::boundary,
+                                            {"s"}};
+
 // RESERVOIR PRESSURIZATION AS A LOAD ON THE MECHANICS ALONE.
 //
 // A depletion or injection benchmark does not solve the flow: the pore pressure

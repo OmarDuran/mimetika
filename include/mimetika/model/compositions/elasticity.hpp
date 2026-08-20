@@ -18,10 +18,15 @@ inline const physics::RegisterModel linear_elasticity{
     [](const physics::ModelOptions& o) {
       physics::Composition c;
       // THE TERM FOLLOWS THE FORMULATION, not the other way round: four fields
-      // is a different pairing, not the same one with a field appended.
+      // is a different pairing, not the same one with a field appended -- and
+      // the strong family is a different space, with the symmetry in the
+      // reconstruction rather than against a rotation multiplier.
+      const char* term =
+          o.strong_symmetry
+              ? (o.total_pressure ? "strong_elasticity_total_cell" : "strong_elasticity_cell")
+              : (o.total_pressure ? "mixed_elasticity_total_cell" : "mixed_elasticity_cell");
       c.emplace<physics::Mechanics>(physics::MechanicsOptions{
-          o.total_pressure ? "mixed_elasticity_total_cell" : "mixed_elasticity_cell",
-          o.traction_moments, o.total_pressure, o.shear_modulus});
+          term, o.traction_moments, o.total_pressure, o.strong_symmetry, o.shear_modulus});
       return c;
     }};
 
