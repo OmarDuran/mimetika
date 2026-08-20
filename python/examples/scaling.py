@@ -45,12 +45,12 @@ FLUX_PRODUCTS = {
 STRESS_PRODUCTS = {
     "derham_bdm": mk.StressRealization.derham_bdm,
     "stabilized_bdm": mk.StressRealization.stabilized_bdm,
-    "diagonal_tpsa": mk.StressRealization.diagonal_tpsa,
+    "diagonal_afw": mk.StressRealization.diagonal_afw,
 }
-# diagonal_tpsa is diagonal only in the total-pressure form, and exists in no
+# diagonal_afw is diagonal only in the total-pressure form, and exists in no
 # other; the de Rham ones are asked for in three fields, as elsewhere.
 FORMULATIONS = {
-    "diagonal_tpsa": mk.StressFormulation.weak_symmetry_total,
+    "diagonal_afw": mk.StressFormulation.weak_symmetry_total,
 }
 SOLVERS = ("direct", "riesz", "ads")
 MU, LAM = 1.0, 1.0

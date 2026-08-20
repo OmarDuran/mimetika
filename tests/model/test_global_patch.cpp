@@ -363,7 +363,7 @@ MIMETIKA_TEST(the_elastic_patch_is_exact_for_the_two_point_stars_where_they_clai
   using R = CauchyElasticityModel::Realization;
   using F = CauchyElasticityModel::Formulation;
   for (const int dim : {2, 3}) {
-    const ElasticPatch t = elastic_patch(dim, Family::cartesian, R::diagonal_tpsa,
+    const ElasticPatch t = elastic_patch(dim, Family::cartesian, R::diagonal_afw,
                                          F::weak_symmetry_total);
     CHECK(t.u < 1e-10);
     CHECK(t.pressure < 1e-9);

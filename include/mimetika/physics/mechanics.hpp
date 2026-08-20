@@ -125,7 +125,7 @@ inline const exokal::forms::RegisterTerm<MixedElasticityCell> register_mixed_ela
 // response is resolved to P0 and the Schur complement is a rank-one fold-back,
 // where the three-field pairing has rank d+1. They agree only where tr sigma is
 // constant on a cell. A cell-centred p is also what a two-point realization
-// needs, which is why diagonal_tpsa exists only here.
+// needs, which is why diagonal_afw exists only here.
 class MixedElasticityTotalCell {
  public:
   MixedElasticityTotalCell() = default;
@@ -165,7 +165,7 @@ class MixedElasticityTotalCell {
     const std::size_t ng = c.As.rows();
     // the cell's own measure is on the operators, so no geometry is consulted
     const double half = half_;
-    const double mass = ops_->pressure_mass() * c.volume;
+    const double mass = ops_->hydrostatic_mass() * c.volume;
 
     for (std::size_t i = 0; i < D; ++i) {
       const std::size_t ri = S.begin + i;
@@ -302,7 +302,7 @@ class StrongElasticityTotalCell {
     }
     const std::size_t nu = c.Dv.rows();
     const double half = half_;
-    const double mass = ops_->pressure_mass() * c.volume;
+    const double mass = ops_->hydrostatic_mass() * c.volume;
     for (std::size_t i = 0; i < D; ++i) {
       const std::size_t ri = S.begin + i;
       if (diagonal) {
@@ -346,6 +346,8 @@ struct MechanicsOptions {
   // match whatever star lands on it; the driver derives both from one
   // realization so they cannot disagree.
   int traction_moments{0};
+  // 1 for the wrench layout, d for the componentwise one; 0 means d
+  int traction_components{0};
   // THE TOTAL PRESSURE AS A FIELD OF ITS OWN, which is exokal's
   // weak_symmetry_total. It adds one scalar per cell and changes the term, so
   // the package cannot infer it from the layout: the driver derives this and
@@ -393,7 +395,8 @@ class Mechanics final : public Package {
     // facets is measured.
     r.fields.push_back(
         {at("s"), DofLayout::moments(
-                      dim, dim - 1, opt_.traction_moments > 0 ? opt_.traction_moments : dim, dim)});
+                      dim, dim - 1, opt_.traction_moments > 0 ? opt_.traction_moments : dim,
+                      opt_.traction_components > 0 ? opt_.traction_components : dim)});
     r.fields.push_back({at("u"), DofLayout::cell_wise(dim, 1, dim)});
     r.fields.push_back({at("g"), DofLayout::cell_wise(dim, 1, dim * (dim - 1) / 2)});
     // p = lambda div u, one scalar per cell: the volumetric response resolved

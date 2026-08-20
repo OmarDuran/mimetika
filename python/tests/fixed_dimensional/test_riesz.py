@@ -318,7 +318,7 @@ def test_the_total_pressure_row_keeps_the_scale_the_operator_gave_it():
 
 # WHAT THE NORM DOES NOT YET COVER: A LUMPED COMPLIANCE.
 #
-# diagonal_tpsa exists only in the four-field form, and its count grows under
+# diagonal_afw exists only in the four-field form, and its count grows under
 # refinement (231, 377, 960 over a hundredfold in unknowns) with the block
 # solved EXACTLY -- so this is the Gram matrix itself, not the way its first
 # block is inverted. ||sigma||^2 = (A sigma, sigma) + ||div sigma||^2 is AFW's
@@ -333,7 +333,7 @@ def test_the_total_pressure_row_keeps_the_scale_the_operator_gave_it():
 def test_the_lumped_compliance_is_not_yet_preconditioned_uniformly():
     counts = []
     for nr in (6, 12, 24):
-        model = patch(nr, product=mk.StressRealization.diagonal_tpsa,
+        model = patch(nr, product=mk.StressRealization.diagonal_afw,
                       formulation=mk.StressFormulation.weak_symmetry_total)
         report = model.solve(options=RIESZ)
         counts.append(report.iterations)

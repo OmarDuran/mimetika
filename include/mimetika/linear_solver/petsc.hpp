@@ -254,7 +254,7 @@ struct SolverOptions {
   // scalable choice; "lu" is the exact one, for small problems and for
   // checking that an approximation is what changed an answer.
   // ELIMINATE THE FIRST FIELD FIRST, when the caller says it can be. A
-  // diagonal star -- diagonal_tpfa, diagonal_tpsa -- makes that block diagonal,
+  // diagonal star -- diagonal_tpfa, diagonal_afw -- makes that block diagonal,
   // and then the flux or the stress is divided out cell by cell and what is
   // solved is the finite volume system itself. Off is the saddle point, which
   // is what every other product must have.
@@ -533,7 +533,7 @@ class PetscSolver final : public LinearSolver {
   // FACTORIZATION SAID.
   //
   // A direct solver handed a SINGULAR matrix returns a vector, reports
-  // CONVERGED, and leaves 1e18 in the answer -- measured, on diagonal_tpsa
+  // CONVERGED, and leaves 1e18 in the answer -- measured, on diagonal_afw
   // under an essential stress condition (relative residual 9.4e3) and on the
   // Kuhn tetrahedra (5.8e3). The residual is one pass over the triplets, which
   // is nothing beside a factorization, and it is the only thing that
@@ -639,24 +639,62 @@ class PetscSolver final : public LinearSolver {
     SolverOptions inner = opts_;
     inner.condense = false;
 
-    // A RIESZ MAP IS A STATEMENT ABOUT A SPACE THAT IS NO LONGER THERE.
+    // THE REDUCED SYSTEM IS ITSELF A SADDLE POINT, AND KEEPS ITS RIESZ MAP.
     //
-    // P = diag(A + B^T W^-1 B, W) preconditions a saddle point by inverting its
-    // H(div) block; S has no such block -- the field it was built on has been
-    // divided out -- so "riesz" and "exact" name nothing here. What S is
-    // instead is a finite volume operator with the two-point stencil, and the
-    // preconditioner for that is ALGEBRAIC MULTIGRID, on the whole of it.
+    // Eliminating the first field does not flatten what is left. For
+    // diagonal_vem the reduced unknowns are the displacement and the
+    // volumetric stress, and that pair is symmetric QUASI-DEFINITE --
+    // measured: u positive (5.5e1 .. 5.8e3), p negative (-7.9e-2 .. -3.7e-2).
+    // An algebraic multigrid over the whole of it preconditions a saddle point
+    // as though it were elliptic, which is the wrong tool.
     //
-    // The Krylov method is kept if the caller named one, because the two
-    // products do not take the same one: TPFA's S is positive definite and CG
-    // applies, TPSA's is symmetric quasi-definite -- (u, r) positive, p
-    // negative -- and CG does not. GMRES is the choice that is right for both,
-    // so it is what an unnamed method becomes.
-    if (inner.preconditioner == "riesz" || inner.preconditioner == "exact") {
+    // What it takes is the same map one level down: P = diag(A + B^T W^-1 B, W)
+    // over the REDUCED unknowns, which is what build_riesz already assembles.
+    // It needs the split, and the caller's norm carries it -- factor 0 is the
+    // field being eliminated, so the reduced norm is the factors after it, with
+    // their indices carried through `slot`.
+    //
+    // Without that split -- a norm whose multipliers were merged into one
+    // factor, which is what the full system wants -- there is nothing to split
+    // on, and the fallback is the multigrid.
+    SpaceNorm reduced_norm;
+    const bool reduced_riesz =
+        (inner.preconditioner == "riesz" || inner.preconditioner == "exact") &&
+        norm_.factors.size() >= 3 && norm_.l2_weight.size() + 1 == norm_.factors.size();
+    if (reduced_riesz) {
+      for (std::size_t f = 1; f < norm_.factors.size(); ++f) {
+        std::vector<int> mapped;
+        std::vector<double> weight;
+        mapped.reserve(norm_.factors[f].size());
+        for (std::size_t k = 0; k < norm_.factors[f].size(); ++k) {
+          const int slot = c.slot[static_cast<std::size_t>(norm_.factors[f][k])];
+          if (slot < 0) continue;  // eliminated, so not a factor of what is left
+          mapped.push_back(slot);
+          if (f >= 2) weight.push_back(norm_.l2_weight[f - 1][k]);
+        }
+        reduced_norm.factors.push_back(std::move(mapped));
+        if (f >= 2) reduced_norm.l2_weight.push_back(std::move(weight));
+      }
+      // the pinned unknowns, carried through the same map
+      for (std::size_t k = 0; k < norm_.pinned.size(); ++k) {
+        const int slot = c.slot[static_cast<std::size_t>(norm_.pinned[k])];
+        if (slot < 0) continue;
+        reduced_norm.pinned.push_back(slot);
+        reduced_norm.pinned_diagonal.push_back(
+            k < norm_.pinned_diagonal.size() ? norm_.pinned_diagonal[k] : 1.0);
+      }
+      inner.preconditioner = "riesz";
+      if (inner.direct()) inner.method = "gmres";
+    } else if (inner.preconditioner == "riesz" || inner.preconditioner == "exact") {
+      // A RIESZ MAP IS A STATEMENT ABOUT A SPACE THAT IS NO LONGER THERE, when
+      // the split went with it: no H(div) block survives the elimination, so
+      // what is left is preconditioned as the finite volume operator it is.
       inner.preconditioner = "hypre";
       if (inner.direct()) inner.method = "gmres";
     }
+
     PetscSolver sub(inner);
+    if (reduced_riesz) sub.set_norm(std::move(reduced_norm));
     if (spread) {
       // the reduced unknowns inherit the partition they came from: a cell's
       // pressure, displacement and rotation belong to whoever owned the cell
@@ -780,7 +818,7 @@ class PetscSolver final : public LinearSolver {
     // without that term nothing in the norm sees a trace at all. It is kept
     // for exactly the discretization that needs it: with a LUMPED compliance
     // the mass controls the deviator only, and dropping the term costs
-    // diagonal_tpsa a quarter of its count (1192 against 960), while
+    // diagonal_afw a quarter of its count (1192 against 960), while
     // stabilized_bdm, whose mass is a real one, hardly moves (135 against 148).
     //
     // Both follow from the diagonal alone -- no field named here, and no
@@ -1546,7 +1584,7 @@ class PetscSolver final : public LinearSolver {
     order = std::vector<PetscInt>();
 
     // THE COARSE SPACE IS THE WHOLE BLOCK when a facet carries one moment per
-    // component -- diagonal_tpsa, and derham_rt's layout generally. The
+    // component -- diagonal_afw, and derham_rt's layout generally. The
     // injection is then a PERMUTATION, and a two-level cycle over it is a cycle
     // whose coarse problem is its fine one: every application pays for a
     // smoother, a Galerkin product and a coarse solve of the same size, and the

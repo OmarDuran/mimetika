@@ -8,7 +8,7 @@
 
 // STATIC CONDENSATION OF A DIAGONAL BLOCK.
 //
-// A diagonal star -- exokal's diagonal_tpfa and diagonal_tpsa -- makes the
+// A diagonal star -- exokal's diagonal_tpfa and diagonal_afw -- makes the
 // first block of the saddle point diagonal, and a diagonal block is inverted by
 // division. So the flux or the stress leaves the system entirely:
 //
@@ -27,7 +27,7 @@
 // WHY IT IS WORTH DOING BEYOND THE SIZE. The saddle point is indefinite and its
 // first block is what a Riesz map spends its effort on; S has no such block.
 // And the elimination is rank-revealing where a factorization is not: handed
-// the Kuhn tetrahedra, on which diagonal_tpsa carries one spurious rotation per
+// the Kuhn tetrahedra, on which diagonal_afw carries one spurious rotation per
 // interior cube face, MUMPS reports CONVERGED and returns 1e16, while the
 // condensation runs out of pivots and says so.
 //

@@ -101,18 +101,18 @@ class CauchyElasticityModel {
     // rigid rotations across a mesh, so the weak-symmetry inf-sup degenerates
     // and the saddle point comes out singular.
     //
-    // diagonal_tpsa carries the same d per facet and is NOT refused, because it
+    // diagonal_afw carries the same d per facet and is NOT refused, because it
     // is a different scheme rather than a coarser space: its face rotation is a
     // convention rather than an inf-sup, and exokal admits it in four fields
     // only, which is where its M is diagonal.
     if (how == Realization::derham_rt) {
       throw std::invalid_argument(
           "CauchyElasticityModel: derham_rt is unisolvent but its weak-symmetry inf-sup "
-          "degenerates; use derham_bdm, stabilized_bdm, or diagonal_tpsa");
+          "degenerates; use derham_bdm, stabilized_bdm, or diagonal_afw");
     }
-    if (how == Realization::diagonal_tpsa && form != Formulation::weak_symmetry_total) {
+    if (how == Realization::diagonal_afw && form != Formulation::weak_symmetry_total) {
       throw std::invalid_argument(
-          "CauchyElasticityModel: diagonal_tpsa needs the total-pressure formulation -- the "
+          "CauchyElasticityModel: diagonal_afw needs the total-pressure formulation -- the "
           "three-field compliance couples traction components through the trace");
     }
     // THE SYMMETRY AXIS IS ONE DECISION: a strongly-symmetric realization
@@ -157,6 +157,17 @@ class CauchyElasticityModel {
     return stress_.eta();
   }
 
+  // THE LAYOUT IS NOT THE SYMMETRY, and exokal separates them: the wrench
+  // layout -- one d(d+1)/2 rigid-motion moment vector per facet, rather than d
+  // copies of a scalar layout -- is what the strong family always uses AND what
+  // diagonal_afw brings to the weak axis. Anything counting unknowns per facet
+  // asks this; anything asking whether a rotation field exists asks the other.
+  bool wrench_layout() const {
+    return exokal::hodge::StressOperators::wrench_layout(how_);
+  }
+  int facet_dofs() const {
+    return exokal::hodge::StressOperators::facet_dofs(how_, dim_);
+  }
   bool strongly_symmetric() const {
     return exokal::hodge::StressOperators::strongly_symmetric(how_);
   }
@@ -308,6 +319,7 @@ class CauchyElasticityModel {
     // product cannot drift apart.
     physics::ModelOptions o;
     o.traction_moments = stress_.moments_per_facet();
+    o.traction_components = wrench_layout() ? 1 : dim_;
     // AND THE FIELD COUNT FOLLOWS THE FORMULATION, read off the operators for
     // the same reason: the field roster is a property of the product that was
     // built, not a second choice made here.
@@ -348,7 +360,7 @@ class CauchyElasticityModel {
       // the strong family carries its six moments on ONE scalar layout, the
       // weak one `moments` per each of d components
       const int nb = stress_.moments_per_facet();
-      const int nk = strongly_symmetric() ? 1 : dim_;
+      const int nk = wrench_layout() ? 1 : dim_;
       for (const Index f : prescribed_) {
         for (int b = 0; b < nb; ++b) {
           for (int k = 0; k < nk; ++k) {
@@ -670,10 +682,7 @@ class CauchyElasticityModel {
   // `moments` runs facet-major over prescribed_traction(), d * nb entries each,
   // in the ProductSpace order (component fastest).
   const std::vector<double>& solution_operator(const std::vector<double>& moments) const {
-    const std::size_t ndf =
-        strongly_symmetric()
-            ? std::size_t{6}
-            : static_cast<std::size_t>(dim_) * static_cast<std::size_t>(stress_.moments_per_facet());
+    const std::size_t ndf = static_cast<std::size_t>(facet_dofs());
     if (moments.size() != prescribed_.size() * ndf) {
       throw std::invalid_argument("solution_operator: one traction moment block per facet");
     }

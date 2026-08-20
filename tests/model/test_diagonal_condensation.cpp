@@ -22,7 +22,7 @@
 //
 // For diagonal_tpfa S is the pressure alone and IS the two-point flux
 // approximation: seven entries a row on a Cartesian mesh in space. For
-// diagonal_tpsa it is the displacement, the rotation and the total pressure,
+// diagonal_afw it is the displacement, the rotation and the total pressure,
 // which is the FV-TPSA system of Nordbotten & Keilegavlen (their Eq. 3.9) --
 // the same three cell-centered unknowns, reached by eliminating a stress those
 // authors never introduce.
@@ -57,7 +57,7 @@
 //                   flux approximation -- seven entries a row on a Cartesian
 //                   mesh in space.
 //
-//   diagonal_tpsa   S is displacement, rotation and total pressure, and is
+//   diagonal_afw   S is displacement, rotation and total pressure, and is
 //                   SYMMETRIC QUASI-DEFINITE: (u, r) positive definite, p
 //                   negative definite. That is not SPD and no scaling makes it
 //                   so -- a diagonal similarity cannot change the sign of a
@@ -74,7 +74,7 @@
 // BOUNDARY DATA. The cases here prescribe the pressure and the displacement,
 // which are natural in a mixed form. An ESSENTIAL condition on the first field
 // -- a traction, or the tangential half of a roller -- pins stress unknowns,
-// and for diagonal_tpsa that costs [Dv; As] its row rank, which leaves S
+// and for diagonal_afw that costs [Dv; As] its row rank, which leaves S
 // singular rather than definite. That is a property of the rotation closure and
 // not of the condensation, and it is not asserted here.
 
@@ -354,7 +354,7 @@ exokal::Mesh box_of(int n, int dim, Family family) {
 
 // THE TETRAHEDRA COME FROM THE ANNULUS, NOT THE BOX. box(simplex) is the
 // Kuhn subdivision -- six congruent tetrahedra a cube, every cell a translate
-// of every other -- and that pattern is degenerate for diagonal_tpsa: it
+// of every other -- and that pattern is degenerate for diagonal_afw: it
 // carries exactly one spurious rotation mode per interior CUBE face, which the
 // last test in this file measures. Tetrahedra as such are not the problem, and
 // a mesh whose cells differ from one another shows it.
@@ -425,7 +425,7 @@ MIMETIKA_TEST(only_the_diagonal_products_leave_a_diagonal_first_block) {
   }
 
   for (const auto [how, name, form, diagonal] :
-       {std::tuple{Stress::diagonal_tpsa, "diagonal_tpsa", Formulation::weak_symmetry_total, true},
+       {std::tuple{Stress::diagonal_afw, "diagonal_afw", Formulation::weak_symmetry_total, true},
         std::tuple{Stress::stabilized_bdm, "stabilized_bdm", Formulation::weak_symmetry_total,
                    false},
         std::tuple{Stress::derham_bdm, "derham_bdm", Formulation::weak_symmetry, false}}) {
@@ -465,7 +465,7 @@ MIMETIKA_TEST(eliminating_the_flux_leaves_an_spd_two_point_pressure_system) {
 }
 
 // QUASI-DEFINITE EVERYWHERE BUT ON TETRAHEDRA, and the exception is the space
-// rather than the condensation. diagonal_tpsa carries d unknowns a facet, so a
+// rather than the condensation. diagonal_afw carries d unknowns a facet, so a
 // cell holds d x (facets/cell) of them against the d + d(d-1)/2 rows the
 // divergence and the weak symmetry impose: 4 against 3 on a quadrilateral, 9
 // against 6 on a hexahedron -- and exactly 6 against 6 on a TETRAHEDRON, where
@@ -480,7 +480,7 @@ MIMETIKA_TEST(eliminating_the_stress_leaves_displacement_rotation_and_pressure) 
     {
       const exokal::Mesh& m = c.mesh;
       const int dim = c.dim;
-      CauchyElasticityModel prob(m, dim, ElasticMaterial{kMu, kLam}, Stress::diagonal_tpsa,
+      CauchyElasticityModel prob(m, dim, ElasticMaterial{kMu, kLam}, Stress::diagonal_afw,
                                  Formulation::weak_symmetry_total);
       build_elasticity(prob, m, dim);
       const Split s = split_of(prob);
@@ -595,7 +595,7 @@ MIMETIKA_TEST(the_condensed_solve_is_the_saddle_point_solve) {
       build_flow(flow, m, dim);
       compare(flow.system(), flow.rhs(), split_of(flow), where + " tpfa", false);
 
-      CauchyElasticityModel solid(m, dim, ElasticMaterial{kMu, kLam}, Stress::diagonal_tpsa,
+      CauchyElasticityModel solid(m, dim, ElasticMaterial{kMu, kLam}, Stress::diagonal_afw,
                                   Formulation::weak_symmetry_total);
       build_elasticity(solid, m, dim);
       // the tetrahedron is the ratio at which the rotation is not determined
@@ -605,7 +605,7 @@ MIMETIKA_TEST(the_condensed_solve_is_the_saddle_point_solve) {
 }
 
 
-// ---- one mesh the pattern of which diagonal_tpsa cannot carry ---------------
+// ---- one mesh the pattern of which diagonal_afw cannot carry ---------------
 //
 // box(simplex) is the Kuhn subdivision: six congruent tetrahedra to a cube,
 // every cell a translate or reflection of every other. TETRAHEDRA ARE NOT THE
@@ -625,7 +625,7 @@ MIMETIKA_TEST(the_condensed_solve_is_the_saddle_point_solve) {
 MIMETIKA_TEST(the_kuhn_tetrahedra_lose_one_rotation_per_interior_cube_face) {
   for (const int n : {2, 3}) {
     const exokal::Mesh m = box_of(n, 3, Family::simplex);
-    CauchyElasticityModel prob(m, 3, ElasticMaterial{kMu, kLam}, Stress::diagonal_tpsa,
+    CauchyElasticityModel prob(m, 3, ElasticMaterial{kMu, kLam}, Stress::diagonal_afw,
                                Formulation::weak_symmetry_total);
     build_elasticity(prob, m, 3);
     const Split s = split_of(prob);
@@ -687,7 +687,7 @@ MIMETIKA_TEST(the_solver_condenses_when_it_is_allowed_to_and_only_then) {
   }
 
   // the stress, four fields, and the same statement
-  CauchyElasticityModel solid(m, 3, ElasticMaterial{kMu, kLam}, Stress::diagonal_tpsa,
+  CauchyElasticityModel solid(m, 3, ElasticMaterial{kMu, kLam}, Stress::diagonal_afw,
                               Formulation::weak_symmetry_total);
   build_elasticity(solid, m, 3);
   mimetika::solver::PetscSolver saddle;
@@ -709,7 +709,7 @@ MIMETIKA_TEST(the_solver_condenses_when_it_is_allowed_to_and_only_then) {
   }
   std::printf("  solid %-14s condensed %d  %zu of %zu unknowns solved  |difference| %.1e "
               "(%.1e on the recovered stress)\n",
-              "diagonal_tpsa", b.condensed ? 1 : 0, b.condensed_dofs,
+              "diagonal_afw", b.condensed ? 1 : 0, b.condensed_dofs,
               solid.simulation().n_dofs(), worst, stress);
   CHECK(a.converged && b.converged);
   CHECK(b.condensed);

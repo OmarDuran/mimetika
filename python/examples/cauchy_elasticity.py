@@ -111,7 +111,7 @@ PRODUCTS = {
     # not, so run it here to see what that costs rather than to be exact.
     #
     # It exists in four fields only, which formulation_for enforces.
-    "diagonal_tpsa": mk.StressRealization.diagonal_tpsa,
+    "diagonal_afw": mk.StressRealization.diagonal_afw,
 }
 
 FORMULATIONS = {
@@ -123,19 +123,19 @@ FORMULATIONS = {
 def formulation_for(product, asked):
     """Three fields, or four with the total pressure p = lambda div u.
 
-    diagonal_tpsa is diagonal only when the compliance is (2 mu)^-1, which is
+    diagonal_afw is diagonal only when the compliance is (2 mu)^-1, which is
     what the total-pressure form gives; in three fields the trace couples the
     traction components and the product does not exist.
     """
     # OMITTED IS NOT THE SAME AS ASKED FOR. `asked` is None when the caller
     # said nothing, and then the product decides: three fields for the BDM
-    # ones, four for diagonal_tpsa, which has no other form. Only an EXPLICIT
-    # --formulation weak_symmetry with diagonal_tpsa is a contradiction, and it
+    # ones, four for diagonal_afw, which has no other form. Only an EXPLICIT
+    # --formulation weak_symmetry with diagonal_afw is a contradiction, and it
     # is the only case refused.
-    if product == "diagonal_tpsa":
+    if product == "diagonal_afw":
         if asked == "weak_symmetry":
             raise SystemExit(
-                "--product diagonal_tpsa exists only in the four-field form: drop "
+                "--product diagonal_afw exists only in the four-field form: drop "
                 "--formulation weak_symmetry, or pass weak_symmetry_total"
             )
         return mk.StressFormulation.weak_symmetry_total

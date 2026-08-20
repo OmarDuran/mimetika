@@ -441,7 +441,7 @@ MIMETIKA_TEST(the_two_point_stress_product_needs_four_fields) {
   const exokal::Mesh m = mimetika::mesh::column(4, 3, Family::cartesian, 1.0);
   bool refused = false;
   try {
-    CauchyElasticityModel model(m, 3, ElasticMaterial{kMu, kLam}, Realization::diagonal_tpsa);
+    CauchyElasticityModel model(m, 3, ElasticMaterial{kMu, kLam}, Realization::diagonal_afw);
   } catch (const std::invalid_argument&) {
     refused = true;
   }
@@ -466,7 +466,7 @@ MIMETIKA_TEST(the_two_point_stress_product_needs_four_fields) {
 // Testing them together is what makes a pass evidence about the PORT rather
 // than about one product.
 //
-// diagonal_tpsa is included where it is claimed: face-orthogonal meshes, which
+// diagonal_afw is included where it is claimed: face-orthogonal meshes, which
 // among these is the box of hexahedra. It carries d per facet and the other two
 // carry d^2, so the count separates them without any tolerance.
 MIMETIKA_TEST(every_four_field_product_reproduces_the_linear_displacement) {
@@ -481,10 +481,10 @@ MIMETIKA_TEST(every_four_field_product_reproduces_the_linear_displacement) {
         CHECK(o.pressure_err < 1e-9);
       }
     }
-    const Patch t = patch_case(3, dim, Family::cartesian, Realization::diagonal_tpsa,
+    const Patch t = patch_case(3, dim, Family::cartesian, Realization::diagonal_afw,
                                Formulation::weak_symmetry_total);
     std::printf("  four-field %-22s %dD %-10s %6zu dofs   u %.2e   p %.2e\n",
-                exokal::hodge::StressOperators::name(Realization::diagonal_tpsa), dim, "cartesian",
+                exokal::hodge::StressOperators::name(Realization::diagonal_afw), dim, "cartesian",
                 t.dofs, t.max_err, t.pressure_err);
     CHECK(t.max_err < 1e-10);
     CHECK(t.pressure_err < 1e-9);

@@ -114,7 +114,7 @@ PRODUCTS = {
     #
     # It exists in four fields only, so --formulation is set for it rather than
     # asked of the caller.
-    "diagonal_tpsa": mk.StressRealization.diagonal_tpsa,
+    "diagonal_afw": mk.StressRealization.diagonal_afw,
     # THE STRONGLY-SYMMETRIC FAMILY (Dassi-Lovadina-Visinoni): six traction
     # moments per facet carried whole, the displacement as the cell's six
     # rigid-motion coefficients, no rotation multiplier. stabilized_vem builds
@@ -139,20 +139,20 @@ FORMULATIONS = {
 def formulation_for(product, asked):
     """Three fields or four, with the one product that has no choice honoured.
 
-    diagonal_tpsa is diagonal only when the compliance is (2 mu)^-1, which is
+    diagonal_afw is diagonal only when the compliance is (2 mu)^-1, which is
     what the total-pressure form gives; in three fields the trace couples the
     traction components and the product does not exist. Asking for the pair
     that cannot be built is refused here rather than deeper down.
     """
     # OMITTED IS NOT THE SAME AS ASKED FOR. `asked` is None when the caller
     # said nothing, and then the product decides: three fields for the BDM
-    # ones, four for diagonal_tpsa, which has no other form. Only an EXPLICIT
-    # --formulation weak_symmetry with diagonal_tpsa is a contradiction, and it
+    # ones, four for diagonal_afw, which has no other form. Only an EXPLICIT
+    # --formulation weak_symmetry with diagonal_afw is a contradiction, and it
     # is the only case refused.
-    if product == "diagonal_tpsa":
+    if product == "diagonal_afw":
         if asked not in (None, "weak_symmetry_total"):
             raise SystemExit(
-                "--product diagonal_tpsa exists only in the four-field form: drop "
+                "--product diagonal_afw exists only in the four-field form: drop "
                 "--formulation, or pass weak_symmetry_total"
             )
         return mk.StressFormulation.weak_symmetry_total
@@ -555,7 +555,7 @@ def main():
     # moment, so on a general mesh their error above is DISCRETIZATION and
     # saying otherwise would hide exactly what those products trade away.
     star_cells = (
-        model.n_cells if args.product in ("diagonal_tpsa", "diagonal_vem")
+        model.n_cells if args.product in ("diagonal_afw", "diagonal_vem")
         else int((model.eta == 0.0).sum()) if args.product == "adaptive_vem"
         else 0
     )

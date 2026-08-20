@@ -404,7 +404,7 @@ class Stage {
 // their weight is zero.
 template <class Model>
 void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exokal::Mesh& mesh,
-                 int dim, bool divergence_is_an_integral) {
+                 int dim, bool divergence_is_an_integral, bool merge_multipliers = true) {
   const auto blocks = mimetika::solver::field_blocks(m.simulation().epoch());
   if (blocks.size() < 2) {
     throw std::runtime_error("riesz: the space has fewer than two factors");
@@ -441,8 +441,29 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
       ++k;
     }
   }
-  norm.factors.push_back(std::move(rest));
-  norm.l2_weight.push_back(std::move(l2));
+  // ONE FACTOR, OR ONE PER FIELD. Merged is what the FULL system wants: the
+  // rotation adds no term to the stress norm in theory and a great deal in
+  // practice -- 41 iterations against 85 without it, measured -- so the
+  // multipliers are preconditioned together.
+  //
+  // A system that will be CONDENSED wants the opposite. Eliminating the first
+  // field leaves the multipliers as the whole system, and for diagonal_vem
+  // that is a saddle point of displacement against volumetric stress; the
+  // reduced Riesz map needs them apart to have anything to split on.
+  if (merge_multipliers) {
+    norm.factors.push_back(std::move(rest));
+    norm.l2_weight.push_back(std::move(l2));
+  } else {
+    std::size_t at = 0;
+    for (std::size_t f = 1; f < blocks.size(); ++f) {
+      const std::size_t size = blocks[f].size();
+      norm.factors.emplace_back(rest.begin() + static_cast<std::ptrdiff_t>(at),
+                                rest.begin() + static_cast<std::ptrdiff_t>(at + size));
+      norm.l2_weight.emplace_back(l2.begin() + static_cast<std::ptrdiff_t>(at),
+                                  l2.begin() + static_cast<std::ptrdiff_t>(at + size));
+      at += size;
+    }
+  }
 
   // THE COMPLEX'S OWN BOUNDARY OPERATORS, for an auxiliary-space solver.
   //
@@ -467,14 +488,17 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
   const bool on_facets = layout.carries(dim - 1) &&
                          blocks[0].size() == static_cast<std::size_t>(topo.count(dim - 1)) *
                                                  static_cast<std::size_t>(moments * copies);
-  // THE STRONG FAMILY IS NOT AN ADS SPACE, directly or through a subspace:
-  // its six moments per facet are one traction vector against a facet-
-  // intrinsic basis, not d copies of a scalar layout, so neither the curl's
-  // rows nor the facet-constant injection describe it. Supplying the maps
-  // anyway makes the solver believe a route exists and hands hypre a curl
-  // whose rows are not the block's -- the exact block is what solves here.
+  // THE STRONG FAMILY REACHES ADS THROUGH A ROTATED SUBSPACE. Its six moments
+  // per facet are one traction vector against a facet-intrinsic frame -- not
+  // d copies of a scalar layout -- so neither the curl's rows nor a subset
+  // injection describe it. But the three MEAN slots {t1, t2, n} rotated by
+  // the facet's own frame ARE three scalar H(div) cochains in global
+  // components: int_f (tau n).e_k. The injection is then WEIGHTED by the
+  // frame rather than a matrix of ones, and the two-level cycle -- facet-
+  // local smoother, per-component ADS on the coarse space -- carries over
+  // unchanged, because nothing in it ever assumed the weights were ones.
   const bool strong_stress = copies == 1 && moments == 6;
-  if (dim == 3 && on_facets && !strong_stress) {
+  if (dim == 3 && on_facets) {
     const auto copy_out = [](const graphos::BoundaryOperator& b, int rows, int cols) {
       mimetika::solver::SpaceNorm::Incidence out;
       out.rows = rows;
@@ -534,7 +558,44 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
     //
     // Columns are copy-major, so each copy of the coarse space is a contiguous
     // run and can be handed to ADS as the scalar problem it expects.
-    if (moments * copies > 1) {
+    if (strong_stress) {
+      // the frame-weighted injection: per facet, rows are the three mean
+      // slots (0: t1, 1: t2, 3: n chi_0) and the columns the three global
+      // components, entries the frame's own direction cosines -- the same
+      // frame the discrete basis is stated in, so the coarse unknown k at
+      // facet f is exactly int_f (tau n) . e_k
+      const auto base = static_cast<Index>(m.simulation().epoch().offset(0)) +
+                        static_cast<Index>(space.offset(0));
+      const Index n_facet = topo.count(dim - 1);
+      auto& inj = norm.lowest_order;
+      inj.rows = static_cast<int>(m.simulation().n_dofs());
+      inj.cols = static_cast<int>(n_facet) * 3;
+      const graphos::CoboundaryOperator cob = graphos::coboundary(topo, dim - 1);
+      for (Index f = 0; f < n_facet; ++f) {
+        const Index cell =
+            cob.indices[static_cast<std::size_t>(cob.offsets[static_cast<std::size_t>(f)])];
+        const mimetika::FacetFrame fr = mimetika::FacetFrame::of(mesh, dim, cell, f);
+        const std::array<const exokal::Point*, 3> dirs{&fr.tangent[0], &fr.tangent[1],
+                                                       &fr.normal};
+        constexpr std::array<int, 3> slots{0, 1, 3};
+        for (int s = 0; s < 3; ++s) {
+          const auto row =
+              static_cast<int>(base + facet_map.global(dim - 1, f, slots[static_cast<std::size_t>(
+                                                                      s)], 0));
+          for (int k = 0; k < 3; ++k) {
+            const double v = (*dirs[static_cast<std::size_t>(s)])[static_cast<std::size_t>(k)];
+            if (v == 0.0) continue;
+            inj.row.push_back(row);
+            inj.col.push_back(static_cast<int>(k * n_facet + f));
+            inj.value.push_back(v);
+          }
+        }
+      }
+      // measured, not assumed: adding the rotation slot as a fourth coarse
+      // component leaves the count at 54 and only enlarges the coarse solve
+      // (27 s -> 35 s at 300k dofs), so the mean slots alone carry the cycle
+      norm.lowest_order_components = 3;
+    } else if (moments * copies > 1) {
       const auto base = static_cast<Index>(m.simulation().epoch().offset(0)) +
                         static_cast<Index>(space.offset(0));
       const Index n_facet = topo.count(dim - 1);
@@ -644,7 +705,15 @@ mimetika::solver::SolveReport solve_elasticity(mimetika::CauchyElasticityModel& 
   mimetika::solver::PetscSolver petsc(opts);
   attach_partition(petsc, m);
   // the momentum row is Dv, whose entries already carry 1/|E|: it is an average
-  if (opts.preconditioner == "riesz") attach_norm(petsc, m, m.mesh(), m.dim(), false);
+  // THE SAME QUESTION THE SOLVER ASKS, asked here because the norm is built
+  // before the solve: a system whose first block is diagonal will be condensed,
+  // and then the split it needs is the unmerged one.
+  const std::vector<int> eliminable = mimetika::solver::first_field_dofs(m.simulation().epoch());
+  const bool will_condense =
+      opts.condense && mimetika::solver::block_is_diagonal(m.system(), eliminable);
+  if (opts.preconditioner == "riesz") {
+    attach_norm(petsc, m, m.mesh(), m.dim(), false, !will_condense);
+  }
   std::vector<double> x;
   // THE SOLVER TIMES ITS OWN THREE, because they are not one stage: the matrix
   // is linear in the assembly, the preconditioner is what decides whether a
@@ -675,7 +744,15 @@ mimetika::solver::SolveReport solve_single_phase(mimetika::SinglePhaseModel& m, 
   mimetika::solver::PetscSolver petsc(opts);
   attach_partition(petsc, m);
   // the mass-balance row is the incidence: (Bq)_E is the integral of div q
-  if (opts.preconditioner == "riesz") attach_norm(petsc, m, m.mesh(), m.dim(), true);
+  // THE SAME QUESTION THE SOLVER ASKS, asked here because the norm is built
+  // before the solve: a system whose first block is diagonal will be condensed,
+  // and then the split it needs is the unmerged one.
+  const std::vector<int> eliminable = mimetika::solver::first_field_dofs(m.simulation().epoch());
+  const bool will_condense =
+      opts.condense && mimetika::solver::block_is_diagonal(m.system(), eliminable);
+  if (opts.preconditioner == "riesz") {
+    attach_norm(petsc, m, m.mesh(), m.dim(), true, !will_condense);
+  }
   std::vector<double> x;
   // THE SOLVER TIMES ITS OWN THREE, because they are not one stage: the matrix
   // is linear in the assembly, the preconditioner is what decides whether a
@@ -963,7 +1040,7 @@ PYBIND11_MODULE(_core, m) {
       // makes M diagonal. Consistent where the mesh is FACE-ORTHOGONAL, and
       // solvable everywhere: half the unknowns of the BDM products and an
       // eighth of the matrix entries.
-      .value("diagonal_tpsa", StressOperators::Realization::diagonal_tpsa)
+      .value("diagonal_afw", StressOperators::Realization::diagonal_afw)
       // THE STRONGLY-SYMMETRIC FAMILY (Dassi-Lovadina-Visinoni): six traction
       // moments per facet carried whole, reconstruction onto constant
       // symmetric tensors, no rotation multiplier. stabilized_vem builds
@@ -978,7 +1055,7 @@ PYBIND11_MODULE(_core, m) {
   // weak_symmetry carries the volumetric response in the compliance;
   // weak_symmetry_total gives the total pressure p = lambda div u a field of
   // its own, one scalar per cell, and the compliance is then lambda-free --
-  // uniform in the incompressible limit, and the only form diagonal_tpsa has.
+  // uniform in the incompressible limit, and the only form diagonal_afw has.
   py::enum_<StressOperators::Formulation>(m, "StressFormulation")
       .value("weak_symmetry", StressOperators::Formulation::weak_symmetry)
       .value("weak_symmetry_total", StressOperators::Formulation::weak_symmetry_total)

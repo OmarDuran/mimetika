@@ -26,7 +26,8 @@ inline const physics::RegisterModel linear_elasticity{
               ? (o.total_pressure ? "strong_elasticity_total_cell" : "strong_elasticity_cell")
               : (o.total_pressure ? "mixed_elasticity_total_cell" : "mixed_elasticity_cell");
       c.emplace<physics::Mechanics>(physics::MechanicsOptions{
-          term, o.traction_moments, o.total_pressure, o.strong_symmetry, o.shear_modulus});
+          term, o.traction_moments, o.traction_components, o.total_pressure, o.strong_symmetry,
+           o.shear_modulus});
       return c;
     }};
 
