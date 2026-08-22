@@ -44,6 +44,7 @@ import mimetika_cxx as mk
 import numpy as np
 
 from _diagnostics import write_report
+from _errors import error_table, l2_norms
 from _stages import stage
 
 MU, LAM = 1.0, 1.0
@@ -554,125 +555,103 @@ def main():
     d_hat = [s_hat[k] - (sm_hat if k in (0, 4, 8) and k // 3 < dim else 0.0) for k in range(9)]
     n_rot = model.n_rotations
 
-    with stage("measuring displacement, rotation and stress"):
+    with stage("reconstructing u, gamma and sigma"):
         # THE STRESS IS RECONSTRUCTED FROM THE CELL'S OPERATORS, and on several
         # processes each holds only its own; every other cell would read zero.
         # The displacement and the rotation are read from the solution, which
         # every process has in full, so only this one is gathered.
+        n = model.n_cells
         stress = mk.gather_cells(
-            model, np.array([model.cell_stress(e) for e in range(model.n_cells)])
+            model, np.array([model.cell_stress(e) for e in range(n)])
         )
-        du = dr = ds = dso = dv = dd = 0.0
-        got_u = [0.0] * dim
-        got_r = [0.0] * n_rot
-        got_s = [0.0] * 9
-        got_m = 0.0
-        for e in range(model.n_cells):
-            want_u = exact_displacement(mk.centroid(mesh, dim, e), lo, gradient, dim)
-            for k in range(dim):
-                got_u[k] = model.displacement(e, k)
-                du = max(du, abs(got_u[k] - want_u[k]))
-            for k in range(n_rot):
-                got_r[k] = model.rotation(e, k)
-                dr = max(dr, abs(got_r[k] - u_hat[k]))
-            s = stress[e]
-            for k in range(9):
-                got_s[k] = s[k]
-            got_m = sum(s[k * 3 + k] for k in range(dim)) / dim
-            dv = max(dv, abs(got_m - sm_hat))
-            for k in range(dim):
-                ds = max(ds, abs(s[k * 3 + k] - s_hat[k * 3 + k]))
-                dd = max(dd, abs((s[k * 3 + k] - got_m) - d_hat[k * 3 + k]))
-                for c in range(dim):
-                    if k != c:
-                        dso = max(dso, abs(s[k * 3 + c] - s_hat[k * 3 + c]))
-                        dd = max(dd, abs(s[k * 3 + c] - d_hat[k * 3 + c]))
-    print()
+        volume = np.fromiter((mk.measure(mesh, dim, e) for e in range(n)), float, n)
+        x = np.array([mk.centroid(mesh, dim, e) for e in range(n)])
+        u = np.array([[model.displacement(e, k) for k in range(dim)] for e in range(n)])
+        rot = np.array([[model.rotation(e, k) for k in range(n_rot)] for e in range(n)])
+        # THE EXACT SIDE NEEDS NO PROJECTION. u is affine, so Pi_0 u is u at the
+        # centroid; gamma and sigma are constant, so Pi_0 leaves them alone.
+        grad = np.array(gradient).reshape(3, 3)[:dim, :dim]
+        u_exact = (x[:, :dim] - lo[:dim]) @ grad.T
+        # the meshed block of the 3x3 layout, and the split the material sees:
+        # volumetric = tr(sigma)/d, deviatoric = what is left of the block
+        block = [i * 3 + j for i in range(dim) for j in range(dim)]
+        on_diagonal = [k * dim + k for k in range(dim)]
+        sigma, sigma_hat = stress[:, block], np.array(s_hat)[block]
+        vol = sigma[:, on_diagonal].mean(axis=1)
+        dev = sigma.copy()
+        dev[:, on_diagonal] -= vol[:, None]
+        dev_hat = sigma_hat.copy()
+        dev_hat[on_diagonal] -= sm_hat
 
-    floor = ("the cg tolerance" if args.hybrid
-             else "round-off" if args.solver == "direct"
-             else f"the {args.solver} tolerance")
-    diag = [k * 3 + k for k in range(dim)]
-    off = [k * 3 + c for k in range(dim) for c in range(dim) if k != c]
-    # the off-diagonal is zero for this field, so its magnitude says it all and
-    # a row of zeros would only stretch the table
-    worst_off = max(abs(got_s[k]) for k in off)
-    x_last = mk.centroid(mesh, dim, model.n_cells - 1)
-    rows = [
-        ("displacement", exact_displacement(x_last, lo, gradient, dim), got_u, du),
-        ("rotation", u_hat, got_r, dr),
-        ("sigma diagonal", [s_hat[k] for k in diag], [got_s[k] for k in diag], ds),
-        ("sigma volumetric", [sm_hat], [got_m], dv),
-        ("sigma deviatoric", [d_hat[k] for k in diag], [got_s[k] - got_m for k in diag], dd),
-        ("max |sigma_ij|", [0.0], [worst_off], dso),
-    ]
-    w = max(len(fmt(r[1])) for r in rows)
-    print(f"  {'field':16s} {'exact':>{w}s} {'numerical (last cell)':>{w}s} {'max error':>11s}")
-    for name, want, got, err in rows:
-        print(f"  {name:16s} {fmt(want):>{w}s} {fmt(got):>{w}s} {err:11.3e}")
-    # THE VERDICT IS THE PRODUCT'S CLAIM, not a blanket promise: the two-point
-    # members are consistent only on face-orthogonal cells of isotropic second
-    # moment, so on a general mesh their error above is DISCRETIZATION and
-    # saying otherwise would hide exactly what those products trade away.
-    star_cells = (
-        model.n_cells if args.product in ("diagonal_afw", "diagonal_vem")
-        else int((model.eta == 0.0).sum()) if args.product == "adaptive_vem"
-        else 0
-    )
-    if star_cells == 0:
-        print(f"\n  every error above is {floor}, not discretization")
-    else:
-        print(f"\n  {star_cells} cell(s) carry a two-point star: their error is the star's")
-        print("  consistency claim -- exact only where the mesh is face-orthogonal with")
-        print(f"  isotropic second moment -- and the rest is {floor}")
+    print()
+    print("  the exact fields, which the method reproduces:")
+    print()
+    print(f"    u at the last cell   {fmt(u_exact[-1])}")
+    print(f"    gamma = skw(grad u)  {fmt(u_hat)}")
+    print(f"    sigma diagonal       {fmt([s_hat[k * 3 + k] for k in range(dim)])}")
+    print(f"    sigma volumetric     {fmt([sm_hat])}")
+    print(f"    sigma deviatoric     {fmt(dev_hat[on_diagonal])}")
+
+    print()
+    print("  error.  e = Pi_0(v - v_h), with Pi_0 w|_E = |E|^-1 int_E w the L2")
+    print("  projection onto cell-wise constants; D is the domain and E a cell.")
+    print("  u and gamma are cell moments over |E| and sigma is the cell average")
+    print("  of the facet tractions, so each row is a whole discretization error.")
+    print("  S is the norm the row is measured against: ||Pi_0 u||_D for u,")
+    print("  |grad u|_F |D|^(1/2) for gamma, and ||sigma||_D for all three stress")
+    print("  rows, which keeps those three comparable. It is named per row rather")
+    print("  than read off the row because sigma_dev vanishes for this field, as")
+    print("  does gamma at --spin 0.")
+    print()
+    root_area = np.sqrt(float(volume.sum()))
+    scale_u, _ = l2_norms(volume, u_exact)
+    error_table(volume, [
+        ("u", u - u_exact, scale_u),
+        ("gamma", rot - np.array(u_hat), root_area * np.linalg.norm(np.array(gradient))),
+        ("sigma", sigma - sigma_hat, root_area * np.linalg.norm(sigma_hat)),
+        ("sigma vol", vol - sm_hat, root_area * np.linalg.norm(sigma_hat)),
+        ("sigma dev", dev - dev_hat, root_area * np.linalg.norm(sigma_hat)),
+    ])
 
     if args.vtu and root:
         with stage(f"writing {args.vtu}"):
-            n = model.n_cells
-            u = np.zeros((n, 3))
-            u_exact = np.zeros((n, 3))
-            rot = np.zeros((n, 3))
-            rot_exact = np.zeros((n, 3))
-            sig = np.zeros((n, 9))
-            for e in range(n):
-                want = exact_displacement(mk.centroid(mesh, dim, e), lo, gradient, dim)
-                for k in range(dim):
-                    u[e, k] = model.displacement(e, k)
-                    u_exact[e, k] = want[k]
-                for k in range(n_rot):
-                    rot[e, k] = model.rotation(e, k)
-                    rot_exact[e, k] = u_hat[k]
-                # ALREADY GATHERED, and it must not be gathered again here: a
-                # gather is collective, this block runs on one process only,
-                # and the others would wait for it forever.
-                sig[e] = stress[e]
+            # EVERYTHING HERE WAS BUILT BY THE MEASUREMENT ABOVE, `stress`
+            # included -- and it must not be gathered again: a gather is
+            # collective, this block runs on one process only, and the others
+            # would wait for it forever. What is left is padding the meshed
+            # components out to the three ParaView expects, and re-expressing
+            # the split over the full 3x3 layout.
+            def padded(values, columns):
+                out = np.zeros((n, 3))
+                out[:, :columns] = values
+                return out
+
+            u3, rot3 = padded(u, dim), padded(rot, n_rot)
             # THE SPLIT, PER CELL: volumetric = tr(sigma)/d as a scalar, the
             # deviator as the full tensor with that mean removed from the
             # meshed diagonal. Both are linear reads of the same field, so
             # their error columns locate WHERE a defect lives -- a wrong trace
             # shows in the volumetric error alone, a wrong shear in the
             # deviatoric one.
-            vol = np.array([sum(sig[e][k * 3 + k] for k in range(dim)) / dim for e in range(n)])
-            dev = sig.copy()
+            dev9 = stress.copy()
             for k in range(dim):
-                dev[:, k * 3 + k] -= vol
-            dev_hat = np.array(d_hat)
+                dev9[:, k * 3 + k] -= vol
             fields = {
-                    "displacement": u,
-                    "displacement_exact": u_exact,
-                    "displacement_error": u - u_exact,
-                    "rotation": rot,
-                    "rotation_exact": rot_exact,
-                    "rotation_error": rot - rot_exact,
-                    "stress": sig,
+                    "displacement": u3,
+                    "displacement_exact": padded(u_exact, dim),
+                    "displacement_error": u3 - padded(u_exact, dim),
+                    "rotation": rot3,
+                    "rotation_exact": padded(np.tile(u_hat, (n, 1)), n_rot),
+                    "rotation_error": rot3 - padded(np.tile(u_hat, (n, 1)), n_rot),
+                    "stress": stress,
                     "stress_exact": np.tile(np.array(s_hat), (n, 1)),
-                    "stress_error": sig - np.array(s_hat),
+                    "stress_error": stress - np.array(s_hat),
                     "stress_volumetric": vol,
                     "stress_volumetric_exact": np.full(n, sm_hat),
                     "stress_volumetric_error": vol - sm_hat,
-                    "stress_deviatoric": dev,
-                    "stress_deviatoric_exact": np.tile(dev_hat, (n, 1)),
-                    "stress_deviatoric_error": dev - dev_hat,
+                    "stress_deviatoric": dev9,
+                    "stress_deviatoric_exact": np.tile(np.array(d_hat), (n, 1)),
+                    "stress_deviatoric_error": dev9 - np.array(d_hat),
             }
             if args.product == "adaptive_vem":
                 fields["eta"] = model.eta

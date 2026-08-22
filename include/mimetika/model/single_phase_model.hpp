@@ -80,6 +80,7 @@ class SinglePhaseModel {
 
   Realization realization() const { return how_; }
   const char* realization_name() const { return exokal::hodge::FluxOperators::name(how_); }
+  double mobility() const { return mobility_; }
   int moments_per_facet() const {
     return exokal::hodge::FluxOperators::moments_per_facet(how_, dim_);
   }

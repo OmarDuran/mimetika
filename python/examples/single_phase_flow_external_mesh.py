@@ -42,7 +42,6 @@ with --make-mesh to produce a sample file first, if there is none to hand:
 """
 
 import argparse
-import math
 import os
 import sys
 
@@ -50,6 +49,7 @@ import mimetika_cxx as mk
 import numpy as np
 
 from _diagnostics import write_report
+from _errors import error_table, l2_norms
 from _stages import stage
 
 MOBILITY = 1.0
@@ -145,6 +145,62 @@ def bounding_box(mesh):
 
 def exact(x, lo, direction, length, dim):
     return float(np.dot(np.asarray(x)[:dim] - lo[:dim], direction) / length)
+
+
+def exact_flux(direction, length):
+    """q = -lambda K grad p, a constant: p is affine and the coefficient uniform.
+
+    K is the identity here and lambda the mobility, so grad p = n/L carries the
+    whole field. The sign is the discretization's, checked against cell_flux on
+    a Cartesian box where both one-moment products reproduce q to round-off.
+    """
+    return -MOBILITY * np.asarray(direction) / length
+
+
+def cell_fields(model, mesh, dim, lo, direction, length):
+    """|E|, p_h, Pi_0 p and Pi_0 q_h, one row per cell.
+
+    Everything downstream is a norm, so the loop only gathers: three calls into
+    the model per cell and no arithmetic, which numpy then does at once.
+    """
+    n = model.n_cells
+    x = np.array([mk.centroid(mesh, dim, e) for e in range(n)])
+    volume = np.fromiter((mk.measure(mesh, dim, e) for e in range(n)), float, n)
+    p_h = np.fromiter((model.cell_pressure(e) for e in range(n)), float, n)
+    q_h = np.array([model.cell_flux(e) for e in range(n)])
+    p = (x[:, :dim] - lo[:dim]) @ np.asarray(direction) / length
+    return volume, p_h, p, q_h
+
+
+def report_error(volume, p_h, p, q_h, q, dim, moments):
+    """||e||_{L2(D)}, relative, and the extreme cell norms, for u = p and u = q.
+
+    """
+    print()
+    print("  error.  e = Pi_0(u - u_h), with Pi_0 v|_E = |E|^-1 int_E v the L2")
+    print("  projection onto cell-wise constants; D is the domain and E a cell.")
+    if moments == 1:
+        # q.n is then constant on each facet, so pairing the moment against the
+        # lever arm integrates it exactly and cell_flux IS Pi_0 q_h; Pi_0 being
+        # an orthogonal projection, the flux row bounds ||q - q_h|| below.
+        print("  p_h is cell-wise constant and cell_flux returns Pi_0 q_h exactly, so")
+        print("  e_p is the whole error in the pressure and ||e_q||_D <= ||q - q_h||_D.")
+    else:
+        # with d moments the linear part of q.n across a facet is real and the
+        # lever-arm formula drops it, so the flux row is not a bound either way
+        print("  p_h is cell-wise constant, so e_p is the whole error in the pressure;")
+        print(f"  the facet carries {moments} flux moments and cell_flux pairs only the")
+        print("  constant one, so the flux row carries a reconstruction error too.")
+    print("  S, the norm each row is measured against, is ||Pi_0 p||_D for the")
+    print("  pressure and ||q||_D for the flux.")
+    print()
+    # |D|^{1/2} |q| is ||q||_{L2(D)} exactly, q being constant
+    area = float(volume.sum())
+    scale_p, _ = l2_norms(volume, p)
+    return error_table(volume, [
+        ("p", p_h - p, scale_p),
+        ("q", q_h[:, :dim] - q, np.sqrt(area) * float(np.linalg.norm(q))),
+    ])
 
 
 def prescribe_linear_pressure(model, mesh, dim, lo, direction, length):
@@ -392,83 +448,29 @@ def main():
             + ")\n"
         )
 
-    with stage("measuring the pressure error"):
-        worst = rms = 0.0
-        for e in range(model.n_cells):
-            x = mk.centroid(mesh, dim, e)
-            d = model.cell_pressure(e) - exact(x, lo, direction, length, dim)
-            worst = max(worst, abs(d))
-            rms += d * d
-        rms = math.sqrt(rms / model.n_cells)
-    print()
-    print(f"  max |p - p_exact|  {worst:11.3e}")
-    print(f"  rms |p - p_exact|  {rms:11.3e}")
-
-    # THE VERDICT IS THE MEASUREMENT, not the moment count. One moment per facet
-    # means the datum loses nothing; it does not by itself mean the answer is
-    # exact, and on a general polyhedral mesh it is not.
-    # an iterative solve cannot show the round-off floor, so the threshold is
-    # the one that solver can actually reach
-    exact_below = 1e-10 if (args.solver == "direct" and not args.hybrid) else 1e-7
-    if worst < exact_below:
-        print(
-            "\n  exact: the datum is a facet constant and the facet carries one moment"
-        )
-    elif args.product == "diagonal_tpfa":
-        # NOT A DEFECT, AND NOT THE DATUM: the two-point flux reconstructs
-        # nothing, and is strongly consistent only where the segment joining two
-        # cell centroids meets their shared facet squarely. Off that condition
-        # it loses the linear field, which is the price of a diagonal M.
-        print(f"\n  NOT exact ({worst:.3e}), and this is what diagonal_tpfa claims: the")
-        print("  two-point flux is consistent only where the mesh is K-ORTHOGONAL, and")
-        print("  this one is not. Run --product stabilized_rt on the same mesh to see")
-        print("  the same space reproduce the field exactly.")
-    elif args.product == "adaptive_rt" and n_star > 0:
-        # the price of the selection, paid exactly where it was made: the
-        # flagged cells carry the two-point star, which loses the linear
-        # field off K-orthogonality. The eta field in the .vtu shows where.
-        print(f"\n  NOT exact ({worst:.3e}), and this is the selection's trade: "
-              f"{n_star} cell(s)")
-        print("  carry the two-point star, which is consistent only where the mesh is")
-        print("  K-orthogonal. The eta cell data locates them.")
-    elif model.moments_per_facet == 1:
-        print(
-            f"\n  NOT exact ({worst:.3e}), and the datum is not the reason: the facet"
-        )
-        print("  carries one moment, so nothing of it was dropped. The linear field is")
-        print("  not being reproduced on this mesh.")
-    else:
-        print(
-            f"\n  NOT exact: the facet carries {model.moments_per_facet} moments and the datum"
-        )
-        print("  supplies only the constant one, so the linear part of p across each")
-        print(
-            "  facet is dropped. First order, and it looks like a discretization error."
-        )
-
     # THE FLUX IS RECONSTRUCTED PER CELL, AND THE GATHER IS COLLECTIVE.
     #
     # A rank reconstructs only the cells it owns, so the field is summed over
     # the processes -- and that sum is an MPI_Allreduce, which EVERY rank has to
-    # reach. Computing it inside the `and root` branch below deadlocks the run:
-    # rank 0 waits in the reduction for ranks that already went on to exit.
-    flux = None
-    if args.vtu:
-        flux = mk.gather_cells(
-            model, np.array([model.cell_flux(e) for e in range(model.n_cells)])
-        )
+    # reach. It happens here, before the norms, because a rank measuring its own
+    # partial flux would report an error that is an artefact of the partition;
+    # and unconditionally, because putting it behind `--vtu` or `and root`
+    # deadlocks the run -- rank 0 waits in the reduction for ranks that already
+    # went on to exit.
+    with stage("reconstructing p and q"):
+        volume, p_h, p_exact, q_h = cell_fields(model, mesh, dim, lo, direction, length)
+        q_h = mk.gather_cells(model, q_h)
+        q_exact = exact_flux(direction, length)[:dim]
+    report_error(volume, p_h, p_exact, q_h, q_exact, dim, model.moments_per_facet)
 
     if args.vtu and root:
         with stage(f"writing {args.vtu}"):
-            n = model.n_cells
-            p = np.array([model.cell_pressure(e) for e in range(n)])
-            q = np.array(
-                [
-                    exact(mk.centroid(mesh, dim, e), lo, direction, length, dim)
-                    for e in range(n)
-                ]
-            )
-            fields = {"pressure": p, "pressure_exact": q, "error": p - q, "flux": flux}
+            fields = {
+                "pressure": p_h,
+                "pressure_exact": p_exact,
+                "error": p_h - p_exact,
+                "flux": q_h,
+            }
             if args.product == "adaptive_rt":
                 fields["eta"] = model.eta
             fields.update(partition_field(mesh, dim, args.partition))

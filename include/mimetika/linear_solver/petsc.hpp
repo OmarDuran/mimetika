@@ -314,6 +314,18 @@ struct SolverOptions {
   // -- the crossover is around 25k, and past it the gap only widens, because
   // Cholesky's cost per iteration grows with the fill and ADS's does not.
   int riesz_ads_limit{400000};
+  // THE COARSE SOLVE OF THE TWO-LEVEL CYCLE. 0 applies the per-component ADS
+  // cycles once; >0 wraps them in that many CG steps to riesz_coarse_rtol.
+  // Under the scale-free norm the graph term is what the block is made of,
+  // and the graph term lives on the facet constants -- the coarse space --
+  // so one ADS sweep there leaves the cycle's contraction to hypre's: the
+  // inner CG under the cycle grew 56 -> 100 -> 168 across three refinements
+  // of the Lame annulus. Solved to a tolerance, the coarse correction is what
+  // the two-level argument assumes, and the inner count is what it should be.
+  // A coarse CG makes the cycle a varying operator, so the block's Krylov
+  // method is promoted to flexible CG when this is on.
+  int riesz_coarse_its{0};
+  double riesz_coarse_rtol{1e-2};
   // RENUMBER BY THE MESH PARTITION when there is more than one process. Off,
   // the rows are split by index and a rank's unknowns come from all over the
   // mesh; the answer is the same either way, and the difference is how much of
@@ -1084,8 +1096,17 @@ class PetscSolver final : public LinearSolver {
     // less of the block than one acting on the block itself.
     const bool single_cycle = b0_pc == "ads" && !two_level && opts_.riesz_block_its < 0;
     const bool inner_krylov = (inexact_block && !single_cycle) || two_level;
+    // THE TWO-LEVEL BUDGET IS "TO TOLERANCE". Capped at 50, the inner CG
+    // under the cycle stopped short on the stress block -- median 56, 100, 168
+    // steps are what rtol 1e-2 takes over three refinements of the Lame
+    // annulus -- and the OUTER count then measured the cap: 21, 22, 36 under
+    // refinement, and 131 on one rank against 103 on two, the hypre
+    // hierarchy leaking into the count. Solved to tolerance the outer count
+    // is the Riesz map's, 20-22 flat and rank-independent (21 against 22).
+    // Where the block converges inside 50 steps anyway -- hybrid_mesh_l_3,
+    // 2.4M unknowns, 53 outer iterations either way -- the budget is moot.
     const int block_its = opts_.riesz_block_its > 0 ? opts_.riesz_block_its
-                          : two_level              ? 50
+                          : two_level              ? 500
                                                    : 200;
     const double block_rtol = opts_.riesz_block_its > 0 ? opts_.riesz_block_rtol
                               : two_level              ? 1e-2
@@ -1094,6 +1115,17 @@ class PetscSolver final : public LinearSolver {
     // flexible outer method may use; applying it under plain gmres is a silent
     // wrong answer, so the promotion happens here rather than in the caller
     if (inner_krylov) check(KSPSetType(ksp, KSPFGMRES), "KSPSetType(fgmres)");
+    // ORTHOGONALITY, KEPT. P^-1 A has a cluster at 1 from the constrained
+    // rows and its other eigenvalues a few decades away, and classical
+    // Gram-Schmidt without refinement loses the Krylov basis to that
+    // contrast: the recursive residual stalls while the true one is already
+    // down, and the iteration only notices at a restart -- measured on the
+    // Dupuit annulus as 39, 66, 67 iterations at restart 30 and 109, 110, 207
+    // at restart 100, always a restart plus nine. Re-orthogonalized when the
+    // loss is detected, the same ladder is 13, 13, 14: the map's count. The
+    // check is cheap next to an application of P; a no-op for a non-GMRES
+    // method.
+    PetscCallAbort(comm_, KSPGMRESSetCGSRefinementType(ksp, KSP_GMRES_CGS_REFINE_IFNEEDED));
 
     // THE SUB-SOLVERS ARE SET THROUGH THE OPTIONS DATABASE, before setup.
     //
@@ -1115,7 +1147,7 @@ class PetscSolver final : public LinearSolver {
       b0_pc = "bjacobi";
     }
     if (inner_krylov) {
-      set(p0 + "ksp_type", "cg");
+      set(p0 + "ksp_type", two_level && opts_.riesz_coarse_its > 0 ? "fcg" : "cg");
       set(p0 + "ksp_max_it", std::to_string(block_its));
       set(p0 + "ksp_rtol", std::to_string(block_rtol));
       set(p0 + "pc_type", b0_pc);
@@ -1686,7 +1718,15 @@ class PetscSolver final : public LinearSolver {
     // the real ones are attached to the sub-solves afterwards.
     KSP coarse = nullptr;
     check(PCMGGetCoarseSolve(pc, &coarse), "PCMGGetCoarseSolve");
-    check(KSPSetType(coarse, KSPPREONLY), "coarse KSPSetType");
+    if (opts_.riesz_coarse_its > 0) {
+      check(KSPSetType(coarse, KSPCG), "coarse KSPSetType(cg)");
+      check(KSPSetTolerances(coarse, opts_.riesz_coarse_rtol, PETSC_DEFAULT, PETSC_DEFAULT,
+                             opts_.riesz_coarse_its),
+            "coarse KSPSetTolerances");
+      check(KSPSetNormType(coarse, KSP_NORM_PRECONDITIONED), "coarse KSPSetNormType");
+    } else {
+      check(KSPSetType(coarse, KSPPREONLY), "coarse KSPSetType");
+    }
     PC coarse_pc = nullptr;
     check(KSPGetPC(coarse, &coarse_pc), "coarse KSPGetPC");
     // ONE COPY NEEDS NO SPLIT. A flux has a single H(div) field, so its coarse

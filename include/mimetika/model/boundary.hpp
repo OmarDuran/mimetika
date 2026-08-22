@@ -477,22 +477,30 @@ class BoundaryVectorData {
 // moments, which the operators do not carry per cell -- and the datum is
 // affine, so a fixed quadrature evaluates the six integrals exactly once at
 // build. The term then reads numbers, as every other natural datum does.
+//
+// One wrench per facet: q = d(d+1)/2 slots, six in space and three in the
+// plane, which is the stride the term reads with.
 class StrongDisplacementCoefficients {
  public:
   StrongDisplacementCoefficients() = default;
-  explicit StrongDisplacementCoefficients(std::size_t n_facets)
-      : value_(n_facets * 6, 0.0), set_(n_facets, 0) {}
+  explicit StrongDisplacementCoefficients(std::size_t n_facets, std::size_t slots = 6)
+      : slots_(slots), value_(n_facets * slots, 0.0), set_(n_facets, 0) {}
+
+  std::size_t slots() const { return slots_; }
 
   void set(Index f, const std::array<double, 6>& v) {
     const auto i = static_cast<std::size_t>(f);
-    for (std::size_t b = 0; b < 6; ++b) value_[i * 6 + b] = v[b];
+    for (std::size_t b = 0; b < slots_; ++b) value_[i * slots_ + b] = v[b];
     set_[i] = 1;
   }
 
   bool applies(Index f) const { return set_[static_cast<std::size_t>(f)] != 0; }
-  double at(Index f, std::size_t b) const { return value_[static_cast<std::size_t>(f) * 6 + b]; }
+  double at(Index f, std::size_t b) const {
+    return value_[static_cast<std::size_t>(f) * slots_ + b];
+  }
 
  private:
+  std::size_t slots_{6};
   std::vector<double> value_;
   std::vector<char> set_;
 };

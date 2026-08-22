@@ -327,9 +327,9 @@ class CauchyElasticityModel {
     // symmetry left diagonal_afw with the componentwise datum written into a
     // space that has no components: the rhs came out identically zero, so the
     // solve "converged" in 0 iterations on x = 0.
-    if (strongly_symmetric() && !displacement_facets_.empty()) {
-      strong_displacement_ =
-          StrongDisplacementCoefficients(static_cast<std::size_t>(c.count(dim_ - 1)));
+    if (wrench_layout() && !displacement_facets_.empty()) {
+      strong_displacement_ = StrongDisplacementCoefficients(
+          static_cast<std::size_t>(c.count(dim_ - 1)), static_cast<std::size_t>(facet_dofs()));
       // THE COBOUNDARY IS BUILT ONCE. cofacet_of rebuilds it per call, which
       // is O(mesh) each time -- 5k boundary facets on a 22k-cell mesh then
       // spend minutes recomputing the same operator that takes milliseconds
@@ -380,7 +380,7 @@ class CauchyElasticityModel {
     // the natural displacement datum, attached only when one is actually given
     if (!displacement_facets_.empty()) {
       sim_->model().add(
-          strongly_symmetric() ? "strong_prescribed_displacement" : "prescribed_displacement",
+          wrench_layout() ? "strong_prescribed_displacement" : "prescribed_displacement",
           exokal::forms::On::all(), {});
     }
     if (!reservoir_.empty()) {
@@ -575,11 +575,12 @@ class CauchyElasticityModel {
   // fracture, a material interface, a post-processing -- wants this functional.
   // PoroelasticModel carries the same method with the Biot term added.
   std::vector<double> trace(Index facet, const std::vector<double>& z) const {
-    // the contact machinery reads the weak family's (moment, component) facet
-    // blocks; the strong family's six-slot basis is not wired through it yet
-    if (strongly_symmetric()) {
+    // the contact machinery reads the componentwise (moment, component) facet
+    // blocks; the wrench basis -- the strong family's and diagonal_afw's -- is
+    // not wired through it yet
+    if (wrench_layout()) {
       throw std::logic_error(
-          "CauchyElasticityModel::trace: not implemented for the strongly-symmetric vem family");
+          "CauchyElasticityModel::trace: not implemented for the wrench-layout realizations");
     }
     const graphos::Complex& c = mesh_->topology();
     const auto& sp = sim_->epoch().stratum(0).space();
@@ -806,10 +807,18 @@ class CauchyElasticityModel {
       for (const Index f : d.facets) {
         free[static_cast<std::size_t>(f)] = 0;
         for (std::size_t b = 0; b < hops.facet_dofs() && b < 6; ++b) {
-          // The datum as it stands: exokal's coupling carries the -s that
-          // makes the multiplier the displacement itself.
+          // THE SIGN IS THE MODEL'S, NOT EXOKAL'S. exokal's saddle puts a
+          // pinned datum on the sigma-row as -s times the moment vector, and
+          // its multiplier is then the displacement itself; this model's
+          // boundary term places the same datum as +s (boundary_terms.hpp:
+          // r -= s coeff), the convention every monolithic patch test is
+          // exact under. Handing exokal the coefficients unchanged therefore
+          // solved the patch u = x to u = -x, stress and traction with it --
+          // a ratio of exactly -1 on every facet, measured at two
+          // resolutions. The multiplier that reproduces the monolithic answer
+          // is the NEGATED coefficient vector.
           pinned[static_cast<std::size_t>(f) * hops.facet_dofs() + b] =
-              strong_displacement_.applies(f) ? strong_displacement_.at(f, b) : 0.0;
+              strong_displacement_.applies(f) ? -strong_displacement_.at(f, b) : 0.0;
         }
       }
     }
@@ -1064,8 +1073,8 @@ class CauchyElasticityModel {
       // component for the weak family, and the three mean slots read through
       // the facet frame for the strong one. The incidence turns it outward.
       const std::array<double, 3> force =
-          strongly_symmetric() ? strong_facet_force(f, fr)
-                               : std::array<double, 3>{
+          wrench_layout() ? strong_facet_force(f, fr)
+                          : std::array<double, 3>{
                                      state_[s_offset_ + static_cast<std::size_t>(
                                                             ms.global(dim_ - 1, f, 0, 0))],
                                      state_[s_offset_ + static_cast<std::size_t>(
@@ -1110,7 +1119,7 @@ class CauchyElasticityModel {
     const auto& sp = sim_->epoch().stratum(0).space();
     const auto& ms = sp.map(sp.index_of("s_0"));
     const double area = exokal::measure(*mesh_, dim_ - 1, facet);
-    if (strongly_symmetric()) {
+    if (wrench_layout()) {
       // interior-safe: any coface serves, since a volume facet's canonical
       // frame does not read the cell
       const graphos::CoboundaryOperator cob = graphos::coboundary(mesh_->topology(), dim_ - 1);
@@ -1135,10 +1144,12 @@ class CauchyElasticityModel {
     const auto& sp = sim_->epoch().stratum(0).space();
     const auto& ms = sp.map(sp.index_of("s_0"));
     const FacetFrame fr = FacetFrame::of(*mesh_, dim_, cofacet_of(*mesh_, dim_, facet), facet);
-    if (strongly_symmetric()) {
-      // n . int_f (sigma n) is slot 3 alone: chi_0 = 1 and the tangential
-      // slots are orthogonal to the normal
-      return state_[s_offset_ + static_cast<std::size_t>(ms.global(dim_ - 1, facet, 3, 0))] /
+    if (wrench_layout()) {
+      // n . int_f (sigma n) is the normal-resultant slot alone -- 3 in space,
+      // 1 in the plane: chi_0 = 1 and the tangential slots are orthogonal to
+      // the normal
+      return state_[s_offset_ + static_cast<std::size_t>(
+                                    ms.global(dim_ - 1, facet, dim_ == 3 ? 3 : 1, 0))] /
              fr.measure;
     }
     double t = 0.0;
@@ -1155,7 +1166,7 @@ class CauchyElasticityModel {
     const auto& sp = sim_->epoch().stratum(0).space();
     const auto& ms = sp.map(sp.index_of("s_0"));
     const FacetFrame fr = FacetFrame::of(*mesh_, dim_, cofacet_of(*mesh_, dim_, facet), facet);
-    if (strongly_symmetric()) {
+    if (wrench_layout()) {
       const std::array<double, 3> force = strong_facet_force(facet, fr);
       return (e[0] * force[0] + e[1] * force[1] + e[2] * force[2]) / fr.measure;
     }
@@ -1179,6 +1190,7 @@ class CauchyElasticityModel {
                                                   const std::array<double, 3>& a,
                                                   const std::array<double, 9>& B) const {
     const FacetFrame fr = FacetFrame::of(*mesh_, dim_, cell, f);
+    const std::array<exokal::Point, 2> tg = wrench_tangents(fr);
     const exokal::Point xE = exokal::centroid(*mesh_, dim_, cell);
     const exokal::Point xf = exokal::centroid(*mesh_, dim_ - 1, f);
     const exokal::QuadratureRule qr = exokal::facet_quadrature(*mesh_, dim_, f, 4);
@@ -1186,7 +1198,7 @@ class CauchyElasticityModel {
     const auto xi = [&](const exokal::Point& x, int t) {
       double s = 0.0;
       for (std::size_t k = 0; k < 3; ++k) {
-        s += fr.tangent[static_cast<std::size_t>(t)][k] * (x[k] - xf[k]);
+        s += tg[static_cast<std::size_t>(t)][k] * (x[k] - xf[k]);
       }
       return s;
     };
@@ -1217,13 +1229,20 @@ class CauchyElasticityModel {
                                        fr.normal[0] * dx[1] - fr.normal[1] * dx[0]};
       double ut1 = 0.0, ut2 = 0.0, un = 0.0, urot = 0.0;
       for (std::size_t k = 0; k < 3; ++k) {
-        ut1 += fr.tangent[0][k] * u[k];
-        ut2 += fr.tangent[1][k] * u[k];
+        ut1 += tg[0][k] * u[k];
+        ut2 += tg[1][k] * u[k];
         un += fr.normal[k] * u[k];
         urot += nxdx[k] * u[k];
       }
       const double x1 = xi(x, 0), x2 = xi(x, 1);
       const double chi1 = chart.a11 * x1;
+      if (dim_ == 2) {
+        // the plane's three: {t, n chi_0, n chi_1}
+        v[0] += w * ut1;
+        v[1] += w * un;
+        v[2] += w * un * chi1;
+        continue;
+      }
       const double chi2 = chart.a21 * x1 + chart.a22 * x2;
       v[0] += w * ut1;
       v[1] += w * ut2;
@@ -1242,18 +1261,38 @@ class CauchyElasticityModel {
   // rotation basis is centred -- so the mean is carried by slots 0, 1 and 3
   // in the facet's canonical frame, which FacetFrame::of shares with the
   // discrete basis.
+  //
+  // In the plane the wrench is {t, n chi_0, n chi_1}: the tangential and
+  // normal resultants sit in slots 0 and 1, and the first moment in slot 2
+  // integrates to zero against a constant.
   std::array<double, 3> strong_facet_force(Index facet, const FacetFrame& fr) const {
     const auto& sp = sim_->epoch().stratum(0).space();
     const auto& ms = sp.map(sp.index_of("s_0"));
     const auto slot = [&](int b) {
       return state_[s_offset_ + static_cast<std::size_t>(ms.global(dim_ - 1, facet, b, 0))];
     };
-    const double s0 = slot(0), s1 = slot(1), s3 = slot(3);
+    const std::array<exokal::Point, 2> t = wrench_tangents(fr);
     std::array<double, 3> force{};
-    for (std::size_t k = 0; k < 3; ++k) {
-      force[k] = s0 * fr.tangent[0][k] + s1 * fr.tangent[1][k] + s3 * fr.normal[k];
+    if (dim_ == 3) {
+      const double s0 = slot(0), s1 = slot(1), s3 = slot(3);
+      for (std::size_t k = 0; k < 3; ++k) {
+        force[k] = s0 * t[0][k] + s1 * t[1][k] + s3 * fr.normal[k];
+      }
+      return force;
     }
+    const double s0 = slot(0), s1 = slot(1);
+    for (std::size_t k = 0; k < 3; ++k) force[k] = s0 * t[0][k] + s1 * fr.normal[k];
     return force;
+  }
+
+  // THE TANGENTS THE DISCRETE WRENCH BASIS USES. In space the frame's own
+  // two, built by the rule the basis shares; in the plane the basis takes the
+  // quarter turn of the canonical normal, (-n_y, n_x), which is what an
+  // edge's tangent is in exokal's chart -- and not the edge's own direction,
+  // whose sign the frame does not promise.
+  std::array<exokal::Point, 2> wrench_tangents(const FacetFrame& fr) const {
+    if (dim_ == 3) return fr.tangent;
+    return {exokal::Point{-fr.normal[1], fr.normal[0], 0.0}, exokal::Point{0.0, 0.0, 0.0}};
   }
 
  private:

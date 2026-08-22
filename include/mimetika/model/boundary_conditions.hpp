@@ -46,11 +46,21 @@ struct FacetForm {
   double value{0.0};
 };
 
-// THE STRONG-SYMMETRY LAYOUT, recognized from the space rather than told: six
-// moments of one scalar layout is the signature no weak stress field has --
-// those carry d components -- so a condition can serve both families through
-// the one space it is resolved against.
-inline bool strong_layout(const FacetDofs& d) { return d.components == 1 && d.moments == 6; }
+// THE WRENCH LAYOUT, recognized from the space rather than told: the
+// d(d+1)/2 rigid-motion moments of one scalar layout -- six in space, three
+// in the plane -- is the signature no componentwise stress field has, those
+// carrying d components. The strong family always, diagonal_afw on the weak
+// axis; a condition serves all of them through the one space it is resolved
+// against. In the plane the wrench is {t, n chi_0, n chi_1}: no rotation slot.
+inline bool strong_layout(const FacetDofs& d) {
+  return d.components == 1 && (d.moments == 6 || d.moments == 3);
+}
+
+// the tangent the wrench basis uses in the plane: the quarter turn of the
+// canonical normal, as exokal's edge chart defines it
+inline Point wrench_plane_tangent(const FacetFrame& fr) {
+  return Point{-fr.normal[1], fr.normal[0], 0.0};
+}
 
 // The base every condition shares. `resolve` is what turns parameters plus a
 // facet set into forms, and it needs the space because a form is a statement
@@ -130,15 +140,21 @@ class TractionBC final : public BoundaryCondition {
         }
       }
       if (strong_layout(d)) {
-        // THE SIX SLOTS OF THE STRONG FAMILY, in the facet's canonical frame:
-        // a uniform traction meets only the mean slots -- the rotation moment
-        // is centred and the chart's higher functions have zero mean -- so
-        // slots 0, 1 and 3 carry |f| times its frame components and 2, 4, 5
-        // are zero. The frame here is the one the discrete basis uses.
-        const std::array<double, 6> value = {
-            fr.measure * dot(t, fr.tangent[0]), fr.measure * dot(t, fr.tangent[1]), 0.0,
-            fr.measure * dot(t, fr.normal),     0.0,                                0.0};
-        for (int b = 0; b < 6; ++b) {
+        // THE WRENCH SLOTS, in the facet's canonical frame: a uniform traction
+        // meets only the resultant slots -- the rotation moment is centred and
+        // the chart's higher functions have zero mean. In space slots 0, 1 and
+        // 3 carry |f| times its frame components and 2, 4, 5 are zero; in the
+        // plane slots 0 and 1 carry them and 2 is zero. The frame here is the
+        // one the discrete basis uses.
+        std::array<double, 6> value{};
+        if (d.moments == 6) {
+          value = {fr.measure * dot(t, fr.tangent[0]), fr.measure * dot(t, fr.tangent[1]), 0.0,
+                   fr.measure * dot(t, fr.normal),     0.0,                                0.0};
+        } else {
+          value = {fr.measure * dot(t, wrench_plane_tangent(fr)), fr.measure * dot(t, fr.normal),
+                   0.0, 0.0, 0.0, 0.0};
+        }
+        for (int b = 0; b < d.moments; ++b) {
           forms_.push_back(FacetForm{f, {d.at(0, b)}, {1.0}, value[static_cast<std::size_t>(b)]});
         }
         continue;
@@ -181,10 +197,12 @@ class FreeSlipBC final : public BoundaryCondition {
       const FacetFrame fr = FacetFrame::of(mesh, cell_dim, cells[fi], f);
       const FacetDofs d = facet_dofs(space, field_, cell_dim, f, offset);
       if (strong_layout(d)) {
-        // the tangential traction is carried whole by slots 0, 1 and 2 -- the
-        // two mean components and the in-plane rotation moment -- so free
-        // slip pins exactly those and leaves the normal slots 3, 4, 5 free
-        for (const int b : {0, 1, 2}) {
+        // the tangential traction is carried whole by the tangential slots --
+        // in space 0, 1 and 2, the two mean components and the in-plane
+        // rotation moment; in the plane slot 0 alone -- so free slip pins
+        // exactly those and leaves the normal slots free
+        const int n_tangential = d.moments == 6 ? 3 : 1;
+        for (int b = 0; b < n_tangential; ++b) {
           forms_.push_back(FacetForm{f, {d.at(0, b)}, {1.0}, 0.0});
         }
         continue;

@@ -247,15 +247,30 @@ def test_the_stress_block_reaches_the_auxiliary_space():
     assert worst < 1e-7
 
 
-def test_the_stress_cycle_count_does_not_grow_under_refinement():
+# THE TWO-LEVEL CYCLE, WITH ITS BLOCK SOLVED TO TOLERANCE. What is h-uniform
+# is the Riesz map: with the stress block solved to rtol 1e-2 by CG under the
+# cycle, the outer count on the 3D annulus is 20, 20, 21 over three
+# refinements (11 flat with the block factorized exactly). What is NOT uniform
+# is the cycle as a preconditioner of that block: the CG steps each
+# application needs grow, median 56 -> 100 -> 168, and did so under the
+# previous, unit-bound norm as well (70 -> 179 -> 338); the old version of
+# this test capped that CG at 50 and read a flat outer count off a capped
+# inner one -- 35, 37, 40 -- which measured the cap. The solver's two-level
+# default is now the same "to tolerance" budget, so plain ADS options measure
+# the map's count; the smoother/coarse-space growth is the open item, not
+# hidden by a budget.
+STRESS_CYCLE = ADS
+
+
+def test_the_stress_count_does_not_grow_when_the_cycle_solves_its_block():
     _needs_hypre()
     counts = []
     for nr in (6, 12, 18):
         model = patch(nr, dim=3)
-        report = model.solve(options=ADS)
+        report = model.solve(options=STRESS_CYCLE)
         counts.append(report.iterations)
         print(f"  {model.n_cells:6d} cells {model.n_dofs:7d} dofs   {report.iterations:4d} its")
-    assert counts[-1] <= counts[0] + 10
+    assert counts[-1] <= counts[0] + 5
 
 
 @pytest.mark.parametrize("nr", [6, 18])

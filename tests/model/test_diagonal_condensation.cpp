@@ -608,21 +608,19 @@ MIMETIKA_TEST(the_condensed_solve_is_the_saddle_point_solve) {
 // ---- one mesh the pattern of which diagonal_afw cannot carry ---------------
 //
 // box(simplex) is the Kuhn subdivision: six congruent tetrahedra to a cube,
-// every cell a translate or reflection of every other. TETRAHEDRA ARE NOT THE
-// PROBLEM -- the annulus tetrahedra above condense to an invertible system --
-// but that PATTERN is, and by an exact count: the condensed operator loses one
-// dimension per interior CUBE face, 3 n^2 (n - 1) of them, which is 12, 54 and
-// 144 at n = 2, 3 and 4. The modes are rotation, with the stress and the
-// pressure identically zero.
+// every cell a translate or reflection of every other. On the TPSA layout --
+// one mean traction per facet -- that PATTERN cost the condensed operator one
+// dimension per interior CUBE face, 3 n^2 (n - 1) of them: a cellwise-
+// alternating rotation the facet means could not see, with the stress and the
+// pressure identically zero. The direct solver on the saddle point reported
+// CONVERGED and returned 1e16; the condensation ran out of pivots and said so.
 //
-// The condensation is what makes this visible at all. Handed the saddle point,
-// the direct solver reports CONVERGED and returns 1e16; handed the condensed
-// operator, the elimination runs out of pivots and says so. That is the case
-// for specializing the solver rather than for trusting a factorization.
-//
-// This test is expected to FAIL the day the rotation is closed -- TPSA's alpha
-// term, which exokal does not carry -- and that failure is the notification.
-MIMETIKA_TEST(the_kuhn_tetrahedra_lose_one_rotation_per_interior_cube_face) {
+// The wrench layout closes it: with the d(d+1)/2 rigid-motion moments on each
+// facet the multiplier's kernel is the global rigid motion alone, so the
+// condensed operator on the same tetrahedra is nonsingular and no pivot is
+// lost. This test pinned the defect while it existed and now pins its
+// absence; both numbers are the ones exokal's afw_stress.hpp states.
+MIMETIKA_TEST(the_kuhn_tetrahedra_keep_every_rotation_on_the_wrench) {
   for (const int n : {2, 3}) {
     const exokal::Mesh m = box_of(n, 3, Family::simplex);
     CauchyElasticityModel prob(m, 3, ElasticMaterial{kMu, kLam}, Stress::diagonal_afw,
@@ -637,8 +635,11 @@ MIMETIKA_TEST(the_kuhn_tetrahedra_lose_one_rotation_per_interior_cube_face) {
                 "pivots lost %2zu   interior cube faces %2zu\n",
                 n, static_cast<std::size_t>(prob.n_cells()), S.rows(), S.rows(), pivot_ratio,
                 tiny_pivots, interior_cube_faces);
-    CHECK(pivot_ratio < 1e-12);
-    CHECK(tiny_pivots == interior_cube_faces);
+    // THE DAY CAME: on the wrench layout the multiplier's kernel is the global
+    // rigid motion alone, the condensed operator is nonsingular, and the
+    // pivots this test used to count as lost are all there
+    CHECK(pivot_ratio > 1e-12);
+    CHECK(tiny_pivots == 0);
   }
 }
 

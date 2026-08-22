@@ -405,6 +405,50 @@ class Stage {
 // AFW's inf-sup is proved with ||sigma||^2 = (A sigma, sigma) + ||div sigma||^2:
 // skw is bounded L^2 -> L^2, so the rotation's rows contribute nothing and
 // their weight is zero.
+//
+// THE NORM HAS NO LENGTH UNIT OF ITS OWN. Scaling the coordinates by L
+// multiplies the material block by 1/L and B^T |E|^-1 B by 1/L^3, so the
+// plain H(div) norm is really ||sigma||^2 + L_0^2 ||div sigma||^2 with L_0 = 1
+// in whatever unit the mesh is written in. On a unit box that is the textbook
+// norm; on an 18 km industrial patch the graph term is 1e8 times too weak, the
+// pressure eigenvalues of P^-1 A collapse, and GMRES stalls with a true
+// residual 700 times the right-hand side while the preconditioned one
+// shrinks -- measured on industrial_2_patch_0 with every flux product, and
+// gone on the same mesh scaled to a unit box. So W carries a length of the
+// domain and the material scale: W = |E| K / L^2 for the flow (M ~ 1/K),
+// W = mu / (|E| L^2) for elasticity (A ~ 1/mu). A uniform rescaling of both
+// Riesz blocks changes nothing; what this fixes is the RATIO of the graph
+// term to the material block, which decides whether the map is an
+// isomorphism with constants of order one.
+//
+// L IS THE BOUNDING DIAGONAL OF THE MESH. The continuous argument: with
+// ||sigma||^2 + L^2 ||div sigma||^2 against ||u||^2 / L^2, the inf-sup
+// constant is L / sqrt(C^2 + L^2) with C the domain's Poincare scale, so it
+// saturates once L reaches the diameter and shrinks linearly below it.
+// Measured: the edge of the cube with the domain's measure -- (sum |E|)^(1/d),
+// 1 on the unit boxes -- doubled stabilized_vem's count on hybrid_mesh_l_2
+// (33 -> 67) against the diagonal; the unit-box ladders that once seemed to
+// prefer it were reading a Gram-Schmidt artefact (see build_riesz), and with
+// that gone the diagonal is flat and lowest on every ladder: 11, 11, 12 for
+// the flow annulus against 69, 66, 59 under the unit-bound norm.
+inline double bounding_diagonal(const exokal::Mesh& mesh) {
+  std::array<double, 3> lo{}, hi{};
+  lo.fill(std::numeric_limits<double>::infinity());
+  hi.fill(-std::numeric_limits<double>::infinity());
+  for (const auto& q : mesh.points()) {
+    for (int k = 0; k < 3; ++k) {
+      lo[k] = std::min(lo[k], q[k]);
+      hi[k] = std::max(hi[k], q[k]);
+    }
+  }
+  double d2 = 0.0;
+  for (int k = 0; k < 3; ++k) d2 += (hi[k] - lo[k]) * (hi[k] - lo[k]);
+  return std::sqrt(d2);
+}
+
+inline double norm_scale(const mimetika::SinglePhaseModel& m) { return m.mobility(); }
+inline double norm_scale(const mimetika::CauchyElasticityModel& m) { return m.material().shear; }
+
 template <class Model>
 void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exokal::Mesh& mesh,
                  int dim, bool divergence_is_an_integral, bool merge_multipliers = true) {
@@ -417,6 +461,8 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
   for (std::size_t e = 0; e < n_cells; ++e) {
     measure[e] = exokal::measure(mesh, dim, static_cast<Index>(e));
   }
+  const double L = bounding_diagonal(mesh);
+  const double scale = norm_scale(m) / (L * L);
 
   mimetika::solver::SpaceNorm norm;
   std::vector<int> first;
@@ -440,7 +486,7 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
       // W is the SCHUR SCALE of this constraint, not the variational L2 mass:
       // an unscaled row (flow's incidence) gives |E|, a row already divided by
       // the measure (elasticity's Dv, As) gives 1/|E|.
-      l2.push_back(divergence_is_an_integral ? me : 1.0 / me);
+      l2.push_back(scale * (divergence_is_an_integral ? me : 1.0 / me));
       ++k;
     }
   }
@@ -938,7 +984,8 @@ PYBIND11_MODULE(_core, m) {
       .def(py::init([](std::string method, std::string factorization, std::string preconditioner,
                        bool condense,
                        std::string riesz_block_pc, std::string riesz_block_factorization, int riesz_block_its, double riesz_block_rtol,
-                       int riesz_exact_limit, int riesz_ads_limit, bool partition, double rtol,
+                       int riesz_exact_limit, int riesz_ads_limit, int riesz_coarse_its,
+                       double riesz_coarse_rtol, bool partition, double rtol,
                        double atol, int max_iterations) {
              return mimetika::solver::SolverOptions{std::move(method),
                                                     std::move(factorization),
@@ -950,6 +997,8 @@ PYBIND11_MODULE(_core, m) {
                                                     riesz_block_rtol,
                                                     riesz_exact_limit,
                                                     riesz_ads_limit,
+                                                    riesz_coarse_its,
+                                                    riesz_coarse_rtol,
                                                     partition,
                                                     rtol,
                                                     atol,
@@ -960,6 +1009,7 @@ PYBIND11_MODULE(_core, m) {
            py::arg("riesz_block_pc") = "", py::arg("riesz_block_factorization") = "mumps",
            py::arg("riesz_block_its") = -1, py::arg("riesz_block_rtol") = 1e-4,
            py::arg("riesz_exact_limit") = 400000, py::arg("riesz_ads_limit") = 400000,
+           py::arg("riesz_coarse_its") = 0, py::arg("riesz_coarse_rtol") = 1e-2,
            py::arg("partition") = true, py::arg("rtol") = 1e-10,
            py::arg("atol") = 1e-50, py::arg("max_iterations") = 1000)
       .def_readwrite("condense", &mimetika::solver::SolverOptions::condense)
@@ -970,6 +1020,8 @@ PYBIND11_MODULE(_core, m) {
       .def_readwrite("riesz_block_rtol", &mimetika::solver::SolverOptions::riesz_block_rtol)
       .def_readwrite("riesz_exact_limit", &mimetika::solver::SolverOptions::riesz_exact_limit)
       .def_readwrite("riesz_ads_limit", &mimetika::solver::SolverOptions::riesz_ads_limit)
+      .def_readwrite("riesz_coarse_its", &mimetika::solver::SolverOptions::riesz_coarse_its)
+      .def_readwrite("riesz_coarse_rtol", &mimetika::solver::SolverOptions::riesz_coarse_rtol)
       .def_readwrite("partition", &mimetika::solver::SolverOptions::partition)
       .def_readwrite("method", &mimetika::solver::SolverOptions::method)
       .def_readwrite("factorization", &mimetika::solver::SolverOptions::factorization)
@@ -1049,6 +1101,21 @@ PYBIND11_MODULE(_core, m) {
       py::arg("mesh"), py::arg("k"), py::arg("cell"));
 
   m.def("read_vtu", &exokal::read_vtu, py::arg("path"), py::arg("tag_array") = "tag");
+
+  // THE SAME COMPLEX AT ANOTHER SCALE: points mapped to (x - origin) * factor,
+  // topology and orientation untouched. What a scale-dependent construction
+  // -- a norm with a hidden length unit -- is tested against.
+  m.def(
+      "scaled",
+      [](const exokal::Mesh& x, double factor, std::array<double, 3> origin) {
+        std::vector<exokal::Mesh::Point> pts = x.points();
+        for (auto& q : pts) {
+          for (int k = 0; k < 3; ++k) q[k] = (q[k] - origin[k]) * factor;
+        }
+        return exokal::Mesh(x.topology(), std::move(pts));
+      },
+      py::arg("mesh"), py::arg("factor"), py::arg("origin") = std::array<double, 3>{0.0, 0.0, 0.0},
+      "the mesh with points (x - origin) * factor");
 
   // ---- what the mesh is, before anything is solved on it -------------------
   //

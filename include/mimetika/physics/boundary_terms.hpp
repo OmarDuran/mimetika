@@ -183,8 +183,9 @@ class StrongPrescribedDisplacement {
 
     const auto& S = st.field(kS);
     const std::size_t slot = st.support_slot[0];
-    for (std::size_t b = 0; b < 6; ++b) {
-      const std::size_t i = S.begin + slot * 6 + b;
+    const std::size_t q = data_->slots();  // six in space, three in the plane
+    for (std::size_t b = 0; b < q; ++b) {
+      const std::size_t i = S.begin + slot * q + b;
       if (i < S.end) r[i] -= st.incidence[0] * data_->at(st.support, b);
     }
   }
