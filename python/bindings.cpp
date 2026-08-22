@@ -23,6 +23,7 @@
 
 #include <array>
 #include <chrono>
+#include <limits>
 #include <cstdio>
 #include <memory>
 #include <stdexcept>
@@ -36,12 +37,14 @@
 #include "exokal/hodge/stress_operators.hpp"
 #include "exokal/io/vtu.hpp"
 #include "exokal/preprocess/diagnostics.hpp"
+#include "exokal/preprocess/curate_vtu.hpp"
 #include "mimetika/model/partition.hpp"
 #include "mimetika/linear_solver/fields.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
 #include "mimetika/mesh/structured.hpp"
 #include "mimetika/model/boundary.hpp"
 #include "mimetika/model/boundary_conditions.hpp"
+#include "mimetika/model/conditioning.hpp"
 #include "mimetika/model/cauchy_elasticity_model.hpp"
 #include "mimetika/model/compositions/elasticity.hpp"
 #include "mimetika/model/compositions/poroelasticity.hpp"
@@ -692,6 +695,70 @@ mimetika::solver::SolveReport assemble_only(Model& m, bool progress,
   return r;
 }
 
+// THE HYBRIDIZED ROUTE, FROM PYTHON.
+//
+// A second elimination rather than a second solver: the stress leaves cell by
+// cell, traction continuity becomes a multiplier on the facets, and what a
+// Krylov method sees is the interface system alone -- SPD once a facet is
+// pinned, so a conjugate gradient applies where the condensed mixed system was
+// quasi-definite.
+//
+// THE BOUNDARY ROLES SWAP. The multiplier IS the facet displacement, so
+// prescribe_displacement PINS one and a traction loads the free rows. The
+// model does that mapping; nothing here restates it.
+//
+// SERIAL. The assembly walks every cell and scatters into a global multiplier
+// numbering; distributed, each rank holds only its own cells and would emit
+// some interface rows twice and others never. That needs the row ownership the
+// condensation has and does not have here, so a distributed call is refused
+// rather than answered wrongly.
+mimetika::solver::SolveReport solve_elasticity_hybrid(mimetika::CauchyElasticityModel& m,
+                                                      bool progress,
+                                                      const mimetika::solver::SolverOptions& opts) {
+  PetscMPIInt size = 1;
+  MPI_Comm_size(PETSC_COMM_WORLD, &size);
+  if (size > 1) {
+    throw std::runtime_error(
+        "solve_hybrid: the interface assembly is serial -- its multiplier rows are not "
+        "partitioned, so a distributed run would double-count some and drop others. Run on one "
+        "process, or use the mixed route.");
+  }
+  Stage stage(progress);
+  stage.begin("assembling");
+  const auto t_build = std::chrono::steady_clock::now();
+  m.build();
+  const double assembly_seconds = Stage::slowest(
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count());
+  stage.end();
+
+  // the interface system is SPD: a conjugate gradient and a multigrid, and an
+  // unnamed method becomes exactly that rather than a factorization
+  mimetika::solver::SolverOptions o = opts;
+  if (o.direct()) {
+    o.method = "cg";
+    o.preconditioner = "hypre";
+  }
+  o.condense = false;  // the elimination already happened, cell by cell
+  mimetika::solver::PetscSolver petsc(o);
+
+  stage.begin("hybridizing and solving");
+  const auto report = m.hybridized(petsc);
+  stage.end();
+  if (!report.solve.converged) {
+    throw std::runtime_error("cauchy elasticity (hybrid): " + report.solve.reason);
+  }
+  mimetika::solver::SolveReport out = report.solve;
+  out.assembly_seconds = assembly_seconds;
+  // WHAT THE SOLVER ACTUALLY SAW. The model's dof count is the monolithic
+  // space, and after hybridization the linear solver never sees it: what it
+  // gets is the facet multipliers alone. Reporting the space instead of the
+  // system is how a run gets read as a solve of something it never touched --
+  // so the size travels back on the same fields the condensation uses.
+  out.condensed = true;
+  out.condensed_dofs = report.multipliers;
+  return out;
+}
+
 mimetika::solver::SolveReport solve_elasticity(mimetika::CauchyElasticityModel& m, bool progress,
                                                const mimetika::solver::SolverOptions& opts) {
   Stage stage(progress);
@@ -729,6 +796,49 @@ mimetika::solver::SolveReport solve_elasticity(mimetika::CauchyElasticityModel& 
   if (!rep.converged) throw std::runtime_error("cauchy elasticity: " + rep.reason);
   m.accept(std::move(x));
   return rep;
+}
+
+// THE HYBRIDIZED FLOW SOLVE: the flux twin of solve_elasticity_hybrid. The
+// boundary roles swap -- a pressure datum PINS a multiplier, a normal flux
+// loads a free row -- and the interface system is SPD, so an unnamed method
+// becomes a conjugate gradient under an algebraic multigrid. Serial, for the
+// same reason as the stress: the multiplier rows are not partitioned.
+mimetika::solver::SolveReport solve_single_phase_hybrid(mimetika::SinglePhaseModel& m,
+                                                        bool progress,
+                                                        const mimetika::solver::SolverOptions& opts) {
+  PetscMPIInt size = 1;
+  MPI_Comm_size(PETSC_COMM_WORLD, &size);
+  if (size > 1) {
+    throw std::runtime_error(
+        "solve_hybrid: the interface assembly is serial -- its multiplier rows are not "
+        "partitioned, so a distributed run would double-count some and drop others. Run on one "
+        "process, or use the mixed route.");
+  }
+  Stage stage(progress);
+  stage.begin("assembling");
+  const auto t_build = std::chrono::steady_clock::now();
+  m.build();
+  const double assembly_seconds = Stage::slowest(
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count());
+  stage.end();
+  mimetika::solver::SolverOptions o = opts;
+  if (o.direct()) {
+    o.method = "cg";
+    o.preconditioner = "hypre";
+  }
+  o.condense = false;  // the elimination already happened, cell by cell
+  mimetika::solver::PetscSolver petsc(o);
+  stage.begin("hybridizing and solving");
+  const auto report = m.hybridized(petsc);
+  stage.end();
+  if (!report.solve.converged) {
+    throw std::runtime_error("single phase (hybrid): " + report.solve.reason);
+  }
+  mimetika::solver::SolveReport out = report.solve;
+  out.assembly_seconds = assembly_seconds;
+  out.condensed = true;
+  out.condensed_dofs = report.multipliers;
+  return out;
 }
 
 mimetika::solver::SolveReport solve_single_phase(mimetika::SinglePhaseModel& m, bool progress,
@@ -992,6 +1102,216 @@ PYBIND11_MODULE(_core, m) {
       py::arg("path"), py::arg("degeneracy_percent") = exokal::default_degeneracy_percent);
   m.attr("default_degeneracy_percent") = py::float_(exokal::default_degeneracy_percent);
 
+  // THE CURATION PASS: remove the cells the scan named, by their vtk ids, by
+  // a bistellar flip with a neighbour or by contracting a 0-cell, and write
+  // the mesh that is left. The degenerate cell is what breaks the discrete
+  // inf-sup constant under the stabilized product; removing it is the robust
+  // route where the selection only relocates the problem.
+  m.def(
+      "curate_vtu",
+      [](const std::string& path, const std::vector<long long>& vtk_cells, double tol,
+         const std::string& out_path, const std::string& method) {
+        exokal::CurationMethod how;
+        if (method == "bistellar") {
+          how = exokal::CurationMethod::bistellar;
+        } else if (method == "contraction") {
+          how = exokal::CurationMethod::contraction;
+        } else {
+          throw std::invalid_argument("curate_vtu: method is 'bistellar' or 'contraction'");
+        }
+        const exokal::CurationOutcome o = exokal::curate_vtu(path, vtk_cells, tol, out_path, how);
+        return py::dict(py::arg("applied") = o.applied, py::arg("notes") = o.notes,
+                        py::arg("written") = o.written);
+      },
+      py::arg("path"), py::arg("vtk_cells"), py::arg("tol") = 1e-8, py::arg("out_path") = "",
+      py::arg("method") = "bistellar",
+      "remove the named cells (vtk ids) and write the curated mesh; out_path empty "
+      "overwrites the origin");
+
+  // THE COLLAPSE PERCENT OF EVERY CELL, not only the witnesses below a
+  // threshold: 100 |E| over the mean measure of its node star, the number the
+  // degeneracy scan compares against. Asked at an infinite threshold the scan
+  // reports every cell with a neighbour; a cell with none gets NaN, which is
+  // the honest value for "not judged".
+  m.def(
+      "cell_collapse_percent",
+      [](const exokal::Mesh& mesh, int dim) {
+        const auto n = static_cast<std::size_t>(mesh.count(dim));
+        py::array_t<double> out(static_cast<py::ssize_t>(n));
+        std::fill(out.mutable_data(), out.mutable_data() + n,
+                  std::numeric_limits<double>::quiet_NaN());
+        for (const exokal::DegenerateCell& r :
+             exokal::degenerate_cells(mesh, dim, std::numeric_limits<double>::infinity())) {
+          out.mutable_data()[static_cast<std::size_t>(r.cell)] = r.percent;
+        }
+        return out;
+      },
+      py::arg("mesh"), py::arg("dim"),
+      "100 |cell| / mean measure over its node star, for every cell");
+
+  // THE FILE'S OWN CELL IDS, per cell of the top stratum: the reader reorders
+  // cells top-first, so the complex id and the id ParaView selects agree only
+  // on a single-stratum file. Every per-cell diagnostic is reported in both.
+  m.def(
+      "vtu_cell_ids",
+      [](const std::string& path) {
+        const exokal::VtuFile file = exokal::read_vtu_file(path);
+        return exokal::file_cell_ids(file, file.mesh.dim());
+      },
+      py::arg("path"), "the vtk cell id of each top cell, in complex order");
+
+  // THE SPECTRUM OF EVERY CELL'S INNER PRODUCT, and nothing assembled: the
+  // operators are built as the model would build them, each cell's M is
+  // handed to a Jacobi eigensolver, and what comes back is one row per cell
+  // -- its size, its extreme eigenvalues, and their ratio, the conditioning
+  // of that cell's flux or stress block. The selection (eta) and the star's
+  // validity ride along where the realization has them, so a bad cell can
+  // be read in every light at once.
+  const auto spectra_of = [](auto product_of, std::size_t n_cells) {
+    py::array_t<double> lmin(static_cast<py::ssize_t>(n_cells)), lmax(static_cast<py::ssize_t>(n_cells)),
+        cond(static_cast<py::ssize_t>(n_cells));
+    py::array_t<int> ndof(static_cast<py::ssize_t>(n_cells));
+    for (std::size_t e = 0; e < n_cells; ++e) {
+      const exokal::numerics::Dense M = product_of(static_cast<Index>(e));
+      const std::size_t n = M.rows();
+      ndof.mutable_data()[e] = static_cast<int>(n);
+      if (n == 0) {
+        lmin.mutable_data()[e] = lmax.mutable_data()[e] = cond.mutable_data()[e] = 0.0;
+        continue;
+      }
+      const exokal::numerics::SymmetricEigen eig = exokal::numerics::symmetric_eigen(M);
+      const double lo = eig.values.front(), hi = eig.values.back();
+      lmin.mutable_data()[e] = lo;
+      lmax.mutable_data()[e] = hi;
+      cond.mutable_data()[e] = lo > 0.0 ? hi / lo : std::numeric_limits<double>::infinity();
+    }
+    return py::dict(py::arg("n_dofs") = ndof, py::arg("lambda_min") = lmin,
+                    py::arg("lambda_max") = lmax, py::arg("cond") = cond);
+  };
+
+  m.def(
+      "flux_cell_spectra",
+      [spectra_of](const exokal::Mesh& mesh, int dim, FluxOperators::Realization how,
+                   double mobility, py::object degeneracy_percent, py::object cond_threshold) {
+        const auto n = static_cast<std::size_t>(mesh.count(dim));
+        const bool adaptive = how == FluxOperators::Realization::adaptive_rt;
+        std::vector<double> eta;
+        if (adaptive && !degeneracy_percent.is_none()) {
+          eta.assign(n, 1.0);
+          for (const Index c :
+               exokal::degenerate_cell_ids(mesh, dim, py::cast<double>(degeneracy_percent))) {
+            eta[static_cast<std::size_t>(c)] = 0.0;
+          }
+        }
+        const auto build = [&](const std::vector<double>* sel) {
+          return FluxOperators::build(mesh, dim, exokal::hodge::Coefficient::uniform(mobility),
+                                      how, nullptr, exokal::hodge::default_enrichment_degree,
+                                      exokal::hodge::default_max_facets, nullptr, nullptr, sel);
+        };
+        // the conditioning selector reads the stabilized member's blocks from
+        // a probe build, exactly as the model does, then builds the selection
+        std::size_t ill = 0;
+        if (adaptive && !cond_threshold.is_none()) {
+          if (eta.empty()) eta.assign(n, 1.0);
+          const std::vector<double> ones(n, 1.0);
+          const FluxOperators probe = build(&ones);
+          for (std::size_t e = 0; e < n; ++e) {
+            if (!probe.eta().empty() && probe.eta()[e] == 0.0) eta[e] = 0.0;
+          }
+          ill = mimetika::cond_selection(
+              eta, py::cast<double>(cond_threshold),
+              [&](std::size_t e) -> const exokal::numerics::Dense& {
+                return probe.cell(static_cast<Index>(e));
+              });
+        }
+        const FluxOperators ops = build(eta.empty() ? nullptr : &eta);
+        py::dict out = spectra_of([&](Index e) { return ops.cell(e); }, n);
+        out["n_ill_conditioned"] = ill;
+        py::array_t<double> eta_out(static_cast<py::ssize_t>(n));
+        for (std::size_t e = 0; e < n; ++e) {
+          eta_out.mutable_data()[e] = ops.eta().empty() ? 1.0 : ops.eta()[e];
+        }
+        py::array_t<int> star(static_cast<py::ssize_t>(n));
+        std::fill(star.mutable_data(), star.mutable_data() + n, 0);
+        for (const Index c : ops.not_star_shaped()) star.mutable_data()[c] = 1;
+        out["eta"] = eta_out;
+        out["star_invalid"] = star;
+        return out;
+      },
+      py::arg("mesh"), py::arg("dim"), py::arg("realization"), py::arg("mobility") = 1.0,
+      py::arg("degeneracy_percent") = py::none(), py::arg("cond_threshold") = py::none(),
+      "per-cell spectrum of the flux inner product, nothing assembled; for adaptive_rt "
+      "eta is zeroed on the cells the scan flags and on those whose stabilized block's "
+      "conditioning exceeds cond_threshold");
+
+  m.def(
+      "stress_cell_spectra",
+      [spectra_of](const exokal::Mesh& mesh, int dim, StressOperators::Realization how,
+                   StressOperators::Formulation form, double mu, double lam,
+                   py::object degeneracy_percent, py::object cond_threshold) {
+        const auto n = static_cast<std::size_t>(mesh.count(dim));
+        const bool adaptive = how == StressOperators::Realization::adaptive_vem;
+        std::vector<double> eta;
+        if (adaptive && !degeneracy_percent.is_none()) {
+          eta.assign(n, 1.0);
+          for (const Index c :
+               exokal::degenerate_cell_ids(mesh, dim, py::cast<double>(degeneracy_percent))) {
+            eta[static_cast<std::size_t>(c)] = 0.0;
+          }
+        }
+        const auto build = [&](const std::vector<double>* sel) {
+          return StressOperators::build(mesh, dim, mu, lam, how, form, nullptr, nullptr, sel);
+        };
+        std::size_t ill = 0;
+        if (adaptive && !cond_threshold.is_none()) {
+          if (eta.empty()) eta.assign(n, 1.0);
+          const std::vector<double> ones(n, 1.0);
+          const StressOperators probe = build(&ones);
+          static const exokal::numerics::Dense empty;
+          for (std::size_t e = 0; e < n; ++e) {
+            if (!probe.eta().empty() && probe.eta()[e] == 0.0) eta[e] = 0.0;
+          }
+          ill = mimetika::cond_selection(
+              eta, py::cast<double>(cond_threshold),
+              [&](std::size_t e) -> const exokal::numerics::Dense& {
+                const auto& cell = probe.compact(static_cast<Index>(e));
+                return cell.diag.empty() ? cell.M : empty;
+              });
+        }
+        const StressOperators ops = build(eta.empty() ? nullptr : &eta);
+        py::dict out = spectra_of(
+            [&](Index e) {
+              const auto& c = ops.compact(e);
+              if (c.diag.empty()) return c.M;
+              exokal::numerics::Dense d(c.diag.size(), c.diag.size());
+              for (std::size_t i = 0; i < c.diag.size(); ++i) d(i, i) = c.diag[i];
+              return d;
+            },
+            n);
+        py::array_t<double> eta_out(static_cast<py::ssize_t>(n));
+        for (std::size_t e = 0; e < n; ++e) {
+          eta_out.mutable_data()[e] = ops.eta().empty() ? 1.0 : ops.eta()[e];
+        }
+        py::array_t<int> star(static_cast<py::ssize_t>(n));
+        for (std::size_t e = 0; e < n; ++e) {
+          int bad = 0;
+          for (const double v : ops.compact(static_cast<Index>(e)).diag) bad |= !(v > 0.0);
+          star.mutable_data()[e] = bad;
+        }
+        out["eta"] = eta_out;
+        out["star_invalid"] = star;
+        out["n_ill_conditioned"] = ill;
+        return out;
+      },
+      // no enum default here: this binding precedes the enum's registration,
+      // and a default of an unregistered type fails the whole module import
+      py::arg("mesh"), py::arg("dim"), py::arg("realization"), py::arg("formulation"),
+      py::arg("mu") = 1.0, py::arg("lam") = 1.0, py::arg("degeneracy_percent") = py::none(),
+      py::arg("cond_threshold") = py::none(),
+      "per-cell spectrum of the stress inner product, nothing assembled; for adaptive_vem "
+      "eta is zeroed on the cells the scan flags and on those whose stabilized block's "
+      "conditioning exceeds cond_threshold");
+
   // the one cell a boundary facet bounds; the affine datum is written about
   // that cell's centroid
   m.def(
@@ -1193,6 +1513,7 @@ PYBIND11_MODULE(_core, m) {
                                }
                                return n;
                              })
+      .def("build", [](mimetika::CauchyElasticityModel& s) { s.build(); })
       .def(
           "assemble",
           [](mimetika::CauchyElasticityModel& s, bool progress,
@@ -1202,6 +1523,8 @@ PYBIND11_MODULE(_core, m) {
           py::arg("progress") = false, py::arg("options") = mimetika::solver::SolverOptions{})
       .def("prescribe_displacement", &mimetika::CauchyElasticityModel::prescribe_displacement,
            py::arg("facets"), py::arg("constant"), py::arg("gradient") = std::array<double, 9>{})
+      .def("solve_hybrid", &solve_elasticity_hybrid, py::arg("progress") = false,
+           py::arg("options") = mimetika::solver::SolverOptions{})
       .def("solve", &solve_elasticity, py::arg("progress") = false,
            py::arg("options") = mimetika::solver::SolverOptions{})
       .def_property_readonly("dim", &mimetika::CauchyElasticityModel::dim)
@@ -1230,6 +1553,14 @@ PYBIND11_MODULE(_core, m) {
            "adaptive_vem's scan threshold: cells whose measure falls below this "
            "percentage of their node-star mean take the diagonal star (eta = 0); "
            "every other cell keeps the stabilized vem product (eta = 1)")
+      .def("set_cond_threshold", &mimetika::CauchyElasticityModel::set_cond_threshold,
+           py::arg("cond"),
+           "adaptive_vem's second selector: cells whose stabilized vem block has "
+           "lambda_max / lambda_min above this take the diagonal star (eta = 0) as "
+           "well; composes with the scan, costs one probe build")
+      .def_property_readonly("n_ill_conditioned",
+                             &mimetika::CauchyElasticityModel::n_ill_conditioned,
+                             "cells the conditioning selector switched, as built")
       .def_property_readonly(
           "eta",
           [](const mimetika::CauchyElasticityModel& s) {
@@ -1397,6 +1728,24 @@ PYBIND11_MODULE(_core, m) {
            "adaptive_rt's scan threshold: cells whose measure falls below this "
            "percentage of their node-star mean take the diagonal star (eta = 0); "
            "every other cell keeps the stabilized product (eta = 1)")
+      .def("set_cond_threshold", &mimetika::SinglePhaseModel::set_cond_threshold,
+           py::arg("cond"),
+           "adaptive_rt's second selector: cells whose stabilized flux block has "
+           "lambda_max / lambda_min above this take the diagonal star (eta = 0) as "
+           "well; composes with the scan, costs one probe build")
+      .def_property_readonly("n_ill_conditioned", &mimetika::SinglePhaseModel::n_ill_conditioned,
+                             "cells the conditioning selector switched, as built")
+      .def_property_readonly("n_not_star_shaped", &mimetika::SinglePhaseModel::n_not_star_shaped,
+                             "cells whose two-point star carries a non-positive facet weight: "
+                             "the centroid does not see that facet, M is not positive there, "
+                             "and the solve is meaningless -- repair the mesh or switch products")
+      .def_property_readonly(
+          "not_star_shaped",
+          [](const mimetika::SinglePhaseModel& s) {
+            const auto& v = s.not_star_shaped();
+            return std::vector<long long>(v.begin(), v.end());
+          },
+          "the cells the star's premise fails on, by complex id")
       .def_property_readonly(
           "eta",
           [](const mimetika::SinglePhaseModel& s) {
@@ -1405,6 +1754,10 @@ PYBIND11_MODULE(_core, m) {
           },
           "the adaptive_rt selection as built, one value per cell: "
           "1 is stabilized_rt, 0 is diagonal_tpfa")
+      // THE OPERATORS AND THE SYSTEM, NOTHING MORE: what a diagnostic needs --
+      // the star's validity, the selection as built -- without paying for a
+      // preconditioner it will never apply
+      .def("build", [](mimetika::SinglePhaseModel& s) { s.build(); })
       .def(
           "assemble",
           [](mimetika::SinglePhaseModel& s, bool progress,
@@ -1414,6 +1767,11 @@ PYBIND11_MODULE(_core, m) {
           py::arg("progress") = false, py::arg("options") = mimetika::solver::SolverOptions{})
       .def("solve", &solve_single_phase, py::arg("progress") = false,
            py::arg("options") = mimetika::solver::SolverOptions{})
+      .def("solve_hybrid", &solve_single_phase_hybrid, py::arg("progress") = false,
+           py::arg("options") = mimetika::solver::SolverOptions{},
+           "eliminate the flux cell by cell and solve the SPD facet-pressure system: "
+           "cg + multigrid on any product; a pressure datum pins a multiplier, a "
+           "normal flux loads a free row, an unconditioned boundary facet is sealed")
       .def_property_readonly("dim", &mimetika::SinglePhaseModel::dim)
       .def_property_readonly("n_cells", &mimetika::SinglePhaseModel::n_cells)
       .def_property_readonly(

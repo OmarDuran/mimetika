@@ -278,6 +278,46 @@ def test_the_selection_defaults_to_ones_on_a_sound_mesh():
     assert list(prob.eta) == [1.0] * m.count(3)
 
 
+# THE SECOND SELECTOR: conditioning. A sound cartesian column has blocks of
+# modest conditioning, so a threshold above them selects nothing and one
+# below them selects everything -- the two members again, reached by the other
+# dial -- and the count of switched cells is reported as built.
+def test_the_conditioning_selector_reaches_both_members():
+    m = mk.column(4, 3, mk.Family.cartesian, 1.0)
+    sp = mk.flux_cell_spectra(m, 3, ADAPTIVE, 1.0, None, None)
+    worst = max(sp["cond"])
+    assert worst > 1.0 and math.isfinite(worst)
+
+    prob = mk.SinglePhaseModel(m, 3, 1.0, ADAPTIVE)
+    prob.add_pressure(mk.boundary_facets(m, 3), 1.0)
+    prob.set_cond_threshold(2.0 * worst)
+    prob.solve()
+    assert list(prob.eta) == [1.0] * m.count(3)
+    assert prob.n_ill_conditioned == 0
+
+    prob = mk.SinglePhaseModel(m, 3, 1.0, ADAPTIVE)
+    prob.add_pressure(mk.boundary_facets(m, 3), 1.0)
+    prob.set_cond_threshold(0.5)
+    prob.solve()
+    assert list(prob.eta) == [0.0] * m.count(3)
+    assert prob.n_ill_conditioned == m.count(3)
+    assert abs(prob.cell_pressure(0) - 1.0) < 1e-10
+
+    # the spectra binding makes the same selection, and says how many
+    sp = mk.flux_cell_spectra(m, 3, ADAPTIVE, 1.0, None, 0.5)
+    assert list(sp["eta"]) == [0.0] * m.count(3)
+    assert sp["n_ill_conditioned"] == m.count(3)
+
+
+def test_the_conditioning_threshold_is_refused_off_the_adaptive_product():
+    m = mk.column(4, 3, mk.Family.cartesian, 1.0)
+    prob = mk.SinglePhaseModel(m, 3, 1.0, STABILIZED)
+    prob.add_pressure(mk.boundary_facets(m, 3), 1.0)
+    prob.set_cond_threshold(1e3)
+    with pytest.raises(Exception):
+        prob.solve()
+
+
 # THE THRESHOLD BELONGS TO adaptive_rt: named beside any other realization it
 # is refused at solve() rather than silently ignored.
 def test_the_threshold_is_refused_off_the_adaptive_product():

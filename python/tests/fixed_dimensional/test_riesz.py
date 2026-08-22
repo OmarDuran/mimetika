@@ -316,26 +316,37 @@ def test_the_total_pressure_row_keeps_the_scale_the_operator_gave_it():
     assert counts[-1] <= counts[0] + 15
 
 
-# WHAT THE NORM DOES NOT YET COVER: A LUMPED COMPLIANCE.
+# THE LUMPED COMPLIANCE, MEASURED ON THE SADDLE POINT IT IS A NORM FOR.
 #
-# diagonal_afw exists only in the four-field form, and its count grows under
-# refinement (231, 377, 960 over a hundredfold in unknowns) with the block
-# solved EXACTLY -- so this is the Gram matrix itself, not the way its first
-# block is inverted. ||sigma||^2 = (A sigma, sigma) + ||div sigma||^2 is AFW's
-# norm for AFW's compliance; TPSA replaces A by a lumped diagonal, and the
-# equivalence of the two is the same conditional the consistency is, so the
-# inf-sup constant the theorem bounds the count by is not the one this norm
-# measures. The product is solvable and the answer is right -- both are tested
-# in test_cauchy_elasticity -- it is the PRECONDITIONER that does not yet know
-# it. Recorded rather than hidden in a slack bound.
-@pytest.mark.xfail(reason="the Riesz norm is AFW's, and TPSA's compliance is lumped",
-                   strict=True)
-def test_the_lumped_compliance_is_not_yet_preconditioned_uniformly():
+# diagonal_afw carries a diagonal star, so a solve of it is CONDENSED by
+# default: the stress is divided out and what reaches a Krylov method is the
+# reduced system, whose iteration count says nothing about the norm on the
+# saddle point. This test is about the norm, so it asks for the saddle point
+# explicitly -- condense=False -- and the count it reports is then the one the
+# theorem bounds.
+SADDLE_RIESZ = mk.SolverOptions(
+    method="gmres", preconditioner="riesz", rtol=1e-10, max_iterations=2000, condense=False
+)
+
+
+def test_the_lumped_compliance_on_the_saddle_point():
     counts = []
     for nr in (6, 12, 24):
         model = patch(nr, product=mk.StressRealization.diagonal_afw,
                       formulation=mk.StressFormulation.weak_symmetry_total)
-        report = model.solve(options=RIESZ)
+        report = model.solve(options=SADDLE_RIESZ)
         counts.append(report.iterations)
         print(f"  {model.n_cells:6d} cells {model.n_dofs:7d} dofs   {report.iterations:4d} its")
     assert counts[-1] <= counts[0] + 15
+
+
+# AND THE CONDENSED ROUTE, which is what a caller gets by default: the stress
+# is eliminated and the reduced system is solved, so the count is the reduced
+# system's and the answer must still be the saddle point's.
+def test_the_condensed_route_is_what_a_caller_gets():
+    model = patch(12, product=mk.StressRealization.diagonal_afw,
+                  formulation=mk.StressFormulation.weak_symmetry_total)
+    report = model.solve(options=RIESZ)
+    assert report.condensed
+    assert report.condensed_dofs < model.n_dofs
+    print(f"  {model.n_dofs} dofs -> {report.condensed_dofs} condensed, {report.iterations} its")

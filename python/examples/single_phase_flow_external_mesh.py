@@ -234,6 +234,14 @@ def main():
     ap.add_argument("--vtu", help="write the solution to this .vtu")
     ap.add_argument("--solver", default="riesz", choices=sorted(SOLVER_NAMES))
     ap.add_argument(
+        "--hybrid",
+        action="store_true",
+        help="hybridize: eliminate the flux cell by cell and solve the facet-pressure "
+        "multiplier system, which is SPD -- conjugate gradients and multigrid, on any "
+        "product. The boundary roles swap: a prescribed pressure PINS a multiplier, "
+        "a normal flux loads a free row, an unconditioned facet is sealed. Serial only.",
+    )
+    ap.add_argument(
         "--output",
         default="",
         help="folder for the mesh diagnostics; they are off unless this is given",
@@ -243,6 +251,13 @@ def main():
         type=float,
         default=None,
         help="a cell is degenerate below this percent of its node-star mean; defaults to exokal's default_degeneracy_percent",
+    )
+    ap.add_argument(
+        "--cond-threshold",
+        type=float,
+        default=None,
+        help="adaptive_rt: a cell whose stabilized flux block has lambda_max/lambda_min above "
+             "this takes the diagonal star as well (composes with --degeneracy-percent)",
     )
     ap.add_argument(
         "--assemble-only",
@@ -294,7 +309,14 @@ def main():
     )
     print(f"  characteristic length L = {length:.6g}  (the box diagonal)")
     print(f"  mobility = {MOBILITY}")
-    print(f"  {mk.flux_realization_name(how)}, {args.solver} solver")
+    # WHAT ACTUALLY RUNS, NOT WHAT WAS ASKED FOR: --hybrid removes the H(div)
+    # block a Riesz map would split along, so the interface system gets
+    # conjugate gradients and an algebraic multigrid whatever --solver said.
+    solver_name = "cg + boomeramg (hybridized)" if args.hybrid else f"{args.solver} solver"
+    print(f"  {mk.flux_realization_name(how)}, {solver_name}")
+    if args.hybrid and args.solver != "riesz":
+        print(f"  note: --solver {args.solver} does not apply to the interface system "
+              f"and is ignored")
     report_processes(mesh, dim)
     print()
 
@@ -304,6 +326,8 @@ def main():
         # any other product it stays what it always was, the diagnostics dial
         if args.product == "adaptive_rt" and args.degeneracy_percent is not None:
             model.set_degeneracy_percent(args.degeneracy_percent)
+        if args.product == "adaptive_rt" and args.cond_threshold is not None:
+            model.set_cond_threshold(args.cond_threshold)
     with stage("prescribing p on the boundary"):
         n_facets = prescribe_linear_pressure(model, mesh, dim, lo, direction, length)
     if args.assemble_only:
@@ -321,7 +345,15 @@ def main():
                   f"unknowns; the preconditioner built is the reduced system's "
                   f"({report.block_solver})")
         return
-    report = model.solve(progress=True, options=solvers(args.rtol)[args.solver])
+    if args.hybrid:
+        report = model.solve_hybrid(
+            progress=True,
+            options=mk.SolverOptions(
+                method="cg", preconditioner="hypre", rtol=args.rtol, max_iterations=2000
+            ),
+        )
+    else:
+        report = model.solve(progress=True, options=solvers(args.rtol)[args.solver])
     # THE TWO ASSEMBLIES, ALWAYS. They are what scales with the mesh, and they
     # are separate costs: the Jacobian is the physics, the preconditioner is the
     # price of being able to solve it iteratively.
@@ -330,9 +362,13 @@ def main():
         f"{report.matrix_seconds:.2f} s, preconditioner "
         f"{report.preconditioner_seconds:.2f} s"
     )
-    if args.solver != "direct":
+    if args.hybrid and report.condensed_dofs:
+        print(f"  the linear system solved: {report.condensed_dofs} facet multipliers "
+              f"({model.n_dofs} in the mixed space, eliminated cell by cell)")
+    label = "cg" if args.hybrid else args.solver
+    if args.hybrid or args.solver != "direct":
         print(
-            f"  {args.solver}: {report.iterations} iterations to rtol {args.rtol:.1e}"
+            f"  {label}: {report.iterations} iterations to rtol {args.rtol:.1e}"
             f", {report.reason} in {report.solve_seconds:.2f} s"
         )
     print(
@@ -350,7 +386,10 @@ def main():
         print(
             f"  adaptive_rt: {n_star} cell(s) on the diagonal star, "
             f"{model.n_cells - n_star} on the stabilized product "
-            f"(threshold {'default' if pct is None else f'{pct}%'})\n"
+            f"(threshold {'default' if pct is None else f'{pct}%'}"
+            + (f"; {model.n_ill_conditioned} switched by cond > {args.cond_threshold:g}"
+               if args.cond_threshold is not None else "")
+            + ")\n"
         )
 
     with stage("measuring the pressure error"):
@@ -370,7 +409,7 @@ def main():
     # exact, and on a general polyhedral mesh it is not.
     # an iterative solve cannot show the round-off floor, so the threshold is
     # the one that solver can actually reach
-    exact_below = 1e-10 if args.solver == "direct" else 1e-7
+    exact_below = 1e-10 if (args.solver == "direct" and not args.hybrid) else 1e-7
     if worst < exact_below:
         print(
             "\n  exact: the datum is a facet constant and the facet carries one moment"

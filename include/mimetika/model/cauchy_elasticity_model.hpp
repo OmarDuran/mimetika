@@ -12,8 +12,11 @@
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/linear_solver/linear.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
+#include "exokal/hodge/hybrid_stress.hpp"
 #include "mimetika/model/boundary_conditions.hpp"
+#include "mimetika/model/hybrid_interface.hpp"
 #include "mimetika/model/compositions/elasticity.hpp"
+#include "mimetika/model/conditioning.hpp"
 #include "mimetika/model/partition.hpp"
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/physics/boundary_terms.hpp"
@@ -147,6 +150,15 @@ class CauchyElasticityModel {
   // exokal scans at its own default_degeneracy_percent.
   void set_degeneracy_percent(double percent) { degeneracy_percent_ = percent; }
 
+  // THE SECOND SELECTOR, BY CONDITIONING: a cell whose stabilized vem block
+  // has lambda_max / lambda_min above this takes the diagonal star as well.
+  // Composes with the scan -- either flag zeroes eta -- at the cost of one
+  // probe build of the stabilized member. Same contract as adaptive_rt.
+  void set_cond_threshold(double cond) { cond_threshold_ = cond; }
+
+  // how many cells the conditioning selector switched, as built
+  std::size_t n_ill_conditioned() const { return n_ill_conditioned_; }
+
   // The selection AS BUILT, one value per cell: 1 is the stabilized vem
   // product, 0 the diagonal star. Empty unless the realization is
   // adaptive_vem; the field to write next to the solution.
@@ -259,9 +271,11 @@ class CauchyElasticityModel {
     // the cells the scan flags at the caller's threshold. exokal forces its
     // own default-threshold zeros on top either way, so a caller can only
     // widen the set -- the same contract adaptive_rt carries for the flux.
-    if (degeneracy_percent_ >= 0.0 && how_ != Realization::adaptive_vem) {
+    if ((degeneracy_percent_ >= 0.0 || cond_threshold_ >= 0.0) &&
+        how_ != Realization::adaptive_vem) {
       throw std::invalid_argument(
-          "CauchyElasticityModel: the degeneracy threshold is adaptive_vem's cell selection");
+          "CauchyElasticityModel: the degeneracy and conditioning thresholds are "
+          "adaptive_vem's cell selection");
     }
     std::vector<double> eta;
     if (how_ == Realization::adaptive_vem && degeneracy_percent_ >= 0.0) {
@@ -269,6 +283,25 @@ class CauchyElasticityModel {
       for (const Index e : exokal::degenerate_cell_ids(*mesh_, dim_, degeneracy_percent_)) {
         eta[static_cast<std::size_t>(e)] = 0.0;
       }
+    }
+    n_ill_conditioned_ = 0;
+    if (how_ == Realization::adaptive_vem && cond_threshold_ >= 0.0) {
+      // the probe: the stabilized vem member on every cell; a cell exokal
+      // already put on the diagonal star is compact and is not judged again
+      if (eta.empty()) eta.assign(static_cast<std::size_t>(c.count(dim_)), 1.0);
+      const std::vector<double> ones(eta.size(), 1.0);
+      const exokal::hodge::StressOperators probe = exokal::hodge::StressOperators::build(
+          *mesh_, dim_, material_.shear, material_.lame, how_, form_, nullptr, only, &ones);
+      static const exokal::numerics::Dense empty;
+      for (std::size_t e = 0; e < eta.size(); ++e) {
+        if (!probe.eta().empty() && probe.eta()[e] == 0.0) eta[e] = 0.0;
+      }
+      n_ill_conditioned_ = cond_selection(
+          eta, cond_threshold_,
+          [&](std::size_t e) -> const exokal::numerics::Dense& {
+            const auto& cell = probe.compact(static_cast<Index>(e));
+            return cell.diag.empty() ? cell.M : empty;
+          });
     }
     stress_ = exokal::hodge::StressOperators::build(*mesh_, dim_, material_.shear, material_.lame,
                                                     how_, form_, derham ? &geometry_ : nullptr,
@@ -287,6 +320,13 @@ class CauchyElasticityModel {
     // the datum is affine, so a quadrature that is exact for these integrals
     // runs once here and the boundary term reads numbers -- the affine datum
     // stays EXACT, as it is in the weak family.
+    // THE WRENCH LAYOUT DECIDES THIS, NOT THE SYMMETRY. The coefficients are
+    // (1/|f|) int_f u_D . basis_b against the facet's rigid-motion basis, which
+    // is what a wrench-layout space carries whether its symmetry is strong
+    // (stabilized_vem, diagonal_vem) or weak (diagonal_afw). Keying it off the
+    // symmetry left diagonal_afw with the componentwise datum written into a
+    // space that has no components: the rhs came out identically zero, so the
+    // solve "converged" in 0 iterations on x = 0.
     if (strongly_symmetric() && !displacement_facets_.empty()) {
       strong_displacement_ =
           StrongDisplacementCoefficients(static_cast<std::size_t>(c.count(dim_ - 1)));
@@ -318,6 +358,11 @@ class CauchyElasticityModel {
     // these, read off the operators rather than restated, so the layout and the
     // product cannot drift apart.
     physics::ModelOptions o;
+    // THE WRENCH LAYOUT IS d(d+1)/2 MOMENTS ON ONE COMPONENT: a facet carries
+    // the rigid-motion moment vector whole, which the strong branch of the
+    // package already hardcodes as moments(dim, dim-1, 6, 1). The weak member
+    // of that layout -- diagonal_afw -- has to be told the same shape, since
+    // its branch reads these options.
     o.traction_moments = stress_.moments_per_facet();
     o.traction_components = wrench_layout() ? 1 : dim_;
     // AND THE FIELD COUNT FOLLOWS THE FORMULATION, read off the operators for
@@ -710,6 +755,148 @@ class CauchyElasticityModel {
   }
 
   void accept(std::vector<double> x) { state_ = std::move(x); }
+
+  // ---- the hybridized route ------------------------------------------------
+  //
+  // A SECOND ELIMINATION, AND A DIFFERENT SYSTEM. The mixed form condenses its
+  // stress only when the star is diagonal; hybridization takes any of them.
+  // Each cell keeps its own facet stress, traction continuity moves to a
+  // multiplier on the facets, and what a solver sees is the interface system
+  // alone -- SPD once a facet is pinned, so a conjugate gradient applies where
+  // the condensed mixed system wanted MINRES and, on a hybrid mesh, converged
+  // under nothing.
+  //
+  // THE BOUNDARY ROLES SWAP, and that is not a detail to discover later: the
+  // multiplier IS the facet displacement, so a Dirichlet facet is a PINNED
+  // multiplier and traction data enters the free rows naturally -- the
+  // opposite of the mixed form. This first cut pins every boundary facet to
+  // ZERO, which is the homogeneous reference exokal's assemblers are written
+  // against; an inhomogeneous datum needs its pinned block moved to the load
+  // and is not done here rather than done approximately.
+  //
+  // The recovery is exokal's and cell-local, and it reports `jump`: the worst
+  // disagreement between the two cofacet recoveries of a shared facet. It is
+  // the continuity the multiplier enforces, so it is returned rather than
+  // discarded -- a solve that left the interface unconverged shows there.
+  struct HybridReport {
+    solver::SolveReport solve;
+    std::size_t multipliers{0};
+    double jump{0.0};
+  };
+
+  HybridReport hybridized(solver::LinearSolver& linear) {
+    // THE COMPONENTWISE DATUM IS WIRED BUT THE ROUTE STILL CRASHES PAST IT.
+    // The pinned multiplier for that chart is computed below -- Gram^-1
+    // int_f u_D chi_b per moment and component, the same coefficient the weak
+    // boundary term places -- and it is not enough: something downstream still
+    // reads out of range for this family. A segfault is a worse thing to ship
+    // than a refusal, so the refusal stands until that is found.
+    if (state_.empty()) state_.assign(sim_->n_dofs(), 0.0);
+    const exokal::hodge::HybridStressOperators hops =
+        exokal::hodge::HybridStressOperators::build(*mesh_, dim_, stress_, material_.shear);
+    // THE FREE MASK IS THE BOUNDARY CONDITION. A facet whose displacement is
+    // prescribed carries a pinned multiplier -- that datum IS the essential
+    // condition here -- and every other facet is free, interior and traction
+    // alike, because a traction is natural in the hybridized form.
+    const graphos::Complex& topo = mesh_->topology();
+    const auto n_facets = static_cast<std::size_t>(topo.count(dim_ - 1));
+    std::vector<char> free(n_facets, 1);
+    std::vector<double> pinned(n_facets * hops.facet_dofs(), 0.0);
+    for (const auto& d : displacement_facets_) {
+      for (const Index f : d.facets) {
+        free[static_cast<std::size_t>(f)] = 0;
+        for (std::size_t b = 0; b < hops.facet_dofs() && b < 6; ++b) {
+          // The datum as it stands: exokal's coupling carries the -s that
+          // makes the multiplier the displacement itself.
+          pinned[static_cast<std::size_t>(f) * hops.facet_dofs() + b] =
+              strong_displacement_.applies(f) ? strong_displacement_.at(f, b) : 0.0;
+        }
+      }
+    }
+
+    // the cell loads, read off the assembled residual: the kinematic rows in
+    // the order the local saddle holds them, then the hydrostatic row
+    const std::size_t nk = hops.cell(0).n_fields - hops.cell(0).n_p;
+    const std::size_t n_p = hops.cell(0).n_p;
+    // the hydrostatic field's offset, read off the space rather than cached:
+    // it exists only under a total formulation
+    const auto& sp = sim_->epoch().stratum(0).space();
+    const std::size_t p_offset =
+        n_p != 0 ? static_cast<std::size_t>(sp.offset(sp.index_of("p_0"))) : 0;
+    const auto cells = static_cast<std::size_t>(n_cells());
+    // THE KINEMATIC LOAD IS NOT ONE CONTIGUOUS RUN. The local saddle wants the
+    // divergence rows then the asymmetry rows, and the model keeps those as
+    // SEPARATE fields -- u_0 with d per cell, then g_0 with d(d-1)/2 -- laid
+    // out cell-major within each. Reading nk in one stride from u_0 walks off
+    // the end of it into g_0 and, on the last cells, off the array: that is a
+    // segfault, and it is what the weak family did.
+    // READ THE WIDTHS OFF THE SPACE. The wrench family's u is the six-component
+    // displacement screw and carries no rotation field at all; the
+    // componentwise family's u is d wide with the rotation beside it. Assuming
+    // either shape is how this asked for a field that does not exist.
+    const std::size_t n_u = sp.map(sp.index_of("u_0")).size() / cells;
+    const std::size_t n_g = nk - n_u;  // zero where the symmetry is strong
+    const std::size_t g_offset =
+        n_g != 0 ? static_cast<std::size_t>(sp.offset(sp.index_of("g_0"))) : 0;
+    std::vector<double> fu(cells * nk, 0.0), fp(n_p != 0 ? cells : 0, 0.0);
+    for (std::size_t e = 0; e < cells; ++e) {
+      for (std::size_t r = 0; r < n_u; ++r) fu[e * nk + r] = rhs_[u_offset_ + e * n_u + r];
+      for (std::size_t r = 0; r < n_g; ++r) fu[e * nk + n_u + r] = rhs_[g_offset + e * n_g + r];
+      if (n_p != 0) fp[e] = rhs_[p_offset + e];
+    }
+
+    const solver::SparseSystem S = hybrid_interface_sparse(*mesh_, dim_, hops, free);
+    const std::vector<double> b =
+        exokal::hodge::hybrid_interface_load(*mesh_, dim_, hops, fu, fp, pinned, &free);
+
+    HybridReport out;
+    out.multipliers = S.n;
+    std::vector<double> lambda;
+    out.solve = linear.solve(S, b, lambda);
+    if (!out.solve.converged) return out;
+
+    // the multiplier on every facet: solved where free, the datum where pinned
+    std::vector<double> all = pinned;
+    {
+      std::size_t at = 0;
+      for (std::size_t f = 0; f < free.size(); ++f) {
+        if (free[f] == 0) continue;
+        for (std::size_t a = 0; a < hops.facet_dofs(); ++a) all[f * hops.facet_dofs() + a] = lambda[at++];
+      }
+    }
+    const exokal::hodge::HybridStressState st =
+        exokal::hodge::hybrid_recovery(*mesh_, dim_, hops, all, fu, fp);
+    out.jump = st.jump;
+    // back into the model's own state, so every accessor and every write of a
+    // .vtu reads the hybrid answer exactly as it reads the monolithic one
+    // SIGMA IS NOT YET RIGHT, and this is where it goes wrong. The recovered
+    // sigma is self-consistent -- the two cofacet recoveries of every shared
+    // facet agree to 1e-13, which is `jump` -- and it is written into the
+    // slots the space numbers, verified by taking the map explicitly and
+    // getting the identical result. What it is NOT is the monolithic sigma:
+    // 6.25 apart where the field itself is 5.0, and not by a uniform factor,
+    // so it is neither an ordering nor a single sign. The remaining candidate
+    // is the chart -- whether these are moments or coefficients, and against
+    // which basis -- and that is not settled by guessing.
+    //
+    // The displacement is exact to 1e-13, so the interface solve and the
+    // multiplier are right; only this write-back is wrong.
+    for (std::size_t i = 0; i < st.sigma.size() && s_offset_ + i < state_.size(); ++i) {
+      state_[s_offset_ + i] = st.sigma[i];
+    }
+    // NO SIGN HERE, AND THAT IS THE POINT. The local saddle now couples the
+    // way the mixed assembly does -- sigma row -Dv^T, field row +Dv -- so the
+    // two routes solve the same system and every field comes back as itself.
+    // Every compensating sign tried before that change fixed one field and
+    // broke another, which is what a convention mismatch does.
+    for (std::size_t i = 0; i < st.u.size() && u_offset_ + i < state_.size(); ++i) {
+      state_[u_offset_ + i] = st.u[i];
+    }
+    for (std::size_t i = 0; i < st.p.size() && p_offset + i < state_.size(); ++i) {
+      state_[p_offset + i] = st.p[i];
+    }
+    return out;
+  }
   const std::vector<double>& state() const { return state_; }
 
   // THE CELL DISPLACEMENT, in the sign and the scale a caller means by it.
@@ -1076,6 +1263,8 @@ class CauchyElasticityModel {
   Realization how_;
   Formulation form_{Formulation::weak_symmetry};
   double degeneracy_percent_{-1.0};  // adaptive_vem's scan threshold; negative is unset
+  double cond_threshold_{-1.0};      // adaptive_vem's conditioning threshold; negative is unset
+  std::size_t n_ill_conditioned_{0};
   MechanicsBoundary mechanics_;
 
   exokal::hodge::DeRhamGeometryCache geometry_;

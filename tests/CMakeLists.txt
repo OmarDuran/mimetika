@@ -41,7 +41,7 @@ if(MIMETIKA_USE_PETSC)
              COMMAND benchmarks.test_contact_mechanics_3)
   endif()
 
-  foreach(t solver/test_fields solver/test_petsc model/test_confined_compression model/test_diagonal_condensation model/test_single_phase model/test_cauchy_elasticity model/test_global_patch algebraic_constraints/contact/test_jump algebraic_constraints/contact/test_cauchy_mechanics benchmarks/test_contact_mechanics_0 benchmarks/test_contact_mechanics_1)
+  foreach(t solver/test_fields solver/test_petsc model/test_confined_compression model/test_diagonal_condensation model/test_hybrid_interface model/test_single_phase model/test_cauchy_elasticity model/test_global_patch model/test_hybrid_flux algebraic_constraints/contact/test_jump algebraic_constraints/contact/test_cauchy_mechanics benchmarks/test_contact_mechanics_0 benchmarks/test_contact_mechanics_1)
     string(REPLACE "/" "." name ${t})
     add_executable(${name} ${t}.cpp)
     target_link_libraries(${name} PRIVATE mimetika::mimetika mimetika_petsc)

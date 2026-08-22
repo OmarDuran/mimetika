@@ -314,6 +314,9 @@ def report_complex(mesh):
     print("  complex: " + ", ".join(parts))
 
 
+ap_default_solver = "riesz"
+
+
 def main():
     root = only_root()
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -333,7 +336,15 @@ def main():
         help="write an N-way mesh partition into the .vtu (default: the processes in use)",
     )
     ap.add_argument("--vtu", help="write the solution to this .vtu")
-    ap.add_argument("--solver", default="riesz", choices=sorted(SOLVER_NAMES))
+    ap.add_argument("--solver", default=ap_default_solver, choices=sorted(SOLVER_NAMES))
+    ap.add_argument(
+        "--hybrid",
+        action="store_true",
+        help="hybridize: eliminate the stress cell by cell and solve the facet "
+        "multiplier system, which is SPD -- conjugate gradients and multigrid. "
+        "The boundary roles swap: a prescribed displacement PINS a multiplier "
+        "and a traction loads the free rows. Serial only.",
+    )
     ap.add_argument(
         "--output",
         default="",
@@ -344,6 +355,13 @@ def main():
         type=float,
         default=None,
         help="a cell is degenerate below this percent of its node-star mean; defaults to exokal's default_degeneracy_percent",
+    )
+    ap.add_argument(
+        "--cond-threshold",
+        type=float,
+        default=None,
+        help="adaptive_vem: a cell whose stabilized vem block has lambda_max/lambda_min above "
+             "this takes the diagonal star as well (composes with --degeneracy-percent)",
     )
     ap.add_argument(
         "--assemble-only",
@@ -400,8 +418,18 @@ def main():
     print(f"  characteristic length L = {length:.6g}")
     print(f"  mu = {mat.shear}, lam = {mat.lame}  (nu = {mat.poisson():.4f})")
     form = formulation_for(args.product, args.formulation)
+    # WHAT ACTUALLY RUNS, NOT WHAT WAS ASKED FOR. --hybrid does not take the
+    # solver named on the command line: the elimination removes the H(div)
+    # block a Riesz map or ADS would split along, so the interface system gets
+    # conjugate gradients and an algebraic multigrid whatever --solver said.
+    # Printing the request instead of the fact is how a run gets read as
+    # evidence for a method that never ran.
+    solver_name = "cg + boomeramg (hybridized)" if args.hybrid else f"{args.solver} solver"
     print(f"  {mk.stress_realization_name(how)}, {mk.stress_formulation_name(form)}, "
-          f"{args.solver} solver")
+          f"{solver_name}")
+    if args.hybrid and args.solver != ap_default_solver:
+        print(f"  note: --solver {args.solver} does not apply to the interface system "
+              f"and is ignored")
     report_processes(mesh, dim)
     print()
 
@@ -412,6 +440,8 @@ def main():
         # any other product it stays what it always was, the diagnostics dial
         if args.product == "adaptive_vem" and args.degeneracy_percent is not None:
             model.set_degeneracy_percent(args.degeneracy_percent)
+        if args.product == "adaptive_vem" and args.cond_threshold is not None:
+            model.set_cond_threshold(args.cond_threshold)
     with stage("prescribing u on the boundary"):
         n_facets = prescribe_linear_displacement(model, mesh, dim, lo, gradient)
     if args.assemble_only:
@@ -429,7 +459,19 @@ def main():
                   f"unknowns; the preconditioner built is the reduced system's "
                   f"({report.block_solver})")
         return
-    report = model.solve(progress=True, options=solvers(args.rtol)[args.solver])
+    if args.hybrid:
+        # THE INTERFACE SYSTEM IS SPD, so the solver named for the saddle point
+        # does not apply to it: a Riesz map splits along an H(div) block that
+        # the elimination removed, and ADS the same. CG with an algebraic
+        # multigrid is what this system takes.
+        report = model.solve_hybrid(
+            progress=True,
+            options=mk.SolverOptions(
+                method="cg", preconditioner="hypre", rtol=args.rtol, max_iterations=2000
+            ),
+        )
+    else:
+        report = model.solve(progress=True, options=solvers(args.rtol)[args.solver])
     # THE TWO ASSEMBLIES, ALWAYS. They are what scales with the mesh, and they
     # are separate costs: the Jacobian is the physics, the preconditioner is the
     # price of being able to solve it iteratively.
@@ -438,9 +480,22 @@ def main():
         f"{report.matrix_seconds:.2f} s, preconditioner "
         f"{report.preconditioner_seconds:.2f} s"
     )
-    if args.solver != "direct":
+    # THE SIZE THE LINEAR SOLVER WAS HANDED, which is not the model's dof
+    # count whenever a field was eliminated first. Hybridized it is the facet
+    # multipliers; condensed it is the cells; monolithic the two agree, and
+    # saying so costs one line and settles what an iteration count is per.
+    if report.condensed and report.condensed_dofs:
+        solved = report.condensed_dofs
+        of_what = "facet multipliers" if args.hybrid else "cell unknowns"
+        print(f"  the linear system solved: {solved} {of_what}"
+              f"  ({model.n_dofs} in the mixed space, eliminated first)")
+    else:
+        print(f"  the linear system solved: {model.n_dofs} unknowns, the mixed space")
+
+    label = "cg" if args.hybrid else args.solver
+    if args.hybrid or args.solver != "direct":
         print(
-            f"  {args.solver}: {report.iterations} iterations to rtol {args.rtol:.1e}"
+            f"  {label}: {report.iterations} iterations to rtol {args.rtol:.1e}"
             f", {report.reason} in {report.solve_seconds:.2f} s"
         )
     # WHAT WAS ACTUALLY SOLVED, when the stress left the system. A facet-
@@ -477,7 +532,10 @@ def main():
         pct = args.degeneracy_percent
         print(f"  adaptive_vem: {n_star} cell(s) on the diagonal star, "
               f"{model.n_cells - n_star} on the stabilized vem product "
-              f"(threshold {'default' if pct is None else f'{pct}%'})")
+              f"(threshold {'default' if pct is None else f'{pct}%'}"
+              + (f"; {model.n_ill_conditioned} switched by cond > {args.cond_threshold:g}"
+                 if args.cond_threshold is not None else "")
+              + ")")
 
     # ---- the three fields, each against the value the datum determines -------
     #
@@ -531,7 +589,9 @@ def main():
                         dd = max(dd, abs(s[k * 3 + c] - d_hat[k * 3 + c]))
     print()
 
-    floor = "round-off" if args.solver == "direct" else f"the {args.solver} tolerance"
+    floor = ("the cg tolerance" if args.hybrid
+             else "round-off" if args.solver == "direct"
+             else f"the {args.solver} tolerance")
     diag = [k * 3 + k for k in range(dim)]
     off = [k * 3 + c for k in range(dim) for c in range(dim) if k != c]
     # the off-diagonal is zero for this field, so its magnitude says it all and

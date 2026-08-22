@@ -326,6 +326,45 @@ def test_the_adaptive_vem_selection_is_reported_as_built():
     assert list(model.eta) == [1.0] * model.n_cells
 
 
+# THE SECOND SELECTOR, BY CONDITIONING, reaches the same two ends: a threshold
+# above every block's conditioning selects nothing, one below selects all.
+def test_the_adaptive_vem_conditioning_selector_reaches_both_members():
+    m = mk.column(4, 3, mk.Family.cartesian, 1.0)
+    sp = mk.stress_cell_spectra(m, 3, ADAPTIVE_VEM, STRONG_TOTAL, MU, LAM, None, None)
+    worst = max(sp["cond"])
+    assert worst > 1.0 and math.isfinite(worst)
+
+    # the confined column, so the all-diagonal solve is well posed (a zero
+    # traction everywhere would leave the rigid modes free)
+    loaded, confined = [], []
+    for f in mk.boundary_facets(m, 3):
+        (loaded if abs(mk.centroid(m, 2, f)[2] - 1.0) < 1e-9 else confined).append(f)
+    applied = [0.0] * 9
+    applied[8] = -0.5
+
+    def confined_model():
+        model = mk.CauchyElasticityModel(m, 3, _material(), ADAPTIVE_VEM, STRONG_TOTAL)
+        model.add_traction(loaded, applied)
+        model.add_free_slip(confined)
+        return model
+
+    model = confined_model()
+    model.set_cond_threshold(2.0 * worst)
+    model.solve()
+    assert list(model.eta) == [1.0] * model.n_cells
+    assert model.n_ill_conditioned == 0
+
+    model = confined_model()
+    model.set_cond_threshold(0.5)
+    model.solve()
+    assert list(model.eta) == [0.0] * model.n_cells
+    assert model.n_ill_conditioned == model.n_cells
+
+    sp = mk.stress_cell_spectra(m, 3, ADAPTIVE_VEM, STRONG_TOTAL, MU, LAM, None, 0.5)
+    assert list(sp["eta"]) == [0.0] * model.n_cells
+    assert sp["n_ill_conditioned"] == model.n_cells
+
+
 # THE REFUSALS: the symmetry axis is one decision, the diagonal members demand
 # the total pressure, the ansatz is three-dimensional, and the threshold
 # belongs to adaptive_vem. Each is an exception where the choice was made.
