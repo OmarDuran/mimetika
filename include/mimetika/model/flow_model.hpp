@@ -77,6 +77,25 @@ class FlowModel {
   Realization realization() const { return how_; }
   const char* realization_name() const { return exokal::hodge::FluxOperators::name(how_); }
   double mobility() const { return mobility_; }
+
+  // K per cell, in place of the uniform mobility.
+  //
+  // The star is the metric of the flux (d-1)-cochains, so K enters it and
+  // nothing else: d is incidence and does not see the coefficient. A jump in K
+  // is therefore a jump in one block of the Hodge star, which is what makes a
+  // contrast test a test of the star rather than of the complex.
+  void set_permeability(std::vector<double> k) {
+    if (!k.empty() && k.size() != static_cast<std::size_t>(mesh_->topology().count(dim_))) {
+      throw std::invalid_argument("FlowModel::set_permeability: one value per cell");
+    }
+    for (const double v : k) {
+      if (!(v > 0.0)) {
+        throw std::invalid_argument("FlowModel::set_permeability: K must be positive");
+      }
+    }
+    permeability_ = std::move(k);
+  }
+  const std::vector<double>& permeability() const { return permeability_; }
   int moments_per_facet() const {
     return exokal::hodge::FluxOperators::moments_per_facet(how_, dim_);
   }
@@ -200,7 +219,7 @@ class FlowModel {
       if (eta.empty()) eta.assign(static_cast<std::size_t>(c.count(dim_)), 1.0);
       const std::vector<double> ones(eta.size(), 1.0);
       const exokal::hodge::FluxOperators probe = exokal::hodge::FluxOperators::build(
-          *mesh_, dim_, exokal::hodge::Coefficient::uniform(mobility_), how_, nullptr,
+          *mesh_, dim_, coefficient(), how_, nullptr,
           exokal::hodge::default_enrichment_degree, exokal::hodge::default_max_facets, only,
           nullptr, &ones);
       for (std::size_t e = 0; e < eta.size(); ++e) {
@@ -213,7 +232,7 @@ class FlowModel {
           });
     }
     flux_ = exokal::hodge::FluxOperators::build(
-        *mesh_, dim_, exokal::hodge::Coefficient::uniform(mobility_), how_,
+        *mesh_, dim_, coefficient(), how_,
         how_ == Realization::derham_bdm ? &geometry_ : nullptr,
         exokal::hodge::default_enrichment_degree,
         exokal::hodge::default_max_facets, only, nullptr,
@@ -460,6 +479,12 @@ class FlowModel {
   const exokal::Mesh* mesh_;
   int dim_;
   double mobility_;
+  std::vector<double> permeability_;  // per cell; empty is the uniform mobility
+
+  exokal::hodge::Coefficient coefficient() const {
+    return permeability_.empty() ? exokal::hodge::Coefficient::uniform(mobility_)
+                                 : exokal::hodge::Coefficient::per_cell(permeability_);
+  }
   Realization how_;
   FlowBoundary flow_;
   double degeneracy_percent_{-1.0};  // adaptive_rt's scan threshold; negative is unset

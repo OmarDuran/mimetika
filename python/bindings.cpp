@@ -442,6 +442,20 @@ inline double bounding_diagonal(const exokal::Mesh& mesh) {
 }
 
 inline double norm_scale(const mimetika::FlowModel& m) { return m.mobility(); }
+
+// K per cell, where the model carries one.
+//
+// W stands for the Schur complement B star_K^-1 B^T of the constraint, and
+// star_K^-1 scales with K, so W scales with K. The measure alone names the norm
+// of a HOMOGENEOUS coefficient only: with K jumping across facets the pairing
+// the map is built from is no longer the pairing the operator has, and the
+// inf-sup constant of the mismatch is what the iteration count then pays.
+inline std::vector<double> cell_coefficient(const mimetika::FlowModel& m) {
+  return m.permeability();
+}
+inline std::vector<double> cell_coefficient(const mimetika::CauchyMechanicsModel&) {
+  return {};  // the shear modulus is uniform, and already in `scale`
+}
 inline double norm_scale(const mimetika::CauchyMechanicsModel& m) { return m.material().shear; }
 
 template <class Model>
@@ -458,6 +472,10 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
   }
   const double L = bounding_diagonal(mesh);
   const double scale = norm_scale(m) / (L * L);
+  const std::vector<double> k_cell = cell_coefficient(m);
+  if (!k_cell.empty() && k_cell.size() != n_cells) {
+    throw std::runtime_error("riesz: the coefficient does not cover the cells");
+  }
 
   mimetika::solver::SpaceNorm norm;
   std::vector<int> first;
@@ -478,10 +496,12 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
     for (const Index g : blocks[f].indices()) {
       rest.push_back(static_cast<int>(g));
       const double me = measure[k / components];
+      // the coefficient the star carries, carried by the norm as well
+      const double k_e = k_cell.empty() ? 1.0 : k_cell[k / components];
       // W is the Schur scale of this constraint, not the variational L2 mass:
       // an unscaled row (flow's incidence) gives |E|, a row already divided by
       // the measure (elasticity's Dv, As) gives 1/|E|.
-      l2.push_back(scale * (divergence_is_an_integral ? me : 1.0 / me));
+      l2.push_back(scale * k_e * (divergence_is_an_integral ? me : 1.0 / me));
       ++k;
     }
   }
@@ -1821,6 +1841,13 @@ PYBIND11_MODULE(_core, m) {
             s.flow().emplace<mimetika::PressureBC>(facets, value);
           },
           py::arg("facets"), py::arg("value"))
+      .def(
+          "set_permeability",
+          [](mimetika::FlowModel& s, std::vector<double> k) { s.set_permeability(std::move(k)); },
+          py::arg("k"),
+          "K per cell, in place of the uniform mobility: one positive value per cell. K "
+          "enters the discrete Hodge star on the flux (d-1)-cochains and nothing else, the "
+          "exterior derivative being incidence")
       .def("set_degeneracy_percent", &mimetika::FlowModel::set_degeneracy_percent,
            py::arg("percent"),
            "adaptive_rt's scan threshold: cells whose measure falls below this "

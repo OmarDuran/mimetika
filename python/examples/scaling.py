@@ -13,9 +13,18 @@ changes only the size.
 
 The problem is the linear patch test of the corresponding external-mesh
 example: a linear field prescribed on the whole boundary, whose answer the
-mixed method reproduces exactly. So the error column is a check, not a
-convergence study -- it must stay at the solver tolerance as the mesh grows,
-and anything else means the scaling was measured on a wrong answer.
+reconstructing products reproduce exactly. For those the error column is a
+check, not a convergence study -- it must stay at the solver tolerance as the
+mesh grows, and anything else means the scaling was measured on a wrong answer.
+
+Two cases do not reproduce it, and there the error column is not that check.
+diagonal_afw's linear moment slots are inconsistent on every mesh, so it is
+never exact. And in FLOW, derham_bdm's datum is one scalar per facet, which
+loads the constant moment alone and leaves the higher ones zero: exact on a
+Cartesian box, first order on simplices. Mechanics has neither problem with
+derham_bdm -- its displacement datum is affine, so both moments are supplied.
+Both cases time the right operator on an inexact answer, which is what a
+scaling study wants.
 
 Defaults are deliberately small: a scaling curve is read from its shape, which
 is visible long before a mesh becomes inconvenient. Raise --n when the times

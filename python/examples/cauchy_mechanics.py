@@ -101,11 +101,13 @@ def require_three_dimensions(solver, dim):
 PRODUCTS = {
     "derham_bdm": mk.StressRealization.derham_bdm,
     "stabilized_bdm": mk.StressRealization.stabilized_bdm,
-    # No reconstruction: d per facet, one constant traction vector, and M the
-    # diagonal primal-dual star -- the two-point stress. Half the unknowns and
-    # an eighth of the matrix entries of the products above, on any mesh, and
-    # consistent only where the mesh is face-orthogonal. The Lame annulus is
-    # not, so run it here to see what that costs rather than to be exact.
+    # No reconstruction, on the same d^2 moments per facet as the products
+    # above: M is the scalar two-point star delta_{E,f}/(2 mu Gram_f(b,b)) on
+    # every moment slot. The first moments are carried rather than the facet
+    # mean alone, which is what keeps the rotation multiplier uniformly stable.
+    # Its constant slots are consistent on face-orthogonal cells and its linear
+    # slots nowhere, so it is never exact; the Lame annulus is not
+    # face-orthogonal either. Run it to see what the diagonal M costs.
     #
     # It exists in four fields only, which formulation_for enforces.
     "diagonal_afw": mk.StressRealization.diagonal_afw,

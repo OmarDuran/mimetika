@@ -441,6 +441,43 @@ class CauchyMechanicsModel {
         }
       }
     }
+
+    // diagonal_afw's patch contract.
+    //
+    // For a linear displacement the interpolant satisfies every row but the
+    // linear slots of the boundary facets: on an interior facet the two
+    // cofacets' first moments cancel, and on a boundary facet the datum's P1
+    // variation lands on a slot no diagonal weight closes. Pinned to zero the
+    // datum enters through the facet means alone, the lowest-order imposition,
+    // and the interpolant is the discrete solution exactly on every
+    // face-orthogonal mesh, unequal boxes included. Left free the error is
+    // O(1) -- 2.5e-01 in u on a box of unequal hexahedra.
+    //
+    // The mask is exokal's, not a second copy of the rule: afw_boundary_pins
+    // indexes f*d*d + b*d + k, the layout ms.global reads.
+    if (how_ == Realization::diagonal_afw) {
+      const std::vector<char> mask = exokal::hodge::afw_boundary_pins(*mesh_, dim_);
+      const auto& ms = sp.map(sp.index_of("s_0"));
+      const auto s_base = static_cast<std::size_t>(sp.offset(sp.index_of("s_0")));
+      const auto dd = static_cast<std::size_t>(dim_);
+      const std::vector<std::size_t> already(prescribed_dofs_.begin(), prescribed_dofs_.end());
+      for (Index f = 0; f < c.count(dim_ - 1); ++f) {
+        for (std::size_t b = 0; b < dd; ++b) {
+          for (std::size_t k = 0; k < dd; ++k) {
+            if (mask[static_cast<std::size_t>(f) * dd * dd + b * dd + k] == 0) continue;
+            const auto d = static_cast<Index>(
+                s_base + static_cast<std::size_t>(
+                             ms.global(dim_ - 1, f, static_cast<int>(b), static_cast<int>(k))));
+            // a facet carrying a prescribed traction is already pinned there
+            if (std::find(already.begin(), already.end(), static_cast<std::size_t>(d)) !=
+                already.end()) {
+              continue;
+            }
+            sim_->constraints().pin(d, 0.0);
+          }
+        }
+      }
+    }
     sim_->freeze_constraints();
 
     // The partition, applied where the space exists. Asked for before the

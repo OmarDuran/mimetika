@@ -19,6 +19,11 @@ operators' facet moments, so no boundary quadrature enters and the mixed method
 reproduces the field rather than approximating it. The error is therefore
 round-off and not discretization, on a good mesh and a bad one alike.
 
+That holds for the products that reconstruct. It does not hold for the diagonal
+stars, and for diagonal_afw it fails on every mesh: its linear moment slots are
+inconsistent everywhere, by construction. Reading its error as a mesh defect
+would be reading the wrong thing -- see the note beside it below.
+
 The stress that goes with it is uniform,
 
     eps = sym(grad u) = I_d / L ,    sigma = 2 mu eps + lam tr(eps) I ,
@@ -103,14 +108,33 @@ PRODUCTS = {
     "derham_bdm": mk.StressRealization.derham_bdm,
     "derham_rt": mk.StressRealization.derham_rt,
     "stabilized_bdm": mk.StressRealization.stabilized_bdm,
-    # No reconstruction: d per facet, one constant traction vector, and M the
-    # diagonal primal-dual star -- the two-point stress. Half the unknowns of
-    # the BDM products and an eighth of the matrix entries, on every mesh; it
-    # is consistent only where the mesh is face-orthogonal, which a box of
-    # hexahedra is and a tetrahedral or polyhedral one is not.
+    # No reconstruction, on the same d^2 moments per facet as the two products
+    # above: M is the scalar two-point star at K = 2 mu I on every moment slot,
+    #
+    #     M_(f,k,b) = delta_{E,f} / (2 mu Gram_f(b,b)) ,
+    #     delta_{E,f} = (x_f - x_E) . n_{E,f} .
+    #
+    # It carries the first moments rather than the facet mean alone because the
+    # mean-traction layout is blind to them: the rotation multiplier then
+    # reaches the tractions only through facet means, a cellwise-alternating
+    # rotation is invisible to it, and the inf-sup constant decays as
+    # 2 sin(pi/2n) on an n-cell-per-side grid. On the P_1 facet moments the
+    # asymmetry pairing is unisolvent on rigid-motion traces and the multiplier
+    # is uniformly stable.
+    #
+    # So it is not the cheap member it reads as: the stress layout is the BDM
+    # one, and the four-field form adds a scalar per cell, which is 8316 dofs
+    # against stabilized_bdm's 8100 on the 216-cell box below. What it buys is
+    # a diagonal M, eliminated by division rather than factorization.
+    #
+    # Its constant slots are consistent on face-orthogonal cells; its LINEAR
+    # slots nowhere. It therefore does not reproduce the linear field of this
+    # example on any mesh -- 2.5e-01 relative in u on a Cartesian box -- and
+    # that is the product's claim, not a defect of the mesh.
     #
     # It exists in four fields only, so --formulation is set for it rather than
-    # asked of the caller.
+    # asked of the caller. --rotation-jump adds the facet-jump stabilization of
+    # its rotation multiplier.
     "diagonal_afw": mk.StressRealization.diagonal_afw,
     # The strongly-symmetric family (Dassi-Lovadina-Visinoni): six traction
     # moments per facet carried whole, the displacement as the cell's six
