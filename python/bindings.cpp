@@ -1,20 +1,19 @@
 // mimetika Python bindings (mimetika_cxx._core).
 //
 // The surface here is the one the fixed-dimensional model tests exercise, and
-// it is deliberately the SAME surface those tests use in C++: a mesh, a
-// realization, a model assembled on it, conditions imposed as forms, a direct
-// solve, and DOF addresses to read the answer back with. Nothing is
-// precomputed on the Python side and nothing is summarised for it -- a test
-// that measures `sigma_lateral` here does the same arithmetic, on the same
-// numbers, as tests/model/test_confined_compression.cpp does.
+// it is the same surface those tests use in C++: a mesh, a realization, a
+// model assembled on it, conditions imposed as forms, a direct solve, and DOF
+// addresses to read the answer back with. Nothing is precomputed or
+// summarised on the Python side -- a test that measures `sigma_lateral` here
+// does the same arithmetic, on the same numbers, as
+// tests/model/test_confined_compression.cpp does.
 //
-// LIFETIME. Simulation keeps a pointer to its TermContext, and StratumSpec
-// keeps a pointer to the Complex inside the Mesh; both must outlive it. A
-// binding that handed those out separately would be one temporary away from
-// the dangling-reference bug this codebase has already paid for once, so the
-// owning object is a single non-copyable Problem that holds the mesh, the
-// operators, the context and the simulation together, in that construction
-// order.
+// Lifetime. Simulation keeps a pointer to its TermContext, and StratumSpec
+// keeps a pointer to the Complex inside the Mesh; both must outlive it.
+// Handing those out separately leaves them one temporary away from dangling,
+// so the owning object is a single non-copyable Problem that holds the mesh,
+// the operators, the context and the simulation together, in that
+// construction order.
 
 #include <pybind11/functional.h>
 #include <pybind11/numpy.h>
@@ -45,12 +44,12 @@
 #include "mimetika/model/boundary.hpp"
 #include "mimetika/model/boundary_conditions.hpp"
 #include "mimetika/model/conditioning.hpp"
-#include "mimetika/model/cauchy_elasticity_model.hpp"
-#include "mimetika/model/compositions/elasticity.hpp"
+#include "mimetika/model/cauchy_mechanics_model.hpp"
+#include "mimetika/model/compositions/cauchy_mechanics.hpp"
 #include "mimetika/model/compositions/poroelasticity.hpp"
-#include "mimetika/model/compositions/single_phase_flow.hpp"
+#include "mimetika/model/compositions/flow.hpp"
 #include "mimetika/model/simulation.hpp"
-#include "mimetika/model/single_phase_model.hpp"
+#include "mimetika/model/flow_model.hpp"
 
 namespace py = pybind11;
 
@@ -72,8 +71,7 @@ py::array_t<double> to_array(const std::vector<double>& v) {
   return a;
 }
 
-// A dense block as a NumPy 2-D copy, so rank and norms are numpy's problem
-// rather than a hand-rolled Gauss-Jordan repeated in two languages.
+// A dense block as a NumPy 2-D copy, so rank and norms are numpy's problem.
 py::array_t<double> to_array(const exokal::numerics::Dense& A) {
   py::array_t<double> out({static_cast<py::ssize_t>(A.rows()), static_cast<py::ssize_t>(A.cols())});
   auto w = out.mutable_unchecked<2>();
@@ -91,9 +89,9 @@ py::array_t<double> to_array(const exokal::numerics::Dense& A) {
 // the model: an elasticity problem is d copies of a stress product, a flow
 // problem is one flux product, and the two share no member beyond the mesh.
 
-class ElasticityProblem {
+class CauchyMechanicsProblem {
  public:
-  ElasticityProblem(exokal::Mesh mesh, int cell_dim, double mu, double lam,
+  CauchyMechanicsProblem(exokal::Mesh mesh, int cell_dim, double mu, double lam,
                     StressOperators::Realization how, const std::string& model)
       : mesh_(std::move(mesh)), dim_(cell_dim) {
     // the RT star carries no de Rham geometry; the BDM ones do
@@ -104,7 +102,7 @@ class ElasticityProblem {
                                   bdm ? &geo_ : nullptr);
     ctx_.provide("stress_operators", ops_);
 
-    // THE SPACE FOLLOWS THE STAR: the layout is read off the operators rather
+    // The space follows the star: the layout is read off the operators rather
     // than restated here, so the two cannot drift apart.
     mimetika::physics::ModelOptions mo;
     mo.traction_moments = ops_.moments_per_facet();
@@ -114,8 +112,8 @@ class ElasticityProblem {
         ctx_);
   }
 
-  ElasticityProblem(const ElasticityProblem&) = delete;
-  ElasticityProblem& operator=(const ElasticityProblem&) = delete;
+  CauchyMechanicsProblem(const CauchyMechanicsProblem&) = delete;
+  CauchyMechanicsProblem& operator=(const CauchyMechanicsProblem&) = delete;
 
   const exokal::Mesh& mesh() const { return mesh_; }
   int dim() const { return dim_; }
@@ -124,8 +122,8 @@ class ElasticityProblem {
   int moments_per_facet() const { return ops_.moments_per_facet(); }
   Index count(int k) const { return mesh_.topology().count(k); }
 
-  // the local constraint block [Dv; As] of one cell, stacked as the test wants
-  // it: a locally surjective block has full row rank, a deficient one does not
+  // the local constraint block [Dv; As] of one cell: a locally surjective
+  // block has full row rank, a deficient one does not
   py::array_t<double> constraint_block(Index e) const {
     const auto& c = ops_.cell(e);
     exokal::numerics::Dense B(c.Dv.rows() + c.As.rows(), c.M.cols());
@@ -174,7 +172,7 @@ class ElasticityProblem {
   }
 
   // The DOF address of one component, so Python indexes the solution the same
-  // way the C++ does rather than through a convenience that could differ.
+  // way the C++ does.
   Index dof(const std::string& field, int k, Index entity, int local, int comp) const {
     const auto& sp = space();
     const auto f = sp.index_of(field);
@@ -219,9 +217,9 @@ class ElasticityProblem {
 // ---- a model assembled but not solved ---------------------------------------
 //
 // What the structural tests need: the composition's space, and the Jacobian as
-// triplets so the block algebra is numpy's rather than a dense loop written
-// twice. Both stars are provided, because poroelasticity reads both and a
-// composition that reads only one simply never asks for the other.
+// triplets so the block algebra is numpy's. Both stars are provided, because
+// poroelasticity reads both and a composition that reads only one never asks
+// for the other.
 class AssembledModel {
  public:
   AssembledModel(exokal::Mesh mesh, int cell_dim, const std::string& model, double mu, double lam,
@@ -260,8 +258,7 @@ class AssembledModel {
 
   void freeze_constraints() { sim_->freeze_constraints(); }
 
-  // (rows, cols, values): the caller densifies or builds a sparse matrix, which
-  // is what the C++ does by hand
+  // (rows, cols, values): the caller densifies or builds a sparse matrix
   py::tuple jacobian_coo() {
     exokal::forms::TripletSink jac(sim_->n_dofs());
     sim_->jacobian(jac);
@@ -312,23 +309,21 @@ class AssembledModel {
   std::unique_ptr<Simulation> sim_;
 };
 
-// WHICH STAGE IS RUNNING, on request.
+// Which stage is running, on request.
 //
 // Assembly, preconditioner and iteration are the three long stages, and from
 // the outside a process in any of them is indistinguishable from a hung one.
 //
-// THE WRITE GOES TO stderr, unbuffered. Reporting through Python's stdout
-// looks correct and is not: on a redirected stream the bytes sit in a buffer
-// that `flush=True` does not push to the operating system, so a stage that
-// takes ten minutes prints its label immediately and its duration only when
-// the process exits -- which is exactly the case the reporting exists for, and
-// exactly when it says nothing. Python's own output is flushed first so the
-// two streams stay in order.
-// PROGRESS IS ONE PROCESS'S JOB. Every rank runs the same script and reaches
-// the same stages at slightly different moments; eight of them writing to an
-// unbuffered stderr produces "assembling ... assembling ... assembling ..." on
-// one line and their timings on the next eight. The stage lines are a picture
-// of the run, so rank 0 draws it and the others stay quiet.
+// The write goes to stderr, unbuffered. On a redirected Python stdout the
+// bytes sit in a buffer that `flush=True` does not push to the operating
+// system, so a stage that takes ten minutes prints its label immediately and
+// its duration only when the process exits. Python's own output is flushed
+// first so the two streams stay in order.
+//
+// Rank 0 alone reports. Every rank runs the same script and reaches the same
+// stages at slightly different moments; eight of them writing to an unbuffered
+// stderr produces "assembling ... assembling ... assembling ..." on one line
+// and their timings on the next eight.
 class Stage {
  public:
   explicit Stage(bool on) : on_(on && is_root()) {}
@@ -389,24 +384,24 @@ class Stage {
   std::chrono::steady_clock::time_point t0_{};
 };
 
-// THE NORM OF THE MODEL'S SPACE, read off the model rather than restated.
+// The norm of the model's space, read off the model rather than restated.
 //
-// Factor 0 is the H(div) field -- flux or stress. EVERY LATER FIELD IS ONE L^2
-// FACTOR, merged: the norm of X is (A s, s) + ||div s||^2 on the first and
+// Factor 0 is the H(div) field -- flux or stress. Every later field is one L^2
+// factor, merged: the norm of X is (A s, s) + ||div s||^2 on the first and
 // plain L^2 on the rest, and L^2 of a product is the product of the L^2s, so
 // the displacement and the AFW rotation form a single factor. Splitting them
-// would be a different preconditioner, not a finer statement of the same one.
+// is a different preconditioner, not a finer statement of the same one.
 //
 // A cell field's dofs are laid out entity-major (see DofMap::global), so dof k
 // of a field of size m over n cells belongs to cell k / (m / n) and its L^2
 // weight is that cell's measure.
 //
-// The graph term is carried ONLY by the rows of the differential constraint.
+// The graph term is carried only by the rows of the differential constraint.
 // AFW's inf-sup is proved with ||sigma||^2 = (A sigma, sigma) + ||div sigma||^2:
 // skw is bounded L^2 -> L^2, so the rotation's rows contribute nothing and
 // their weight is zero.
 //
-// THE NORM HAS NO LENGTH UNIT OF ITS OWN. Scaling the coordinates by L
+// The norm has no length unit of its own. Scaling the coordinates by L
 // multiplies the material block by 1/L and B^T |E|^-1 B by 1/L^3, so the
 // plain H(div) norm is really ||sigma||^2 + L_0^2 ||div sigma||^2 with L_0 = 1
 // in whatever unit the mesh is written in. On a unit box that is the textbook
@@ -417,11 +412,11 @@ class Stage {
 // gone on the same mesh scaled to a unit box. So W carries a length of the
 // domain and the material scale: W = |E| K / L^2 for the flow (M ~ 1/K),
 // W = mu / (|E| L^2) for elasticity (A ~ 1/mu). A uniform rescaling of both
-// Riesz blocks changes nothing; what this fixes is the RATIO of the graph
+// Riesz blocks changes nothing; what this fixes is the ratio of the graph
 // term to the material block, which decides whether the map is an
 // isomorphism with constants of order one.
 //
-// L IS THE BOUNDING DIAGONAL OF THE MESH. The continuous argument: with
+// L is the bounding diagonal of the mesh. The continuous argument: with
 // ||sigma||^2 + L^2 ||div sigma||^2 against ||u||^2 / L^2, the inf-sup
 // constant is L / sqrt(C^2 + L^2) with C the domain's Poincare scale, so it
 // saturates once L reaches the diameter and shrinks linearly below it.
@@ -446,8 +441,8 @@ inline double bounding_diagonal(const exokal::Mesh& mesh) {
   return std::sqrt(d2);
 }
 
-inline double norm_scale(const mimetika::SinglePhaseModel& m) { return m.mobility(); }
-inline double norm_scale(const mimetika::CauchyElasticityModel& m) { return m.material().shear; }
+inline double norm_scale(const mimetika::FlowModel& m) { return m.mobility(); }
+inline double norm_scale(const mimetika::CauchyMechanicsModel& m) { return m.material().shear; }
 
 template <class Model>
 void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exokal::Mesh& mesh,
@@ -483,19 +478,19 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
     for (const Index g : blocks[f].indices()) {
       rest.push_back(static_cast<int>(g));
       const double me = measure[k / components];
-      // W is the SCHUR SCALE of this constraint, not the variational L2 mass:
+      // W is the Schur scale of this constraint, not the variational L2 mass:
       // an unscaled row (flow's incidence) gives |E|, a row already divided by
       // the measure (elasticity's Dv, As) gives 1/|E|.
       l2.push_back(scale * (divergence_is_an_integral ? me : 1.0 / me));
       ++k;
     }
   }
-  // ONE FACTOR, OR ONE PER FIELD. Merged is what the FULL system wants: the
+  // One factor, or one per field. Merged is what the full system wants: the
   // rotation adds no term to the stress norm in theory and a great deal in
   // practice -- 41 iterations against 85 without it, measured -- so the
   // multipliers are preconditioned together.
   //
-  // A system that will be CONDENSED wants the opposite. Eliminating the first
+  // A system that will be condensed wants the opposite. Eliminating the first
   // field leaves the multipliers as the whole system, and for diagonal_vem
   // that is a saddle point of displacement against volumetric stress; the
   // reduced Riesz map needs them apart to have anything to split on.
@@ -514,11 +509,11 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
     }
   }
 
-  // THE COMPLEX'S OWN BOUNDARY OPERATORS, for an auxiliary-space solver.
+  // The complex's own boundary operators, for an auxiliary-space solver.
   //
   // d_1 (edges x vertices) is the discrete gradient and d_2 (faces x edges)
   // the discrete curl -- not built here, only copied out of the topology with
-  // the incidence numbers already on them. They address the FACETS, so they
+  // the incidence numbers already on them. They address the facets, so they
   // are supplied whenever the first factor is carried by the facets at all:
   // one unknown per facet is the space ADS is written for, and a space with
   // several moments per facet reaches it through its facet-constant subspace.
@@ -526,26 +521,25 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
   const auto& space = m.simulation().epoch().stratum(0).space();
   const auto& facet_map = space.map(0);
   const auto& layout = facet_map.layout();
-  // THE TWO NUMBERS THAT DESCRIBE A FACET-CARRIED SPACE, and they are not the
-  // same number even when they are equal. `moments` is how much of the facet
-  // P_1 basis is measured -- 1 for RT, d for BDM -- and `copies` is how many
-  // H(div) fields sit side by side: one for a flux, d for the rows of a
-  // stress. ADS solves ONE copy of ONE moment, so both are what decides which
-  // route it is reached by.
+  // The two numbers that describe a facet-carried space, distinct even when
+  // equal. `moments` is how much of the facet P_1 basis is measured -- 1 for
+  // RT, d for BDM -- and `copies` is how many H(div) fields sit side by side:
+  // one for a flux, d for the rows of a stress. ADS solves one copy of one
+  // moment, so both decide which route it is reached by.
   const int moments = layout.on(dim - 1);
   const int copies = layout.components;
   const bool on_facets = layout.carries(dim - 1) &&
                          blocks[0].size() == static_cast<std::size_t>(topo.count(dim - 1)) *
                                                  static_cast<std::size_t>(moments * copies);
-  // THE STRONG FAMILY REACHES ADS THROUGH A ROTATED SUBSPACE. Its six moments
+  // The strong family reaches ADS through a rotated subspace. Its six moments
   // per facet are one traction vector against a facet-intrinsic frame -- not
   // d copies of a scalar layout -- so neither the curl's rows nor a subset
-  // injection describe it. But the three MEAN slots {t1, t2, n} rotated by
-  // the facet's own frame ARE three scalar H(div) cochains in global
-  // components: int_f (tau n).e_k. The injection is then WEIGHTED by the
+  // injection describe it. But the three mean slots {t1, t2, n} rotated by
+  // the facet's own frame are three scalar H(div) cochains in global
+  // components: int_f (tau n).e_k. The injection is then weighted by the
   // frame rather than a matrix of ones, and the two-level cycle -- facet-
   // local smoother, per-component ADS on the coarse space -- carries over
-  // unchanged, because nothing in it ever assumed the weights were ones.
+  // unchanged.
   const bool strong_stress = copies == 1 && moments == 6;
   if (dim == 3 && on_facets) {
     const auto copy_out = [](const graphos::BoundaryOperator& b, int rows, int cols) {
@@ -575,11 +569,11 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
       norm.vertex_coordinates.insert(norm.vertex_coordinates.end(), {x[0], x[1], x[2]});
     }
 
-    // WHO OWNS EACH VERTEX, EDGE AND FACE, on several processes.
+    // Who owns each vertex, edge and face, on several processes.
     //
     // The maps above are the complex's, in its own serial numbering; hypre
     // needs the three spaces distributed, and consistently -- so the ownership
-    // is taken from the SAME partition the unknowns were taken from, through
+    // is taken from the same partition the unknowns were taken from, through
     // the same exokal call, with a layout that puts one unknown on each entity
     // of the dimension in question. A k-entity's owner is then just the owner
     // of that one unknown.
@@ -587,19 +581,19 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
     MPI_Comm_size(PETSC_COMM_WORLD, &size);
     norm.entity_owner = mimetika::entity_owners(mesh, dim, static_cast<int>(size));
 
-    // THE FACET-CONSTANT SUBSPACE, for every space that is not already it.
+    // The facet-constant subspace, for every space that is not already it.
     //
     // ADS takes one scalar H(div) problem: one copy, one moment per facet.
     // Anything else -- BDM's d moments of a flux, AFW's d copies of those --
-    // reaches it through the subspace spanned by the CONSTANT moment of each
+    // reaches it through the subspace spanned by the constant moment of each
     // copy, and that subspace is not interpolated here. The moments are taken
     // against the facet P_1 basis {1, in-facet coordinates} with the constant
-    // first, so the lowest-order space is a SUBSET of the unknowns and the
+    // first, so the lowest-order space is a subset of the unknowns and the
     // injection is a matrix of ones.
     //
-    // A facet's unknowns are ordered (moment, copy) with the COPY fastest --
+    // A facet's unknowns are ordered (moment, copy) with the copy fastest --
     // StressOperators permutes its own (copy, moment) ordering into this one
-    // when it builds, see its `perm` -- so the constants are the FIRST
+    // when it builds, see its `perm` -- so the constants are the first
     // `copies` unknowns of the facet's block, contiguous rather than strided.
     // Getting that backwards is not a crash: the coarse space is then one
     // copy's worth of moments, carries no divergence, and the cycle merely
@@ -640,7 +634,7 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
           }
         }
       }
-      // measured, not assumed: adding the rotation slot as a fourth coarse
+      // measured: adding the rotation slot as a fourth coarse
       // component leaves the count at 54 and only enlarges the coarse solve
       // (27 s -> 35 s at 300k dofs), so the mean slots alone carry the cycle
       norm.lowest_order_components = 3;
@@ -675,20 +669,20 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
   petsc.set_norm(std::move(norm));
 }
 
-// ASSEMBLE ONLY: the Jacobian and the preconditioner, and no iteration.
+// Assemble only: the Jacobian and the preconditioner, and no iteration.
 //
-// The two are what a mesh has to survive before a solve is even attempted, and
-// they are the part that scales with the mesh rather than with the physics. A
+// The two are what a mesh has to survive before a solve is attempted, and they
+// are the part that scales with the mesh rather than with the physics. A
 // caller measuring them wants them without waiting for a Krylov method to
-// converge -- and wants to know that they COMPLETED, which a timing alone does
+// converge, and wants to know that they completed, which a timing alone does
 // not say.
-// THE PARTITION, IN TWO HALVES, because it is needed on both sides of the
+// The partition, in two halves, because it is needed on both sides of the
 // build: the model must know it before it assembles, and the solver only
 // after, when the unknowns it lays out exist.
 //
 // Neither half decides anything -- mimetika's own `distribute_model` reads
 // exokal's geometric partition and its ownership rule -- and both are skipped
-// on one process, which is then exactly the program it was before.
+// on one process.
 template <class Model>
 void request_partition(Model& m, const mimetika::solver::SolverOptions& opts) {
   PetscMPIInt size = 1, rank = 0;
@@ -696,10 +690,10 @@ void request_partition(Model& m, const mimetika::solver::SolverOptions& opts) {
   MPI_Comm_size(PETSC_COMM_WORLD, &size);
   MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
   if (size < 2 || !opts.partition) return;
-  // NO REDUCTION IS NEEDED, and that is worth saying rather than leaving as an
-  // absence: a process assembles every cell that contributes to a row it owns,
-  // so the diagonal a constrained row is scaled by is already complete where
-  // it is used. Summing across the processes would count the halo twice.
+  // No reduction is needed: a process assembles every cell that contributes to
+  // a row it owns, so the diagonal a constrained row is scaled by is already
+  // complete where it is used. Summing across the processes would count the
+  // halo twice.
   m.distribute_over(static_cast<int>(size), static_cast<int>(rank), {});
 }
 
@@ -727,7 +721,7 @@ mimetika::solver::SolveReport assemble_only(Model& m, bool progress,
   if (opts.preconditioner == "riesz") {
     attach_norm(petsc, m, m.mesh(), m.dim(), divergence_is_an_integral);
   }
-  // THE SAME GATE THE SOLVE USES: a facet-diagonal block is eliminated and
+  // The same gate the solve uses: a facet-diagonal block is eliminated and
   // the reduced system's preconditioner is what gets built -- measuring the
   // saddle's instead reports a cost, in time and in memory, no solve pays.
   petsc.set_condensable(mimetika::solver::first_field_dofs(m.simulation().epoch()));
@@ -741,7 +735,7 @@ mimetika::solver::SolveReport assemble_only(Model& m, bool progress,
   return r;
 }
 
-// THE HYBRIDIZED ROUTE, FROM PYTHON.
+// The hybridized route, from Python.
 //
 // A second elimination rather than a second solver: the stress leaves cell by
 // cell, traction continuity becomes a multiplier on the facets, and what a
@@ -749,16 +743,16 @@ mimetika::solver::SolveReport assemble_only(Model& m, bool progress,
 // pinned, so a conjugate gradient applies where the condensed mixed system was
 // quasi-definite.
 //
-// THE BOUNDARY ROLES SWAP. The multiplier IS the facet displacement, so
-// prescribe_displacement PINS one and a traction loads the free rows. The
+// The boundary roles swap. The multiplier is the facet displacement, so
+// prescribe_displacement pins one and a traction loads the free rows. The
 // model does that mapping; nothing here restates it.
 //
-// SERIAL. The assembly walks every cell and scatters into a global multiplier
+// Serial. The assembly walks every cell and scatters into a global multiplier
 // numbering; distributed, each rank holds only its own cells and would emit
 // some interface rows twice and others never. That needs the row ownership the
 // condensation has and does not have here, so a distributed call is refused
 // rather than answered wrongly.
-mimetika::solver::SolveReport solve_elasticity_hybrid(mimetika::CauchyElasticityModel& m,
+mimetika::solver::SolveReport solve_cauchy_mechanics_hybrid(mimetika::CauchyMechanicsModel& m,
                                                       bool progress,
                                                       const mimetika::solver::SolverOptions& opts) {
   PetscMPIInt size = 1;
@@ -795,17 +789,15 @@ mimetika::solver::SolveReport solve_elasticity_hybrid(mimetika::CauchyElasticity
   }
   mimetika::solver::SolveReport out = report.solve;
   out.assembly_seconds = assembly_seconds;
-  // WHAT THE SOLVER ACTUALLY SAW. The model's dof count is the monolithic
-  // space, and after hybridization the linear solver never sees it: what it
-  // gets is the facet multipliers alone. Reporting the space instead of the
-  // system is how a run gets read as a solve of something it never touched --
-  // so the size travels back on the same fields the condensation uses.
+  // What the solver actually saw. The model's dof count is the monolithic
+  // space; after hybridization the linear solver gets the facet multipliers
+  // alone, so the size travels back on the same fields the condensation uses.
   out.condensed = true;
   out.condensed_dofs = report.multipliers;
   return out;
 }
 
-mimetika::solver::SolveReport solve_elasticity(mimetika::CauchyElasticityModel& m, bool progress,
+mimetika::solver::SolveReport solve_cauchy_mechanics(mimetika::CauchyMechanicsModel& m, bool progress,
                                                const mimetika::solver::SolverOptions& opts) {
   Stage stage(progress);
   request_partition(m, opts);
@@ -818,7 +810,7 @@ mimetika::solver::SolveReport solve_elasticity(mimetika::CauchyElasticityModel& 
   mimetika::solver::PetscSolver petsc(opts);
   attach_partition(petsc, m);
   // the momentum row is Dv, whose entries already carry 1/|E|: it is an average
-  // THE SAME QUESTION THE SOLVER ASKS, asked here because the norm is built
+  // The same question the solver asks, asked here because the norm is built
   // before the solve: a system whose first block is diagonal will be condensed,
   // and then the split it needs is the unmerged one.
   const std::vector<int> eliminable = mimetika::solver::first_field_dofs(m.simulation().epoch());
@@ -828,7 +820,7 @@ mimetika::solver::SolveReport solve_elasticity(mimetika::CauchyElasticityModel& 
     attach_norm(petsc, m, m.mesh(), m.dim(), false, !will_condense);
   }
   std::vector<double> x;
-  // THE SOLVER TIMES ITS OWN THREE, because they are not one stage: the matrix
+  // The solver times its own three, because they are not one stage: the matrix
   // is linear in the assembly, the preconditioner is what decides whether a
   // mesh is reachable, and the iteration is what the preconditioner shortens.
   stage.begin("solving");
@@ -844,12 +836,12 @@ mimetika::solver::SolveReport solve_elasticity(mimetika::CauchyElasticityModel& 
   return rep;
 }
 
-// THE HYBRIDIZED FLOW SOLVE: the flux twin of solve_elasticity_hybrid. The
-// boundary roles swap -- a pressure datum PINS a multiplier, a normal flux
+// The hybridized flow solve: the flux twin of solve_cauchy_mechanics_hybrid. The
+// boundary roles swap -- a pressure datum pins a multiplier, a normal flux
 // loads a free row -- and the interface system is SPD, so an unnamed method
 // becomes a conjugate gradient under an algebraic multigrid. Serial, for the
 // same reason as the stress: the multiplier rows are not partitioned.
-mimetika::solver::SolveReport solve_single_phase_hybrid(mimetika::SinglePhaseModel& m,
+mimetika::solver::SolveReport solve_flow_hybrid(mimetika::FlowModel& m,
                                                         bool progress,
                                                         const mimetika::solver::SolverOptions& opts) {
   PetscMPIInt size = 1;
@@ -887,7 +879,7 @@ mimetika::solver::SolveReport solve_single_phase_hybrid(mimetika::SinglePhaseMod
   return out;
 }
 
-mimetika::solver::SolveReport solve_single_phase(mimetika::SinglePhaseModel& m, bool progress,
+mimetika::solver::SolveReport solve_flow(mimetika::FlowModel& m, bool progress,
                                                  const mimetika::solver::SolverOptions& opts) {
   Stage stage(progress);
   request_partition(m, opts);
@@ -900,9 +892,8 @@ mimetika::solver::SolveReport solve_single_phase(mimetika::SinglePhaseModel& m, 
   mimetika::solver::PetscSolver petsc(opts);
   attach_partition(petsc, m);
   // the mass-balance row is the incidence: (Bq)_E is the integral of div q
-  // THE SAME QUESTION THE SOLVER ASKS, asked here because the norm is built
-  // before the solve: a system whose first block is diagonal will be condensed,
-  // and then the split it needs is the unmerged one.
+  // as in solve_cauchy_mechanics: a diagonal first block will be condensed, and
+  // then the norm needs the unmerged split.
   const std::vector<int> eliminable = mimetika::solver::first_field_dofs(m.simulation().epoch());
   const bool will_condense =
       opts.condense && mimetika::solver::block_is_diagonal(m.system(), eliminable);
@@ -910,9 +901,7 @@ mimetika::solver::SolveReport solve_single_phase(mimetika::SinglePhaseModel& m, 
     attach_norm(petsc, m, m.mesh(), m.dim(), true, !will_condense);
   }
   std::vector<double> x;
-  // THE SOLVER TIMES ITS OWN THREE, because they are not one stage: the matrix
-  // is linear in the assembly, the preconditioner is what decides whether a
-  // mesh is reachable, and the iteration is what the preconditioner shortens.
+  // the solver times its own three stages separately
   stage.begin("solving");
   petsc.set_condensable(mimetika::solver::first_field_dofs(m.simulation().epoch()));
   const auto rep = petsc.solve(m.system(), m.rhs(), x);
@@ -949,11 +938,10 @@ PYBIND11_MODULE(_core, m) {
   m.doc() = "Python interface to the mimetika C++ application";
 
   // The factors of a model's space, as the solver sees them: name, size and
-  // where each run begins. What a block preconditioner is built from, and the
-  // first thing to look at when one misbehaves.
+  // where each run begins -- what a block preconditioner is built from.
   m.def(
       "field_blocks",
-      [](const mimetika::SinglePhaseModel& s) {
+      [](const mimetika::FlowModel& s) {
         py::list out;
         for (const auto& b : mimetika::solver::field_blocks(s.simulation().epoch())) {
           py::list runs;
@@ -967,7 +955,7 @@ PYBIND11_MODULE(_core, m) {
 
   m.def(
       "field_blocks",
-      [](const mimetika::CauchyElasticityModel& s) {
+      [](const mimetika::CauchyMechanicsModel& s) {
         py::list out;
         for (const auto& b : mimetika::solver::field_blocks(s.simulation().epoch())) {
           py::list runs;
@@ -1040,7 +1028,7 @@ PYBIND11_MODULE(_core, m) {
   // checkable directly rather than inferred from an iteration count.
   m.def(
       "system_triplets",
-      [](const mimetika::CauchyElasticityModel& s) {
+      [](const mimetika::CauchyMechanicsModel& s) {
         const auto& A = s.system();
         py::array_t<int> r(static_cast<py::ssize_t>(A.nnz())), c(static_cast<py::ssize_t>(A.nnz()));
         py::array_t<double> v(static_cast<py::ssize_t>(A.nnz()));
@@ -1102,7 +1090,7 @@ PYBIND11_MODULE(_core, m) {
 
   m.def("read_vtu", &exokal::read_vtu, py::arg("path"), py::arg("tag_array") = "tag");
 
-  // THE SAME COMPLEX AT ANOTHER SCALE: points mapped to (x - origin) * factor,
+  // The same complex at another scale: points mapped to (x - origin) * factor,
   // topology and orientation untouched. What a scale-dependent construction
   // -- a norm with a hidden length unit -- is tested against.
   m.def(
@@ -1127,7 +1115,7 @@ PYBIND11_MODULE(_core, m) {
   // percent = 100 |s| / mean over the node star, so a uniform mesh reports 100
   // at every cell whatever its valence; neighborhood_total is carried for a
   // volume-weighted consumer and is not the denominator. vtk_cell_id is the id
-  // of the ORIGINAL file -- the cell ParaView selects.
+  // of the original file -- the cell ParaView selects.
   m.def(
       "diagnose_vtu",
       [](const std::string& path, double degeneracy_percent) {
@@ -1169,7 +1157,7 @@ PYBIND11_MODULE(_core, m) {
       py::arg("path"), py::arg("degeneracy_percent") = exokal::default_degeneracy_percent);
   m.attr("default_degeneracy_percent") = py::float_(exokal::default_degeneracy_percent);
 
-  // THE CURATION PASS: remove the cells the scan named, by their vtk ids, by
+  // The curation pass: remove the cells the scan named, by their vtk ids, by
   // a bistellar flip with a neighbour or by contracting a 0-cell, and write
   // the mesh that is left. The degenerate cell is what breaks the discrete
   // inf-sup constant under the stabilized product; removing it is the robust
@@ -1195,11 +1183,11 @@ PYBIND11_MODULE(_core, m) {
       "remove the named cells (vtk ids) and write the curated mesh; out_path empty "
       "overwrites the origin");
 
-  // THE COLLAPSE PERCENT OF EVERY CELL, not only the witnesses below a
+  // The collapse percent of every cell, not only the witnesses below a
   // threshold: 100 |E| over the mean measure of its node star, the number the
   // degeneracy scan compares against. Asked at an infinite threshold the scan
-  // reports every cell with a neighbour; a cell with none gets NaN, which is
-  // the honest value for "not judged".
+  // reports every cell with a neighbour; a cell with none gets NaN, meaning
+  // "not judged".
   m.def(
       "cell_collapse_percent",
       [](const exokal::Mesh& mesh, int dim) {
@@ -1216,7 +1204,23 @@ PYBIND11_MODULE(_core, m) {
       py::arg("mesh"), py::arg("dim"),
       "100 |cell| / mean measure over its node star, for every cell");
 
-  // THE FILE'S OWN CELL IDS, per cell of the top stratum: the reader reorders
+  // the size of every cell's node star -- the cells sharing at least one
+  // 0-cell with it -- which is the count the collapse percent averages over
+  m.def(
+      "cell_star_neighbours",
+      [](const exokal::Mesh& mesh, int dim) {
+        const auto n = static_cast<std::size_t>(mesh.count(dim));
+        py::array_t<int> out(static_cast<py::ssize_t>(n));
+        std::fill(out.mutable_data(), out.mutable_data() + n, 0);
+        for (const exokal::DegenerateCell& r :
+             exokal::degenerate_cells(mesh, dim, std::numeric_limits<double>::infinity())) {
+          out.mutable_data()[static_cast<std::size_t>(r.cell)] = static_cast<int>(r.n_neighbors);
+        }
+        return out;
+      },
+      py::arg("mesh"), py::arg("dim"), "the number of cells in each cell's node star");
+
+  // The file's own cell ids, per cell of the top stratum: the reader reorders
   // cells top-first, so the complex id and the id ParaView selects agree only
   // on a single-stratum file. Every per-cell diagnostic is reported in both.
   m.def(
@@ -1227,13 +1231,12 @@ PYBIND11_MODULE(_core, m) {
       },
       py::arg("path"), "the vtk cell id of each top cell, in complex order");
 
-  // THE SPECTRUM OF EVERY CELL'S INNER PRODUCT, and nothing assembled: the
+  // The spectrum of every cell's inner product, and nothing assembled: the
   // operators are built as the model would build them, each cell's M is
   // handed to a Jacobi eigensolver, and what comes back is one row per cell
   // -- its size, its extreme eigenvalues, and their ratio, the conditioning
   // of that cell's flux or stress block. The selection (eta) and the star's
-  // validity ride along where the realization has them, so a bad cell can
-  // be read in every light at once.
+  // validity ride along where the realization has them.
   const auto spectra_of = [](auto product_of, std::size_t n_cells) {
     py::array_t<double> lmin(static_cast<py::ssize_t>(n_cells)), lmax(static_cast<py::ssize_t>(n_cells)),
         cond(static_cast<py::ssize_t>(n_cells));
@@ -1389,7 +1392,7 @@ PYBIND11_MODULE(_core, m) {
       py::arg("mesh"), py::arg("cell_dim"), py::arg("facet"));
 
   // Batched: the coboundary is built once for the whole array rather than once
-  // per facet, which is what makes a loop over the boundary affordable.
+  // per facet.
   m.def(
       "cofacets_of",
       [](const exokal::Mesh& x, int cell_dim, const std::vector<Index>& facets) {
@@ -1405,30 +1408,48 @@ PYBIND11_MODULE(_core, m) {
   m.def(
       "write_vtu",
       [](const exokal::Mesh& x, const std::string& path, const py::dict& fields, bool binary) {
+        // An integer array stays an integer array. A count, a flag or a
+        // selection written as Float64 reads back as 1.0 and thresholds as a
+        // real; exokal's top_arrays carry Int32 CellData, so a numpy integer
+        // dtype is routed there and everything else is a real-valued field.
         std::vector<exokal::CellField> cf;
-        cf.reserve(fields.size());
+        std::vector<std::pair<std::string, std::vector<int>>> ints;
         for (const auto& [k, v] : fields) {
-          cf.push_back(cell_field(py::cast<std::string>(k), py::cast<py::array>(v)));
+          const auto a = py::cast<py::array>(v);
+          const std::string name = py::cast<std::string>(k);
+          if (a.dtype().kind() == 'i' || a.dtype().kind() == 'u' || a.dtype().kind() == 'b') {
+            const auto iv = py::array_t<long long, py::array::c_style | py::array::forcecast>::ensure(a);
+            if (!iv || iv.ndim() != 1) {
+              throw std::invalid_argument("write_vtu: integer field '" + name + "' must be 1-D");
+            }
+            std::vector<int> out(static_cast<std::size_t>(iv.size()));
+            for (py::ssize_t i = 0; i < iv.size(); ++i) out[static_cast<std::size_t>(i)] = static_cast<int>(iv.data()[i]);
+            ints.emplace_back(name, std::move(out));
+          } else {
+            cf.push_back(cell_field(name, a));
+          }
         }
-        exokal::write_vtu(x, path, "tag", {},
+        exokal::write_vtu(x, path, "tag", ints,
                           binary ? exokal::VtuFormat::binary : exokal::VtuFormat::ascii, -1, cf);
       },
-      py::arg("mesh"), py::arg("path"), py::arg("fields") = py::dict(), py::arg("binary") = false);
+      py::arg("mesh"), py::arg("path"), py::arg("fields") = py::dict(), py::arg("binary") = false,
+      "write the mesh with cell fields: integer numpy arrays become Int32 CellData, the "
+      "rest Float64 with 1, 3 or 9 components");
 
   // ---- the stress star -----------------------------------------------------
   py::enum_<StressOperators::Realization>(m, "StressRealization")
       .value("derham_bdm", StressOperators::Realization::derham_bdm)
       .value("derham_rt", StressOperators::Realization::derham_rt)
       .value("stabilized_bdm", StressOperators::Realization::stabilized_bdm)
-      // NO RECONSTRUCTION: d per facet, one constant traction vector, and M the
+      // No reconstruction: d per facet, one constant traction vector, and M the
       // diagonal primal-dual star at K = 2 mu -- the two-point stress. It needs
       // four fields, where the compliance is (2 mu)^-1 and applies
       // componentwise; in three the trace couples the components and no mesh
-      // makes M diagonal. Consistent where the mesh is FACE-ORTHOGONAL, and
+      // makes M diagonal. Consistent where the mesh is face-orthogonal, and
       // solvable everywhere: half the unknowns of the BDM products and an
       // eighth of the matrix entries.
       .value("diagonal_afw", StressOperators::Realization::diagonal_afw)
-      // THE STRONGLY-SYMMETRIC FAMILY (Dassi-Lovadina-Visinoni): six traction
+      // The strongly-symmetric family (Dassi-Lovadina-Visinoni): six traction
       // moments per facet carried whole, reconstruction onto constant
       // symmetric tensors, no rotation multiplier. stabilized_vem builds
       // either strong formulation; diagonal_vem is the two-point member and
@@ -1438,7 +1459,7 @@ PYBIND11_MODULE(_core, m) {
       .value("diagonal_vem", StressOperators::Realization::diagonal_vem)
       .value("adaptive_vem", StressOperators::Realization::adaptive_vem);
 
-  // THREE FIELDS OR FOUR, which is a discretization and not a solver setting.
+  // Three fields or four, a discretization and not a solver setting.
   // weak_symmetry carries the volumetric response in the compliance;
   // weak_symmetry_total gives the total pressure p = lambda div u a field of
   // its own, one scalar per cell, and the compliance is then lambda-free --
@@ -1446,7 +1467,7 @@ PYBIND11_MODULE(_core, m) {
   py::enum_<StressOperators::Formulation>(m, "StressFormulation")
       .value("weak_symmetry", StressOperators::Formulation::weak_symmetry)
       .value("weak_symmetry_total", StressOperators::Formulation::weak_symmetry_total)
-      // THE RIGID-MOTION ANSATZ: symmetry lives in the reconstruction space,
+      // The rigid-motion ansatz: symmetry lives in the reconstruction space,
       // so there is no rotation field -- sigma and u, with the total pressure
       // independent in the _total form. The vem realizations build these.
       .value("strong_symmetry", StressOperators::Formulation::strong_symmetry)
@@ -1469,31 +1490,31 @@ PYBIND11_MODULE(_core, m) {
       py::arg("realization"), py::arg("dim"));
 
   // ---- the elasticity problem ---------------------------------------------
-  py::class_<ElasticityProblem>(m, "ElasticityProblem")
+  py::class_<CauchyMechanicsProblem>(m, "CauchyMechanicsProblem")
       .def(py::init<exokal::Mesh, int, double, double, StressOperators::Realization,
                     const std::string&>(),
            py::arg("mesh"), py::arg("cell_dim"), py::arg("mu") = 1.0, py::arg("lam") = 1.0,
            py::arg("realization") = StressOperators::Realization::derham_bdm,
            py::arg("model") = "linear_elasticity")
-      .def_property_readonly("dim", &ElasticityProblem::dim)
-      .def_property_readonly("n_dofs", &ElasticityProblem::n_dofs)
-      .def_property_readonly("n_stabilized", &ElasticityProblem::n_stabilized)
-      .def_property_readonly("moments_per_facet", &ElasticityProblem::moments_per_facet)
-      .def("count", &ElasticityProblem::count, py::arg("k"))
-      .def("constraint_block", &ElasticityProblem::constraint_block, py::arg("cell"))
-      .def("boundary_facets", &ElasticityProblem::boundary_facets)
-      .def("impose_traction", &ElasticityProblem::impose_traction, py::arg("field"),
+      .def_property_readonly("dim", &CauchyMechanicsProblem::dim)
+      .def_property_readonly("n_dofs", &CauchyMechanicsProblem::n_dofs)
+      .def_property_readonly("n_stabilized", &CauchyMechanicsProblem::n_stabilized)
+      .def_property_readonly("moments_per_facet", &CauchyMechanicsProblem::moments_per_facet)
+      .def("count", &CauchyMechanicsProblem::count, py::arg("k"))
+      .def("constraint_block", &CauchyMechanicsProblem::constraint_block, py::arg("cell"))
+      .def("boundary_facets", &CauchyMechanicsProblem::boundary_facets)
+      .def("impose_traction", &CauchyMechanicsProblem::impose_traction, py::arg("field"),
            py::arg("facets"), py::arg("stress"))
-      .def("impose_free_slip", &ElasticityProblem::impose_free_slip, py::arg("field"),
+      .def("impose_free_slip", &CauchyMechanicsProblem::impose_free_slip, py::arg("field"),
            py::arg("facets"))
-      .def("freeze_constraints", &ElasticityProblem::freeze_constraints)
-      .def("solve", &ElasticityProblem::solve)
-      .def("dof", &ElasticityProblem::dof, py::arg("field"), py::arg("k"), py::arg("entity"),
+      .def("freeze_constraints", &CauchyMechanicsProblem::freeze_constraints)
+      .def("solve", &CauchyMechanicsProblem::solve)
+      .def("dof", &CauchyMechanicsProblem::dof, py::arg("field"), py::arg("k"), py::arg("entity"),
            py::arg("local") = 0, py::arg("comp") = 0)
-      .def("cofacet_of", &ElasticityProblem::cofacet_of, py::arg("facet"))
-      .def("facet_frame", &ElasticityProblem::facet_frame, py::arg("facet"))
-      .def("centroid", &ElasticityProblem::centroid, py::arg("k"), py::arg("cell"))
-      .def("measure", &ElasticityProblem::measure, py::arg("k"), py::arg("cell"));
+      .def("cofacet_of", &CauchyMechanicsProblem::cofacet_of, py::arg("facet"))
+      .def("facet_frame", &CauchyMechanicsProblem::facet_frame, py::arg("facet"))
+      .def("centroid", &CauchyMechanicsProblem::centroid, py::arg("k"), py::arg("cell"))
+      .def("measure", &CauchyMechanicsProblem::measure, py::arg("k"), py::arg("cell"));
 
   // ---- the structured families --------------------------------------------
   py::enum_<mimetika::mesh::Family>(m, "Family")
@@ -1504,11 +1525,11 @@ PYBIND11_MODULE(_core, m) {
   m.def("family_name", &mimetika::mesh::name, py::arg("family"));
   m.def("column", &mimetika::mesh::column, py::arg("n"), py::arg("dim"), py::arg("family"),
         py::arg("height") = 1.0, py::arg("width") = 1.0);
-  // A BOX, WHICH IS THE MESH A SCALING STUDY WANTS: the resolution is a
+  // A box, which is the mesh a scaling study wants: the resolution is a
   // number per axis, the shape is a choice, and nothing about the geometry
   // varies as it is refined. The annulus curves and grades, so refining it
   // changes the conditioning as well as the size; a box changes only the size,
-  // which is what makes a timing at two resolutions comparable.
+  // so a timing at two resolutions is comparable.
   //
   // Cartesian gives one hexahedron per cell of the grid, simplex gives six
   // tetrahedra (the Freudenthal cut of the cube), and both are 2D as well:
@@ -1546,33 +1567,33 @@ PYBIND11_MODULE(_core, m) {
   // The boundary conditions are typed in C++ (`emplace<TractionBC>`), which a
   // template cannot carry across the binding, so each one gets a named adder.
   // Adding a condition here is the only change a new one needs.
-  py::class_<mimetika::CauchyElasticityModel>(m, "CauchyElasticityModel")
+  py::class_<mimetika::CauchyMechanicsModel>(m, "CauchyMechanicsModel")
       .def(py::init<const exokal::Mesh&, int, mimetika::ElasticMaterial,
                     StressOperators::Realization, StressOperators::Formulation>(),
            py::arg("mesh"), py::arg("cell_dim"), py::arg("material"),
            py::arg("realization") = StressOperators::Realization::derham_bdm,
            py::arg("formulation") = StressOperators::Formulation::weak_symmetry,
            py::keep_alive<1, 2>())  // the mesh must outlive the model
-      .def_property_readonly("formulation", &mimetika::CauchyElasticityModel::formulation)
-      // p = lambda div u, the fourth unknown. It is SOLVED FOR rather than
+      .def_property_readonly("formulation", &mimetika::CauchyMechanicsModel::formulation)
+      // p = lambda div u, the fourth unknown. It is solved for rather than
       // reconstructed, so it exists only in the four-field formulation and
       // asking for it in three raises rather than returning a guess.
-      .def("total_pressure", &mimetika::CauchyElasticityModel::total_pressure, py::arg("cell"))
+      .def("total_pressure", &mimetika::CauchyMechanicsModel::total_pressure, py::arg("cell"))
       .def(
           "add_traction",
-          [](mimetika::CauchyElasticityModel& s, const std::vector<Index>& facets,
+          [](mimetika::CauchyMechanicsModel& s, const std::vector<Index>& facets,
              const std::array<double, 9>& stress) {
             s.mechanics().emplace<mimetika::TractionBC>(facets, stress);
           },
           py::arg("facets"), py::arg("stress"))
       .def(
           "add_free_slip",
-          [](mimetika::CauchyElasticityModel& s, const std::vector<Index>& facets) {
+          [](mimetika::CauchyMechanicsModel& s, const std::vector<Index>& facets) {
             s.mechanics().emplace<mimetika::FreeSlipBC>(facets);
           },
           py::arg("facets"))
       .def_property_readonly("n_constrained",
-                             [](const mimetika::CauchyElasticityModel& s) {
+                             [](const mimetika::CauchyMechanicsModel& s) {
                                const auto& c = s.simulation().constraints();
                                std::size_t n = 0;
                                for (std::size_t i = 0; i < s.simulation().n_dofs(); ++i) {
@@ -1580,57 +1601,67 @@ PYBIND11_MODULE(_core, m) {
                                }
                                return n;
                              })
-      .def("build", [](mimetika::CauchyElasticityModel& s) { s.build(); })
+      .def("build", [](mimetika::CauchyMechanicsModel& s) { s.build(); })
       .def(
           "assemble",
-          [](mimetika::CauchyElasticityModel& s, bool progress,
+          [](mimetika::CauchyMechanicsModel& s, bool progress,
              const mimetika::solver::SolverOptions& o) {
             return assemble_only(s, progress, o, false);
           },
           py::arg("progress") = false, py::arg("options") = mimetika::solver::SolverOptions{})
-      .def("prescribe_displacement", &mimetika::CauchyElasticityModel::prescribe_displacement,
+      .def("prescribe_displacement", &mimetika::CauchyMechanicsModel::prescribe_displacement,
            py::arg("facets"), py::arg("constant"), py::arg("gradient") = std::array<double, 9>{})
-      .def("solve_hybrid", &solve_elasticity_hybrid, py::arg("progress") = false,
+      .def("solve_hybrid", &solve_cauchy_mechanics_hybrid, py::arg("progress") = false,
            py::arg("options") = mimetika::solver::SolverOptions{})
-      .def("solve", &solve_elasticity, py::arg("progress") = false,
+      .def("solve", &solve_cauchy_mechanics, py::arg("progress") = false,
            py::arg("options") = mimetika::solver::SolverOptions{})
-      .def_property_readonly("dim", &mimetika::CauchyElasticityModel::dim)
-      .def_property_readonly("n_cells", &mimetika::CauchyElasticityModel::n_cells)
-      .def_property_readonly("n_stabilized", &mimetika::CauchyElasticityModel::n_stabilized)
+      .def_property_readonly("dim", &mimetika::CauchyMechanicsModel::dim)
+      .def_property_readonly("n_cells", &mimetika::CauchyMechanicsModel::n_cells)
+      .def_property_readonly("n_stabilized", &mimetika::CauchyMechanicsModel::n_stabilized)
       .def_property_readonly(
           "n_dofs",
-          [](const mimetika::CauchyElasticityModel& s) { return s.simulation().n_dofs(); })
-      .def_property_readonly("realization_name", &mimetika::CauchyElasticityModel::realization_name)
-      .def("material", &mimetika::CauchyElasticityModel::material, py::return_value_policy::copy)
-      .def("displacement", &mimetika::CauchyElasticityModel::displacement, py::arg("cell"),
+          [](const mimetika::CauchyMechanicsModel& s) { return s.simulation().n_dofs(); })
+      .def_property_readonly("realization_name", &mimetika::CauchyMechanicsModel::realization_name)
+      .def("material", &mimetika::CauchyMechanicsModel::material, py::return_value_policy::copy)
+      .def("displacement", &mimetika::CauchyMechanicsModel::displacement, py::arg("cell"),
            py::arg("axis"))
-      .def("rotation", &mimetika::CauchyElasticityModel::rotation, py::arg("cell"),
+      .def("rotation", &mimetika::CauchyMechanicsModel::rotation, py::arg("cell"),
            py::arg("generator"))
-      .def_property_readonly("n_rotations", &mimetika::CauchyElasticityModel::n_rotations)
-      .def("normal_traction", &mimetika::CauchyElasticityModel::normal_traction, py::arg("facet"))
-      .def("cell_stress", &mimetika::CauchyElasticityModel::cell_stress, py::arg("cell"))
-      .def("facet_traction", &mimetika::CauchyElasticityModel::facet_traction, py::arg("facet"))
+      .def_property_readonly("n_rotations", &mimetika::CauchyMechanicsModel::n_rotations)
+      .def("normal_traction", &mimetika::CauchyMechanicsModel::normal_traction, py::arg("facet"))
+      .def("cell_stress", &mimetika::CauchyMechanicsModel::cell_stress, py::arg("cell"))
+      .def("facet_traction", &mimetika::CauchyMechanicsModel::facet_traction, py::arg("facet"))
       .def_property_readonly(
-          "n_invalid_star", &mimetika::CauchyElasticityModel::n_invalid_star,
+          "n_invalid_star", &mimetika::CauchyMechanicsModel::n_invalid_star,
           "cells whose diagonal star carries a non-positive facet weight: the centroid "
           "does not see that facet squarely, M is not positive there, and the condensed "
           "solve is meaningless -- refuse or switch products when this is nonzero")
-      .def("set_degeneracy_percent", &mimetika::CauchyElasticityModel::set_degeneracy_percent,
+      .def("set_degeneracy_percent", &mimetika::CauchyMechanicsModel::set_degeneracy_percent,
            py::arg("percent"),
            "adaptive_vem's scan threshold: cells whose measure falls below this "
            "percentage of their node-star mean take the diagonal star (eta = 0); "
            "every other cell keeps the stabilized vem product (eta = 1)")
-      .def("set_cond_threshold", &mimetika::CauchyElasticityModel::set_cond_threshold,
+      .def("set_cond_threshold", &mimetika::CauchyMechanicsModel::set_cond_threshold,
            py::arg("cond"),
            "adaptive_vem's second selector: cells whose stabilized vem block has "
            "lambda_max / lambda_min above this take the diagonal star (eta = 0) as "
            "well; composes with the scan, costs one probe build")
       .def_property_readonly("n_ill_conditioned",
-                             &mimetika::CauchyElasticityModel::n_ill_conditioned,
+                             &mimetika::CauchyMechanicsModel::n_ill_conditioned,
                              "cells the conditioning selector switched, as built")
+      .def("set_rotation_jump", &mimetika::CauchyMechanicsModel::set_rotation_jump,
+           py::arg("c"),
+           "diagonal_afw's facet-jump stabilization of the rotation multiplier: the "
+           "rotation row becomes As sigma - J gamma with J the two-point Laplacian of "
+           "the half weights c mu |f| delta. J annihilates constant rotations, so a "
+           "linear displacement is still reproduced exactly. Off at c = 0; refused for "
+           "any other product, and not available under hybridization")
+      .def_property_readonly("rotation_jump",
+                             &mimetika::CauchyMechanicsModel::rotation_jump,
+                             "the rotation-jump constant the operators were built at")
       .def_property_readonly(
           "eta",
-          [](const mimetika::CauchyElasticityModel& s) {
+          [](const mimetika::CauchyMechanicsModel& s) {
             const auto& e = s.eta();
             return py::array_t<double>(static_cast<py::ssize_t>(e.size()), e.data());
           },
@@ -1649,23 +1680,23 @@ PYBIND11_MODULE(_core, m) {
       .value("derham_bdm", FluxOperators::Realization::derham_bdm)
       .value("derham_rt", FluxOperators::Realization::derham_rt)
       .value("stabilized_rt", FluxOperators::Realization::stabilized_rt)
-      // ONE FLUX PER FACET AND NO RECONSTRUCTION: M is the diagonal
+      // One flux per facet and no reconstruction: M is the diagonal
       // primal-dual star, which is the two-point flux approximation. Exact
-      // where the mesh is K-ORTHOGONAL and only there -- see the flow example.
+      // where the mesh is K-orthogonal and only there -- see the flow example.
       .value("diagonal_tpfa", FluxOperators::Realization::diagonal_tpfa)
-      // THE PER-CELL SELECTION between the two products above, carried as
+      // The per-cell selection between the two products above, carried as
       // eta in {0, 1}: ones everywhere -- the stabilized product -- and 0 on
       // the cells the metric-degeneracy scan flags, which take the diagonal
       // star instead of a reconstruction over a collapsed cell. The scan runs
       // at exokal's default threshold, or at the percentage
-      // SinglePhaseModel.set_degeneracy_percent names; the model's .eta is
+      // FlowModel.set_degeneracy_percent names; the model's .eta is
       // the selection as built, one value per cell.
       .value("adaptive_rt", FluxOperators::Realization::adaptive_rt);
 
-  // HOW MANY PROCESSES THE SOLVER WILL USE, which is a question worth being
-  // able to ask: launched under mpirun with a mismatched runtime, MPI falls
-  // back to singletons and every rank solves the whole problem believing it is
-  // alone. That looks like a working parallel run and is not one.
+  // How many processes the solver will use: launched under mpirun with a
+  // mismatched runtime, MPI falls back to singletons and every rank solves the
+  // whole problem believing it is alone. That looks like a working parallel
+  // run and is not one.
   m.def(
       "mpi_size",
       [] {
@@ -1685,11 +1716,11 @@ PYBIND11_MODULE(_core, m) {
       },
       "this process's rank in PETSC_COMM_WORLD");
 
-  // A CELL FIELD THE WHOLE MESH CAN SEE.
+  // A cell field the whole mesh can see.
   //
   // Distributed, a process builds the per-cell operators of its own cells and
   // its halo, and no others -- that is what makes the assembly divide. So
-  // anything reconstructed FROM those operators, stress above all, exists only
+  // anything reconstructed from those operators, stress above all, exists only
   // where they do; asked for elsewhere it comes back zero, which reads as a
   // wrong answer rather than as an absent one.
   //
@@ -1699,7 +1730,7 @@ PYBIND11_MODULE(_core, m) {
   // solution, which every process already has in full.
   m.def(
       "gather_cells",
-      [](const mimetika::CauchyElasticityModel& model, py::array_t<double> values) {
+      [](const mimetika::CauchyMechanicsModel& model, py::array_t<double> values) {
         const auto& owned = model.distribution().owned_cells;
         if (owned.empty()) return values;
         auto v = values.mutable_unchecked();
@@ -1726,7 +1757,7 @@ PYBIND11_MODULE(_core, m) {
   // the same for the flow model, whose flux is reconstructed per cell too
   m.def(
       "gather_cells",
-      [](const mimetika::SinglePhaseModel& model, py::array_t<double> values) {
+      [](const mimetika::FlowModel& model, py::array_t<double> values) {
         const auto& owned = model.distribution().owned_cells;
         if (owned.empty()) return values;
         auto v = values.mutable_unchecked();
@@ -1750,7 +1781,7 @@ PYBIND11_MODULE(_core, m) {
       py::arg("model"), py::arg("values"),
       "sum a per-cell field over the processes, each contributing the cells it owns");
 
-  // THE PARTITION AS A FIELD, so it can be looked at rather than trusted.
+  // The partition as a field, so it can be looked at rather than trusted.
   //
   // The same geometric bisection the solver uses, asked for any number of
   // parts: written into a .vtu it colours the mesh by process, which is how a
@@ -1773,80 +1804,80 @@ PYBIND11_MODULE(_core, m) {
 
   m.def("flux_realization_name", &FluxOperators::name, py::arg("realization"));
 
-  py::class_<mimetika::SinglePhaseModel>(m, "SinglePhaseModel")
+  py::class_<mimetika::FlowModel>(m, "FlowModel")
       .def(py::init<const exokal::Mesh&, int, double, FluxOperators::Realization>(),
            py::arg("mesh"), py::arg("cell_dim"), py::arg("mobility") = 1.0,
            py::arg("realization") = FluxOperators::Realization::derham_bdm,
            py::keep_alive<1, 2>())  // the mesh must outlive the model
       .def(
           "add_normal_flux",
-          [](mimetika::SinglePhaseModel& s, const std::vector<Index>& facets) {
+          [](mimetika::FlowModel& s, const std::vector<Index>& facets) {
             s.flow().emplace<mimetika::NormalFluxBC>(facets);
           },
           py::arg("facets"))
       .def(
           "add_pressure",
-          [](mimetika::SinglePhaseModel& s, const std::vector<Index>& facets, double value) {
+          [](mimetika::FlowModel& s, const std::vector<Index>& facets, double value) {
             s.flow().emplace<mimetika::PressureBC>(facets, value);
           },
           py::arg("facets"), py::arg("value"))
-      .def("set_degeneracy_percent", &mimetika::SinglePhaseModel::set_degeneracy_percent,
+      .def("set_degeneracy_percent", &mimetika::FlowModel::set_degeneracy_percent,
            py::arg("percent"),
            "adaptive_rt's scan threshold: cells whose measure falls below this "
            "percentage of their node-star mean take the diagonal star (eta = 0); "
            "every other cell keeps the stabilized product (eta = 1)")
-      .def("set_cond_threshold", &mimetika::SinglePhaseModel::set_cond_threshold,
+      .def("set_cond_threshold", &mimetika::FlowModel::set_cond_threshold,
            py::arg("cond"),
            "adaptive_rt's second selector: cells whose stabilized flux block has "
            "lambda_max / lambda_min above this take the diagonal star (eta = 0) as "
            "well; composes with the scan, costs one probe build")
-      .def_property_readonly("n_ill_conditioned", &mimetika::SinglePhaseModel::n_ill_conditioned,
+      .def_property_readonly("n_ill_conditioned", &mimetika::FlowModel::n_ill_conditioned,
                              "cells the conditioning selector switched, as built")
-      .def_property_readonly("n_not_star_shaped", &mimetika::SinglePhaseModel::n_not_star_shaped,
+      .def_property_readonly("n_not_star_shaped", &mimetika::FlowModel::n_not_star_shaped,
                              "cells whose two-point star carries a non-positive facet weight: "
                              "the centroid does not see that facet, M is not positive there, "
                              "and the solve is meaningless -- repair the mesh or switch products")
       .def_property_readonly(
           "not_star_shaped",
-          [](const mimetika::SinglePhaseModel& s) {
+          [](const mimetika::FlowModel& s) {
             const auto& v = s.not_star_shaped();
             return std::vector<long long>(v.begin(), v.end());
           },
           "the cells the star's premise fails on, by complex id")
       .def_property_readonly(
           "eta",
-          [](const mimetika::SinglePhaseModel& s) {
+          [](const mimetika::FlowModel& s) {
             const auto& e = s.eta();
             return py::array_t<double>(static_cast<py::ssize_t>(e.size()), e.data());
           },
           "the adaptive_rt selection as built, one value per cell: "
           "1 is stabilized_rt, 0 is diagonal_tpfa")
-      // THE OPERATORS AND THE SYSTEM, NOTHING MORE: what a diagnostic needs --
+      // The operators and the system, nothing more: what a diagnostic needs --
       // the star's validity, the selection as built -- without paying for a
       // preconditioner it will never apply
-      .def("build", [](mimetika::SinglePhaseModel& s) { s.build(); })
+      .def("build", [](mimetika::FlowModel& s) { s.build(); })
       .def(
           "assemble",
-          [](mimetika::SinglePhaseModel& s, bool progress,
+          [](mimetika::FlowModel& s, bool progress,
              const mimetika::solver::SolverOptions& o) {
             return assemble_only(s, progress, o, true);
           },
           py::arg("progress") = false, py::arg("options") = mimetika::solver::SolverOptions{})
-      .def("solve", &solve_single_phase, py::arg("progress") = false,
+      .def("solve", &solve_flow, py::arg("progress") = false,
            py::arg("options") = mimetika::solver::SolverOptions{})
-      .def("solve_hybrid", &solve_single_phase_hybrid, py::arg("progress") = false,
+      .def("solve_hybrid", &solve_flow_hybrid, py::arg("progress") = false,
            py::arg("options") = mimetika::solver::SolverOptions{},
            "eliminate the flux cell by cell and solve the SPD facet-pressure system: "
            "cg + multigrid on any product; a pressure datum pins a multiplier, a "
            "normal flux loads a free row, an unconditioned boundary facet is sealed")
-      .def_property_readonly("dim", &mimetika::SinglePhaseModel::dim)
-      .def_property_readonly("n_cells", &mimetika::SinglePhaseModel::n_cells)
+      .def_property_readonly("dim", &mimetika::FlowModel::dim)
+      .def_property_readonly("n_cells", &mimetika::FlowModel::n_cells)
       .def_property_readonly(
-          "n_dofs", [](const mimetika::SinglePhaseModel& s) { return s.simulation().n_dofs(); })
-      .def_property_readonly("moments_per_facet", &mimetika::SinglePhaseModel::moments_per_facet)
-      .def_property_readonly("realization_name", &mimetika::SinglePhaseModel::realization_name)
-      .def("cell_pressure", &mimetika::SinglePhaseModel::cell_pressure, py::arg("cell"))
-      .def("cell_flux", &mimetika::SinglePhaseModel::cell_flux, py::arg("cell"));
+          "n_dofs", [](const mimetika::FlowModel& s) { return s.simulation().n_dofs(); })
+      .def_property_readonly("moments_per_facet", &mimetika::FlowModel::moments_per_facet)
+      .def_property_readonly("realization_name", &mimetika::FlowModel::realization_name)
+      .def("cell_pressure", &mimetika::FlowModel::cell_pressure, py::arg("cell"))
+      .def("cell_flux", &mimetika::FlowModel::cell_flux, py::arg("cell"));
 
   // ---- the assembled model, for the structural checks ---------------------
   py::class_<AssembledModel>(m, "AssembledModel")
@@ -1875,8 +1906,7 @@ PYBIND11_MODULE(_core, m) {
   // ---- compositions and their spaces --------------------------------------
   //
   // A composition can be inspected without ever assembling: the space it lays
-  // out is a function of the packages and the complex alone, which is what the
-  // counts tests are about.
+  // out is a function of the packages and the complex alone.
   py::class_<exokal::spaces::ProductSpace>(m, "ProductSpace")
       .def_property_readonly("n_fields", &exokal::spaces::ProductSpace::n_fields)
       .def_property_readonly("size", &exokal::spaces::ProductSpace::size)

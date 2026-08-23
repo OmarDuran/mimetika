@@ -7,12 +7,12 @@
 #include "mimetika/algebraic_constraints/contact/laws.hpp"
 #include "mimetika/model/boundary.hpp"
 
-// THE TRACE OPERATOR ON A FRACTURE: the displacement jump, as the adjoint of
+// The trace operator on a fracture: the displacement jump, as the adjoint of
 // the divergence and the asymmetry.
 //
-// A contact law needs two things from the mechanics -- the TRACTION on the
+// A contact law needs two things from the mechanics -- the traction on the
 // fracture, which in the mixed form is already a degree of freedom, and the
-// DISPLACEMENT JUMP, which is not. The jump is what the trace operator
+// displacement jump, which is not. The jump is what the trace operator
 // supplies, and it is not a separate construction:
 //
 //     [| D^T u + A^T gamma |]_f = (D^T u + A^T gamma)_f^+ - (...)_f^-
@@ -20,30 +20,30 @@
 // The right-hand side is not something to be assembled twice and subtracted.
 // D is the discrete divergence, a map from facet tractions to cell vectors, and
 // its adjoint D^T maps cell displacements back onto facets; each cell's
-// contribution carries that cell's OUTWARD incidence on the facet, so the two
+// contribution carries that cell's outward incidence on the facet, so the two
 // cofaces of an interior facet enter with opposite signs and the assembled row
-// IS the difference. The jump comes out of the adjoint for free. The same holds
+// is the difference. The jump comes out of the adjoint for free. The same holds
 // for A and the rotation gamma, which supplies the rigid-rotation part of the
 // displacement field the facet sees.
 //
-// SO THE OPERATOR IS THE CONSTITUTIVE ROW OF THE UNFRACTURED SYSTEM,
+// So the operator is the constitutive row of the unfractured system,
 //
 //     g_f = -( M sigma - D^T u - A^T gamma )_f ,
 //
-// evaluated on the solution. Three consequences, each load bearing:
+// evaluated on the solution. Three consequences:
 //
-//   * IT IS LINEAR, so it can be applied even though that row was REPLACED by
+//   * It is linear, so it can be applied even though that row was replaced by
 //     the contact constraint. The row the fractured system solves is gone; the
 //     functional it used to express is not.
-//   * IT MUST BE THE UNFRACTURED ROW. At the solution the fractured row is
+//   * It must be the unfractured row. At the solution the fractured row is
 //     satisfied exactly and its residual is zero, whereas the unfractured
 //     residual is precisely the jump this exists to extract.
-//   * NO Gram^{-1}, and this is the subtle one. A traction degree of freedom IS
-//     a moment m = int_e (sigma n) b, so recovering its pointwise values needs
-//     Gram^{-1} m. The jump term int_e [[u]].(tau n) is instead paired AGAINST
+//   * No Gram^{-1}. A traction degree of freedom is a moment
+//     m = int_e (sigma n) b, so recovering its pointwise values needs
+//     Gram^{-1} m. The jump term int_e [[u]].(tau n) is instead paired against
 //     that moment: writing (tau n) = sum_b phi_b b_b gives m = Gram phi, so the
 //     pairing already carries a Gram^{-1} and the residual emerges as the
-//     expansion COEFFICIENTS of the jump, ready to evaluate against the basis.
+//     expansion coefficients of the jump, ready to evaluate against the basis.
 //     A second inversion divides the jump by |e|, and the slip then grows like
 //     1/h under refinement -- a mesh-dependent answer that converges to nothing.
 //
@@ -56,7 +56,7 @@ namespace mimetika::contact {
 
 using graphos::Index;
 
-// THE FRACTURE: a set of facets on which a contact law is active, with the
+// The fracture: a set of facets on which a contact law is active, with the
 // per-facet frames and the dof addressing the trace needs.
 //
 // An instance of a driver owns one of these, so several fractures -- several
@@ -82,7 +82,7 @@ class Fracture {
             " cofaces; a fracture is INTERIOR -- a jump needs two sides, and a "
             "boundary facet has one");
       }
-      // the frame is the FACET's, so both cofaces read one convention: the
+      // the frame is the facet's, so both cofaces read one convention: the
       // canonical normal the traction dofs are numbered in, and the tangents
       // derived from it alone
       frames_.push_back(FacetFrame::of(mesh, cell_dim, cob.indices[b], f));
@@ -96,7 +96,7 @@ class Fracture {
   std::size_t size() const { return facets_.size(); }
   const FacetFrame& frame(std::size_t i) const { return frames_[i]; }
 
-  // ONE ENFORCEMENT POINT PER FACET: the law is applied to the facet-mean
+  // One enforcement point per facet: the law is applied to the facet-mean
   // traction, which is what most discrete-fracture codes do. Applying it at the
   // facet quadrature points instead resolves partial contact within a facet at
   // the cost of state per point; the choice belongs to the caller and the law is

@@ -5,7 +5,7 @@
 #include "mimetika/algebraic_constraints/contact/driver.hpp"
 #include "mimetika/mesh/structured.hpp"
 
-// THE CONTACT DRIVER: the augmentation, the outer loop and the step.
+// The contact driver: the augmentation, the outer loop and the step.
 //
 // The pieces that need a mesh are here -- the augmentation parameter is derived
 // from the geometry the fracture sits in -- while everything that does not is in
@@ -47,9 +47,9 @@ std::vector<Index> facets_at(const exokal::Mesh& m, int dim, double z, double to
 // A one-point stub standing where a real mechanics will: a spring of the given
 // compliance, so the driver's loop can be exercised against a closed form.
 //
-// THE SIGN IS THE ONE THAT MAKES CONTACT STABLE, and it is not free. The map
+// The sign is the one that makes contact stable, and it is not free. The map
 // CD(x) = P(x + r g(x)) has multiplier |1 + r dg/dx|, so it contracts only for
-// dg/dx < 0: the gap must DECREASE as the traction grows. With the opposite
+// dg/dx < 0: the gap must decrease as the traction grows. With the opposite
 // sign no r converges, which is a statement about the physics being unstable
 // rather than about the solver -- the same convention test_map.cpp records for
 // its 2x2 system.
@@ -98,7 +98,7 @@ Vec3 free_gap(double n, double t1 = 0.0) {
 
 // -- the augmentation parameter ----------------------------------------------
 
-// r MUST MATCH THE INVERSE COMPLIANCE THE FRACTURE SEES, or Uzawa cycles. On a
+// r must match the inverse compliance the fracture sees, or Uzawa cycles. On a
 // column of unit cells cut at mid-height, each adjacent cell contributes half
 // its height, so the standoff is 2 x 0.25 = 0.5 and r = (2mu + lam) / 0.5.
 MIMETIKA_TEST(the_augmentation_is_derived_from_stiffness_and_geometry) {
@@ -110,7 +110,7 @@ MIMETIKA_TEST(the_augmentation_is_derived_from_stiffness_and_geometry) {
   CHECK(near(r[0], kOedometer / 0.5));
 }
 
-// A VOLUME/AREA SHORTCUT IS EXACT FOR BOXES AND WRONG FOR TETRAHEDRA: it gives
+// A volume/area shortcut is exact for boxes and wrong for tetrahedra: it gives
 // h/6 where the true centroid standoff is h/4, mis-scaling r badly enough to
 // stall the iteration. The distance is therefore measured directly, and this
 // checks it against the same quantity computed independently.
@@ -139,7 +139,7 @@ MIMETIKA_TEST(the_augmentation_uses_the_true_centroid_distance_on_tets) {
       length += std::abs(d);
     }
     CHECK(near(r[i], kOedometer / length));
-    // and it is NOT the volume/area shortcut, which would be smaller
+    // and it is not the volume/area shortcut, which would be smaller
     CHECK(!near(length, 1.0 / 6.0, 1e-6) || true);
   }
 }
@@ -155,9 +155,9 @@ MIMETIKA_TEST(an_explicit_augmentation_is_respected) {
 
 // -- the linear law short-circuit --------------------------------------------
 
-// AN EXACTLY LINEAR LAW NEEDS NO OUTER ITERATION: its projection is the
+// An exactly linear law needs no outer iteration: its projection is the
 // identity, so the fixed point is reached in one evaluation and the driver
-// stops there rather than re-deriving it.
+// stops there.
 MIMETIKA_TEST(a_linear_law_finishes_in_one_pass) {
   const SpringMechanics mech(0.5, free_gap(0.0), 1);
   const LinearContact law;
@@ -168,8 +168,8 @@ MIMETIKA_TEST(a_linear_law_finishes_in_one_pass) {
 
 // -- the unilateral conditions, through the whole loop ------------------------
 
-// TENSION OPENS THE FRACTURE WITH ZERO TRACTION: a free gap that wants to open
-// must not be held shut, and an open point carries no traction at all.
+// Tension opens the fracture with zero traction: a free gap that wants to open
+// must not be held shut, and an open point carries no traction.
 MIMETIKA_TEST(tension_opens_the_fracture_with_zero_traction) {
   const SpringMechanics mech(0.5, free_gap(+0.2), 1);  // a positive free gap: it wants to open
   const SignoriniCoulomb law(0.6);
@@ -184,7 +184,7 @@ MIMETIKA_TEST(tension_opens_the_fracture_with_zero_traction) {
   CHECK(d.status(s)[0] == Status::open);
 }
 
-// COMPRESSION CLOSES WITHOUT INTERPENETRATION: the complementarity g_n t_n = 0
+// Compression closes without interpenetration: the complementarity g_n t_n = 0
 // holds, with the traction taking exactly the value that shuts the gap.
 MIMETIKA_TEST(compression_closes_without_interpenetration) {
   const SpringMechanics mech(0.5, free_gap(-0.2),
@@ -205,7 +205,7 @@ MIMETIKA_TEST(compression_closes_without_interpenetration) {
 
 // -- the caller owns the loop -------------------------------------------------
 
-// SLIP ACCUMULATES ACROSS STEPS, because the driver commits the internal
+// Slip accumulates across steps, because the driver commits the internal
 // variables at the end of each one and the caller feeds the state back. This is
 // the property a staggered poromechanics scheme needs: the pressure solve sits
 // between two calls and the fracture remembers.
@@ -241,9 +241,9 @@ MIMETIKA_TEST(the_initial_state_has_one_entry_per_enforcement_point) {
 
 // -- prestress, through the driver -------------------------------------------
 
-// A FAULT UNDER IN-SITU COMPRESSION IS NOT OPENED BY A TENSILE INCREMENT. This
+// A fault under in-situ compression is not opened by a tensile increment. This
 // is the incremental problem the benchmarks pose, and the reason the driver
-// carries a prestress at all.
+// carries a prestress.
 MIMETIKA_TEST(a_prestressed_fault_stays_shut_under_a_tensile_increment) {
   const SpringMechanics mech(0.5, free_gap(+0.2), 1);  // the increment alone wants to open
   const SignoriniCoulomb law(0.6);
@@ -259,7 +259,7 @@ MIMETIKA_TEST(a_prestressed_fault_stays_shut_under_a_tensile_increment) {
 
   const ContactState s = d.solve_step();
   CHECK(s.converged);
-  CHECK(d.status(s)[0] != Status::open);  // the TOTAL traction is still compressive
+  CHECK(d.status(s)[0] != Status::open);  // the total traction is still compressive
 }
 
 // -- the mismatched-size guard ------------------------------------------------

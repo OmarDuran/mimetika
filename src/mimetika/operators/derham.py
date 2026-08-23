@@ -13,10 +13,7 @@ stabilized family.
 
 Scalar member (the BDM equivalent):
 
-The name is structural: the enrichment that makes the construction possible
-is supplied by the de Rham complex -- the fields invisible to the divergence
-are exactly the images of the curl.  **This operator is the BDM equivalent**:
-on simplices it coincides, degree of freedom for degree of freedom, with the
+On simplices it coincides, degree of freedom for degree of freedom, with the
 classical mixed ``BDM_1``--``P_0`` finite element, and on polytopal cells it
 is that element's extension.
 
@@ -29,24 +26,21 @@ Galerkin (mass) matrix of that space,
     ``M_E = |E| N^{-T} Kbar N^{-1}``    (``ker N^T = {0}``),
 
 which is pure consistency: no stabilization matrix exists, by construction
-rather than by cell type.  There is deliberately **no stabilized fallback**:
-a cell whose enrichment cannot reach unisolvence by ``max_degree`` raises.
+rather than by cell type.  There is no stabilized fallback: a cell whose
+enrichment cannot reach unisolvence by ``max_degree`` raises.
 
 The enrichment is dictated by the exterior-calculus structure of the problem:
-the fields invisible to the divergence are exactly the images of the curl
-(``rot`` of scalar potentials in 2D, ``curl`` of vector potentials in 3D), so
-enriching never perturbs the discrete equilibrium structure, and consistency
-for constant fluxes survives verbatim -- the boundary pairing of a linear
-potential is captured exactly by the facet ``P_1`` moments, and the volume
-term dies at the centroid because every mode has cell-wise constant
-divergence.
+the fields invisible to the divergence are ``rot`` of scalar potentials in 2D
+and ``curl`` of vector potentials in 3D, so enriching never perturbs the
+discrete equilibrium structure, and consistency for constant fluxes survives
+verbatim -- the boundary pairing of a linear potential is captured exactly by
+the facet ``P_1`` moments, and the volume term dies at the centroid because
+every mode has cell-wise constant divergence.
 
 On a simplex the count ``d n_f = d (d+1)`` forbids enrichment, the local
-space is ``BDM_1(E)`` and ``M_E`` its mass matrix: the method coincides,
-degree of freedom for degree of freedom, with the classical mixed
-``BDM_1``--``P_0`` finite element.  Off simplices, strong consistency holds
-for constants (the patch test), not for linears -- the price of keeping the
-degrees of freedom lowest order.
+space is ``BDM_1(E)`` and ``M_E`` its mass matrix.  Off simplices, strong
+consistency holds for constants (the patch test), not for linears -- the
+price of keeping the degrees of freedom lowest order.
 
 The built-in mesh quadrature is exact only for quadratics, while the Gram of
 degree-``k`` enrichment needs degree ``2(k-1)``; the module therefore carries
@@ -297,7 +291,7 @@ class DeRhamDiffusionInnerProduct:
         ``N`` is square ``(d nf, d nf)`` and invertible -- selected from the
         ``P_1`` modes plus the smallest curl enrichment that reaches full
         rank.  Raises when ``max_degree`` is not enough: there is no
-        stabilized fallback, by design.
+        stabilized fallback.
         """
         N, G, lc, degree, _, _ = self._local(cell_id)
         return N, G, lc, degree
@@ -380,12 +374,11 @@ class DeRhamDiffusionInnerProduct:
         _, _, piv = scipy.linalg.qr(proj, mode="economic", pivoting=True)
         # Sorted, so congruent cells produce identical N and G.  LAPACK breaks
         # equal-magnitude pivots by encounter order, which round-off flips from
-        # cell to cell: on a structured quad mesh the same two curl modes were
-        # selected as (7, 8) or (8, 7) at random.  M is invariant under the
-        # permutation, but N and G are not, which defeats caching on congruent
-        # cells and makes the operator reproducible only up to that permutation.
-        # Sorting fixes the order; it does not fix which columns are chosen when
-        # two candidates are near-tied in magnitude.
+        # cell to cell.  M is invariant under the permutation, but N and G are
+        # not, which defeats caching on congruent cells and leaves the operator
+        # reproducible only up to that permutation.  Sorting fixes the order; it
+        # does not fix which columns are chosen when two candidates are
+        # near-tied in magnitude.
         sel = m1 + np.sort(piv[: n_dof - m1])
         idx = np.concatenate([np.arange(m1), sel])
         N = N_all[:, idx]
@@ -772,7 +765,7 @@ class DeRhamElasticityInnerProduct(DeRhamDeviatoricStress):
 
     ``assemble()`` returns ``M_row - (a/2mu) P^T Gvol P``: the block-diagonal
     row-wise (BDM) part plus the exact ``P_1`` trace-energy term.  On a
-    simplicial mesh this **is** the Arnold--Falk--Winther product, entry by
+    simplicial mesh this is the Arnold--Falk--Winther product, entry by
     entry -- the implementation reflects the structural fact that AFW is
     ``d`` copies of the ``BDM_1`` inner product coupled only through the
     trace of the compliance; off simplices it is the row-wise member with

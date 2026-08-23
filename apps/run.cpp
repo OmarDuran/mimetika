@@ -1,7 +1,7 @@
 #include <cstdio>
 #include <string>
 
-#include "mimetika/model/compositions/single_phase_flow.hpp"
+#include "mimetika/model/compositions/flow.hpp"
 
 // THE DRIVER. It selects a compiled composition, reports what must be
 // supplied, and runs. Nothing here defines physics; nothing here appears in

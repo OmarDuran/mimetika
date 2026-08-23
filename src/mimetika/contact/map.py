@@ -48,7 +48,7 @@ law                        ``x`` components    admissible set of ``y = CD(x)``  
 :class:`RateAndStateFriction`  ``(t_n, t_t..)``  ``t_n <= 0``, ``|t_t| <= -mu(V, theta) t_n``  slip, ``theta`` (2)  yes
 =========================  ==================  ==========================================  =====================  =======
 
-Two consequences worth stating.  :class:`LinearContact` imposes no constraint at
+Two consequences.  :class:`LinearContact` imposes no constraint at
 all, so its projection is the identity and its fixed point is reached in one
 evaluation -- which is why the driver short-circuits it through the compliance
 block instead and it never reaches ``CD`` in practice.  And the sets of
@@ -86,7 +86,7 @@ from mimetika.solver.saddle import solve_saddle
 def driving_gap(gap: np.ndarray, g_prev=None) -> np.ndarray:
     """What the augmentation multiplies: total normal gap, tangential *increment*.
 
-    The two components are not treated alike, and the asymmetry is physical.
+    The two components are not treated alike.
     The normal condition ``g_n >= 0`` is a statement about the *absolute* gap, so
     the normal term is driven by the total jump.  Coulomb friction instead
     opposes the slip **rate**: eq. (2e) of Frigo et al. (2025) reads
@@ -215,9 +215,9 @@ class ContactMap:
                  ) -> "CondensedContactMap":
         """Reduce to the contact unknowns alone -- no linear solve per evaluation.
 
-        The nonlinear system is *small*: it has ``n_points * dim`` unknowns, a
-        handful per fracture facet.  Evaluating it through a global solve is
-        backwards, and two facts remove the need to.
+        The nonlinear system is small: ``n_points * dim`` unknowns, a handful
+        per fracture facet.  Two facts remove the need for a global solve per
+        evaluation.
 
         The constrained matrix does **not** depend on ``x``.  Pinning zeroes the
         same rows and columns whatever the pinned values are; only the
@@ -232,8 +232,7 @@ class ContactMap:
 
         Worth it whenever the iteration count exceeds the contact DOF count,
         which is the usual case for friction; for a very large fracture and a
-        near-linear law the uncondensed form can still win, so this is offered
-        rather than imposed.
+        near-linear law the uncondensed form can still win.
 
         ``reuse`` skips the factorisation and ``Ghat`` entirely: pass the
         condensed map of a *previous* system with the **same matrix** (a new
@@ -331,22 +330,20 @@ def fixed_point(
 ) -> FixedPointResult:
     """Solve ``x = CD(x)`` by relaxed Picard iteration.
 
-    Under-relaxation is not cosmetic.  While the fracture *sticks* the tangential
-    update is a contraction and ``relaxation = 1`` converges; while it *slides* it
-    is not, and the plain iteration settles into a limit cycle of constant
-    amplitude rather than converging.  Damping restores convergence.
+    While the fracture *sticks* the tangential update is a contraction and
+    ``relaxation = 1`` converges; while it *slides* it is not, and the plain
+    iteration settles into a limit cycle of constant amplitude rather than
+    converging.  Damping restores convergence.
 
-    Deliberately separate from :class:`ContactMap`: the map is the problem, this
-    is one way of solving it, and a Newton or Anderson variant would replace only
-    this function.
+    Separate from :class:`ContactMap`: the map is the problem, and a Newton or
+    Anderson variant would replace only this function.
     """
     def settled(x, change):
         """Converged means *small*, which a non-finite iterate never is.
 
         Without the finiteness guard a diverging iteration reports success: once
         ``x`` overflows, ``tolerance * max(|x|, 1)`` is ``inf`` and the test
-        ``change <= inf`` passes.  Divergence would be indistinguishable from
-        convergence in the returned flag.
+        ``change <= inf`` passes.
         """
         if not (np.all(np.isfinite(x)) and np.isfinite(change)):
             return False
@@ -419,11 +416,11 @@ class CondensedContactMap:
         response, not a local estimate.  Taking ``r_p = 1 / max_j |Ghat_(pj,pj)|``
         is the Jacobi choice, which makes the diagonal of ``I + r Ghat`` vanish.
 
-        This matters most where a local guess is worst.  A geometric estimate
-        based on the two cells adjacent to the facet assumes the fracture is
-        loaded through its immediate neighbours; for a fault cutting the entire
-        domain the compliance is that of the whole block, and the estimate can be
-        an order of magnitude too stiff -- enough to make the iteration diverge.
+        A geometric estimate based on the two cells adjacent to the facet
+        assumes the fracture is loaded through its immediate neighbours; for a
+        fault cutting the entire domain the compliance is that of the whole
+        block, and the estimate can be an order of magnitude too stiff --
+        enough to make the iteration diverge.
         """
         n_points, dim = self.shape
         diagonal = np.abs(np.diag(self.gap_matrix)).reshape(n_points, dim)
@@ -546,14 +543,14 @@ def newton(
     scalar ``r`` makes ``I + r Ghat`` a contraction.  Rescaling ``r`` cannot fix
     a spectral radius problem caused by off-diagonal coupling.
 
-    Newton does not care.  With
+    With
 
         ``F(x) = P(x + r (g_0 + Ghat x)) - x`` ,
         ``J    = T (I + r Ghat) - I`` ,   ``T = dP/dt`` ,
 
-    the step is a dense solve of size ``n_points * dim`` -- small, since that is
-    the whole point of condensing.  For an affine law (a frictionless fault) the
-    residual is linear and this converges in a **single** iteration.
+    the step is a dense solve of size ``n_points * dim``, small because the map
+    is condensed.  For an affine law (a frictionless fault) the residual is
+    linear and this converges in a single iteration.
 
     Requires the condensed form: ``Ghat`` has to be available explicitly.
     """

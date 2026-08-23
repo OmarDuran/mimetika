@@ -3,14 +3,14 @@
 Nothing here computes anything about the mesh: one call to exokal's
 diagnose_vtu returns the formal findings, the shape-regularity classification
 at the library constants, and the degenerate-cell witnesses -- the latter as
-numbers rather than a message, so the hundred of them a real mesh produces can
-be sorted, joined back onto the mesh, or opened in a spreadsheet.
+numbers rather than a message, so they can be sorted, joined back onto the
+mesh, or opened in a spreadsheet.
 
-The cell ids in the CSV are the ids OF THE INPUT FILE -- the ones ParaView
-selects -- not the ambient complex's, which are what the reader happens to
-assign after it reorders the cells top-first.
+The cell ids in the CSV are the ids of the input file -- the ones ParaView
+selects -- not the ambient complex's, which the reader assigns after it
+reorders the cells top-first.
 
-percent is 100 |s| divided by the MEAN measure over the cell's node star, so a
+percent is 100 |s| divided by the mean measure over the cell's node star, so a
 uniform mesh reports 100 at every cell whatever its valence. The star's total is
 carried alongside as a column; it is not the denominator.
 """

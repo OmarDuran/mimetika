@@ -34,7 +34,7 @@ ImmiscibleFluid two_phase() {
 
 }  // namespace
 
-// THE FLASH IS EXPLICIT under the bijection: the saturations invert from
+// The flash is explicit under the bijection: the saturations invert from
 // the compositions in closed form, and they invert back
 MIMETIKA_TEST(the_composition_inverts_to_saturations_exactly) {
   const ImmiscibleFluid f = two_phase();
@@ -74,7 +74,7 @@ MIMETIKA_TEST(the_weights_live_on_the_simplex) {
 }
 
 // the temperature comes from the enthalpy through the caloric closure,
-// the phase mass fractions BEING the compositions here
+// the phase mass fractions being the compositions here
 MIMETIKA_TEST(temperature_follows_from_the_enthalpy) {
   const ImmiscibleFluid f = two_phase();
   const std::vector<double> z = {0.75, 0.25};
@@ -91,7 +91,7 @@ MIMETIKA_TEST(temperature_follows_from_the_enthalpy) {
 }
 
 // An immobile phase contributes nothing. And the wholly immobile state is
-// UNREACHABLE for a valid composition: the saturations sum to one while
+// Unreachable for a valid composition: the saturations sum to one while
 // the residuals sum to less than one, so s_a < s_ra for every phase would
 // give 1 < 1. At least one phase is always strictly mobile — the guard in
 // evaluate() is defence, not a case the physics reaches.
@@ -125,7 +125,7 @@ MIMETIKA_TEST(residual_saturation_and_the_unreachable_immobile_state) {
   }
 }
 
-// compressibility is what makes the ACCUMULATION nonlinear: the mixture
+// compressibility is what makes the accumulation nonlinear: the mixture
 // density depends on the pressure, so d/dt(phi rho) is not a mass matrix
 MIMETIKA_TEST(compressibility_makes_the_accumulation_state_dependent) {
   PhaseModel m;
@@ -140,7 +140,7 @@ MIMETIKA_TEST(compressibility_makes_the_accumulation_state_dependent) {
   CHECK(near(hi, 1000.0 * (1.0 + 1.0e-8 * 1.0e7), 1e-9));
 }
 
-// THE WEIGHTS DIFFERENTIATE: evaluated at dual scalars they return exact
+// The weights differentiate: evaluated at dual scalars they return exact
 // derivatives with respect to the state, which is what a term needs
 MIMETIKA_TEST(the_weights_carry_dual_scalars) {
   const ImmiscibleFluid f = two_phase();

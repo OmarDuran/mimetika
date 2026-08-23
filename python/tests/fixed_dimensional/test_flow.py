@@ -1,6 +1,6 @@
 """Single-phase Darcy flow through the Python interface.
 
-The Python-side mirror of tests/model/test_single_phase.cpp: the same column
+The Python-side mirror of tests/model/test_flow_model.cpp: the same column
 with a linear pressure it must reproduce exactly, the same Dupuit annulus it
 can only approximate, and the same three flux products -- including what each
 one does NOT claim, which is asserted as a refusal rather than skipped.
@@ -31,7 +31,7 @@ class Outcome:
 
 
 def run(m, dim, high, low, sealed, p_high, p_low, exact, how=BDM, degeneracy=None) -> Outcome:
-    prob = mk.SinglePhaseModel(m, dim, 1.0, how)
+    prob = mk.FlowModel(m, dim, 1.0, how)
     prob.add_normal_flux(sealed)
     prob.add_pressure(high, p_high)
     prob.add_pressure(low, p_low)
@@ -251,7 +251,7 @@ def two_cells_one_collapsed(t=1e-6):
 
 def test_the_scan_flags_the_collapsed_cell():
     m = two_cells_one_collapsed()
-    prob = mk.SinglePhaseModel(m, 3, 1.0, ADAPTIVE)
+    prob = mk.FlowModel(m, 3, 1.0, ADAPTIVE)
     prob.add_pressure(mk.boundary_facets(m, 3), 1.0)
     with pytest.raises(Exception):
         prob.eta  # as built -- so not before the build
@@ -263,7 +263,7 @@ def test_the_scan_flags_the_collapsed_cell():
     assert abs(prob.cell_pressure(1) - 1.0) < 1e-10
 
     # a wider threshold flags the cube too: the scan is the caller's dial
-    prob = mk.SinglePhaseModel(m, 3, 1.0, ADAPTIVE)
+    prob = mk.FlowModel(m, 3, 1.0, ADAPTIVE)
     prob.add_pressure(mk.boundary_facets(m, 3), 1.0)
     prob.set_degeneracy_percent(1e9)
     prob.solve()
@@ -272,7 +272,7 @@ def test_the_scan_flags_the_collapsed_cell():
 
 def test_the_selection_defaults_to_ones_on_a_sound_mesh():
     m = mk.column(4, 3, mk.Family.cartesian, 1.0)
-    prob = mk.SinglePhaseModel(m, 3, 1.0, ADAPTIVE)
+    prob = mk.FlowModel(m, 3, 1.0, ADAPTIVE)
     prob.add_pressure(mk.boundary_facets(m, 3), 1.0)
     prob.solve()
     assert list(prob.eta) == [1.0] * m.count(3)
@@ -288,14 +288,14 @@ def test_the_conditioning_selector_reaches_both_members():
     worst = max(sp["cond"])
     assert worst > 1.0 and math.isfinite(worst)
 
-    prob = mk.SinglePhaseModel(m, 3, 1.0, ADAPTIVE)
+    prob = mk.FlowModel(m, 3, 1.0, ADAPTIVE)
     prob.add_pressure(mk.boundary_facets(m, 3), 1.0)
     prob.set_cond_threshold(2.0 * worst)
     prob.solve()
     assert list(prob.eta) == [1.0] * m.count(3)
     assert prob.n_ill_conditioned == 0
 
-    prob = mk.SinglePhaseModel(m, 3, 1.0, ADAPTIVE)
+    prob = mk.FlowModel(m, 3, 1.0, ADAPTIVE)
     prob.add_pressure(mk.boundary_facets(m, 3), 1.0)
     prob.set_cond_threshold(0.5)
     prob.solve()
@@ -311,7 +311,7 @@ def test_the_conditioning_selector_reaches_both_members():
 
 def test_the_conditioning_threshold_is_refused_off_the_adaptive_product():
     m = mk.column(4, 3, mk.Family.cartesian, 1.0)
-    prob = mk.SinglePhaseModel(m, 3, 1.0, STABILIZED)
+    prob = mk.FlowModel(m, 3, 1.0, STABILIZED)
     prob.add_pressure(mk.boundary_facets(m, 3), 1.0)
     prob.set_cond_threshold(1e3)
     with pytest.raises(Exception):
@@ -322,7 +322,7 @@ def test_the_conditioning_threshold_is_refused_off_the_adaptive_product():
 # is refused at solve() rather than silently ignored.
 def test_the_threshold_is_refused_off_the_adaptive_product():
     m = mk.column(4, 3, mk.Family.cartesian, 1.0)
-    prob = mk.SinglePhaseModel(m, 3, 1.0, STABILIZED)
+    prob = mk.FlowModel(m, 3, 1.0, STABILIZED)
     prob.add_pressure(mk.boundary_facets(m, 3), 1.0)
     prob.set_degeneracy_percent(1.0)
     with pytest.raises(Exception):
@@ -376,7 +376,7 @@ def drum(n):
 def builds(n, how):
     try:
         m = drum(n)
-        model = mk.SinglePhaseModel(m, 3, 1.0, how)
+        model = mk.FlowModel(m, 3, 1.0, how)
         model.add_pressure(mk.boundary_facets(m, 3), 1.0)
         model.solve()
         return True

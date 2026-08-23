@@ -43,7 +43,7 @@ DIRECT = mk.SolverOptions()
 def dupuit(nr, dim=2):
     """Sealed symmetry planes and prescribed pressures: constraints and data both."""
     mesh = mk.annulus(nr, nr // 2, dim, mk.Family.simplex, A_IN, B_OUT, 1.0)
-    model = mk.SinglePhaseModel(mesh, dim, 1.0, mk.FluxRealization.derham_rt)
+    model = mk.FlowModel(mesh, dim, 1.0, mk.FluxRealization.derham_rt)
     rmid = math.sqrt(A_IN * B_OUT)
     inner, outer, sealed = [], [], []
     for f in mk.boundary_facets(mesh, dim):
@@ -71,7 +71,7 @@ def patch(nr, dim=2):
     pts = [mesh.point(v) for v in range(mesh.count(0))]
     lo = [min(p[k] for p in pts) for k in range(3)]
     length = max(max(p[k] for p in pts) - lo[k] for k in range(dim))
-    model = mk.CauchyElasticityModel(
+    model = mk.CauchyMechanicsModel(
         mesh, dim, mk.ElasticMaterial(MU, LAM), mk.StressRealization.stabilized_bdm
     )
     gradient = [0.0] * 9

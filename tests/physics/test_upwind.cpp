@@ -41,7 +41,7 @@ MIMETIKA_TEST(the_density_weight_selects_the_nearer_member) {
   static_assert(std::is_same_v<decltype(density_weight(1.0, 2.0, 3.0)), double>);
 }
 
-// CONSISTENCY: two cells sharing a state give back the continuous pair
+// Consistency: two cells sharing a state give back the continuous pair
 // mobility f_a f_b lambda
 MIMETIKA_TEST(the_operator_is_consistent) {
   const std::vector<double> m = {0.4, 1.1, 0.25, 0.7};
@@ -56,9 +56,9 @@ MIMETIKA_TEST(the_operator_is_consistent) {
   }
 }
 
-// PAIR ANTISYMMETRY: U_ab(nu) = U_ba(-nu). The consequence is the one that
-// matters physically — the buoyant fluxes summed over ordered pairs cancel,
-// so the component fluxes add up to the total flux with nothing left over.
+// Pair antisymmetry: U_ab(nu) = U_ba(-nu). The physical consequence is that the
+// buoyant fluxes summed over ordered pairs cancel, so the component fluxes add
+// up to the total flux with nothing left over.
 MIMETIKA_TEST(pairs_are_antisymmetric_so_the_component_fluxes_close) {
   const std::vector<double> L = {0.4, 1.1, 0.25, 0.7};
   const std::vector<double> R = {0.9, 0.2, 1.4, 0.05};
@@ -86,7 +86,7 @@ MIMETIKA_TEST(pairs_are_antisymmetric_so_the_component_fluxes_close) {
   CHECK(near(total, 0.0, 1e-12));
 }
 
-// REDUCTION CONSISTENCY: as a passive density approaches a pair member,
+// Reduction consistency: as a passive density approaches a pair member,
 // merging the two reproduces the (N-1)-phase operator exactly
 MIMETIKA_TEST(coalescing_phases_reduce_to_the_merged_operator) {
   //          a       b      g (coalescing with a)
@@ -111,7 +111,7 @@ MIMETIKA_TEST(coalescing_phases_reduce_to_the_merged_operator) {
                                  std::span<const double>(rhom), 0, 1, nu)));
 }
 
-// PERMUTATION INVARIANCE: no ordering of the phases is encoded, so
+// Permutation invariance: no ordering of the phases is encoded, so
 // relabelling leaves every pair value unchanged
 MIMETIKA_TEST(the_construction_encodes_no_phase_ordering) {
   const std::vector<double> L = {0.4, 1.1, 0.25, 0.7};
@@ -133,7 +133,7 @@ MIMETIKA_TEST(the_construction_encodes_no_phase_ordering) {
   }
 }
 
-// MONOTONICITY: raising the active mobility at the expense of a single
+// Monotonicity: raising the active mobility at the expense of a single
 // donor, at fixed cell total, never decreases the operator — for every
 // donor and every pair
 MIMETIKA_TEST(the_operator_is_monotone_under_constrained_variation) {

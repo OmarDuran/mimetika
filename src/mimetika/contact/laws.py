@@ -46,9 +46,9 @@ and then
     ``lambda <- project(lambda + r g)`` .
 
 So the only thing a nonsmooth law has to supply is its projection onto the
-admissible set -- that is what :meth:`ContactLaw.project` is.  The augmentation
-``r`` is not free: the iteration contracts only for ``r < 2 / compliance``, so
-the driver derives it from the stiffness the fracture actually sees.
+admissible set -- that is what :meth:`ContactLaw.project` is.  The iteration
+contracts only for ``r < 2 / compliance``, so the driver derives the
+augmentation from the stiffness the fracture actually sees.
 """
 
 from __future__ import annotations
@@ -338,13 +338,13 @@ class AssociativeMohrCoulomb(SignoriniCoulomb):
     correcting an over-stressed shear state also **changes the normal
     traction**: shear and normal response are energetically coupled, which is
     the traction-space image of dilatancy on a rough fault.  The two agree only
-    where the projection happens to be radial; elsewhere they are genuinely
-    different constitutive assumptions, not two approximations of one.
+    where the projection happens to be radial; elsewhere they are different
+    constitutive assumptions, not two approximations of one.
 
     Why the metric matters
     ----------------------
-    ``eps_N`` and ``eps_T`` are *not* free numerical knobs here: they weight the
-    distance, so they select which point of the cone is "closest".  With
+    ``eps_N`` and ``eps_T`` weight the distance, so they select which point of
+    the cone is "closest".  With
     ``eps_N = eps_T`` the projection is the plain Euclidean shortest path.  They
     must be the same values the augmented-Lagrangian update uses, or the return
     mapping and the iteration are minimising different things.
@@ -357,8 +357,7 @@ class AssociativeMohrCoulomb(SignoriniCoulomb):
     candidate active sets -- the trial itself, the lateral cone, the truncation
     disc ``t_N = 0``, and the axis ``rho = 0``.  Each has a closed form, so the
     projection is found by evaluating all four and taking the nearest feasible
-    one.  That is both exact and branch-free, which matters: hand-written
-    case logic on a cone is where these implementations usually go wrong.
+    one: exact and branch-free.
     """
 
     def __init__(
@@ -408,9 +407,8 @@ class AssociativeMohrCoulomb(SignoriniCoulomb):
 
         ``region`` records which active set won: ``0`` interior, ``1`` lateral
         cone, ``2`` truncation disc, ``3`` axis.  Sharing it between the
-        projection and its derivative is what keeps the two consistent -- a
-        tangent that re-derives the branch independently is exactly how these
-        implementations drift out of step.
+        projection and its derivative keeps the two consistent; a tangent that
+        re-derives the branch independently can drift out of step.
         """
         trial = np.atleast_2d(np.asarray(trial, dtype=float))
         tn, shear = trial[:, 0], trial[:, 1:]
@@ -445,10 +443,9 @@ class AssociativeMohrCoulomb(SignoriniCoulomb):
     def tangent(self, trial) -> np.ndarray:
         r"""``d t / d t_trial``, ``(n, dim, dim)`` -- the consistent linearisation.
 
-        What makes this return mapping worth the extra algebra: with the exact
-        derivative of the (semi-smooth) projection, a Newton iteration on the
-        contact map converges quadratically, instead of the linear rate a
-        fixed-point Uzawa sweep gives.
+        With the exact derivative of the (semi-smooth) projection a Newton
+        iteration on the contact map converges quadratically, against the
+        linear rate of a fixed-point Uzawa sweep.
 
         Off the cone boundary the map is the identity (stick) or a projection
         with a zero normal block (open).  On the boundary the derivative carries

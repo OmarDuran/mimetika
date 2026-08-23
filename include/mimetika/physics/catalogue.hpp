@@ -8,12 +8,12 @@
 
 #include "mimetika/physics/package.hpp"
 
-// THE CATALOGUE: named models, each a COMPOSITION of packages.
+// The catalogue: named models, each a composition of packages.
 //
 // An entry is a declaration, not an implementation. If writing one takes
 // more than a few lines, a package is missing and the right response is to
-// write the package rather than the model — that is the whole discipline
-// that keeps a product-shaped catalogue on top of a sum-shaped codebase.
+// write the package rather than the model — that is what keeps a
+// product-shaped catalogue on top of a sum-shaped codebase.
 //
 // Registration happens at static-init, so the models a build supports are
 // exactly the ones compiled into it, and a driver can list them without
@@ -45,11 +45,16 @@ struct ModelOptions {
   // the total pressure as an independent field: exokal's weak_symmetry_total,
   // four fields rather than three
   bool total_pressure{false};
-  // STRONG SYMMETRY: the rigid-motion ansatz. The stress carries six traction
+  // Strong symmetry: the rigid-motion ansatz. The stress carries six traction
   // moments per facet whole, the displacement the six rigid-motion
   // coefficients per cell, and there is no rotation field -- symmetry lives
   // in the reconstruction space rather than against a multiplier.
   bool strong_symmetry{false};
+  // diagonal_afw's facet-jump stabilization of the rotation multiplier. The
+  // constant itself goes to StressOperators::build, which stores the half
+  // weights per cell; this only says whether the facet term that assembles
+  // them into J is part of the composition.
+  bool rotation_jump{false};
   double shear_modulus{1.0};
 };
 

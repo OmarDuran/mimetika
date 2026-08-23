@@ -6,8 +6,8 @@
 #include "exokal/hodge/coefficient.hpp"
 #include "exokal/hodge/flux_operators.hpp"
 #include "exokal/hodge/stress_operators.hpp"
-#include "mimetika/model/compositions/elasticity.hpp"
-#include "mimetika/model/compositions/single_phase_flow.hpp"
+#include "mimetika/model/compositions/cauchy_mechanics.hpp"
+#include "mimetika/model/compositions/flow.hpp"
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/physics/boundary_terms.hpp"
 
@@ -22,7 +22,7 @@ namespace {
 bool near(double a, double b, double tol) { return std::abs(a - b) <= tol; }
 }  // namespace
 
-// THE BOUNDARY IS A THIN SET, and it is identified once. A 3x3x3 box of
+// The boundary is a thin set, and it is identified once. A 3x3x3 box of
 // hexahedra has 6 * 9 = 54 boundary facets out of 108 — and only those are
 // sites for a boundary coupling.
 MIMETIKA_TEST(the_boundary_facets_are_the_ones_with_a_single_cofacet) {
@@ -40,8 +40,8 @@ MIMETIKA_TEST(the_boundary_facets_are_the_ones_with_a_single_cofacet) {
   }
 }
 
-// ESSENTIAL CONDITIONS PIN DEGREES OF FREEDOM, and in a mixed form it is the
-// FLUX that is pinned — a sealed face, not a prescribed pressure.
+// Essential conditions pin degrees of freedom, and in a mixed form it is the
+// flux that is pinned — a sealed face, not a prescribed pressure.
 MIMETIKA_TEST(a_sealed_face_pins_the_flux_and_nothing_else) {
   const auto m = mimetika_test::hex_grid(3);
   const graphos::Complex& c = m.topology();
@@ -51,14 +51,14 @@ MIMETIKA_TEST(a_sealed_face_pins_the_flux_and_nothing_else) {
   exokal::forms::TermContext ctx;
   ctx.provide("flux_operators", h);
 
-  const auto comp = Catalogue::instance().build("single_phase_flow", {});
+  const auto comp = Catalogue::instance().build("flow", {});
   Simulation sim(comp, {StratumSpec{"ambient", &c, 3, 0}}, ctx);
   const auto& sp = sim.epoch().stratum(0).space();
 
   const auto sides = FacetSelector::where(m, 3, FacetSelector::at(0, 0.0));
   mimetika::impose_normal_flux(sim.constraints(), sp, "q_0", 3, m, sides);
   // d moments per facet in the de Rham flow space: sealing a face pins the
-  // net flow AND the way it is distributed across the face, which is what
+  // net flow and the way it is distributed across the face, which is what
   // "no flow through it" means when the flux is not constant on a facet
   CHECK(sim.constraints().size() == 3 * sides.size());
   sim.freeze_constraints();
@@ -76,7 +76,7 @@ MIMETIKA_TEST(a_sealed_face_pins_the_flux_and_nothing_else) {
   }
 }
 
-// THE NATURAL CONDITION IS FREE WHEN IT IS HOMOGENEOUS. A drained face at
+// The natural condition is free when it is homogeneous. A drained face at
 // zero pressure needs no term, and attaching one changes nothing — so a model
 // cannot be wrong by failing to mention its free boundaries.
 MIMETIKA_TEST(a_homogeneous_natural_condition_costs_nothing) {
@@ -86,7 +86,7 @@ MIMETIKA_TEST(a_homogeneous_natural_condition_costs_nothing) {
       exokal::hodge::FluxOperators::build(m, exokal::hodge::Coefficient::uniform(1.0),
                                           exokal::hodge::FluxOperators::Realization::derham_bdm);
 
-  const auto comp = Catalogue::instance().build("single_phase_flow", {});
+  const auto comp = Catalogue::instance().build("flow", {});
   const auto n_facets = static_cast<std::size_t>(c.count(2));
 
   BoundaryData zero(n_facets), loaded(n_facets);
@@ -117,12 +117,12 @@ MIMETIKA_TEST(a_homogeneous_natural_condition_costs_nothing) {
 
   for (std::size_t i = 0; i < plain.size(); ++i) CHECK(near(plain[i], with_zero[i], 1e-14));
 
-  // a NONZERO datum does move the residual, and only on the loaded face
+  // a nonzero datum does move the residual, and only on the loaded face
   std::size_t moved = 0;
   for (std::size_t i = 0; i < plain.size(); ++i) {
     if (std::abs(with_load[i] - plain[i]) > 1e-12) ++moved;
   }
-  // the datum pairs with the CONSTANT moment of each loaded facet
+  // the datum pairs with the constant moment of each loaded facet
   CHECK(moved == top.size());
 
   // and it scales with the datum, as a linear term must
@@ -138,7 +138,7 @@ MIMETIKA_TEST(a_homogeneous_natural_condition_costs_nothing) {
   }
 }
 
-// THE MIRROR, FOR MECHANICS. A prescribed displacement is natural in the
+// The mirror, for mechanics. A prescribed displacement is natural in the
 // Hellinger-Reissner form exactly as a prescribed pressure is in the mixed
 // flow form — and both are homogeneous-for-free, so the two halves of a
 // poroelastic model behave the same way at their boundaries.
@@ -179,7 +179,7 @@ MIMETIKA_TEST(a_prescribed_displacement_is_natural_and_free_when_homogeneous) {
   for (std::size_t i = 0; i < plain.size(); ++i) CHECK(near(plain[i], with_zero[i], 1e-13));
 
   // a real datum moves the stress rows of the loaded facets, and only those:
-  // one moment per facet, since a CONSTANT datum pairs only with the constant
+  // one moment per facet, since a constant datum pairs only with the constant
   // facet basis function
   std::size_t moved = 0;
   for (std::size_t i = 0; i < plain.size(); ++i) {
@@ -196,11 +196,10 @@ MIMETIKA_TEST(a_prescribed_displacement_is_natural_and_free_when_homogeneous) {
   }
 }
 
-// AN AFFINE DATUM IS EXACT, which is what a patch test needs. A linear
+// An affine datum is exact, which is what a patch test needs. A linear
 // displacement pairs with the higher facet basis functions too, so it must
-// move MORE degrees of freedom than a constant one — a term that quietly
-// integrated only the constant part would pass every test above and fail
-// here.
+// move more degrees of freedom than a constant one — a term that integrated
+// only the constant part would pass every test above and fail here.
 MIMETIKA_TEST(an_affine_displacement_datum_reaches_the_higher_moments) {
   const auto m = mimetika_test::hex_grid(2);
   const graphos::Complex& c = m.topology();

@@ -190,8 +190,8 @@ def graded_quads(xs, ys) -> Mesh:
     solution has features far smaller than the domain: resolving a 150 m
     reservoir inside a 4500 m block costs thousands of cells that do nothing.
     Passing the coordinates directly lets the mesh be fine where the physics is
-    and coarse where it is not -- and, just as importantly, lets material and
-    loading interfaces be placed exactly on cell faces.
+    and coarse where it is not, and lets material and loading interfaces be
+    placed exactly on cell faces.
     """
     xs = np.unique(np.asarray(xs, dtype=float))
     ys = np.unique(np.asarray(ys, dtype=float))
@@ -212,7 +212,7 @@ def graded_quads(xs, ys) -> Mesh:
 
 
 def _two_sided(left: float, right: float, spacing: float, growth: float):
-    """Cell sizes across ``[left, right]``: smallest at BOTH ends, largest mid-span.
+    """Cell sizes across ``[left, right]``: smallest at both ends, largest mid-span.
 
     A one-sided geometric fan would refine one interface and starve the other.
     The weights are ``growth ** min(i, n-1-i)``, which is symmetric, so both
@@ -234,8 +234,7 @@ def graded_triangles(xs, ys) -> Mesh:
     vanishes identically (``3 edges x 4 DOFs = 12 = d^2(d+1) = m``, so
     ``ker(N^T) = {0}``): the scheme reduces to the pure Arnold--Falk--Winther
     mixed element.  A quadrilateral carries ``16 > 12`` DOFs and therefore always
-    carries a stabilisation term, which is a genuine discretisation difference,
-    not a cosmetic one.
+    carries a stabilisation term -- a genuine discretisation difference.
     """
     quads = graded_quads(xs, ys)
     points = quads.geometry.points
@@ -271,7 +270,7 @@ def graded_coordinates(interfaces, extent, spacing, growth: float = 1.35,
     from its edges instead.  Clustering at interfaces is the right default when the
     error is concentrated *at* them, but it thins out in between -- and a solution
     that is smooth yet not small over a whole neighbourhood (the near field of a
-    slipping fault, say) is then under-resolved exactly where it still matters.
+    slipping fault, say) is then under-resolved there.
     The interfaces are still forced in, so nothing is lost if they fall off the
     uniform grid; they simply split one cell.
     """

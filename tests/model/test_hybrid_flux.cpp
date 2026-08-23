@@ -6,27 +6,27 @@
 #include "mimetika/linear_solver/petsc.hpp"
 #include "mimetika/mesh/structured.hpp"
 #include "mimetika/model/hybrid_interface.hpp"
-#include "mimetika/model/single_phase_model.hpp"
+#include "mimetika/model/flow_model.hpp"
 
-// THE HYBRIDIZED FLOW, HELD TO THE DENSE ORACLE AND TO THE MIXED ROUTE.
+// The hybridized flow, held to the dense oracle and to the mixed route.
 //
 // The flux twin of test_hybrid_interface. Three things are asserted, in the
 // order they depend on one another:
 //
-//   * the SPARSE interface system is exokal's DENSE one, entry for entry, on
+//   * the sparse interface system is exokal's dense one, entry for entry, on
 //     every flux realization -- the sparsity clause (two multiplier blocks
 //     couple iff their facets share a cell) is the whole content of the
 //     assembler, and a wrong clause is invisible in any norm of an answer;
 //   * it is symmetric positive definite once the boundary is pinned, which is
 //     the reason to prefer this route: the condensed mixed system exists for
 //     the diagonal star alone and the Riesz map pays for an H(div) block;
-//   * the hybridized MODEL reproduces the mixed model's column -- the linear
+//   * the hybridized model reproduces the mixed model's column -- the linear
 //     pressure exactly -- with the roles swapped: the pressure datum pins a
 //     multiplier, the sealed sides are free rows with nothing on them, and an
-//     INFLOW datum loads a free row, which is what pins the sign of that load.
+//     inflow datum loads a free row, which pins the sign of that load.
 
 using graphos::Index;
-using mimetika::SinglePhaseModel;
+using mimetika::FlowModel;
 using mimetika::mesh::Family;
 using Realization = exokal::hodge::FluxOperators::Realization;
 
@@ -125,15 +125,15 @@ Column column(int dim, Family family, Realization how, bool hybrid, bool inflow)
       side.push_back(f);
     }
   }
-  SinglePhaseModel prob(m, dim, 1.0, how);
+  FlowModel prob(m, dim, 1.0, how);
   prob.flow().emplace<mimetika::NormalFluxBC>(side);
   prob.flow().emplace<mimetika::PressureBC>(base, p_lo);
   // the exact gradient of p = p_lo + (p_hi - p_lo) z / h, and the flux it
-  // drives: q = -grad p, so the CANONICAL normal flux on the top, whose
+  // drives: q = -grad p, so the canonical normal flux on the top, whose
   // canonical normal points +z on these meshes, is -(p_hi - p_lo)/h
   const double grad = (p_hi - p_lo) / h;
   if (inflow) {
-    // the datum is stated against each facet's CANONICAL normal, which the
+    // the datum is stated against each facet's canonical normal, which the
     // complex orients as it stores it -- +z on some top facets, -z on others
     // -- so the exact flux -grad e_z is projected facet by facet
     for (const Index f : top) {

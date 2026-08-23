@@ -5,7 +5,7 @@
 #include "../../mimetika_test.hpp"
 #include "mimetika/algebraic_constraints/contact/laws.hpp"
 
-// CONTACT LAWS: the constitutive layer, tested without any mesh or solver.
+// Contact laws: the constitutive layer, tested without any mesh or solver.
 //
 // A law is a pure function of (traction, jump, state) in the facet frame, so it
 // is checked directly against the conditions it is supposed to encode. Every
@@ -39,8 +39,8 @@ Vec3 vec(double n, double t1 = 0.0, double t2 = 0.0) {
 
 // -- the taxonomy itself -----------------------------------------------------
 
-// EACH LAW ADVERTISES WHAT IT NEEDS, and the driver keys off exactly these: a
-// linear compliance means one solve and no iteration; path dependence means the
+// Each law advertises what it needs, and the driver keys off these: a linear
+// compliance means one solve and no iteration; path dependence means the
 // previous jump must be kept; an asymmetric tangent forbids a symmetric solver.
 MIMETIKA_TEST(the_taxonomy_flags_are_declared) {
   const LinearContact lin;
@@ -61,15 +61,15 @@ MIMETIKA_TEST(the_taxonomy_flags_are_declared) {
   CHECK(sw.n_state() == 1 && sw.path_dependent() && !sw.symmetric_tangent());
   CHECK(!sw.has_linear_compliance());
 
-  // and rate-and-state is the only one that needs a TIME increment: it carries
-  // a second internal variable and reads the slip RATE rather than the slip
+  // and rate-and-state is the only one that needs a time increment: it carries
+  // a second internal variable and reads the slip rate rather than the slip
   const RateAndStateFriction rs;
   CHECK(rs.n_state() == 2 && rs.path_dependent() && rs.rate_dependent());
   CHECK(!rs.symmetric_tangent() && !rs.has_linear_compliance());
 }
 
-// EVERY LAW IMPLEMENTS THE CONTRACT, through the base pointer the driver holds
-// it by -- which is the whole of what "plug and play" has to mean here.
+// Every law implements the contract, through the base pointer the driver holds
+// it by.
 MIMETIKA_TEST(every_law_implements_the_contract) {
   std::vector<std::unique_ptr<ContactLaw>> laws;
   laws.push_back(std::make_unique<LinearContact>());
@@ -80,7 +80,7 @@ MIMETIKA_TEST(every_law_implements_the_contract) {
 
   for (const auto& law : laws) {
     for (const int dim : {2, 3}) {
-      // THE LAW'S OWN INITIAL STATE, which is what the driver hands it: zero for
+      // the law's own initial state, which is what the driver hands it: zero for
       // most, theta0 for rate-and-state, and starting the latter at zero would
       // put log(0) in its coefficient
       State s = law->initial_state();
@@ -106,7 +106,7 @@ MIMETIKA_TEST(the_linear_compliance_is_diagonal_in_the_facet_frame) {
   CHECK(near(c2[0], 0.25) && near(c2[1], 0.125));
 }
 
-// BONDED: tension and interpenetration are both admissible, so the projection
+// Bonded: tension and interpenetration are both admissible, so the projection
 // is the identity and the fixed point is reached in one evaluation.
 MIMETIKA_TEST(the_linear_projection_is_the_identity) {
   const LinearContact law;
@@ -118,8 +118,8 @@ MIMETIKA_TEST(the_linear_projection_is_the_identity) {
 
 // -- frictionless bilateral --------------------------------------------------
 
-// THE FAULT IS HELD SHUT AND MAY CARRY TENSION. This is the law of the
-// INCREMENTAL problem: a fault under tens of MPa of in-situ compression stays
+// The fault is held shut and may carry tension. This is the law of the
+// incremental problem: a fault under tens of MPa of in-situ compression stays
 // closed, so an incremental tensile normal traction must not be read as opening.
 MIMETIKA_TEST(the_bilateral_law_keeps_the_normal_traction_and_zeroes_the_shear) {
   const FrictionlessBilateral law;
@@ -140,7 +140,7 @@ MIMETIKA_TEST(the_normal_projection_removes_tension) {
   CHECK(near(law.project(vec(-3.0), s, 3)[0], -3.0));  // compression preserved
 }
 
-// THE FRICTION RADIUS FOLLOWS THE PROJECTED NORMAL TRACTION, so an open point
+// The friction radius follows the projected normal traction, so an open point
 // carries no shear automatically -- no separate branch for it.
 MIMETIKA_TEST(an_open_point_carries_no_shear) {
   const SignoriniCoulomb law(0.6);
@@ -160,7 +160,7 @@ MIMETIKA_TEST(the_tangential_projection_lands_on_the_friction_disk) {
     const Vec3 in = law.project(inside, s, 3);
     CHECK(near(in[0], inside[0]) && near(in[1], inside[1]) && near(in[2], inside[2]));
 
-    // outside: sliding, so it lands ON the cone, direction preserved
+    // outside: sliding, so it lands on the cone, direction preserved
     const Vec3 out = law.project(vec(tn, 10.0 * radius, 0.0), s, 3);
     CHECK(near(out.shear_norm(3), radius, 1e-12 * std::max(1.0, radius)));
     CHECK(out[1] > 0.0 && near(out[2], 0.0));
@@ -181,7 +181,7 @@ MIMETIKA_TEST(the_status_labels_open_stick_and_slip) {
   CHECK(law.status(vec(-2.0, 1.0, 0.0), 3) == Status::slip);
 }
 
-// SLIP ACCUMULATES OVER STEPS, as the magnitude of the tangential increment --
+// Slip accumulates over steps, as the magnitude of the tangential increment --
 // the state a weakening law then reads.
 MIMETIKA_TEST(slip_accumulates_over_steps) {
   const SignoriniCoulomb law;
@@ -197,7 +197,7 @@ MIMETIKA_TEST(slip_accumulates_over_steps) {
 
 // -- slip weakening ----------------------------------------------------------
 
-// THE COEFFICIENT FALLS LINEARLY FROM mu_s TO mu_d over d_c and then stays
+// The coefficient falls linearly from mu_s to mu_d over d_c and then stays
 // there (Novikov et al. 2024, Eq. 23). Benchmark 3's law.
 MIMETIKA_TEST(the_friction_coefficient_weakens_linearly_then_saturates) {
   const SlipWeakening law(0.52, 0.20, 0.02);
@@ -214,7 +214,7 @@ MIMETIKA_TEST(the_friction_coefficient_weakens_linearly_then_saturates) {
   CHECK(near(law.friction_at(s, nullptr, nullptr, 0.0, 3), 0.20));
 }
 
-// AND THE CURRENT JUMP WEAKENS IT TOO, not only the committed state: within an
+// And the current jump weakens it too, not only the committed state: within an
 // outer iteration the fault has already slipped by the current iterate's jump,
 // and a law that ignored it would lag one step behind.
 MIMETIKA_TEST(the_current_jump_weakens_the_fault_within_a_step) {
@@ -225,16 +225,16 @@ MIMETIKA_TEST(the_current_jump_weakens_the_fault_within_a_step) {
   CHECK(near(law.friction_at(s, nullptr, nullptr, 0.0, 3), 0.52));  // and without it, static
 }
 
-// IT IS A SignoriniCoulomb, so the unilateral normal condition, the projection
-// and the slip accumulation are inherited rather than restated -- which is the
-// property that lets a user write a new law by overriding one function.
+// It is a SignoriniCoulomb, so the unilateral normal condition, the projection
+// and the slip accumulation are inherited rather than restated: a new law is
+// one overridden function.
 MIMETIKA_TEST(the_weakening_law_inherits_the_unilateral_normal_condition) {
   const SlipWeakening law(0.52, 0.20, 0.02);
   State s;
   const Vec3 t = law.project(vec(3.0, 1.0, 0.0), s, 3);
   CHECK(near(t[0], 0.0) && near(t[1], 0.0));  // opens, and carries no shear
 
-  // and a weakened point slides at the LOWER radius
+  // and a weakened point slides at the lower radius
   s[0] = 1.0;  // fully weakened
   const Vec3 slid = law.project(vec(-2.0, 10.0, 0.0), s, 3);
   CHECK(near(slid.shear_norm(3), 0.20 * 2.0));
@@ -259,9 +259,9 @@ MIMETIKA_TEST(a_weakening_law_that_strengthens_is_refused) {
 
 // -- rate and state ------------------------------------------------------------
 
-// THETA STARTS AT THETA0, not at zero, and the driver asks the law rather than
-// assuming. The coefficient carries log(theta), so a zero start is not a small
-// error in the initial condition -- it is minus infinity.
+// Theta starts at theta0, not at zero, and the driver asks the law rather than
+// assuming. The coefficient carries log(theta), so a zero start is minus
+// infinity.
 MIMETIKA_TEST(rate_and_state_initialises_theta) {
   const RateAndStateFriction law(0.6, 0.01, 0.015, 1e-4, 1e-6, 2.5);
   const State s = law.initial_state();
@@ -273,7 +273,7 @@ MIMETIKA_TEST(rate_and_state_initialises_theta) {
   CHECK(!law.symmetric_tangent());  // and it is still non-associated
 }
 
-// THE DIRECT EFFECT a ln(V/V0): friction rises with the slip rate.
+// The direct effect a ln(V/V0): friction rises with the slip rate.
 MIMETIKA_TEST(friction_increases_with_the_slip_rate) {
   const RateAndStateFriction law(0.6, 0.01, 0.0, 1e-4, 1e-6);
   const double fast = law.friction_coefficient(1e-5, 1.0);
@@ -282,7 +282,7 @@ MIMETIKA_TEST(friction_increases_with_the_slip_rate) {
   CHECK(fast > slow);
 }
 
-// THE EVOLUTION EFFECT b ln(V0 theta / Dc): friction rises as contact matures.
+// The evolution effect b ln(V0 theta / Dc): friction rises as contact matures.
 MIMETIKA_TEST(friction_increases_with_the_state_variable) {
   const RateAndStateFriction law(0.6, 0.0, 0.015, 1e-4, 1e-6);
   const double mature = law.friction_coefficient(1e-6, 10.0);
@@ -291,8 +291,8 @@ MIMETIKA_TEST(friction_increases_with_the_state_variable) {
   CHECK(mature > fresh);
 }
 
-// SEPARATING a FROM b IS THE WHOLE POINT: the sign of a - b decides whether the
-// fault is velocity-WEAKENING and so capable of unstable slip. At steady state
+// a and b are separate because the sign of a - b decides whether the fault is
+// velocity-weakening and so capable of unstable slip. At steady state
 // theta = Dc/V, so mu(V) = mu0 + (a - b) ln(V/V0) and the two effects compete.
 MIMETIKA_TEST(the_steady_state_coefficient_is_governed_by_a_minus_b) {
   for (const bool weakening : {true, false}) {
@@ -305,9 +305,9 @@ MIMETIKA_TEST(the_steady_state_coefficient_is_governed_by_a_minus_b) {
   }
 }
 
-// THE AGING LAW IS STABLE AND REACHES STEADY STATE. Integrated implicitly,
-// theta -> Dc/V under sustained slip and is never driven negative -- and the dt
-// here is deliberately large, which is where the explicit form fails.
+// The aging law is stable and reaches steady state. Integrated implicitly,
+// theta -> Dc/V under sustained slip and is never driven negative; the dt here
+// is deliberately large, which is where the explicit form fails.
 MIMETIKA_TEST(the_aging_law_is_stable_and_reaches_steady_state) {
   const double Dc = 1e-4, V = 1e-3, dt = 1e-2;
   const RateAndStateFriction law(0.6, 0.01, 0.015, Dc, 1e-6);
@@ -323,8 +323,8 @@ MIMETIKA_TEST(the_aging_law_is_stable_and_reaches_steady_state) {
   CHECK(near(s[1], Dc / V, 1e-3 * Dc / V));
 }
 
-// AND IT INHERITS THE UNILATERAL NORMAL CONDITION unchanged: a tensile trial is
-// projected to nothing at all, whatever the coefficient came out to be.
+// And it inherits the unilateral normal condition unchanged: a tensile trial is
+// projected to zero, whatever the coefficient came out to be.
 MIMETIKA_TEST(rate_and_state_inherits_the_unilateral_normal_condition) {
   const RateAndStateFriction law;
   State s = law.initial_state();
@@ -332,9 +332,8 @@ MIMETIKA_TEST(rate_and_state_inherits_the_unilateral_normal_condition) {
   for (std::size_t k = 0; k < 3; ++k) CHECK(near(t[k], 0.0));
 }
 
-// THE SLIP-RATE FLOOR AVOIDS log(0). A stuck point has V = 0 exactly, and it is
-// exactly the points that are not moving that would otherwise take the
-// coefficient to minus infinity.
+// The slip-rate floor avoids log(0). A stuck point has V = 0 exactly, which
+// would otherwise take the coefficient to minus infinity.
 MIMETIKA_TEST(the_slip_rate_floor_avoids_the_logarithm_of_zero) {
   const RateAndStateFriction law;
   const Vec3 g = vec(0.0, 0.0, 0.0);
@@ -345,9 +344,9 @@ MIMETIKA_TEST(the_slip_rate_floor_avoids_the_logarithm_of_zero) {
   CHECK(law.friction_coefficient(law.minimum_rate(), 1e-300) >= 0.0);
 }
 
-// THE RATE ENTERS THE PROJECTION, which is the whole claim: two identical trial
-// tractions differing only in how fast the fault is moving must be projected
-// onto friction disks of different radius.
+// The rate enters the projection: two identical trial tractions differing only
+// in how fast the fault is moving must be projected onto friction disks of
+// different radius.
 MIMETIKA_TEST(the_slip_rate_changes_the_friction_disk) {
   const RateAndStateFriction law(0.6, 0.05, 0.0, 1e-4, 1e-6);  // a large direct effect
   const Vec3 trial = vec(-1.0, 10.0, 0.0);                     // far outside the cone
@@ -362,8 +361,8 @@ MIMETIKA_TEST(the_slip_rate_changes_the_friction_disk) {
 
 // -- the dimension contract --------------------------------------------------
 
-// A LAW IS WRITTEN ONCE FOR BOTH DIMENSIONS: `dim` says how many shear
-// components are live, and the second one is simply not touched in the plane.
+// A law is written once for both dimensions: `dim` says how many shear
+// components are live, and the second one is not touched in the plane.
 MIMETIKA_TEST(a_two_dimensional_law_has_one_shear_direction) {
   const SignoriniCoulomb law(0.5);
   State s;

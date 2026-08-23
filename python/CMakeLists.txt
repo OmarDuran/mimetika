@@ -28,7 +28,7 @@ endif()
 # the same closed forms, the same tolerances, driven through the bindings.
 if(BUILD_TESTING)
   find_package(Python COMPONENTS Interpreter REQUIRED)
-  foreach(t test_confined_compression test_cauchy_elasticity test_poroelasticity test_single_phase test_riesz)
+  foreach(t test_confined_compression test_cauchy_mechanics test_poroelasticity test_flow test_riesz)
     add_test(NAME python.${t}
              COMMAND ${Python_EXECUTABLE} -m pytest -q
                      ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixed_dimensional/${t}.py)

@@ -4,46 +4,44 @@
 
 #include "../mimetika_test.hpp"
 #include "mimetika/mesh/structured.hpp"
-#include "mimetika/model/cauchy_elasticity_model.hpp"
+#include "mimetika/model/cauchy_mechanics_model.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
 
-// THE CAUCHY ELASTICITY MODEL, AGAINST TWO CLOSED FORMS, ON EVERY CELL TYPE AND
-// BOTH STRESS PRODUCTS.
+// The Cauchy elasticity model, against two closed forms, on every cell type and
+// both stress products.
 //
-//   column    confined uniaxial compression   constant stress, LINEAR displacement
+//   column    confined uniaxial compression   constant stress, linear displacement
 //   annulus   Lame's thick-walled tube        sigma_rr = A - B/r^2, u_r = ar + b/r
 //
-// The pair is chosen the way the single-phase pair is, and for the same reason.
-// The column is EXACT FOR THE SPACE: a constant stress and a linear
-// displacement lie in every one of these reconstructions, so anything above
-// round-off is a broken space and no refinement would fix it. Lame is NOT in
-// any of them -- 1/r^2 in the stress, 1/r in the displacement -- so its error
-// is a resolution and must fall under refinement. One says the method is right,
-// the other says it converges.
+// The column is exact for the space: a constant stress and a linear displacement
+// lie in every one of these reconstructions, so anything above round-off is a
+// broken space and no refinement would fix it. Lame is in none of them -- 1/r^2
+// in the stress, 1/r in the displacement -- so its error is a resolution and
+// must fall under refinement. One says the method is right, the other says it
+// converges.
 //
-// TWO PRODUCTS, both of which are elements:
+// Two products, both of which are elements:
 //
 //   derham          d copies of the mimetic-BDM plus a rank-one volumetric
 //                   fold-back; consistency-only, N square, nothing stabilized.
 //   stabilized_bdm  the same d^2 dofs per facet on the full linear tensor space
 //                   [P_1]^{dxd}. On a simplex D = m and the stabilization
-//                   VANISHES -- there it is the conforming AFW/BDM_1 element.
-//                   On a polytope it stabilizes, and that is asserted per family
-//                   rather than assumed.
+//                   vanishes -- there it is the conforming AFW/BDM_1 element.
+//                   On a polytope it stabilizes, asserted per family rather
+//                   than assumed.
 //
-// The plane-strain point is worth stating once: with d = 2 the compliance
-// coefficient is a = lam/(2mu + 2lam), which is exactly the plane-strain
-// inverse of sigma = 2mu eps + lam tr(eps) I. So the SAME Lame solution serves
-// both dimensions, the three-dimensional case being held in plane strain by
-// rollers on z = 0 and z = h. No separate closed form, and no plane-stress
-// branch to get wrong.
+// With d = 2 the compliance coefficient is a = lam/(2mu + 2lam), which is the
+// plane-strain inverse of sigma = 2mu eps + lam tr(eps) I. So the same Lame
+// solution serves both dimensions, the three-dimensional case being held in
+// plane strain by rollers on z = 0 and z = h. No separate closed form, and no
+// plane-stress branch.
 
 using graphos::Index;
-using mimetika::CauchyElasticityModel;
+using mimetika::CauchyMechanicsModel;
 using mimetika::ElasticMaterial;
 using mimetika::mesh::Family;
-using Realization = CauchyElasticityModel::Realization;
-using Formulation = CauchyElasticityModel::Formulation;
+using Realization = CauchyMechanicsModel::Realization;
+using Formulation = CauchyMechanicsModel::Formulation;
 
 namespace {
 
@@ -64,7 +62,7 @@ const Realization kProducts[] = {Realization::derham_bdm, Realization::stabilize
 
 const char* product_name(Realization r) { return exokal::hodge::StressOperators::name(r); }
 
-void solve(CauchyElasticityModel& m) {
+void solve(CauchyMechanicsModel& m) {
   m.build();
   mimetika::solver::PetscSolver petsc;
   std::vector<double> x;
@@ -77,14 +75,14 @@ void solve(CauchyElasticityModel& m) {
 //
 // Rollers on the base and every side, a uniform compressive traction on top.
 // Confinement removes every lateral strain by geometry alone, so elasticity
-// gives the whole answer in two lines, in ANY dimension:
+// gives the whole answer in two lines, in any dimension:
 //
 //     sigma_nn  = lam/(lam + 2mu) sigma_axial   on the confined facets
 //     eps_axial = sigma_axial / K_oed,          K_oed = lam + 2mu
 //
-// A roller is the two halves of one condition: zero TANGENTIAL traction, which
-// is strong because the traction is a degree of freedom, and zero NORMAL
-// DISPLACEMENT, which is natural and comes from leaving the normal traction
+// A roller is the two halves of one condition: zero tangential traction, which
+// is strong because the traction is a degree of freedom, and zero normal
+// displacement, which is natural and comes from leaving the normal traction
 // free so that its own equation reads u.n = 0.
 Outcome column_case(int n, int dim, Family family, Realization how,
                     Formulation form = Formulation::weak_symmetry) {
@@ -101,7 +99,7 @@ Outcome column_case(int n, int dim, Family family, Realization how,
   std::array<double, 9> applied{};
   applied[static_cast<std::size_t>(axis * 3 + axis)] = -load;
 
-  CauchyElasticityModel model(m, dim, ElasticMaterial{kMu, kLam}, how, form);
+  CauchyMechanicsModel model(m, dim, ElasticMaterial{kMu, kLam}, how, form);
   model.mechanics().emplace<mimetika::TractionBC>(loaded, applied);
   model.mechanics().emplace<mimetika::FreeSlipBC>(confined);
   solve(model);
@@ -122,7 +120,7 @@ Outcome column_case(int n, int dim, Family family, Realization how,
     acc += d * d;
   }
   out.rms_err = std::sqrt(acc / static_cast<double>(out.cells));
-  // the LATERAL normal traction, on the confined facets whose normal is not the
+  // the lateral normal traction, on the confined facets whose normal is not the
   // column axis -- the base carries the axial reaction instead
   for (const Index f : confined) {
     const auto nrm = exokal::boundary_outward_normal(m, dim, f);
@@ -140,10 +138,10 @@ Outcome column_case(int n, int dim, Family family, Realization how,
 //     sigma_rr = A - B/r^2      sigma_tt = A + B/r^2
 //     u_r      = A r / (2(lam + mu))  +  B / (2 mu r)
 //
-// Neither term is polynomial, so neither is in the reconstruction. Note the
-// boundary datum: the exact stress at r = a is NOT -p_a I, but its TRACTION is
-// -p_a n, and a uniform -p_a I delivers exactly that. So the condition is a
-// constant tensor and the closed form is still the curved one.
+// Neither term is polynomial, so neither is in the reconstruction. The boundary
+// datum: the exact stress at r = a is not -p_a I, but its traction is -p_a n,
+// and a uniform -p_a I delivers exactly that. So the condition is a constant
+// tensor and the closed form is still the curved one.
 struct Lame {
   double A{0.0}, B{0.0}, a{1.0}, b{4.0};
   ElasticMaterial mat{kMu, kLam};
@@ -187,7 +185,7 @@ Outcome annulus_case(int nr, int nt, int dim, Family family, Realization how,
     so[static_cast<std::size_t>(k * 3 + k)] = -p_b;
   }
 
-  CauchyElasticityModel model(m, dim, mat, how);
+  CauchyMechanicsModel model(m, dim, mat, how);
   model.mechanics().emplace<mimetika::TractionBC>(inner, si);
   model.mechanics().emplace<mimetika::TractionBC>(outer, so);
   model.mechanics().emplace<mimetika::FreeSlipBC>(sym);
@@ -201,7 +199,7 @@ Outcome annulus_case(int nr, int nt, int dim, Family family, Realization how,
   for (Index e = 0; e < static_cast<Index>(out.cells); ++e) {
     const auto x = exokal::centroid(m, dim, e);
     const double r = std::sqrt(x[0] * x[0] + x[1] * x[1]);
-    // the RADIAL displacement, projected out of the cell's vector unknown
+    // the radial displacement, projected out of the cell's vector unknown
     const double ur = (model.displacement(e, 0) * x[0] + model.displacement(e, 1) * x[1]) / r;
     const double d = ur - ex.u_r(r);
     out.max_err = std::max(out.max_err, std::abs(d));
@@ -213,11 +211,11 @@ Outcome annulus_case(int nr, int nt, int dim, Family family, Realization how,
 
 }  // namespace
 
-// A LINEAR DISPLACEMENT IS REPRODUCED EXACTLY, on every cell type, in either
+// A linear displacement is reproduced exactly, on every cell type, in either
 // dimension, by both products. The stress is constant and the displacement
-// linear, and both lie in every one of these reconstructions -- so this is the
-// space working, not a fine mesh. The stabilized counts come along because they
-// are the construction: none on a simplex mesh, every cell on a polytopal one.
+// linear, and both lie in every one of these reconstructions, so this is the
+// space working rather than a fine mesh. The stabilized counts come along: none
+// on a simplex mesh, every cell on a polytopal one.
 MIMETIKA_TEST(the_column_reproduces_the_linear_displacement_exactly) {
   for (const Realization r : kProducts) {
     for (const int dim : {2, 3}) {
@@ -238,7 +236,7 @@ MIMETIKA_TEST(the_column_reproduces_the_linear_displacement_exactly) {
   }
 }
 
-// AND LAME IS APPROXIMATED AND CONVERGES. The radial solution carries 1/r^2 in
+// And Lame is approximated and converges. The radial solution carries 1/r^2 in
 // the stress and 1/r in the displacement, so no polynomial reconstruction
 // contains it: the error is a resolution, and it must fall with refinement. A
 // space that were merely wrong would not improve.
@@ -260,22 +258,22 @@ MIMETIKA_TEST(the_annulus_reproduces_lame) {
   }
 }
 
-// ON A SIMPLEX MESH THE TWO PRODUCTS ARE ONE ELEMENT, and this carries it from
+// On a simplex mesh the two products are one element, and this carries it from
 // a single cell up to a solved problem.
 //
 // exokal settles the local statement twice over: the two operators agree entry
-// for entry (hodge.test_stress_hodge), and each equals the CONFORMING AFW/BDM_1
+// for entry (hodge.test_stress_hodge), and each equals the conforming AFW/BDM_1
 // element by congruence against basix (hodge.test_afw_equivalence), at every
 // material in 0 < nu < 1/2. That they still agree after assembly, the boundary
 // forms and the solve is a separate claim, and it is this one.
 //
-// It holds only on simplices, and for a reason that is about the SPACE. There
-// derham_bdm needs no curl enrichment -- D = d(d+1) = dim[P_1]^d -- so d copies
-// of the scalar mimetic-BDM is [P_1]^{dxd}, exactly what stabilized_bdm
-// reconstructs on, and D = m so nothing is stabilized either. On a polytope
-// both of those fail: stabilized_bdm stabilizes on ker(N^T) while derham_bdm
-// enriches with curl modes instead, and they are then genuinely different
-// discretizations -- which the second half measures rather than glosses.
+// It holds only on simplices, for a reason about the space. There derham_bdm
+// needs no curl enrichment -- D = d(d+1) = dim[P_1]^d -- so d copies of the
+// scalar mimetic-BDM is [P_1]^{dxd}, exactly what stabilized_bdm reconstructs
+// on, and D = m so nothing is stabilized either. On a polytope both of those
+// fail: stabilized_bdm stabilizes on ker(N^T) while derham_bdm enriches with
+// curl modes instead, and they are then different discretizations, which the
+// second half measures.
 MIMETIKA_TEST(the_two_products_are_one_element_on_a_simplex_mesh) {
   for (const int dim : {2, 3}) {
     // the material must not be trivial: at lam = 0 the volumetric term is
@@ -304,7 +302,7 @@ MIMETIKA_TEST(the_two_products_are_one_element_on_a_simplex_mesh) {
   }
 }
 
-// derham_rt IS REFUSED AT CONSTRUCTION. It is a sound inner product and not an
+// derham_rt is refused at construction. It is a sound inner product and not an
 // element -- one constant traction vector per facet cannot control the rigid
 // rotations across a mesh -- so the model declines it rather than assembling a
 // singular saddle point. See test_confined_compression for the measurement behind this.
@@ -312,7 +310,7 @@ MIMETIKA_TEST(the_model_refuses_the_realization_that_is_not_an_element) {
   const exokal::Mesh m = mimetika::mesh::column(2, 3, Family::simplex);
   bool refused = false;
   try {
-    CauchyElasticityModel bad(m, 3, ElasticMaterial{kMu, kLam},
+    CauchyMechanicsModel bad(m, 3, ElasticMaterial{kMu, kLam},
                               exokal::hodge::StressOperators::Realization::derham_rt);
   } catch (const std::invalid_argument&) {
     refused = true;
@@ -320,21 +318,20 @@ MIMETIKA_TEST(the_model_refuses_the_realization_that_is_not_an_element) {
   CHECK(refused);
 }
 
-// NEITHER PRODUCT LOCKS. This is the regime that would separate them if
-// anything did, and it does not.
+// Neither product locks.
 //
 // As nu -> 1/2 the volumetric term dominates the compliance, so a product that
-// only approximates it -- derham folds back the rank-one MEAN-trace form where
+// only approximates it -- derham folds back the rank-one mean-trace form where
 // stabilized_bdm integrates the trace pairing exactly -- is where one would
-// expect the approximation to tell. It does not, and the reason is structural:
-// this is a MIXED method. The stress is the primary unknown and what is
-// discretized is the COMPLIANCE, which merely loses a rank as a -> 1/d (the
-// hydrostatic mode stores no energy) and is absorbed. Locking is a pathology of
-// displacement-based formulations, where the stiffness diverges instead.
+// expect the approximation to tell. It does not, for a structural reason: this
+// is a mixed method. The stress is the primary unknown and what is discretized
+// is the compliance, which loses a rank as a -> 1/d (the hydrostatic mode stores
+// no energy) and is absorbed. Locking is a pathology of displacement-based
+// formulations, where the stiffness diverges instead.
 //
 // So the test is a comparison rather than a threshold: at nu = 0.4999 the error
 // must be no worse than at nu = 0.25, for both products, on simplices and on
-// polytopes. Anything else would be locking, however mild.
+// polytopes.
 MIMETIKA_TEST(neither_product_locks_as_the_material_becomes_incompressible) {
   const double nu = 0.4999;
   const ElasticMaterial stiff{kMu, 2.0 * kMu * nu / (1.0 - 2.0 * nu)};
@@ -359,10 +356,10 @@ MIMETIKA_TEST(neither_product_locks_as_the_material_becomes_incompressible) {
 }
 
 
-// THE LINEAR PATCH, WEAKLY IMPOSED. u = x on every boundary facet, as an affine
+// The linear patch, weakly imposed. u = x on every boundary facet, as an affine
 // datum: both moments the facet carries are supplied, so the answer is the
 // field itself and any departure is the discretization rather than the data.
-// Nothing is strongly constrained, which keeps this a test of the PAIRING.
+// Nothing is strongly constrained, which keeps this a test of the pairing.
 struct Patch {
   std::size_t dofs{0}, cells{0};
   double max_err{0.0};      // |u - x|
@@ -373,7 +370,7 @@ Patch patch_case(int n, int dim, Family family, Realization how,
                  Formulation form = Formulation::weak_symmetry) {
   std::array<int, 3> res{n, n, dim == 3 ? n : 1};
   const exokal::Mesh m = mimetika::mesh::box(res, dim, family);
-  CauchyElasticityModel model(m, dim, ElasticMaterial{kMu, kLam}, how, form);
+  CauchyMechanicsModel model(m, dim, ElasticMaterial{kMu, kLam}, how, form);
   std::array<double, 9> grad{};
   for (int k = 0; k < dim; ++k) grad[static_cast<std::size_t>(k * 3 + k)] = 1.0;
   for (const Index f : mimetika::boundary_facets(m.topology(), dim)) {
@@ -399,15 +396,15 @@ Patch patch_case(int n, int dim, Family family, Realization how,
   return out;
 }
 
-// ---- FOUR FIELDS, AND THE TWO-POINT PRODUCT THAT NEEDS THEM ----------------
+// ---- four fields, and the two-point product that needs them ----------------
 //
 // The total pressure p = lambda div u carried as a field of its own. That is
 // exokal's weak_symmetry_total, and mimetika's part of it is the pairing: the
 // sigma row gains -(2 mu)^-1 T^T p and the p row closes the system with
 // c_p |E| p. Everything below tests that pairing, not the product beneath it.
 
-// THE COLUMN IS STILL THE COLUMN. A linear displacement lies in every one of
-// these reconstructions, so four fields must reproduce it exactly too -- the
+// The column is still the column. A linear displacement lies in every one of
+// these reconstructions, so four fields must reproduce it exactly too: the
 // formulation changes how the volumetric response is resolved, not whether the
 // method is consistent.
 MIMETIKA_TEST(the_four_field_column_reproduces_the_linear_displacement) {
@@ -422,9 +419,8 @@ MIMETIKA_TEST(the_four_field_column_reproduces_the_linear_displacement) {
   }
 }
 
-// AND IT IS A LARGER SYSTEM, by exactly one scalar per cell: the count is the
-// concrete content of "p is a field", and a formulation that quietly kept
-// three fields would pass every accuracy check above.
+// And it is a larger system, by exactly one scalar per cell: a formulation that
+// kept three fields would pass every accuracy check above.
 MIMETIKA_TEST(the_fourth_field_is_one_scalar_per_cell) {
   const Outcome three = column_case(4, 3, Family::cartesian, Realization::stabilized_bdm);
   const Outcome four = column_case(4, 3, Family::cartesian, Realization::stabilized_bdm,
@@ -434,14 +430,14 @@ MIMETIKA_TEST(the_fourth_field_is_one_scalar_per_cell) {
   CHECK(four.dofs == three.dofs + three.cells);
 }
 
-// THE TWO-POINT PRODUCT REACHES THE MODEL. Its space is derham_rt's -- d per
+// The two-point product reaches the model. Its space is derham_rt's -- d per
 // facet, one constant traction vector -- and it exists in four fields only,
 // which the model refuses to fake.
 MIMETIKA_TEST(the_two_point_stress_product_needs_four_fields) {
   const exokal::Mesh m = mimetika::mesh::column(4, 3, Family::cartesian, 1.0);
   bool refused = false;
   try {
-    CauchyElasticityModel model(m, 3, ElasticMaterial{kMu, kLam}, Realization::diagonal_afw);
+    CauchyMechanicsModel model(m, 3, ElasticMaterial{kMu, kLam}, Realization::diagonal_afw);
   } catch (const std::invalid_argument&) {
     refused = true;
   }
@@ -451,7 +447,7 @@ MIMETIKA_TEST(the_two_point_stress_product_needs_four_fields) {
   // inf-sup degenerates, which is a different objection
   refused = false;
   try {
-    CauchyElasticityModel model(m, 3, ElasticMaterial{kMu, kLam}, Realization::derham_rt,
+    CauchyMechanicsModel model(m, 3, ElasticMaterial{kMu, kLam}, Realization::derham_rt,
                                 Formulation::weak_symmetry_total);
   } catch (const std::invalid_argument&) {
     refused = true;
@@ -459,12 +455,11 @@ MIMETIKA_TEST(the_two_point_stress_product_needs_four_fields) {
   CHECK(refused);
 }
 
-// EVERY FOUR-FIELD PRODUCT, ON EVERY MESH THIS MODEL CLAIMS.
+// Every four-field product, on every mesh this model claims.
 //
 // The pairing is one term, so a mistake in it -- a sign, a missing adjoint, the
-// wrong compliance on the trace -- is the same mistake for all three products.
-// Testing them together is what makes a pass evidence about the PORT rather
-// than about one product.
+// wrong compliance on the trace -- is the same mistake for all three products,
+// which is why they are tested together.
 //
 // diagonal_afw is included where it is claimed: face-orthogonal meshes, which
 // among these is the box of hexahedra. It carries d per facet and the other two
@@ -491,13 +486,13 @@ MIMETIKA_TEST(every_four_field_product_reproduces_the_linear_displacement) {
   }
 }
 
-// THE THREE-FIELD ANSWER, WHERE THE TWO MUST AGREE. Condensing p does not
-// return the three-field operator in general -- p is one scalar per cell, so
-// the volumetric response is resolved to P0 against the trace's rank d+1 -- and
-// they agree exactly where tr sigma is CONSTANT on a cell, which a linear
-// displacement makes it. So this is the one comparison that is allowed to be
-// exact, and it is the sharpest check on the p-row: a wrong compliance there
-// moves the displacement while leaving the patch test intact.
+// The three-field answer, where the two must agree. Condensing p does not return
+// the three-field operator in general -- p is one scalar per cell, so the
+// volumetric response is resolved to P0 against the trace's rank d+1 -- and they
+// agree exactly where tr sigma is constant on a cell, which a linear
+// displacement makes it. So this is the one comparison allowed to be exact, and
+// the sharpest check on the p-row: a wrong compliance there moves the
+// displacement while leaving the patch test intact.
 MIMETIKA_TEST(four_fields_and_three_agree_where_the_trace_is_constant) {
   for (const int dim : {2, 3}) {
     for (const Family f : kFamilies) {
@@ -514,17 +509,16 @@ MIMETIKA_TEST(four_fields_and_three_agree_where_the_trace_is_constant) {
   }
 }
 
-// AND THE FOURTH FIELD IS WHAT MAKES THE INCOMPRESSIBLE LIMIT UNIFORM. The
+// And the fourth field is what makes the incompressible limit uniform. The
 // four-field compliance is lambda-free and c_p = d/(2mu) + 1/lambda stays finite
 // as lambda grows, where the three-field Gram loses a rank. The patch test is
-// exact at every lambda, so what is checked is that it STAYS exact -- a
-// formulation that locked would fail here and nowhere else.
+// exact at every lambda, so what is checked is that it stays exact.
 MIMETIKA_TEST(the_four_field_patch_survives_the_incompressible_limit) {
   const int dim = 3;
   for (const double nu : {0.25, 0.4999, 0.499999}) {
     const double lam = 2.0 * kMu * nu / (1.0 - 2.0 * nu);
     const exokal::Mesh m = mimetika::mesh::box({3, 3, 3}, dim, Family::cartesian);
-    CauchyElasticityModel model(m, dim, ElasticMaterial{kMu, lam}, Realization::stabilized_bdm,
+    CauchyMechanicsModel model(m, dim, ElasticMaterial{kMu, lam}, Realization::stabilized_bdm,
                                 Formulation::weak_symmetry_total);
     std::array<double, 9> grad{};
     for (int k = 0; k < dim; ++k) grad[static_cast<std::size_t>(k * 3 + k)] = 1.0;
@@ -542,7 +536,7 @@ MIMETIKA_TEST(the_four_field_patch_survives_the_incompressible_limit) {
       }
       p_worst = std::max(p_worst, std::abs(model.total_pressure(e) - lam * dim));
     }
-    // THE TOLERANCE TRACKS THE CONDITIONING, because the error does: 4.8e-15,
+    // The tolerance tracks the conditioning, because the error does: 4.8e-15,
     // 1.8e-11, 1.4e-9 as lambda goes 1, 5e3, 5e5 -- linear in lambda, which is
     // round-off through a stiffer system and not a loss of accuracy in the
     // method. Locking would show as an error that stops falling with the mesh,

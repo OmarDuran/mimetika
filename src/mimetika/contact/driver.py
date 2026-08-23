@@ -43,8 +43,7 @@ caller's; the law is written the same way either way.
 Stepping
 --------
 :meth:`ContactDriver.solve_step` advances **one** step.  The caller owns the
-loop, which keeps the driver free to be embedded in a staggered poromechanics
-scheme later.
+loop.
 """
 
 from __future__ import annotations
@@ -180,12 +179,12 @@ class ContactDriver:
         :meth:`LocalCell.facet_scalar_basis` -- the basis the stress DOFs are
         actually defined against -- both use.
 
-        It used to be ``|f| ** (1/k)``.  That agrees for ``k = 2`` (a polygonal
-        facet of a 3D cell) and disagrees for ``k = 1`` (an edge of a 2D cell),
-        where it gives ``|f|`` instead of ``sqrt(|f|)``.  The Gram matrix then
-        came out a factor ``|f|`` too small, so ``to_values`` inverted a different
-        basis from the one ``to_moments`` integrated against and the round trip
-        was not the identity -- silently, and only in 2D.
+        A ``|f| ** (1/k)`` scaling agrees for ``k = 2`` (a polygonal facet of a
+        3D cell) but gives ``|f|`` instead of ``sqrt(|f|)`` for ``k = 1`` (an
+        edge of a 2D cell): the Gram matrix then comes out a factor ``|f|`` too
+        small, ``to_values`` inverts a different basis from the one
+        ``to_moments`` integrated against, and the round trip is not the
+        identity.
         """
         d, k = self.dim, self.dim - 1
         g = self.mesh.geometry
@@ -253,7 +252,7 @@ class ContactDriver:
 
     def _slice(self, index: int) -> slice:
         # cumulative offsets, cached: the naive per-call sum is quadratic in
-        # the facet count and showed up as millions of generator evaluations
+        # the facet count
         offsets = self.__dict__.get("_point_offsets")
         if offsets is None:
             counts = [self.points_per_facet(int(f)) for f in self.facets]
@@ -337,9 +336,9 @@ class ContactDriver:
         by the contact constraint, and because it is a matrix the contact map
         never needs the mesh.
 
-        No ``Gram^{-1}`` here, and it is worth saying why, because the residual
-        looks like a moment vector and :meth:`to_values` *does* invert the Gram.
-        The two convert different objects.  A traction DOF **is** a moment
+        No ``Gram^{-1}`` here, although the residual looks like a moment vector
+        and :meth:`to_values` *does* invert the Gram: the two convert different
+        objects.  A traction DOF **is** a moment
         ``m = int_e (sigma n) b``, so recovering a traction's pointwise values
         needs ``Gram^{-1} m`` -- that is :meth:`to_values`.  The jump term
         ``int_e [[u]] . (tau n)`` is instead paired *against* that moment DOF:
@@ -351,10 +350,9 @@ class ContactDriver:
         """
         # the assembled stress-row block of the *unfractured* system, in
         # whatever field layout the problem uses -- three- and four-field
-        # evaluate the same functional.  Stripping the fracture compliance is
-        # essential: at the solution the fractured row is satisfied exactly, so
-        # its residual is zero, whereas the unfractured residual is A_f sigma,
-        # i.e. the jump this operator exists to extract.
+        # evaluate the same functional.  At the solution the fractured row is
+        # satisfied exactly, so its residual is zero, whereas the unfractured
+        # residual is A_f sigma, the jump this operator extracts.
         traction_rows = problem.constitutive_rows(contact=False)
 
         blocks, rows, cols, vals = [], [], [], []

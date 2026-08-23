@@ -8,13 +8,13 @@
 
 #include "exokal/forms/model.hpp"
 
-// ESSENTIAL CONSTRAINTS, as LINEAR FORMS on the degrees of freedom.
+// Essential constraints, as linear forms on the degrees of freedom.
 //
 //     sum_j a_j x_{d_j} = g
 //
-// A single pinned unknown is the one-term case, and it is not the general one.
-// In a mixed method a boundary condition is a statement about a QUANTITY, and
-// the quantity is a form on the facet's unknowns rather than one of them:
+// A single pinned unknown is the one-term case, not the general one. In a mixed
+// method a boundary condition is a statement about a quantity, and the quantity
+// is a form on the facet's unknowns rather than one of them:
 //
 //     n . (sigma n) = g      the normal traction   sum_k n_k x_{f,k,b}
 //     t . (sigma n) = 0      no shear              sum_k t_k x_{f,k,b}
@@ -27,11 +27,11 @@
 // condition. Carrying the form is what makes the same statement mean the same
 // thing on any mesh in any dimension.
 //
-// SUBSTITUTION, NOT PENALTY. The form replaces the equation of ONE of the
-// unknowns it involves -- its LEADING dof, chosen by largest coefficient, as a
+// Substitution, not penalty. The form replaces the equation of one of the
+// unknowns it involves -- its leading dof, chosen by largest coefficient, as a
 // pivot is chosen. The residual becomes the discrepancy of the form, the
 // tangent's row becomes the form itself, and the action of the tangent along a
-// direction is the form applied to the direction. The constraint is then EXACT:
+// direction is the form applied to the direction. The constraint is then exact:
 // a penalty would leave an error scaling with the penalty parameter, and a
 // benchmark checked against a closed form would be measuring the penalty
 // rather than the discretization.
@@ -41,11 +41,11 @@
 // contribution into the right-hand side, and in a matrix-free setting that is
 // an extra operator apply per assembly.
 //
-// THE ROW CARRIES THE SCALE OF THE EQUATION IT REPLACES.
+// The row carries the scale of the equation it replaces.
 //
 // The form and any nonzero multiple of it are the same constraint, so the
 // scale is free and the solution does not depend on it. It is not free for the
-// FACTORIZATION. The replaced row is a constitutive relation carrying that
+// factorization. The replaced row is a constitutive relation carrying that
 // relation's factors -- a traction moment has A_ii ~ 1/(2 mu), around 1e-9 for
 // rock; a flux moment has A_ii ~ 1/(k dt), which can be 1e14 for a small step.
 // A unit-scaled row sits many orders of magnitude away from everything around
@@ -65,7 +65,7 @@ using exokal::forms::Index;
 
 class Constraints {
  public:
-  // A LINEAR FORM over the global numbering, and the value it takes.
+  // A linear form over the global numbering, and the value it takes.
   struct Form {
     std::vector<Index> dofs;
     std::vector<double> coeff;
@@ -94,10 +94,10 @@ class Constraints {
   bool empty() const { return forms_.empty(); }
   const std::vector<Form>& forms() const { return forms_; }
 
-  // MOVE A FORM'S VALUE, leaving its structure alone.
+  // Move a form's value, leaving its structure alone.
   //
-  // This is the affine decomposition made operational. finalize() assigns each
-  // form the equation it replaces by partial pivoting on the COEFFICIENTS, and
+  // The affine decomposition made operational. finalize() assigns each
+  // form the equation it replaces by partial pivoting on the coefficients, and
   // the assembled operator depends on the dofs and the coefficients alone; the
   // value enters only the right-hand side. So a caller that solves the same
   // problem repeatedly with a different datum -- an outer iteration on a
@@ -110,7 +110,7 @@ class Constraints {
     forms_[form].value = value;
   }
 
-  // ASSIGN EACH FORM THE EQUATION IT REPLACES, and build the lookups an
+  // Assign each form the equation it replaces, and build the lookups an
   // assembly needs. The leading dof is the unclaimed one with the largest
   // coefficient -- partial pivoting, and for the orthonormal facet frames the
   // boundary forms are written in it always succeeds. Two forms that want the
@@ -145,12 +145,12 @@ class Constraints {
         }
       }
       if (best == f.dofs.size() || best_c <= 0.0) {
-        // THE SAME CONDITION TWICE IS REDUNDANT, NOT A CONFLICT. Two facet sets
+        // The same condition twice is redundant, not a conflict. Two facet sets
         // that overlap, or a driver that names a facet in two selections, both
         // produce a form already imposed; dropping it is right and refusing it
         // would make selections order-dependent. A form asking for the same
-        // unknowns with a DIFFERENT equation is a genuine contradiction and is
-        // still refused.
+        // unknowns with a different equation is a contradiction and is still
+        // refused.
         bool redundant = false;
         for (const Index dj : f.dofs) {
           const auto d = static_cast<std::size_t>(dj);
@@ -181,7 +181,7 @@ class Constraints {
   const Form& form_at(std::size_t d) const { return forms_[index_at(d)]; }
   std::size_t lead_term_at(std::size_t d) const { return lead_index_[index_at(d)]; }
 
-  // THE RIGHT-HAND SIDE of the form a dof leads: what a driver assembling
+  // The right-hand side of the form a dof leads: what a driver assembling
   // A x = b directly must place in that row, since the row itself is s a^T.
   double rhs_at(std::size_t d) const { return form_at(d).value; }
 
@@ -203,8 +203,8 @@ class Constraints {
   double scale_at(std::size_t d) const { return scale_.empty() ? 1.0 : scale_[d]; }
   bool scaled() const { return scaled_; }
 
-  // MEASURED LAZILY, AND SO const. The scale is not part of what the constraint
-  // MEANS -- the form holds whatever it is multiplied by -- it is a
+  // Measured lazily, and so const. The scale is not part of what the constraint
+  // means -- the form holds whatever it is multiplied by -- it is a
   // representation chosen to keep the replaced row in scale with the matrix
   // around it. It can therefore be read off the first tangent that gets
   // assembled rather than paid for with an assembly of its own.
@@ -236,10 +236,9 @@ class Constraints {
 
   // ---- the three paths --------------------------------------------------
 
-  // A STARTING POINT consistent with the forms: solve each for its leading
-  // unknown, holding the others. It is only a starting point -- the constraint
-  // is made exact by the step, not by this -- but it costs nothing and it
-  // makes the very first residual small.
+  // A starting point consistent with the forms: solve each for its leading
+  // unknown, holding the others. The constraint is made exact by the step, not
+  // by this; it costs nothing and makes the first residual small.
   void apply_to_state(std::vector<double>& x) const {
     require_final();
     for (std::size_t d = 0; d < mask_.size(); ++d) {

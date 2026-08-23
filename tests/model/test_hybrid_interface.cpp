@@ -5,29 +5,27 @@
 #include "exokal/hodge/hybrid_stress.hpp"
 #include "mimetika/mesh/structured.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
-#include "mimetika/model/cauchy_elasticity_model.hpp"
+#include "mimetika/model/cauchy_mechanics_model.hpp"
 #include "mimetika/model/hybrid_interface.hpp"
 
-// THE SPARSE INTERFACE SYSTEM, AGAINST EXOKAL'S DENSE ORACLE.
+// The sparse interface system, against exokal's dense oracle.
 //
-// exokal hybridizes a cell and assembles the interface system DENSELY, and it
-// says why: the dense assembler is the contract, and what a sparse one is held
-// to. So this file holds it to exactly that -- entry for entry, every entry,
-// on meshes small enough that the dense matrix is a legitimate thing to build.
+// exokal hybridizes a cell and assembles the interface system densely, and the
+// dense assembler is the contract a sparse one is held to. This file holds it to
+// exactly that -- entry for entry, every entry, on meshes small enough that the
+// dense matrix is a legitimate thing to build.
 //
-// The contract has one clause worth restating, because it is what the sparsity
-// IS: two multiplier blocks couple iff their facets share a cell. A sparse
-// assembly that visited anything else would still be symmetric, still be
-// positive semidefinite, and wrong in a way no norm of the answer reveals --
-// which is why the comparison is against the oracle rather than against a
-// solution.
+// One clause of the contract is what the sparsity is: two multiplier blocks
+// couple iff their facets share a cell. A sparse assembly that visited anything
+// else would still be symmetric, still be positive semidefinite, and wrong in a
+// way no norm of the answer reveals, which is why the comparison is against the
+// oracle rather than against a solution.
 //
-// AND THE PROPERTY THE SECOND ELIMINATION IS FOR: S is symmetric positive
-// SEMIdefinite with the cell rigid motions in its kernel, and pinning the
+// And the property the second elimination is for: S is symmetric positive
+// semidefinite with the cell rigid motions in its kernel, and pinning the
 // boundary -- the default free mask is the interior stratum -- removes the
-// global ones. That is asserted here too, because it is the whole reason to
-// prefer this route over condensing the mixed system, whose reduced operator
-// is quasi-definite.
+// global ones. That is asserted here too: it is the reason to prefer this route
+// over condensing the mixed system, whose reduced operator is quasi-definite.
 
 using graphos::Index;
 using mimetika::mesh::Family;
@@ -115,9 +113,9 @@ MIMETIKA_TEST(the_total_form_hybridizes_the_same_way) {
   CHECK(c.worst < 1e-10 * std::max(1.0, c.scale));
 }
 
-// THE PROPERTY THE ROUTE EXISTS FOR. With the boundary pinned the interface
-// system is SPD, so a Cholesky runs to completion -- and that is what lets it
-// be handed to a conjugate gradient rather than to MINRES.
+// The property the route exists for. With the boundary pinned the interface
+// system is SPD, so a Cholesky runs to completion, and it can be handed to a
+// conjugate gradient rather than to MINRES.
 MIMETIKA_TEST(the_interface_system_is_symmetric_positive_definite) {
   const exokal::Mesh m = mimetika::mesh::box({2, 2, 2}, 3, Family::cartesian);
   const exokal::hodge::HybridStressOperators hops =
@@ -156,21 +154,19 @@ MIMETIKA_TEST(the_interface_system_is_symmetric_positive_definite) {
   CHECK(definite);
 }
 
-// THE SOLVE, AND WHAT IT IS FOR: a conjugate gradient with an algebraic
-// multigrid, and NO factorization anywhere. That is the whole point of the
-// second elimination -- the condensed mixed system is quasi-definite and takes
-// MINRES at best, while this one is SPD, so the cheapest Krylov method there
-// is applies.
+// The solve: a conjugate gradient with an algebraic multigrid, and no
+// factorization anywhere. The condensed mixed system is quasi-definite and takes
+// MINRES at best, while this one is SPD.
 //
-// It is checked against a dense solve of the SAME system, so the comparison
-// isolates the solver: a preconditioner that quietly changed the operator
-// would converge to a different vector and be caught here rather than in an
-// error norm that also contains the discretization.
+// It is checked against a dense solve of the same system, so the comparison
+// isolates the solver: a preconditioner that changed the operator would converge
+// to a different vector and be caught here rather than in an error norm that
+// also contains the discretization.
 //
-// AND THE RECOVERY, which is exokal's and cell-local. `jump` is the worst
-// disagreement between the two cofacet recoveries of a shared facet: it is the
+// And the recovery, which is exokal's and cell-local. `jump` is the worst
+// disagreement between the two cofacet recoveries of a shared facet: the
 // traction continuity the multiplier exists to enforce, so a small residual on
-// the interface must show up as a small jump, and does.
+// the interface must show up as a small jump.
 MIMETIKA_TEST(the_interface_system_solves_without_a_factorization) {
   for (const Family family : {Family::cartesian, Family::simplex}) {
     const exokal::Mesh m = mimetika::mesh::box({3, 3, 3}, 3, family);
@@ -211,7 +207,7 @@ MIMETIKA_TEST(the_interface_system_solves_without_a_factorization) {
       scale = std::max(scale, std::abs(reference[i]));
     }
 
-    // upstream now takes the multiplier over EVERY facet: solved where free,
+    // upstream now takes the multiplier over every facet: solved where free,
     // zero where pinned, which is this test's homogeneous reference
     std::vector<double> lambda_all(
         static_cast<std::size_t>(m.topology().count(2)) * hops.facet_dofs(), 0.0);
@@ -239,34 +235,32 @@ MIMETIKA_TEST(the_interface_system_solves_without_a_factorization) {
   }
 }
 
-// THE MODEL'S OWN ROUTE, AGAINST ITS OWN MONOLITHIC ANSWER.
+// The model's own route, against its own monolithic answer.
 //
 // Everything above tests the assembly against exokal's oracle. This tests the
-// WIRING: the same model, the same loads, solved two ways -- the monolithic
+// wiring: the same model, the same loads, solved two ways -- the monolithic
 // saddle point, and the hybridized interface -- and the cell fields have to
-// agree. exokal's header states the identity plainly: with every boundary
-// facet pinned to zero the interface solution reproduces the monolithic free
-// saddle exactly, cell fields and stresses alike.
+// agree. exokal's header states the identity: with every boundary facet pinned
+// to zero the interface solution reproduces the monolithic free saddle exactly,
+// cell fields and stresses alike.
 //
-// The load is a reservoir pressure, because a homogeneous Dirichlet problem
-// with no load has zero for an answer and would agree trivially -- this
-// session has already produced one product whose vanished right-hand side
-// satisfied every check that did not look at the magnitude.
+// The load is a reservoir pressure, because a homogeneous Dirichlet problem with
+// no load has zero for an answer and would agree trivially.
 MIMETIKA_TEST(the_hybridized_model_agrees_with_the_monolithic_one) {
-  // TWO RESOLUTIONS, because the outstanding factor has to be told apart from
-  // a geometric one: |f| falls by four between these, so a chart mismatch
-  // moves the ratio and a material one does not.
+  // Two resolutions, so a geometric factor can be told apart from a material
+  // one: |f| falls by four between these, so a chart mismatch moves the ratio
+  // and a material one does not.
   for (const int n : {2, 4}) {
   const exokal::Mesh m = mimetika::mesh::box({n, n, n}, 3, Family::cartesian);
   const auto cells = static_cast<std::size_t>(m.topology().count(3));
 
-  // THE LINEAR PATCH, u = x, prescribed on the whole boundary. In the mixed
-  // form that datum is NATURAL and lands in the stress rows; hybridized it is
-  // ESSENTIAL and pins the multipliers. Same problem, opposite machinery --
-  // which is exactly what has to be checked, because a pinned block whose
-  // data never reached the load still solves and answers u = 0.
+  // The linear patch, u = x, prescribed on the whole boundary. In the mixed
+  // form that datum is natural and lands in the stress rows; hybridized it is
+  // essential and pins the multipliers. Same problem, opposite machinery, and a
+  // pinned block whose data never reached the load still solves and answers
+  // u = 0.
   const auto build = [&]() {
-    auto model = std::make_unique<mimetika::CauchyElasticityModel>(
+    auto model = std::make_unique<mimetika::CauchyMechanicsModel>(
         m, 3, mimetika::ElasticMaterial{kMu, kLam}, Realization::stabilized_vem,
         Formulation::strong_symmetry_total);
     std::array<double, 9> grad{};
@@ -307,10 +301,10 @@ MIMETIKA_TEST(the_hybridized_model_agrees_with_the_monolithic_one) {
       exact = std::max(exact, std::abs(hybrid->displacement(e, k) - xc[static_cast<std::size_t>(k)]));
     }
   }
-  // AND THE STRESS, which the displacement cannot speak for. A uniform sign
-  // flip of sigma leaves the displacement untouched and hides in the
-  // deviatoric row of any patch whose exact deviator is zero -- this one's is
-  // -- so it is compared against the monolithic answer component by component.
+  // And the stress, which the displacement cannot speak for. A uniform sign flip
+  // of sigma leaves the displacement untouched and hides in the deviatoric row
+  // of any patch whose exact deviator is zero -- this one's is -- so it is
+  // compared against the monolithic answer component by component.
   double worst_s = 0.0, scale_s = 0.0;
   for (Index e = 0; e < static_cast<Index>(cells); ++e) {
     const std::array<double, 9> a = monolithic->cell_stress(e);
@@ -320,9 +314,8 @@ MIMETIKA_TEST(the_hybridized_model_agrees_with_the_monolithic_one) {
       scale_s = std::max(scale_s, std::abs(a[k]));
     }
   }
-  // IS IT A SCALE? A ratio that is the same everywhere is a chart or a
-  // constant, and one that scatters is neither -- worth knowing which before
-  // anything is changed.
+  // Is it a scale? A ratio that is the same everywhere is a chart or a constant,
+  // and one that scatters is neither.
   double rlo = 1e300, rhi = -1e300;
   for (Index e = 0; e < static_cast<Index>(cells); ++e) {
     const std::array<double, 9> a = monolithic->cell_stress(e);
@@ -334,9 +327,9 @@ MIMETIKA_TEST(the_hybridized_model_agrees_with_the_monolithic_one) {
       rhi = std::max(rhi, r);
     }
   }
-  // AND THE RAW FACET TRACTION, which is the sigma dofs with no
-  // recombination in front of them: if the ratio is the same here, the dofs
-  // themselves differ and cell_stress is innocent.
+  // And the raw facet traction, the sigma dofs with no recombination in front of
+  // them: if the ratio is the same here, the dofs themselves differ and
+  // cell_stress is innocent.
   double tlo = 1e300, thi = -1e300;
   for (Index f = 0; f < m.topology().count(2); ++f) {
     const std::array<double, 3> a = monolithic->facet_traction(f);
@@ -363,13 +356,12 @@ MIMETIKA_TEST(the_hybridized_model_agrees_with_the_monolithic_one) {
   }
 }
 
-// DOES THE DIAGONAL MEMBER HYBRIDIZE? exokal says any StressOperators cell
+// Does the diagonal member hybridize? exokal says any StressOperators cell
 // does -- "the stabilized families included -- this is the SPD route for the
 // realizations whose sigma-block the two-point condensation refuses" -- and
-// diagonal_vem is the one that condenses instead. Both routes existing for the
-// same product is worth knowing rather than assuming: the condensed system is
-// quasi-definite and wanted MINRES, the hybridized one should be SPD and take
-// a conjugate gradient.
+// diagonal_vem is the one that condenses instead. Both routes exist for the same
+// product: the condensed system is quasi-definite and wanted MINRES, the
+// hybridized one should be SPD and take a conjugate gradient.
 //
 // Held to the same three things as stabilized_vem: the sparse assembly against
 // exokal's dense oracle, the interface SPD, and the model's hybrid answer
@@ -391,7 +383,7 @@ MIMETIKA_TEST(the_diagonal_member_solves_and_recovers) {
   const auto cells = static_cast<std::size_t>(m.topology().count(3));
 
   const auto build = [&]() {
-    auto model = std::make_unique<mimetika::CauchyElasticityModel>(
+    auto model = std::make_unique<mimetika::CauchyMechanicsModel>(
         m, 3, mimetika::ElasticMaterial{kMu, kLam}, Realization::diagonal_vem,
         Formulation::strong_symmetry_total);
     std::array<double, 9> grad{};
@@ -432,10 +424,8 @@ MIMETIKA_TEST(the_diagonal_member_solves_and_recovers) {
       exact = std::max(exact, std::abs(hybrid->displacement(e, k) - xc[static_cast<std::size_t>(k)]));
     }
   }
-  // AND THE STRESS, which the displacement cannot speak for. A uniform sign
-  // flip of sigma leaves the displacement untouched and hides in the
-  // deviatoric row of any patch whose exact deviator is zero -- this one's is
-  // -- so it is compared against the monolithic answer component by component.
+  // and the stress, component by component: a uniform sign flip of sigma is
+  // invisible in the displacement
   double worst_s = 0.0, scale_s = 0.0;
   for (Index e = 0; e < static_cast<Index>(cells); ++e) {
     const std::array<double, 9> a = monolithic->cell_stress(e);
@@ -445,9 +435,7 @@ MIMETIKA_TEST(the_diagonal_member_solves_and_recovers) {
       scale_s = std::max(scale_s, std::abs(a[k]));
     }
   }
-  // IS IT A SCALE? A ratio that is the same everywhere is a chart or a
-  // constant, and one that scatters is neither -- worth knowing which before
-  // anything is changed.
+  // the same ratio diagnostic: uniform means a chart or a constant
   double rlo = 1e300, rhi = -1e300;
   for (Index e = 0; e < static_cast<Index>(cells); ++e) {
     const std::array<double, 9> a = monolithic->cell_stress(e);
@@ -459,9 +447,7 @@ MIMETIKA_TEST(the_diagonal_member_solves_and_recovers) {
       rhi = std::max(rhi, r);
     }
   }
-  // AND THE RAW FACET TRACTION, which is the sigma dofs with no
-  // recombination in front of them: if the ratio is the same here, the dofs
-  // themselves differ and cell_stress is innocent.
+  // and the raw facet traction, the sigma dofs with no recombination
   double tlo = 1e300, thi = -1e300;
   for (Index f = 0; f < m.topology().count(2); ++f) {
     const std::array<double, 3> a = monolithic->facet_traction(f);
@@ -487,17 +473,16 @@ MIMETIKA_TEST(the_diagonal_member_solves_and_recovers) {
   CHECK(exact < 1e-8);
 }
 
-// ONE CELL, TWO LOCAL SADDLES, SIDE BY SIDE.
+// One cell, two local saddles, side by side.
 //
 // The ratio sigma_hybrid / sigma_mixed is mu/(mu + 3 lambda) -- measured at
-// three (mu, lambda) pairs, invariant under mesh and cell family. Ratios say
-// THAT two things differ; they do not say where. This builds the local matrix
-// both ways from the SAME StressOperators cell and compares it entry by entry,
-// so whatever differs is a number rather than an inference.
+// three (mu, lambda) pairs, invariant under mesh and cell family. A ratio says
+// that two things differ, not where. This builds the local matrix both ways from
+// the same StressOperators cell and compares it entry by entry.
 //
-// exokal's is reconstructed from its documented assembly and then CHECKED
+// exokal's is reconstructed from its documented assembly and then checked
 // against the inverse it actually returns -- A_reconstructed * Ainv == I -- so
-// the comparison rests on exokal's real matrix and not on my reading of it.
+// the comparison rests on exokal's real matrix rather than on a reading of it.
 MIMETIKA_TEST(one_cell_the_two_local_saddles_side_by_side) {
   const exokal::Mesh m = mimetika::mesh::box({1, 1, 1}, 3, Family::cartesian);
   const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(
@@ -512,9 +497,9 @@ MIMETIKA_TEST(one_cell_the_two_local_saddles_side_by_side) {
   const bool total = ops.hydrostatic_mass() > 0.0;
   const std::size_t nt = ns + nk + (total ? 1 : 0);
 
-  // ONE CONVENTION NOW, held by both: the coupling antisymmetric, sigma row
+  // One convention now, held by both: the coupling antisymmetric, sigma row
   // -Dv^T against +Dv on the field row. `sym` keeps its name from when the two
-  // differed; the point of the test is that they no longer do.
+  // differed; the test asserts that they no longer do.
   std::vector<double> sym(nt * nt, 0.0);
   std::vector<double> anti(nt * nt, 0.0);
   for (std::size_t i = 0; i < ns; ++i) {

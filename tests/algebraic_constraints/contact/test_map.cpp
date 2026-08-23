@@ -4,14 +4,13 @@
 #include "../../mimetika_test.hpp"
 #include "mimetika/algebraic_constraints/contact/map.hpp"
 
-// y = CD(x) AS A NONLINEAR ALGEBRAIC FUNCTION, tested without a mesh.
+// y = CD(x) as a nonlinear algebraic function, tested without a mesh.
 //
-// That the contact problem is ONLY algebra is the claim the design makes, so it
-// is the claim these tests check: the mechanics below is a hand-written 2x2
-// system. No mesh, no material, no boundary condition and no model object
-// appears anywhere in this file -- which is the same thing as saying the driver
-// will plug into CauchyElasticityModel and PoroelasticModel without either
-// being mentioned here.
+// The design claims the contact problem is only algebra, so that is what these
+// tests check: the mechanics below is a hand-written 2x2 system. No mesh, no
+// material, no boundary condition and no model object appears in this file, so
+// the driver plugs into CauchyMechanicsModel and PoroelasticModel without
+// either being mentioned here.
 //
 // The stub is small enough to have a closed form. With one enforcement point,
 // to_moments = [1] and the system
@@ -38,7 +37,7 @@ namespace {
 
 bool near(double a, double b, double tol = 1e-9) { return std::abs(a - b) <= tol; }
 
-// THE COUPLING SIGN IS NOT FREE. g(x) = (b1 - c x)/d must DECREASE as the
+// The coupling sign is not free. g(x) = (b1 - c x)/d must decrease as the
 // traction grows -- pushing harder closes the gap -- so c/d > 0. With the
 // opposite sign the map has multiplier 1 + r|c|/d > 1 and no r converges, which
 // is a statement about contact being unstable, not about the solver.
@@ -130,10 +129,10 @@ MIMETIKA_TEST(the_map_is_the_closed_form) {
   }
 }
 
-// THE PINNED UNKNOWN REALLY IS PINNED -- an essential condition, not a
-// compliance. It matters: with an augmented relation inside the operator the
-// solved traction would be the TRIAL value, so an open fracture would come out
-// carrying tension.
+// The pinned unknown really is pinned -- an essential condition, not a
+// compliance. With an augmented relation inside the operator the solved traction
+// would be the trial value, so an open fracture would come out carrying
+// tension.
 MIMETIKA_TEST(the_pinned_unknown_really_is_pinned) {
   const StubMechanics m;
   const Identity law;
@@ -163,7 +162,7 @@ MIMETIKA_TEST(the_residual_vanishes_only_at_the_fixed_point) {
   CHECK(map.residual(at(kExactFixedPoint + 1.0)) > 1e-6);
 }
 
-// AND THE GAP CLOSES THERE: the bilateral contact condition, which is what the
+// And the gap closes there: the bilateral contact condition, which is what the
 // fixed point means physically.
 MIMETIKA_TEST(the_gap_closes_at_the_fixed_point) {
   const StubMechanics m;
@@ -174,9 +173,9 @@ MIMETIKA_TEST(the_gap_closes_at_the_fixed_point) {
 
 // -- the iteration -----------------------------------------------------------
 
-// A SLOW CONTRACTION IS STILL A CONTRACTION. The multiplier is |1 - r c/d|,
-// which is 0.9 at r = 0.2, so reaching 1e-14 takes some 700 iterations -- the
-// budget has to be sized to the contraction rate, not to a habit.
+// A slow contraction is still a contraction. The multiplier is |1 - r c/d|,
+// which is 0.9 at r = 0.2, so reaching 1e-14 takes some 700 iterations: the
+// budget has to be sized to the contraction rate.
 MIMETIKA_TEST(fixed_point_finds_it) {
   const StubMechanics m;
   const Identity law;
@@ -203,10 +202,9 @@ MIMETIKA_TEST(fixed_point_starts_from_the_supplied_guess) {
   CHECK(res.converged && res.iterations == 1);  // already there
 }
 
-// THE CONTRACTION CONDITION IS THE EXPECTED ONE. CD has multiplier
-// |1 - r c/d|, so the iteration contracts exactly for r < 2 d / c = 4 here --
-// which is the statement "r < 2 / compliance" the driver derives its
-// augmentation from.
+// The contraction condition is the expected one. CD has multiplier |1 - r c/d|,
+// so the iteration contracts exactly for r < 2 d / c = 4 here, the statement
+// "r < 2 / compliance" the driver derives its augmentation from.
 MIMETIKA_TEST(the_contraction_condition_is_the_expected_one) {
   const StubMechanics m;
   const Identity law;
@@ -223,7 +221,7 @@ MIMETIKA_TEST(the_contraction_condition_is_the_expected_one) {
   CHECK(!fixed_point(outside, opt).converged);
 }
 
-// A DIVERGING ITERATION MUST REPORT FAILURE, not succeed by overflowing: once
+// A diverging iteration must report failure, not succeed by overflowing: once
 // x is non-finite, tolerance * max(|x|, 1) is inf and an unguarded test would
 // pass.
 MIMETIKA_TEST(too_large_an_augmentation_diverges_and_says_so) {
@@ -237,8 +235,8 @@ MIMETIKA_TEST(too_large_an_augmentation_diverges_and_says_so) {
   CHECK(!res.converged);
 }
 
-// AND RELAXATION RESCUES IT: damping is what restores convergence when the
-// plain iteration is not a contraction -- the sliding case in practice.
+// And relaxation rescues it: damping restores convergence when the plain
+// iteration is not a contraction -- the sliding case in practice.
 MIMETIKA_TEST(relaxation_rescues_a_divergent_augmentation) {
   const StubMechanics m;
   const Identity law;
@@ -276,9 +274,9 @@ MIMETIKA_TEST(the_projection_is_applied) {
   CHECK(near(map.evaluate(at(10.0)).value[0][0], 0.0));
 }
 
-// A CLAMPING LAW MOVES THE FIXED POINT OFF THE BILATERAL ONE, which is the
-// whole point of a unilateral condition: the bilateral answer x* = 3 is
-// inadmissible under t_n <= 0, so the constrained solution sits at the bound.
+// A clamping law moves the fixed point off the bilateral one: the bilateral
+// answer x* = 3 is inadmissible under t_n <= 0, so the constrained solution sits
+// at the bound.
 MIMETIKA_TEST(a_clamping_law_moves_the_fixed_point_off_the_bilateral_one) {
   const StubMechanics m;
   const ClampNormal law;
@@ -294,9 +292,9 @@ MIMETIKA_TEST(a_clamping_law_moves_the_fixed_point_off_the_bilateral_one) {
 
 // -- the driving gap ---------------------------------------------------------
 
-// THE NORMAL IS DRIVEN BY THE TOTAL GAP, THE TANGENTIAL BY THE INCREMENT, and
+// The normal is driven by the total gap, the tangential by the increment, and
 // the asymmetry is physical: g_n >= 0 is a statement about the absolute gap,
-// while Coulomb friction opposes the slip RATE.
+// while Coulomb friction opposes the slip rate.
 MIMETIKA_TEST(the_driving_gap_is_total_in_normal_and_incremental_in_shear) {
   Vec3 g, prev;
   g[0] = 2.0;
@@ -307,7 +305,7 @@ MIMETIKA_TEST(the_driving_gap_is_total_in_normal_and_incremental_in_shear) {
   prev[2] = 4.0;
 
   const Vec3 with = mimetika::contact::driving_gap(g, &prev, 3);
-  CHECK(near(with[0], 2.0));                        // normal: TOTAL, the previous value ignored
+  CHECK(near(with[0], 2.0));                        // normal: total, the previous value ignored
   CHECK(near(with[1], 2.0) && near(with[2], 3.0));  // shear: the increment
 
   const Vec3 without = mimetika::contact::driving_gap(g, nullptr, 3);
@@ -316,8 +314,8 @@ MIMETIKA_TEST(the_driving_gap_is_total_in_normal_and_incremental_in_shear) {
 
 // -- prestress ---------------------------------------------------------------
 
-// THE LAW SEES THE TOTAL TRACTION WHILE x STAYS INCREMENTAL. A fault under
-// in-situ compression must not be opened by a tensile INCREMENT, so the
+// The law sees the total traction while x stays incremental. A fault under
+// in-situ compression must not be opened by a tensile increment, so the
 // prestress is added before the projection and removed after.
 MIMETIKA_TEST(prestress_shows_the_law_the_total_and_returns_the_increment) {
   const StubMechanics m;
@@ -328,7 +326,7 @@ MIMETIKA_TEST(prestress_shows_the_law_the_total_and_returns_the_increment) {
   const double x = 10.0;
   CHECK(near(map.evaluate(at(x)).value[0][0], 0.0));
 
-  // with a firmly compressive in-situ state the SAME increment stays free: the
+  // with a firmly compressive in-situ state the same increment stays free: the
   // total is still compressive, so the clamp does not bite, and what comes back
   // is the increment rather than the total
   std::vector<Vec3> pre(1);

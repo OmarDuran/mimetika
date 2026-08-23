@@ -5,21 +5,20 @@
 
 #include "exokal/forms/model.hpp"
 
-// FIELD INDEX SETS: which global unknowns belong to which factor of the space.
+// Field index sets: which global unknowns belong to which factor of the space.
 //
 // A block preconditioner is a statement about the factors of a product space,
 // and it needs exactly one thing from the discretization: the index set of each
 // factor. Nothing about the operator, the mesh or the physics enters here.
 //
-// THE LAYOUT ALREADY DETERMINES THEM. Stratum s begins at epoch.offset(s) and
+// The layout already determines them. Stratum s begins at epoch.offset(s) and
 // field f begins space.offset(f) into it, so one (stratum, field) pair owns a
-// CONTIGUOUS run of the global vector. A field carried by several strata owns
+// contiguous run of the global vector. A field carried by several strata owns
 // one run per stratum and its block is their union — disjoint and ascending,
 // because the strata are laid out in order.
 //
-// Contiguity is the point rather than an accident: PETSc takes a strided IS per
-// run, so a block costs two integers per stratum and nothing is materialized
-// unless a caller asks for the indices themselves.
+// PETSc takes a strided IS per run, so a block costs two integers per stratum
+// and nothing is materialized unless a caller asks for the indices themselves.
 //
 // The runs of stratum_field_blocks partition [0, epoch.size()) exactly. That is
 // the invariant a fieldsplit depends on — an unassigned unknown is dropped from
@@ -75,7 +74,7 @@ inline std::vector<FieldBlock> stratum_field_blocks(const exokal::forms::Stratif
   return out;
 }
 
-// One block per distinct field NAME, gathered over every stratum carrying it,
+// One block per distinct field name, gathered over every stratum carrying it,
 // in order of first appearance.
 //
 // This is the split a Riesz map is written against: the factors are H(div) and
@@ -104,10 +103,10 @@ inline std::vector<FieldBlock> field_blocks(const exokal::forms::StratifiedEpoch
   return out;
 }
 
-// THE UNKNOWNS A DIAGONAL STAR MAKES ELIMINABLE: the first factor, which is
-// the flux or the stress. Naming them is a permission -- see
-// PetscSolver::set_condensable -- and the matrix decides whether the block
-// really is diagonal, so this asks nothing about which product built it.
+// The unknowns a diagonal star makes eliminable: the first factor, the flux or
+// the stress. Naming them is a permission -- see PetscSolver::set_condensable
+// -- and the matrix decides whether the block really is diagonal, so this asks
+// nothing about which product built it.
 inline std::vector<int> first_field_dofs(const exokal::forms::StratifiedEpoch& e) {
   const std::vector<FieldBlock> blocks = field_blocks(e);
   std::vector<int> out;

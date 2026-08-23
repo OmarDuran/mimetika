@@ -23,19 +23,19 @@
 // and with constant heat capacities T = h / Σ_k z_k c_k, the phase mass
 // fractions being the overall compositions under the bijection.
 //
-// THE INTERFACE IS THE POINT, not the correlations behind it. A weight is
-// a pointwise map evaluated with whatever scalar the caller chose — double
-// for a residual, ad::Dual for a residual with its derivatives. An
+// The interface is what matters here, not the correlations behind it. A
+// weight is a pointwise map evaluated with whatever scalar the caller chose
+// — double for a residual, ad::Dual for a residual with its derivatives. An
 // operator-based linearization replaces the closed forms with a
 // multilinear interpolant over a tabulated state box; differentiating that
 // interpolant with the same dual numbers yields exactly what OBL requires,
-// the gradient OF the interpolant rather than an interpolant of the
+// the gradient of the interpolant rather than an interpolant of the
 // gradient. So the tables drop into this slot later without anything above
 // changing.
 //
-// A NOTE ON THE DUAL WIDTH. The state here is p, h and the compositions —
-// a handful of scalars — so these evaluations want ad::Dual sized to that,
-// not the default capacity. StateDual below is the recommended alias; the
+// The dual width: the state here is p, h and the compositions — a handful
+// of scalars — so these evaluations want ad::Dual sized to that, not the
+// default capacity. StateDual below is the recommended alias; the
 // cell-system width belongs to ad::Local, never here.
 
 namespace mimetika::physics::constitutive {
@@ -43,7 +43,7 @@ namespace mimetika::physics::constitutive {
 // raise if a mixture needs more; every array below is sized by it
 inline constexpr std::size_t max_phases = 4;
 
-// The primary state at one point. The composition carries ALL phases and
+// The primary state at one point. The composition carries all phases and
 // sums to one; close() applies the closure to the independent entries.
 template <class T>
 struct State {
@@ -110,7 +110,7 @@ class ImmiscibleFluid {
   std::size_t n_phases() const { return phases_.size(); }
   const PhaseModel& phase(std::size_t a) const { return phases_[a]; }
 
-  // The densities the upwind operator needs: FROZEN, evaluated at the
+  // The densities the upwind operator needs: frozen, evaluated at the
   // linearization pressure and not differentiated.
   std::vector<double> densities_at(double p) const {
     std::vector<double> r(phases_.size());
@@ -157,7 +157,7 @@ class ImmiscibleFluid {
           w.density[a] * relative_permeability(a, w.saturation[a]) / phases_[a].viscosity;
       w.total_mobility = w.total_mobility + w.mobility[a];
     }
-    // DEFENCE, NOT A CASE THE PHYSICS REACHES: the saturations sum to one
+    // A defence, not a case the physics reaches: the saturations sum to one
     // while the residuals sum to less than one, so s_a < s_ra for every
     // phase would give 1 < 1. At least one phase is always strictly
     // mobile, and the guard exists only so a malformed composition cannot
@@ -175,8 +175,7 @@ class ImmiscibleFluid {
   }
 
   // Corey, clamped. The clamp is a branch on a value, so the mobility is
-  // Lipschitz at the residual saturation rather than smooth — stated
-  // rather than smoothed away.
+  // Lipschitz at the residual saturation rather than smooth.
   template <class T>
   T relative_permeability(std::size_t a, const T& s) const {
     using std::pow;

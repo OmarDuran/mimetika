@@ -13,44 +13,43 @@
 #include "mimetika/mesh/structured.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
 
-// BENCHMARK 1 of Novikov et al. (2024): the VERTICAL DISPLACED FAULT, frictionless.
+// Benchmark 1 of Novikov et al. (2024): the vertical displaced fault,
+// frictionless.
 //
 // A reservoir offset across a vertical fault is depleted by -25 MPa. The throw
 // puts reservoir against seal on both sides of the fault, which loads it in
-// shear; with no friction the fault slips until it carries no shear stress at
-// all. This is the first benchmark with a fault, so it is the first that
-// exercises the contact driver end to end on a real problem.
+// shear; with no friction the fault slips until it carries no shear stress.
+// This is the first benchmark with a fault, so the first that exercises the
+// contact driver end to end.
 //
-// GEOMETRY (Fig. 5). The reservoir spans [-b, a] on one side of the fault and
+// Geometry (Fig. 5). The reservoir spans [-b, a] on one side of the fault and
 // [-a, b] on the other, with a = 75 m and b = 150 m -- a thickness of a + b =
 // 225 m and a throw of b - a = 75 m.
 //
-// TWO COMPUTATIONS, and they are different problems:
+// Two computations, and they are different problems:
 //
-//   THE LOCKED FAULT gives the driving Coulomb stress Sigma_C of eq. (18). No
+//   The locked fault gives the driving Coulomb stress Sigma_C of eq. (18). No
 //   contact at all -- the fault is not allowed to slip, so this is the plain
 //   continuous medium under the depletion load, solved once.
 //
-//   THE SLIPPING FAULT gives the tent of eq. (20). The total shear then
+//   The slipping fault gives the tent of eq. (20). The total shear then
 //   vanishes, which is the frictionless condition and the thing to check.
 //
-// THE LAW IS SignoriniCoulomb(friction = 0) -- unilateral and frictionless,
-// which is the physical model. A benchmark exists to TEST laws, so the one that
-// represents the situation is the one that should be run.
+// The law is SignoriniCoulomb(friction = 0) -- unilateral and frictionless, the
+// physical model, rather than the bonded law that gives the same answer here.
 //
-// AND IT ONLY WORKS IF THE LAW IS GIVEN THE TOTAL TRACTION. Signorini
-// constrains t_n <= 0 on the TOTAL stress, and this is an incremental problem --
-// only the depletion response is solved for. The incremental normal traction
-// reaches +8 MPa in tension, but the fault sits on -57 MPa of in-situ
-// compression and is shut by a wide margin, so the law must be told what it is
-// sitting on. That is what the prestress carries. With it, Signorini correctly
-// finds the fault closed and agrees with FrictionlessBilateral to round-off;
-// without it, it reads the tensile increment as opening. The deficiency is in
-// the incremental formulation, not in the law -- and the test below is able to
-// tell the two apart, which is the point of running both.
+// It only works if the law is given the total traction. Signorini constrains
+// t_n <= 0 on the total stress, and this is an incremental problem -- only the
+// depletion response is solved for. The incremental normal traction reaches
+// +8 MPa in tension, but the fault sits on -57 MPa of in-situ compression and is
+// shut by a wide margin, so the law must be told what it is sitting on. That is
+// what the prestress carries. With it, Signorini finds the fault closed and
+// agrees with FrictionlessBilateral to round-off; without it, it reads the
+// tensile increment as opening. The deficiency is in the incremental
+// formulation, not in the law.
 
 using graphos::Index;
-using mimetika::CauchyElasticityModel;
+using mimetika::CauchyMechanicsModel;
 using mimetika::ElasticMaterial;
 using mimetika::benchmarks::Parameters;
 using mimetika::contact::CauchyContactMechanics;
@@ -69,17 +68,16 @@ bool close(double got, double want, double rel) {
   return std::abs(got - want) <= rel * std::abs(want);
 }
 
-// BENCHMARK 1 RUNS ON A MUCH WIDER DOMAIN than Table 2's 4500 m box, because
-// eqs. (18)-(20) are posed for an UNBOUNDED medium and a box that small does not
-// approximate one. The paper says so itself in Sect. 4.1: its own results
-// deviate from the semi-analytical ones and the discrepancy disappears once W is
+// Benchmark 1 runs on a much wider domain than Table 2's 4500 m box, because
+// eqs. (18)-(20) are posed for an unbounded medium and a box that small does not
+// approximate one. Sect. 4.1 of the paper reports the same: its results deviate
+// from the semi-analytical ones and the discrepancy disappears once W is
 // increased, after which it reruns at W = 18,000 m.
 //
-// The HEIGHT stays at Table 2's 4500 m, and that is a physical ceiling rather
-// than an economy: the in-situ state is defined by depth = D0 - y with D0 = 3500
-// m, so a taller domain would put its top above the ground surface, where
-// sigma_xx extrapolates to TENSION and a unilateral law opens the fault for
-// reasons that have nothing to do with the reservoir.
+// The height stays at Table 2's 4500 m, a physical ceiling: the in-situ state is
+// defined by depth = D0 - y with D0 = 3500 m, so a taller domain would put its
+// top above the ground surface, where sigma_xx extrapolates to tension and a
+// unilateral law opens the fault for reasons unrelated to the reservoir.
 Parameters wide() {
   Parameters p;
   p.width = 18000.0;
@@ -90,8 +88,7 @@ Parameters wide() {
 
 // -- the analytic solution ------------------------------------------------------
 
-// THE PUBLISHED CONSTANTS, derived from Table 2 rather than pasted in -- the
-// same discipline as Benchmark 0's in-situ state, and for the same reason.
+// The published constants, derived from Table 2 rather than pasted in.
 MIMETIKA_TEST(the_published_constants) {
   const Parameters p = wide();
   const double C = p.slip_stress_scale(), A = p.slip_stiffness();
@@ -114,8 +111,8 @@ MIMETIKA_TEST(the_peak_slip_is_the_published_value) {
   CHECK(close(p.peak_slip(), 0.18173, 1e-3));
 }
 
-// THE SLIP PROFILE IS A TENT: zero outside |y| = b, rising linearly over the
-// throw, and FLAT at (C/A)(a-b) over the overlap |y| < a where reservoir faces
+// The slip profile is a tent: zero outside |y| = b, rising linearly over the
+// throw, flat at (C/A)(a-b) over the overlap |y| < a where reservoir faces
 // reservoir across the fault.
 MIMETIKA_TEST(the_slip_profile_has_the_published_shape) {
   const Parameters p = wide();
@@ -129,8 +126,8 @@ MIMETIKA_TEST(the_slip_profile_has_the_published_shape) {
   CHECK(close(std::abs(flat), p.peak_slip(), 1e-12));
 }
 
-// AND IT IS CONTINUOUS across all four breakpoints -- there is no jump in slip
-// at the reservoir edges, only a kink.
+// And it is continuous across all four breakpoints: no jump in slip at the
+// reservoir edges, only a kink.
 MIMETIKA_TEST(the_slip_profile_is_continuous) {
   const Parameters p = wide();
   double worst = 0.0, prev = p.analytic_slip(-400.0);
@@ -153,10 +150,10 @@ MIMETIKA_TEST(the_slip_profile_is_symmetric_about_the_reservoir) {
   }
 }
 
-// THE COULOMB STRESS IS EVEN AND SINGULAR AT THE FOUR RESERVOIR EDGES, with
-// OPPOSITE signs at y = a and y = b: the loading jumps one way at the reservoir
-// top and the other at the seal contact, which is what drives slip in a single
-// direction over the whole throw.
+// The Coulomb stress is even and singular at the four reservoir edges, with
+// opposite signs at y = a and y = b: the loading jumps one way at the reservoir
+// top and the other at the seal contact, which drives slip in a single direction
+// over the whole throw.
 MIMETIKA_TEST(the_coulomb_stress_is_even_and_singular_at_the_reservoir_edges) {
   const Parameters p = wide();
   for (const double y : {10.0, 60.0, 120.0, 300.0}) {
@@ -169,8 +166,8 @@ MIMETIKA_TEST(the_coulomb_stress_is_even_and_singular_at_the_reservoir_edges) {
   CHECK((near_a > 0.0) != (near_b > 0.0));  // opposite singularities
 }
 
-// AND IT DECAYS FAR FROM THE RESERVOIR, which is what makes a truncated domain
-// usable at all: by 4 km the driving stress is under 2% of C.
+// And it decays far from the reservoir, which is what makes a truncated domain
+// usable: by 4 km the driving stress is under 2% of C.
 MIMETIKA_TEST(the_coulomb_stress_decays_far_from_the_reservoir) {
   const Parameters p = wide();
   const double far = p.analytic_coulomb_stress(4000.0);
@@ -181,10 +178,10 @@ MIMETIKA_TEST(the_coulomb_stress_decays_far_from_the_reservoir) {
 
 // -- the graded mesh ------------------------------------------------------------
 
-// THE INTERFACES BECOME NODES, exactly. The reservoir edges y = +-a, +-b and the
-// fault x = 0 must land on cell FACES: the depletion is assigned per cell, so an
+// The interfaces become nodes, exactly. The reservoir edges y = +-a, +-b and the
+// fault x = 0 must land on cell faces: the depletion is assigned per cell, so an
 // edge that bisects a cell shifts the loading by half a cell -- the same failure
-// Benchmark 0 refuses outright, here prevented by construction instead.
+// Benchmark 0 refuses outright, here prevented by construction.
 MIMETIKA_TEST(the_graded_mesh_puts_a_node_on_every_interface) {
   const Parameters p = wide();
   const double a = p.fault_a, b = p.fault_b;
@@ -224,9 +221,9 @@ MIMETIKA_TEST(the_graded_mesh_puts_a_node_on_every_interface) {
 
 namespace {
 
-// THE OFFSET RESERVOIR AND THE FAULT IT LOADS.
+// The offset reservoir and the fault it loads.
 //
-// Everything is solved NONDIMENSIONALLY -- stress in units of G, length in units
+// Everything is solved nondimensionally -- stress in units of G, length in units
 // of the domain height -- for the reason Benchmark 0 records: in SI units the
 // compliance and divergence blocks of the mixed saddle point sit ten orders
 // apart and the direct factorization breaks down. Slip comes back in metres and
@@ -234,7 +231,7 @@ namespace {
 struct Setup {
   exokal::Mesh mesh;
   std::vector<Index> fault;  // the x = 0 facets, ordered by y
-  std::vector<double> y;     // their centroids, in METRES
+  std::vector<double> y;     // their centroids, in metres
   std::vector<Index> depleted;
   double unit{1.0}, length{1.0};
 };
@@ -252,7 +249,7 @@ Setup build(const Parameters& p, double spacing, double boundary_spacing = 500.0
   const graphos::Complex& c = s.mesh.topology();
   const graphos::CoboundaryOperator cob = graphos::coboundary(c, 1);
 
-  // the fault: the INTERIOR facets on x = 0, running the full height
+  // the fault: the interior facets on x = 0, running the full height
   std::vector<std::pair<double, Index>> ordered;
   for (Index f = 0; f < c.count(1); ++f) {
     const exokal::Point x = exokal::centroid(s.mesh, 1, f);
@@ -268,9 +265,9 @@ Setup build(const Parameters& p, double spacing, double boundary_spacing = 500.0
     s.y.push_back(yi * L);
   }
 
-  // THE RESERVOIR IS DISPLACED ACROSS THE FAULT: [-b, a] on the left and
+  // The reservoir is displaced across the fault: [-b, a] on the left and
   // [-a, b] on the right, so each side faces seal over part of the throw. That
-  // offset IS the loading -- with no throw there is no shear on the fault and
+  // offset is the loading -- with no throw there is no shear on the fault and
   // nothing to slip.
   for (Index e = 0; e < c.count(2); ++e) {
     const exokal::Point x = exokal::centroid(s.mesh, 2, e);
@@ -282,7 +279,7 @@ Setup build(const Parameters& p, double spacing, double boundary_spacing = 500.0
 }
 
 // the model, in units of G, with the depletion load and the roller frame
-std::unique_ptr<CauchyElasticityModel> make_model(const Setup& s, const Parameters& p,
+std::unique_ptr<CauchyMechanicsModel> make_model(const Setup& s, const Parameters& p,
                                                   bool prescribe_fault) {
   const int dim = 2;
   Parameters q = p;  // in units of G
@@ -295,22 +292,22 @@ std::unique_ptr<CauchyElasticityModel> make_model(const Setup& s, const Paramete
     (std::abs(exokal::centroid(s.mesh, 1, f)[1] - 0.5) < 1e-9 ? top : rollers).push_back(f);
   }
 
-  auto model = std::make_unique<CauchyElasticityModel>(s.mesh, dim,
+  auto model = std::make_unique<CauchyMechanicsModel>(s.mesh, dim,
                                                        ElasticMaterial{q.shear_modulus, q.lame()});
   model->mechanics().emplace<mimetika::TractionBC>(top, std::array<double, 9>{});
   model->mechanics().emplace<mimetika::FreeSlipBC>(rollers);
   model->pressurize(s.depleted, q.depletion, q.biot, q.volumetric_compliance(dim));
-  // BEFORE build(): prescribing changes which equations the system has
+  // before build(): prescribing changes which equations the system has
   if (prescribe_fault) model->prescribe_traction(s.fault);
   model->build();
   return model;
 }
 
-// THE LOCKED FAULT: no contact at all, so the shear it carries is the driving
+// The locked fault: no contact at all, so the shear it carries is the driving
 // Coulomb stress Sigma_C of eq. (18). On a vertical fault with no in-situ shear
-// the Coulomb stress IS sigma_xy.
+// the Coulomb stress is sigma_xy.
 std::vector<double> pre_slip_coulomb_stress(const Setup& s, const Parameters& p) {
-  const std::unique_ptr<CauchyElasticityModel> model = make_model(s, p, false);
+  const std::unique_ptr<CauchyMechanicsModel> model = make_model(s, p, false);
   mimetika::solver::PetscSolver petsc;
   std::vector<double> x;
   const auto report = petsc.solve(model->system(), model->rhs(), x);
@@ -327,20 +324,20 @@ std::vector<double> pre_slip_coulomb_stress(const Setup& s, const Parameters& p)
 
 struct Slipped {
   std::vector<double> slip;    // metres, tangential
-  std::vector<double> normal;  // Pa, the INCREMENTAL normal traction
+  std::vector<double> normal;  // Pa, the incremental normal traction
   std::vector<double> shear;   // Pa, the total shear on the fault
   int iterations{0};
   bool converged{false};
   double peak{0.0};
 };
 
-// THE SLIPPING FAULT. `prestress` is the whole question of this benchmark: with
-// it the unilateral law sees the total traction and finds the fault shut;
-// without it, it reads the tensile increment as opening.
+// The slipping fault. With `prestress` the unilateral law sees the total
+// traction and finds the fault shut; without it, it reads the tensile increment
+// as opening.
 Slipped simulate(const Setup& s, const Parameters& p, const mimetika::contact::ContactLaw& law,
                  bool prestress = true) {
   const int dim = 2;
-  const std::unique_ptr<CauchyElasticityModel> model = make_model(s, p, true);
+  const std::unique_ptr<CauchyMechanicsModel> model = make_model(s, p, true);
   const Fracture fr(s.mesh, dim, s.fault, model->stress_operators().moments_per_facet());
   const CauchyContactMechanics mech(*model, fr);
 
@@ -348,7 +345,7 @@ Slipped simulate(const Setup& s, const Parameters& p, const mimetika::contact::C
   opt.relaxation = 1.0;  // the projection is affine here, so no damping is needed
   opt.tolerance = 1e-11;
   opt.max_iterations = 50;
-  // NEWTON, NOT PICARD. A fault that cuts the domain has a dense Ghat -- every
+  // Newton, not Picard. A fault that cuts the domain has a dense Ghat -- every
   // facet feels every other -- so no scalar augmentation makes I + r Ghat a
   // contraction, and the Picard sweep diverges in the normal component while its
   // slip profile is already right. Newton is indifferent to that, and for this
@@ -360,7 +357,7 @@ Slipped simulate(const Setup& s, const Parameters& p, const mimetika::contact::C
                        mimetika::contact::default_augmentation(s.mesh, dim, s.fault, mu, lam), opt);
 
   if (prestress) {
-    // A CONTACT LAW CONSTRAINS THE TOTAL TRACTION, so an incremental solve has
+    // A contact law constrains the total traction, so an incremental solve has
     // to tell it what it is sitting on. On a vertical fault the in-situ normal
     // traction is sigma_xx(y) ~ -57 MPa and the shear vanishes.
     std::vector<Vec3> pre(s.fault.size());
@@ -385,9 +382,8 @@ Slipped simulate(const Setup& s, const Parameters& p, const mimetika::contact::C
 
 }  // namespace
 
-// THE OFFSET IS WHAT LOADS THE FAULT, so the pressure field must be displaced:
-// [-b, a] on the left and [-a, b] on the right. With no throw the two sides
-// would face reservoir everywhere, there would be no shear, and nothing to slip.
+// The offset is what loads the fault, so the pressure field must be displaced:
+// [-b, a] on the left and [-a, b] on the right.
 MIMETIKA_TEST(the_offset_reservoir_is_built_correctly) {
   const Parameters p = wide();
   const Setup s = build(p, 25.0);
@@ -422,17 +418,16 @@ MIMETIKA_TEST(the_offset_reservoir_is_built_correctly) {
   CHECK(s.fault.size() == rows.size());
 }
 
-// THE LOCKED FAULT CARRIES THE DRIVING STRESS of eq. (18): the plain continuous
+// The locked fault carries the driving stress of eq. (18): the plain continuous
 // medium under the depletion load, with no contact anywhere. This is Fig. 6's
 // left panel, which the paper compares graphically; the same comparison is made
 // here as an assertion.
 //
-// THE FOUR SINGULARITIES ARE SKIPPED, and that is the figure's own convention
-// rather than a convenience: eq. (18) is logarithmically singular at y = +-a and
-// y = +-b, so the analytic markers in Fig. 6 deliberately avoid them and no
-// cell-centred value could follow it there.
+// The four singularities are skipped, which is the figure's own convention:
+// eq. (18) is logarithmically singular at y = +-a and y = +-b, so the analytic
+// markers in Fig. 6 avoid them and no cell-centred value could follow it there.
 //
-// THE TRACTION IS READ ON THE FAULT FACETS, not from the cells beside them. In
+// The traction is read on the fault facets, not from the cells beside them. In
 // Hellinger-Reissner the facet traction moments are primary unknowns, so this is
 // the value on the plane itself; a cell-centred sigma_xy is sampled half a cell
 // away, where the stress has already decayed, and no amount of refinement along
@@ -465,10 +460,9 @@ MIMETIKA_TEST(the_locked_fault_carries_the_analytic_coulomb_stress) {
 
 // -- the slipping fault ----------------------------------------------------------
 
-// A FRICTIONLESS FAULT CARRIES NO SHEAR, which is the whole of the constitutive
-// statement and the first thing to check. It is not approximately zero: the law
-// projects the shear to zero at every enforcement point, so what remains is the
-// residual of the fixed point and nothing else.
+// A frictionless fault carries no shear, the whole of the constitutive
+// statement. Not approximately zero: the law projects the shear to zero at every
+// enforcement point, so what remains is the residual of the fixed point.
 MIMETIKA_TEST(the_frictionless_fault_carries_no_shear_traction) {
   const Parameters p = wide();
   const Setup s = build(p, 25.0);
@@ -484,7 +478,7 @@ MIMETIKA_TEST(the_frictionless_fault_carries_no_shear_traction) {
   CHECK(shear <= 1e-8 * std::max(normal, 1.0));
 }
 
-// AND THE SLIP IS THE TENT OF EQ. (20). The peak is the number the paper
+// And the slip is the tent of eq. (20). The peak is the number the paper
 // reports; the profile is compared over the support of the analytic solution.
 MIMETIKA_TEST(the_peak_slip_is_close_to_the_analytic_value) {
   const Parameters p = wide();
@@ -504,7 +498,7 @@ MIMETIKA_TEST(the_peak_slip_is_close_to_the_analytic_value) {
   CHECK(close(r.peak, p.peak_slip(), 0.15));
 }
 
-// THE SLIP IS LOCALISED AT THE RESERVOIR: the analytic tent is supported on
+// The slip is localised at the reservoir: the analytic tent is supported on
 // |y| <= b, and while the numerical solution carries a far-field tail the
 // reservoir must dominate it by a wide margin.
 MIMETIKA_TEST(the_slip_is_localised_at_the_reservoir) {
@@ -522,14 +516,11 @@ MIMETIKA_TEST(the_slip_is_localised_at_the_reservoir) {
 
 // -- what the prestress is for ---------------------------------------------------
 
-// WITHOUT THE PRESTRESS THE UNILATERAL LAW OPENS THE FAULT. The incremental
-// normal traction is TENSILE -- depletion unloads the horizontal stress -- so a
+// Without the prestress the unilateral law opens the fault. The incremental
+// normal traction is tensile -- depletion unloads the horizontal stress -- so a
 // law shown only the increment clips it to zero and reports an open fault. Shown
 // the total, the same law finds it shut under 57 MPa of in-situ compression.
-//
-// This is the failure the benchmark is able to detect, and running both is the
-// only way it is detected: the slip profiles differ, but not so obviously that
-// an eye would catch it.
+// The slip profiles differ only slightly, so both are run.
 MIMETIKA_TEST(without_the_prestress_the_unilateral_law_opens_the_fault) {
   const Parameters p = wide();
   const Setup s = build(p, 25.0);
@@ -542,15 +533,14 @@ MIMETIKA_TEST(without_the_prestress_the_unilateral_law_opens_the_fault) {
   for (const double t : without.normal) clipped = std::max(clipped, t);
   std::printf("  max incremental t_n:  with prestress %+.3e Pa   without %+.3e Pa\n", kept,
               clipped);
-  CHECK(kept > 1e6);      // the tensile increment is KEPT: the fault is shut
+  CHECK(kept > 1e6);      // the tensile increment is kept: the fault is shut
   CHECK(clipped < 1e-6);  // and clipped without it: the fault is read as open
 }
 
-// AND THE TWO LAWS AGREE ONCE BOTH SEE THE TOTAL TRACTION. FrictionlessBilateral
+// And the two laws agree once both see the total traction. FrictionlessBilateral
 // holds the fault shut by construction; SignoriniCoulomb(0) decides that it is
-// shut. Since it really is, the two must give the same answer -- and to
-// round-off, not approximately, because the unilateral branch is simply never
-// taken.
+// shut. Since it really is, the two must give the same answer to round-off,
+// because the unilateral branch is never taken.
 MIMETIKA_TEST(the_two_laws_agree_once_both_see_the_total_traction) {
   const Parameters p = wide();
   const Setup s = build(p, 25.0);
@@ -567,10 +557,9 @@ MIMETIKA_TEST(the_two_laws_agree_once_both_see_the_total_traction) {
 
 // -- the domain truncation -------------------------------------------------------
 
-// W = 4500 m IS TOO NARROW, AS THE PAPER SAYS. Section 4.1 reports the reference
+// W = 4500 m is too narrow, as the paper says. Section 4.1 reports the reference
 // code deviating from the semi-analytical solution on Table 2's box, cured by
-// widening to 18 km. Pinning both ends here records WHY the domain is 18 km and
-// keeps it from being changed back by accident.
+// widening to 18 km. Pinning both ends here records why the domain is 18 km.
 MIMETIKA_TEST(the_narrow_domain_reproduces_the_published_discrepancy) {
   const Parameters narrow_p;  // Table 2's 4500 m box
   const Parameters wide_p = wide();
@@ -585,10 +574,10 @@ MIMETIKA_TEST(the_narrow_domain_reproduces_the_published_discrepancy) {
   CHECK(std::abs(broad.peak / target - 1.0) < 0.03);  // and on the analytic value
 }
 
-// THE SOLVE CONVERGES, AND IN A HANDFUL OF ITERATIONS -- Newton, not Picard.
-// The count is the diagnostic: an affine law makes the condensed residual linear,
-// so Newton is exact in one step and anything beyond a few iterations would mean
-// the tangent is not the derivative.
+// The solve converges in a handful of iterations. The count is the diagnostic:
+// an affine law makes the condensed residual linear, so Newton is exact in one
+// step and anything beyond a few iterations would mean the tangent is not the
+// derivative.
 MIMETIKA_TEST(the_solve_converges) {
   const Parameters p = wide();
   const Setup s = build(p, 25.0);
@@ -598,14 +587,14 @@ MIMETIKA_TEST(the_solve_converges) {
   CHECK(r.iterations <= 10);
 }
 
-// THE SLIP IS SYMMETRIC ABOUT THE RESERVOIR, as the analytic profile is.
+// The slip is symmetric about the reservoir, as the analytic profile is.
 //
-// Compared against the PEAK rather than against the local value: the offset
+// Compared against the peak rather than against the local value: the offset
 // reservoir is symmetric only under the point reflection (x, y) -> (-x, -y), and
-// the boundary conditions -- free top, roller base -- are not y-symmetric at
-// all, so the far field carries a small absolute asymmetry that is large in
-// relative terms precisely where the slip is near zero. Checked tightly on
-// |y| <= b, the support of the analytic tent, and loosely outside it.
+// the boundary conditions -- free top, roller base -- are not y-symmetric, so
+// the far field carries a small absolute asymmetry that is large in relative
+// terms precisely where the slip is near zero. Checked tightly on |y| <= b, the
+// support of the analytic tent, and loosely outside it.
 MIMETIKA_TEST(the_slip_is_symmetric_about_the_reservoir) {
   const Parameters p = wide();
   const Setup s = build(p, 25.0);
@@ -636,13 +625,12 @@ MIMETIKA_TEST(the_slip_is_symmetric_about_the_reservoir) {
   CHECK(outer.first < 2e-2 * r.peak);
 }
 
-// REFINEMENT CONVERGES -- but not necessarily ONTO the analytic peak, and the
-// distinction is the point of this test.
+// Refinement converges, but not necessarily onto the analytic peak.
 //
-// On the wide domain the peak overshoots by around 1% and SETTLES there. That
+// On the wide domain the peak overshoots by around 1% and settles there. That
 // residual is the fault compliance's own discretization error, not a failure to
 // converge, so demanding the peak error shrink would be demanding the wrong
-// thing. What must hold is that the whole PROFILE converges and the peak stays
+// thing. What must hold is that the whole profile converges and the peak stays
 // bounded.
 MIMETIKA_TEST(refinement_converges_and_stays_close_to_the_analytic_peak) {
   const Parameters p = wide();
@@ -665,12 +653,8 @@ MIMETIKA_TEST(refinement_converges_and_stays_close_to_the_analytic_peak) {
   CHECK(std::max(peak[0], peak[1]) < 0.03);  // and the peak stays put
 }
 
-// THE DEFAULT LAW IS THE UNILATERAL ONE. Benchmark 1 runs SignoriniCoulomb at
-// zero friction -- the physical model -- rather than the bonded law that happens
-// to give the same answer here. A benchmark exists to test laws, so the one that
-// represents the situation is the one that should be run, and the fact that it
-// KEEPS the tensile increment is the evidence it decided the fault was shut
-// rather than being told so.
+// The default law is the unilateral one. That it keeps the tensile increment is
+// the evidence it decided the fault was shut rather than being told so.
 MIMETIKA_TEST(the_default_law_is_the_unilateral_one) {
   const Parameters p = wide();
   const Setup s = build(p, 25.0);
@@ -681,7 +665,7 @@ MIMETIKA_TEST(the_default_law_is_the_unilateral_one) {
   CHECK(r.converged);
   double kept = -1e300;
   for (const double t : r.normal) kept = std::max(kept, t);
-  CHECK(kept > 1e6);  // tension kept: the unilateral branch was NOT taken
+  CHECK(kept > 1e6);  // tension kept: the unilateral branch was not taken
 }
 
 MIMETIKA_TEST_MAIN()

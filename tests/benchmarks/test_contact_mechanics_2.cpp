@@ -10,39 +10,38 @@
 #include "mimetika/algebraic_constraints/contact/cauchy_mechanics.hpp"
 #include "mimetika/algebraic_constraints/contact/driver.hpp"
 #include "mimetika/benchmarks/novikov_2024.hpp"
-#include "mimetika/model/cauchy_elasticity_model.hpp"
+#include "mimetika/model/cauchy_mechanics_model.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
 
-// BENCHMARK 2 of Novikov et al. (2024): the INCLINED displaced fault, with
+// Benchmark 2 of Novikov et al. (2024): the inclined displaced fault, with
 // constant Coulomb friction (paper 4.1).
 //
 // The reservoir of benchmark 1, but the fault dips 70 degrees from horizontal
 // and carries friction mu = 0.52. Depletion loads it in shear; where the shear
-// traction reaches the slip threshold -mu times the EFFECTIVE normal traction,
+// traction reaches the slip threshold -mu times the effective normal traction,
 // the fault slips. At -25 MPa the slip occurs in two separate patches around
 // the reservoir edges at y = +-75 m; the patches grow with depletion and merge
 // near -27 MPa (the paper's Fig. 12).
 //
-// THIS IS THE FIRST BENCHMARK WITH A REAL FRICTION CONE. Benchmark 1 was
-// frictionless, so its projection was affine and the tangent was trivially
-// block-diagonal. Here the cone couples the shear to the normal at every
-// sliding point, the tangent stops being trivial, and the semismooth Newton is
-// solving a genuinely nonlinear system -- which is what the AD tangent was
-// built for.
+// The first benchmark with a real friction cone. Benchmark 1 was frictionless,
+// so its projection was affine and the tangent was block-diagonal. Here the cone
+// couples the shear to the normal at every sliding point and the semismooth
+// Newton is solving a nonlinear system, which is what the AD tangent was built
+// for.
 //
-// THE GEOMETRY IS STATED AS A SHAPE COMPLEX. The fault spans the domain, so it
-// is a shared BOUNDARY of the rock on either side rather than an immersed
-// curve, and the reservoir interfaces divide each side into seal / reservoir /
-// seal. Every region is named and the mesh is graded about the fault. Nothing
-// here is a mesher script: it is the geometry, and gmsh is asked to realize it.
+// The geometry is stated as a shape complex. The fault spans the domain, so it
+// is a shared boundary of the rock on either side rather than an immersed curve,
+// and the reservoir interfaces divide each side into seal / reservoir / seal.
+// Every region is named and the mesh is graded about the fault; gmsh is asked to
+// realize it.
 //
-// WHAT IS COMPARED. The paper's post-slip solution is semi-analytical (Cauchy
+// What is compared. The paper's post-slip solution is semi-analytical (Cauchy
 // singular integral equations) and is published as a dataset rather than a
 // formula; its slip rows are corrupt, which the Python reference records, so
-// the paper's own REPORTED OBSERVABLES are what a solver can be held to: the
+// the paper's own reported observables are what a solver can be held to: the
 // two-patch structure, where the patches sit, and that they grow with
 // depletion. Those are checked here, together with the conditions the law
-// itself encodes -- which hold pointwise and are not a matter of reference data.
+// itself encodes, which hold pointwise and are not a matter of reference data.
 
 #include <string>
 
@@ -59,16 +58,16 @@ using novikov::simulate;
 using novikov::Slipped;
 using novikov::wide;
 
-// THE FACET FRAMES ALONG THE FAULT MUST NOT FLIP.
+// The facet frames along the fault must not flip.
 //
-// The in-situ shear prestress is t . sigma . n -- BILINEAR in the frame, so it
+// The in-situ shear prestress is t . sigma . n -- bilinear in the frame, so it
 // changes sign if one facet's frame is oriented opposite to its neighbour's.
-// The normal component n . sigma . n is quadratic and cannot. So a frame flip
-// is invisible in the normal traction and inverts the shear, which is exactly
-// the asymmetry a fault slipping on one side only would show.
+// The normal component n . sigma . n is quadratic and cannot. A frame flip is
+// therefore invisible in the normal traction and inverts the shear, the same
+// asymmetry a fault slipping on one side only would show.
 //
-// Benchmark 1 could never have caught this: a vertical fault carries no in-situ
-// shear, so the sign of a quantity that is identically zero does not matter.
+// Benchmark 1 could not catch this: a vertical fault carries no in-situ shear,
+// so the sign of a quantity that is identically zero does not matter.
 MIMETIKA_TEST(the_fault_facet_frames_do_not_flip) {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   const Parameters p = wide();
@@ -95,25 +94,23 @@ MIMETIKA_TEST(the_fault_facet_frames_do_not_flip) {
   CHECK(flips == 0);
 }
 
-// IS THE SOLUTION SYMMETRIC AS THE GEOMETRY IS?
+// Is the solution symmetric as the geometry is?
 //
-// The offset reservoir and the dipping fault are invariant under the POINT
-// REFLECTION (x, y) -> (-x, -y): the left band [-b, a] maps onto the right band
+// The offset reservoir and the dipping fault are invariant under the point
+// reflection (x, y) -> (-x, -y): the left band [-b, a] maps onto the right band
 // [-a, b], and the fault line y = x tan(theta) maps onto itself. The in-situ
 // state is not symmetric -- it has a depth gradient -- but that gradient is
-// small over +-100 m compared with the depletion response, so the SLIP should
+// small over +-100 m compared with the depletion response, so the slip should
 // be very nearly mirror-symmetric in y.
 //
 // The reference is: patches [-77.8, -36.6] and [+30.9, +77.8], peaks 8.15 and
-// 9.23 mm -- mirror images to within the depth gradient. Mine freeze one side
-// at [-82, -55] through an entire depletion sweep while the other grows, which
-// is not a small asymmetry but a qualitative one.
+// 9.23 mm -- mirror images to within the depth gradient.
 //
-// The gap is the first quantity whose sign is NOT invariant under a facet frame
+// The gap is the first quantity whose sign is not invariant under a facet frame
 // flip: [[u]] depends on which side is "+", so it must flip with the canonical
 // normal and `Fracture::to_frame` must undo that. Where the two conventions
-// disagree, a facet's slip is signed backwards -- and a backwards facet can
-// never join a growing patch.
+// disagree a facet's slip is signed backwards, and a backwards facet can never
+// join a growing patch.
 MIMETIKA_TEST(the_slip_is_symmetric_as_the_geometry_is) {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   const Parameters p = wide();
@@ -123,11 +120,11 @@ MIMETIKA_TEST(the_slip_is_symmetric_as_the_geometry_is) {
   const Slipped r = novikov::solve_on(prep, s, p, p.depletion, law);
   CHECK(r.converged);
 
-  // PAIR-AVERAGED, because that is the quantity the reference reports.
+  // Pair-averaged, because that is the quantity the reference reports.
   //
   // The exact set-valued law leaves an alternating active set on a near-threshold
-  // plateau: every point there sits ON the cone (Sigma_C = 0) so the TRACTION is
-  // determined, while the slip MAGNITUDE is not, facet to facet. That mode is
+  // plateau: every point there sits on the cone (Sigma_C = 0) so the traction is
+  // determined, while the slip magnitude is not, facet to facet. That mode is
   // mean-zero at the sampling frequency, so a two-facet average annihilates it
   // and leaves everything else to second order. Comparing raw per-facet slip
   // against a reference measures that oscillation, not the solution.
@@ -169,12 +166,12 @@ MIMETIKA_TEST(the_slip_is_symmetric_as_the_geometry_is) {
 
 // -- the geometry ----------------------------------------------------------------
 
-// THE SHAPE COMPLEX IS THE DOMAIN. The fault spans it, so it is a shared
+// The shape complex is the domain. The fault spans it, so it is a shared
 // boundary; the reservoir is named surfaces, so its area is exact rather than
 // the result of a centroid test; and the mesh conforms to both by construction.
 MIMETIKA_TEST(the_geometry_is_a_shape_complex_with_the_fault_as_a_shared_boundary) {
-  // UNBUFFERED, so that a crash inside a solve does not take the record of
-  // which test was running down with it
+  // unbuffered, so a crash inside a solve does not take the record of which
+  // test was running down with it
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   const Parameters p = wide();
   const Setup s = build(p, 12.0, 1500.0, 400.0, 40.0, 2.0);
@@ -196,9 +193,9 @@ MIMETIKA_TEST(the_geometry_is_a_shape_complex_with_the_fault_as_a_shared_boundar
   for (const Index e : s.depleted) {
     reservoir += exokal::measure(s.mesh, 2, e) * s.length * s.length;
   }
-  // TWO BANDS OF THICKNESS a + b, one on each side of the fault -- and their
-  // areas are NOT mirror images, because the fault leans. Integrating the two
-  // strips against the fault line x = y cot(theta),
+  // Two bands of thickness a + b, one on each side of the fault; their areas are
+  // not mirror images, because the fault leans. Integrating the two strips
+  // against the fault line x = y cot(theta),
   //
   //     A = W (a + b) + cot(theta) (a^2 - b^2) ,
   //
@@ -214,7 +211,7 @@ MIMETIKA_TEST(the_geometry_is_a_shape_complex_with_the_fault_as_a_shared_boundar
   CHECK(close(reservoir, want, 1e-9));
 }
 
-// THE THROW IS WHAT LOADS THE FAULT. The reservoir is offset across it, so each
+// The throw is what loads the fault. The reservoir is offset across it, so each
 // side faces seal over part of the throw; with no offset there would be no shear
 // and nothing to slip.
 MIMETIKA_TEST(the_reservoir_is_offset_across_the_inclined_fault) {
@@ -238,7 +235,7 @@ MIMETIKA_TEST(the_reservoir_is_offset_across_the_inclined_fault) {
               left_lo, left_hi, right_lo, right_hi, p.fault_a, p.fault_b);
   CHECK(left_lo < right_lo);  // offset in y: the throw
   CHECK(left_hi < right_hi);
-  // CENTROIDS, so they lie strictly INSIDE their band and never reach its edge
+  // centroids, so they lie strictly inside their band and never reach its edge
   CHECK(left_lo > -p.fault_b && left_hi < p.fault_a);
   CHECK(right_lo > -p.fault_a && right_hi < p.fault_b);
   // and the offset is the throw, to within a cell
@@ -248,16 +245,15 @@ MIMETIKA_TEST(the_reservoir_is_offset_across_the_inclined_fault) {
 
 // -- the friction cone ------------------------------------------------------------
 
-// THE COULOMB CONDITION HOLDS AT EVERY POINT, which is the constitutive content
+// The Coulomb condition holds at every point, which is the constitutive content
 // of the law and does not depend on any reference data:
 //
 //     t_n <= 0        no tension on a fault under kilometres of overburden
 //     |t_t| <= -mu t_n    inside the cone
 //     slip > 0 only where |t_t| = -mu t_n
 //
-// The last is the complementarity: a point that slips must sit ON the cone, and
-// a point inside it must be stuck. This is where a real friction cone differs
-// from benchmark 1's frictionless law, and where the AD tangent is doing work.
+// The last is the complementarity: a point that slips must sit on the cone, and
+// a point inside it must be stuck.
 MIMETIKA_TEST(the_coulomb_condition_holds_at_every_point_of_the_fault) {
   const Parameters p = wide();
   const Setup s = build(p, 12.0, 1500.0, 400.0, 40.0, 2.0);
@@ -294,10 +290,10 @@ MIMETIKA_TEST(the_coulomb_condition_holds_at_every_point_of_the_fault) {
 
 // -- the two slip patches -----------------------------------------------------------
 
-// SLIP OCCURS IN TWO SEPARATE PATCHES, one about each reservoir edge y = +-a.
-// That is the paper's central observation for this benchmark, and it is a
-// consequence of the throw: the driving Coulomb stress peaks where reservoir
-// faces seal, and the fault is still stuck in between.
+// Slip occurs in two separate patches, one about each reservoir edge y = +-a.
+// That is the paper's central observation for this benchmark, and a consequence
+// of the throw: the driving Coulomb stress peaks where reservoir faces seal, and
+// the fault is still stuck in between.
 MIMETIKA_TEST(slip_occurs_in_two_patches_about_the_reservoir_edges) {
   const Parameters p = wide();
   const Setup s = build(p, 12.0, 1500.0, 400.0, 40.0, 2.0);
@@ -315,9 +311,9 @@ MIMETIKA_TEST(slip_occurs_in_two_patches_about_the_reservoir_edges) {
   CHECK(std::abs(found[1].second) < 3.0 * p.fault_b);
 }
 
-// AND THEY GROW WITH DEPLETION, which is what Fig. 12 tracks. The patches
+// And they grow with depletion, which is what Fig. 12 tracks. The patches
 // lengthen as the pressure falls and eventually merge; here it is enough that
-// the trend is monotone, which no amount of reference data is needed to state.
+// the trend is monotone.
 MIMETIKA_TEST(the_patches_grow_with_depletion) {
   const Parameters p = wide();
   const Setup s = build(p, 12.0, 1500.0, 400.0, 40.0, 2.0);
@@ -339,10 +335,10 @@ MIMETIKA_TEST(the_patches_grow_with_depletion) {
 
 // -- Fig. 3: the initial stresses on the 70-degree line -------------------------
 
-// THE IN-SITU STATE RESOLVED ON THE FAULT PLANE, before anything is depleted.
+// The in-situ state resolved on the fault plane, before anything is depleted.
 // Both components are linear in depth and both follow from Table 2, so this is
-// a check on the SETUP -- and on the rotation, which benchmark 1 never
-// exercised because a vertical fault carries no in-situ shear.
+// a check on the setup and on the rotation, which benchmark 1 never exercised
+// because a vertical fault carries no in-situ shear.
 MIMETIKA_TEST(the_initial_stresses_on_the_seventy_degree_line) {
   const Parameters p = wide();
   std::vector<double> y, perp, para;
@@ -363,7 +359,7 @@ MIMETIKA_TEST(the_initial_stresses_on_the_seventy_degree_line) {
   CHECK(close(fit_n[1], 17.15e3, 5e-3));
   CHECK(close(std::abs(fit_t[0]), 8.21e6, 5e-3));
   CHECK(close(std::abs(fit_t[1]), 2.35e3, 5e-3));
-  // both are EXACTLY linear -- the paper states them as such
+  // both are exactly linear -- the paper states them as such
   for (std::size_t i = 0; i < y.size(); ++i) {
     CHECK(std::abs(perp[i] - (fit_n[0] + fit_n[1] * y[i])) < 1e-6);
     CHECK(std::abs(para[i] - (fit_t[0] + fit_t[1] * y[i])) < 1e-6);
@@ -372,17 +368,16 @@ MIMETIKA_TEST(the_initial_stresses_on_the_seventy_degree_line) {
 
 // -- Fig. 8: the pre-slip stresses on the locked fault ---------------------------
 
-// THE DRIVING STRESS, and the figure that says whether the fault slips at all.
+// The driving stress, and the figure that says whether the fault slips at all.
 //
-// Sigma_parallel SPIKES at the four reservoir corners -- the loading jumps
-// there -- reaching about 27 MPa against 18 MPa at the fault centre, and it is
-// that spike which carries the fault past the threshold. Sigma_C is therefore
-// POSITIVE in two bands about y = +-a and NEGATIVE between them, which is the
-// two-patch structure before any contact solve is done.
+// Sigma_parallel spikes at the four reservoir corners -- the loading jumps
+// there -- reaching about 27 MPa against 18 MPa at the fault centre, and that
+// spike carries the fault past the threshold. Sigma_C is therefore positive in
+// two bands about y = +-a and negative between them, the two-patch structure
+// before any contact solve is done.
 //
-// Getting this wrong is what a coarse mesh does: smear the corners and the
-// excess appears at the centre instead, so the fault slips in the one place the
-// paper says it does not.
+// A coarse mesh smears the corners, and the excess then appears at the centre
+// instead, so the fault slips in the one place the paper says it does not.
 MIMETIKA_TEST(the_pre_slip_coulomb_stress_peaks_at_the_reservoir_corners) {
   const Parameters p = wide();
   const Setup s = build(p, 12.0, 1500.0, 400.0, 40.0, 2.0);
@@ -407,24 +402,24 @@ MIMETIKA_TEST(the_pre_slip_coulomb_stress_peaks_at_the_reservoir_corners) {
   std::printf("  y=%+5.0f  Sigma_par %6.2f MPa  Sigma_C %+6.2f MPa   (paper 27.0, +7.0)\n",
               corner_y, corner_para / 1e6, corner_coulomb / 1e6);
 
-  // THE SPIKE IS THERE: the corner carries markedly more shear than the centre
+  // the spike is there: the corner carries markedly more shear than the centre
   CHECK(corner_para > centre_para);
-  // the centre is BELOW the threshold and the corner ABOVE it -- the two-patch
+  // the centre is below the threshold and the corner above it -- the two-patch
   // structure, read off the locked solve before any contact iteration
   CHECK(centre_coulomb < 0.0);
   CHECK(corner_coulomb > 0.0);
 }
 
-// -- Fig. 8, POINTWISE against the paper's own dataset ---------------------------
+// -- Fig. 8, pointwise against the paper's own dataset ---------------------------
 //
 // The semi-analytical solution is not a closed form, so this is the only
 // comparison that can be made pointwise: the authors' published Sigma_shear and
 // Sigma_slip on the locked fault at p = -25 MPa, interpolated onto the fault
 // facets and differenced.
 //
-// AT THE PAPER'S FAULT RESOLUTION, 2 m. Sigma_parallel is near-singular at the
-// four reservoir corners, and a coarser fault mesh does not merely blur it -- it
-// loses the peak that decides whether the fault slips at all.
+// At the paper's fault resolution, 2 m. Sigma_parallel is near-singular at the
+// four reservoir corners, and a coarser fault mesh loses the peak that decides
+// whether the fault slips at all.
 MIMETIKA_TEST(the_pre_slip_stresses_match_the_published_dataset) {
   const Parameters p = wide();
   const Setup s = build(p, 2.0, 1500.0, 300.0, 20.0, 1.0);
@@ -465,12 +460,12 @@ MIMETIKA_TEST(the_pre_slip_stresses_match_the_published_dataset) {
   CHECK(worst_c < 2.5e6);
 }
 
-// -- Figs. 9 and 10: the POST-SLIP Coulomb function, pointwise -------------------
+// -- Figs. 9 and 10: the post-slip Coulomb function, pointwise -------------------
 //
 // Sigma_C on the slipped state: identically zero on the slipping patches -- a
-// point that slides sits ON the cone -- and negative where the fault still
-// holds. So this one curve carries both the stress answer and the patch
-// structure, and its zeros ARE the patch boundaries that Fig. 12 tracks.
+// point that slides sits on the cone -- and negative where the fault still
+// holds. This one curve carries both the stress answer and the patch structure,
+// and its zeros are the patch boundaries that Fig. 12 tracks.
 //
 // Fig. 9 is the Table 2 domain and Fig. 10 the wide one. The paper plots them
 // separately because the fault answer is insensitive to the truncation while
@@ -487,27 +482,26 @@ MIMETIKA_TEST(the_post_slip_coulomb_function_matches_the_published_dataset) {
       const std::string tag = level == -25e6 ? "25" : "27";
       const std::vector<double>& ry = ref["y_" + tag];
       const std::vector<double>& rc = ref["Sigma_C_post_" + tag];
-      // warm-started from the locked solution: a cold start diverges here
-      // THE LOCKED WARM START IS FOR THE CONFINED DOMAIN ONLY, which is what
+      // The locked warm start is for the confined domain only, which is what
       // the Python does: `warm_from_locked = width <= 4500`. On W = 4500 the
       // cold start diverges into a spurious whole-fault runaway; on the wide
       // domain it does not, and forcing the locked start there lands the
-      // iteration on a DIFFERENT admissible stick/slip partition -- converged,
+      // iteration on a different admissible stick/slip partition -- converged,
       // Coulomb-satisfied, and not the reference's.
       const bool confined = width <= 4500.0;
       const ContactState warm = confined ? novikov::locked_start(s, p, level, law) : ContactState{};
       const Slipped r = simulate(s, p, level, law, confined ? &warm : nullptr);
       CHECK(r.converged);
 
-      // THE REFERENCE COMPARISON IS AN RMS OVER |y| <= 100 m, which is what the
-      // Python reports and the only statistic that means anything here.
+      // The reference comparison is an RMS over |y| <= 100 m, which is what the
+      // Python reports.
       //
       // Sigma_C is near-singular at the four reservoir corners and the profile
       // runs to +-250 m, so a worst-case over the full window is dominated by
       // two cells next to a logarithmic singularity -- it measures the mesh at
       // the corner, not the agreement on the fault. The Python quotes
       // rms = 0.100 MPa against a scale of 8.9 MPa over the slipping region.
-      // PAIR-AVERAGED, for the same reason the slip is: the plateau's active set
+      // Pair-averaged, for the same reason the slip is: the plateau's active set
       // alternates, so Sigma_C carries a facet-scale mean-zero mode that a
       // pointwise difference against a smooth reference measures instead of the
       // agreement.
@@ -539,9 +533,10 @@ MIMETIKA_TEST(the_post_slip_coulomb_function_matches_the_published_dataset) {
 // -- Fig. 12: the slip patches merge at a definite pressure ----------------------
 //
 // The two patches grow inward as the reservoir depletes and eventually meet.
-// That MERGING PRESSURE is the sharpest scalar this benchmark produces -- the
+// That merging pressure is the sharpest scalar this benchmark produces -- the
 // paper's dataset puts it at -26.87 MPa and the Python port at -26.9 -- because
-// it is a topological change in the solution, not a value read off a curve.
+// it is a topological change in the solution rather than a value read off a
+// curve.
 //
 // This is what `prepare` is for. The matrix, its factorization and Ghat do not
 // depend on the depletion, so a sweep is a right-hand side per level and a dense
@@ -569,7 +564,7 @@ MIMETIKA_TEST(the_slip_patches_merge_at_the_published_pressure) {
   CHECK(count_at(separate) == 2);
   CHECK(count_at(merged) == 1);
 
-  // BISECT ON THE TOPOLOGY. The merge is a change in the number of connected
+  // Bisect on the topology. The merge is a change in the number of connected
   // slipping runs, so it is bracketed exactly rather than interpolated.
   for (int k = 0; k < 5; ++k) {
     const double mid = 0.5 * (separate + merged);

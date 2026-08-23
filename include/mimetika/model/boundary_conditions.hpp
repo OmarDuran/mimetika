@@ -11,7 +11,7 @@
 #include "mimetika/model/boundary.hpp"
 #include "mimetika/model/constraints.hpp"
 
-// BOUNDARY CONDITIONS, ONE PHYSICS AT A TIME.
+// Boundary conditions, one physics at a time.
 //
 // Poromechanics is two physics coupled, and their boundary conditions are
 // separate descriptions. A face of a domain may be traction-loaded and sealed,
@@ -23,18 +23,16 @@
 //     MechanicsBoundary   acts on the stress field       s
 //     FlowBoundary        acts on the flux and pressure  q, p
 //
-// A CONDITION IS THREE THINGS, and a consumer needs all three:
+// A condition is three things, and a consumer needs all three:
 //
-//     the PARAMETERS   the numbers it carries -- a stress tensor, a datum
-//     the FORM         the linear functional it imposes on the unknowns
-//     the DOFS         which unknowns it reaches, and the facets they came from
+//     the parameters   the numbers it carries -- a stress tensor, a datum
+//     the form         the linear functional it imposes on the unknowns
+//     the dofs         which unknowns it reaches, and the facets they came from
 //
 // Keeping the dofs is what makes a condition an object rather than a side
 // effect. A driver reads the traction back off the wall it prescribed it on; a
 // transient datum is updated in place without re-deriving the numbering; a
-// diagnostic asks which unknowns a condition actually touched. None of that is
-// possible if the dofs are computed, pushed into a constraint set, and
-// forgotten.
+// diagnostic asks which unknowns a condition actually touched.
 
 namespace mimetika {
 
@@ -46,7 +44,7 @@ struct FacetForm {
   double value{0.0};
 };
 
-// THE WRENCH LAYOUT, recognized from the space rather than told: the
+// The wrench layout, recognized from the space rather than told: the
 // d(d+1)/2 rigid-motion moments of one scalar layout -- six in space, three
 // in the plane -- is the signature no componentwise stress field has, those
 // carrying d components. The strong family always, diagonal_afw on the weak
@@ -70,7 +68,7 @@ class BoundaryCondition {
   virtual ~BoundaryCondition() = default;
 
   virtual std::string name() const = 0;
-  // STRONG conditions replace equations; NATURAL ones are data a term reads.
+  // Strong conditions replace equations; natural ones are data a term reads.
   // Which is which follows from the mixed form and not from the caller: the
   // quantity carried as an unknown is imposed strongly.
   virtual bool strong() const = 0;
@@ -106,7 +104,7 @@ class BoundaryCondition {
 
 // ------------------------------------------------------------- mechanics
 
-// sigma n = g, from a STRESS TENSOR rather than a traction vector: the caller
+// sigma n = g, from a stress tensor rather than a traction vector: the caller
 // never has to know which way a facet's canonical normal points, and a vector
 // assembled against the wrong one is silently sign-flipped.
 class TractionBC final : public BoundaryCondition {
@@ -122,7 +120,7 @@ class TractionBC final : public BoundaryCondition {
   void resolve(const exokal::Mesh& mesh, int cell_dim, const exokal::spaces::ProductSpace& space,
                Index offset) override {
     forms_.clear();
-    // the coboundary is built ONCE for the batch: per facet it is O(mesh),
+    // the coboundary is built once for the batch: per facet it is O(mesh),
     // and a resolve over the boundary of a large mesh then costs more than
     // the assembly it serves
     const std::vector<Index> cells = cofacets_of(mesh, cell_dim, facets_);
@@ -130,7 +128,7 @@ class TractionBC final : public BoundaryCondition {
       const Index f = facets_[fi];
       const FacetFrame fr = FacetFrame::of(mesh, cell_dim, cells[fi], f);
       const FacetDofs d = facet_dofs(space, field_, cell_dim, f, offset);
-      // the traction against the CANONICAL normal, so the dof convention and
+      // the traction against the canonical normal, so the dof convention and
       // the datum agree on orientation without the caller knowing either
       std::array<double, 3> t{};
       for (int k = 0; k < cell_dim; ++k) {
@@ -140,7 +138,7 @@ class TractionBC final : public BoundaryCondition {
         }
       }
       if (strong_layout(d)) {
-        // THE WRENCH SLOTS, in the facet's canonical frame: a uniform traction
+        // The wrench slots, in the facet's canonical frame: a uniform traction
         // meets only the resultant slots -- the rotation moment is centred and
         // the chart's higher functions have zero mean. In space slots 0, 1 and
         // 3 carry |f| times its frame components and 2, 4, 5 are zero; in the
@@ -179,8 +177,8 @@ class TractionBC final : public BoundaryCondition {
   std::string field_{"s_0"};
 };
 
-// t_a . (sigma n) = 0 on every tangent: FREE SLIP, the strong half of a roller.
-// The vanishing NORMAL DISPLACEMENT is the natural half and is imposed by
+// t_a . (sigma n) = 0 on every tangent: free slip, the strong half of a roller.
+// The vanishing normal displacement is the natural half and is imposed by
 // leaving the normal traction free, so that its own equation reads u.n = 0.
 class FreeSlipBC final : public BoundaryCondition {
  public:
@@ -260,7 +258,7 @@ class NormalFluxBC final : public BoundaryCondition {
   std::string field_{"q_0"};
 };
 
-// p = g on the facet: NATURAL in the mixed form, so it is data a term reads
+// p = g on the facet: natural in the mixed form, so it is data a term reads
 // rather than an equation replaced. It still resolves its dofs -- the flux
 // moments the datum will reach -- because a caller asking "which unknowns does
 // this condition touch" deserves the same answer whichever kind it is.
@@ -273,14 +271,14 @@ class PressureBC final : public BoundaryCondition {
   bool strong() const override { return false; }
   double value() const { return value_; }
 
-  // THE DATUM AS IT ENTERS THE ROW, and that is the value itself.
+  // The datum as it enters the row is the value itself.
   //
-  // It goes into the FLUX row, against -B^T p, whose entries are the incidence
+  // It goes into the flux row, against -B^T p, whose entries are the incidence
   // and not the measure -- the flux unknown is already the measure-weighted
   // moment int_f (q.n) chi, so the pairing carries no further factor. Scaling
   // the datum by the measure imposes the condition at a strength that varies
-  // facet by facet on a graded mesh, which is exactly the error a steady
-  // Darcy annulus exposes and a uniform column never can.
+  // facet by facet on a graded mesh, an error a steady Darcy annulus exposes
+  // and a uniform column does not.
   void fill(BoundaryData& data, const exokal::Mesh& mesh, int cell_dim) const {
     (void)mesh;
     (void)cell_dim;
@@ -303,10 +301,10 @@ class PressureBC final : public BoundaryCondition {
   std::string field_{"q_0"};
 };
 
-// a (q.n) + b p_E = g: a Robin condition, one form over TWO fields. This is
-// what forces the constraint layer to take forms rather than values -- no
-// amount of per-dof pinning expresses a condition that couples a facet unknown
-// to a cell unknown.
+// a (q.n) + b p_E = g: a Robin condition, one form over two fields. This is
+// what forces the constraint layer to take forms rather than values: no
+// per-dof pinning expresses a condition that couples a facet unknown to a cell
+// unknown.
 class RobinBC final : public BoundaryCondition {
  public:
   RobinBC(std::vector<Index> facets, double a, double b, double g) : a_(a), b_(b), g_(g) {

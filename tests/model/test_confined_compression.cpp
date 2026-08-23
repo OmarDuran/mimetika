@@ -8,16 +8,16 @@
 #include "exokal/hodge/flux_operators.hpp"
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/model/boundary.hpp"
-#include "mimetika/model/compositions/elasticity.hpp"
+#include "mimetika/model/compositions/cauchy_mechanics.hpp"
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
 
-// THE SAME PROBLEM IN EVERY DIMENSION AND EVERY CELL FAMILY.
+// The same problem in every dimension and every cell family.
 //
 // Confined uniaxial compression has no freedom left to get wrong: rollers on
 // the base and sides, a uniform compressive traction on top, zero lateral
 // strain forced by geometry alone. So elasticity gives the whole answer in
-// closed form, in ANY dimension, with the same two lines:
+// closed form, in any dimension, with the same two lines:
 //
 //     sigma_nn = lam/(lam + 2 mu) sigma_axial     on the confined facets
 //     eps_axial = sigma_axial / K_oed,            K_oed = lam + 2 mu
@@ -27,13 +27,13 @@
 // method". Each family exercises something different:
 //
 //   triangle   3 edges x 2 moments = 6 = dim[P_1]^2, so the mimetic-BDM is
-//              BDM_1 with NO enrichment and N is square by construction
+//              BDM_1 with no enrichment and N is square by construction
 //   quad       8 > 6, so the rot enrichment must supply exactly 2
 //   tet        4 facets x 3 = 12 = dim[P_1]^3, again no enrichment
 //   hex        18 > 12, so the curl enrichment supplies 6
 //
 // and the mimetic-AFW is d copies of whichever of those it sits on, with the
-// weak-symmetry pairing carrying d(d-1)/2 rows -- three on a tet, ONE on a
+// weak-symmetry pairing carrying d(d-1)/2 rows -- three on a tet, one on a
 // triangle, where skew(2) is a line.
 
 using exokal::hodge::DeRhamGeometryCache;
@@ -194,7 +194,7 @@ Result confined(const exokal::Mesh& m, int d,
   exokal::forms::TermContext ctx;
   ctx.provide("stress_operators", ops);
 
-  // THE SPACE FOLLOWS THE STAR. d^2 traction moments per facet for d copies of
+  // The space follows the star. d^2 traction moments per facet for d copies of
   // the mimetic-BDM, d for d copies of the mimetic-RT -- and the layout is read
   // off the operators rather than restated, so the two cannot drift apart.
   mimetika::physics::ModelOptions mo;
@@ -239,14 +239,14 @@ Result confined(const exokal::Mesh& m, int d,
   // `solvable` and the error fields stay at zero
   if (!rep.converged) return out;
 
-  // the normal traction on every confined facet, read through the FORM that
+  // the normal traction on every confined facet, read through the form that
   // imposed nothing there: n . (sigma n), divided by the measure it was
   // integrated against
   const auto& ms = sp.map(sp.index_of("s_0"));
   const auto s_off = static_cast<std::size_t>(sp.offset(sp.index_of("s_0")));
   for (const Index f : confined_f) {
     const auto fr = mimetika::FacetFrame::of(m, d, mimetika::cofacet_of(m, d, f), f);
-    // only the LATERAL facets carry lam/(lam+2mu) sigma_axial. The base is
+    // only the lateral facets carry lam/(lam+2mu) sigma_axial. The base is
     // confined too, but the axial load transmits straight through it, so its
     // normal traction is sigma_axial itself -- a different closed form, and
     // checking it against the lateral one would fail by exactly 2/3 here.
@@ -274,7 +274,7 @@ Result confined(const exokal::Mesh& m, int d,
 
 }  // namespace
 
-// THE 2 x 2 MATRIX: two dimensions, two cell families, one closed form.
+// The 2 x 2 matrix: two dimensions, two cell families, one closed form.
 MIMETIKA_TEST(confined_compression_is_exact_in_every_dimension_and_family) {
   struct Case {
     const char* name;
@@ -300,8 +300,8 @@ MIMETIKA_TEST(confined_compression_is_exact_in_every_dimension_and_family) {
   }
 }
 
-// d COPIES OF THE MIMETIC-RT IS A SOUND PRODUCT AND NOT A STABLE ELEMENT, and
-// the difference is worth stating because every LOCAL check passes.
+// d copies of the mimetic-RT is a sound product and not a stable element, and
+// the difference is worth stating because every local check passes.
 //
 // The product itself is correct: unisolvent, symmetric positive definite,
 // exact on the compliance energy of a constant stress at every material
@@ -309,39 +309,20 @@ MIMETIKA_TEST(confined_compression_is_exact_in_every_dimension_and_family) {
 // rank 6 on a tetrahedron just as the BDM one does. exokal's
 // hodge.test_derham_stress asks all of that of both layers and both answer.
 //
-// What fails is GLOBAL. Weak symmetry needs the traction space to control the
-// rigid rotations across the mesh, not merely within a cell, and one CONSTANT
+// What fails is global. Weak symmetry needs the traction space to control the
+// rigid rotations across the mesh, not merely within a cell, and one constant
 // traction vector per facet is too poor to: the discrete inf-sup for gamma
 // degenerates and the saddle point is singular -- MUMPS reports
 // DIVERGED_PC_FAILED rather than a wrong answer. This is the known result that
 // the AFW family needs BDM_k with k >= 1 for the stress, and RT_0 is k = 0.
 //
-// So there is no confined-compression case here for that layer. It is not an
-// omission and it is not a defect in the product; it is the reason the
-// STABILIZED mimetic-AFW exists, and the stabilization is what a space this
-// poor needs in order to be an element at all.
+// So there is no confined-compression case here for that layer; it is the
+// reason the stabilized mimetic-AFW exists, and the stabilization is what a
+// space this poor needs in order to be an element at all.
 
-// d COPIES OF THE MIMETIC-RT IS A SOUND PRODUCT AND NOT A STABLE ELEMENT.
-//
-// This is the result worth having, and the whole of it is that the two halves
-// disagree. EVERY LOCAL CHECK PASSES. The product is unisolvent, symmetric
-// positive definite, and exact on the compliance energy of a constant stress at
-// every material including the incompressible limit -- exokal's
-// hodge.test_derham_stress asks all of that of both layers and both answer --
-// and the local constraint block [Dv; As] has full rank 6 on a tetrahedron for
-// both, which is asserted here rather than assumed.
-//
-// What fails is GLOBAL. Weak symmetry needs the traction space to control the
-// rigid rotations ACROSS the mesh, not merely within a cell, and one CONSTANT
-// traction vector per facet is too poor to: the discrete inf-sup for gamma
-// degenerates and the assembled saddle point is singular. This is the known
-// statement that the AFW family needs BDM_k with k >= 1 for the stress, and
-// RT_0 is k = 0 -- seen here as a direct factorization failing rather than as a
-// wrong answer, which is the benign way for it to show.
-//
-// The distinction matters because a locally-checked product can look finished.
-// It is also the reason the STABILIZED mimetic-AFW exists: a stabilization is
-// what lets a space this poor be an element at all.
+// The same claim, measured: the local constraint block [Dv; As] has full rank 6
+// on a tetrahedron for both layers -- asserted here rather than assumed -- and
+// only the BDM layer gives a solvable global system.
 MIMETIKA_TEST(the_rt_layer_is_locally_sound_but_globally_unstable) {
   const exokal::Mesh m = cube(2, true);
   const DeRhamGeometryCache geo = DeRhamGeometryCache::build(m, 3);
@@ -373,21 +354,21 @@ MIMETIKA_TEST(the_rt_layer_is_locally_sound_but_globally_unstable) {
   CHECK(!rt.solvable);            // and genuinely not an element
 }
 
-// AND THE STABILIZED MIMETIC-AFW REPRODUCES THE SAME CLOSED FORM, everywhere.
+// And the stabilized mimetic-AFW reproduces the same closed form, everywhere.
 //
 // This is the construction of Beirao da Veiga (ESAIM M2AN 44 (2010) 231-250):
-// d^2 traction moments per facet, reconstructed on the FULL LINEAR TENSOR SPACE
+// d^2 traction moments per facet, reconstructed on the full linear tensor space
 // [P_1]^{dxd}, m = d^2(d+1) modes. On a simplex D = d^2(d+1) = m exactly, so
-// ker(N^T) is trivial and THE STABILIZATION VANISHES -- the scheme reduces to
+// ker(N^T) is trivial and the stabilization vanishes -- the scheme reduces to
 // the conforming AFW/BDM_1 mixed element. On a genuine polytope it remains: 4
 // on a quadrilateral, 18 on a hexahedron.
 //
-// So the stabilized counts below are not incidental, they are the construction
-// checked in place, and they are asserted per family rather than as a total.
-// Confined compression is exact for all four either way -- a constant stress
-// and a linear displacement lie in every one of these spaces, so a stabilized
-// cell must reproduce them as exactly as a simplex does. That the penalty term
-// does not disturb consistency is the whole reason it is built on ker(N^T).
+// The stabilized counts below are the construction checked in place, asserted
+// per family rather than as a total. Confined compression is exact for all four
+// either way -- a constant stress and a linear displacement lie in every one of
+// these spaces, so a stabilized cell must reproduce them as exactly as a
+// simplex does. That the penalty term does not disturb consistency is why it is
+// built on ker(N^T).
 MIMETIKA_TEST(the_stabilized_bdm_is_exact_in_every_dimension_and_family) {
   struct Case {
     const char* name;

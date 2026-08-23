@@ -53,9 +53,9 @@ struct PoroCoupling final : Package {
 
 }  // namespace
 
-// A COMPOSITION IS VALIDATED, NOT HOPED FOR. Composing the coupling without
-// the mechanics is caught here, by name, rather than by a term reading past
-// the end of a stencil during assembly.
+// A composition is validated. Composing the coupling without the mechanics is
+// caught here, by name, rather than by a term reading past the end of a stencil
+// during assembly.
 MIMETIKA_TEST(a_missing_capability_is_reported_by_name) {
   Composition c;
   c.emplace<Pressure>();
@@ -92,7 +92,7 @@ MIMETIKA_TEST(two_packages_may_not_provide_the_same_capability) {
   CHECK(threw);
 }
 
-// THE SPACE IS THE UNION OF WHAT THE PACKAGES CONTRIBUTE, in the order they
+// The space is the union of what the packages contribute, in the order they
 // were added — and no term depends on that order, because exokal resolves a
 // term's fields by name against whatever space it is handed.
 MIMETIKA_TEST(the_space_is_the_union_of_the_packages_fields) {
@@ -112,9 +112,9 @@ MIMETIKA_TEST(the_space_is_the_union_of_the_packages_fields) {
   CHECK(s.map(s.index_of("u")).layout().components == 3);
 }
 
-// THE CONFIGURATION SURFACE IS REPORTABLE. Every closure every package
-// needs, with the scope it binds at — which is what a driver prints so a
-// user need not read the source to configure a model.
+// The configuration surface is reportable. Every closure every package needs,
+// with the scope it binds at — what a driver prints so a user need not read the
+// source to configure a model.
 MIMETIKA_TEST(the_closure_slots_are_reported_with_their_scope) {
   Composition c;
   c.emplace<Pressure>();
@@ -132,7 +132,7 @@ MIMETIKA_TEST(the_closure_slots_are_reported_with_their_scope) {
   }
   CHECK(fluid == 1 && rock == 3 && iface == 1);
 
-  // the out-of-plane permeability is bound to a stratum PAIR, which is why
+  // the out-of-plane permeability is bound to a stratum pair, which is why
   // it cannot be a per-cell coefficient
   bool found = false;
   for (const auto& s : slots) {

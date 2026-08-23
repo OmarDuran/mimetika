@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """How the solve scales, on a mesh that changes only in size.
 
-A scaling study needs a mesh whose SHAPE is fixed under refinement. The annulus
+A scaling study needs a mesh whose shape is fixed under refinement. The annulus
 curves and grades, so refining it changes the conditioning as well as the
 count, and a timing at two resolutions is then two different problems. A box
 changes only the size.
@@ -13,13 +13,13 @@ changes only the size.
 
 The problem is the linear patch test of the corresponding external-mesh
 example: a linear field prescribed on the whole boundary, whose answer the
-mixed method reproduces exactly. So the ERROR COLUMN IS A CHECK, not a
+mixed method reproduces exactly. So the error column is a check, not a
 convergence study -- it must stay at the solver tolerance as the mesh grows,
 and anything else means the scaling was measured on a wrong answer.
 
-Defaults are deliberately small. A scaling curve is read from its SHAPE, and
-the shape is visible long before a mesh becomes inconvenient; raise --n when
-the times are large enough to compare.
+Defaults are deliberately small: a scaling curve is read from its shape, which
+is visible long before a mesh becomes inconvenient. Raise --n when the times
+are large enough to compare.
 """
 
 import argparse
@@ -32,7 +32,7 @@ import numpy as np
 FAMILIES = {"cartesian": mk.Family.cartesian, "simplex": mk.Family.simplex,
             "prism": mk.Family.prism}
 
-# THE PRODUCT IS PART OF THE MEASUREMENT, not a constant. Two realizations of
+# The product is part of the measurement. Two realizations of
 # the same space cost very different amounts -- diagonal_tpfa's M is diagonal
 # where stabilized_rt's is dense per cell -- so a scaling curve belongs to a
 # product as much as to a mesh.
@@ -57,14 +57,14 @@ MU, LAM = 1.0, 1.0
 
 
 def solver_options(name, rtol, block_its, block_rtol):
-    """The solver, and HOW HARD THE BLOCK IS SOLVED, which is the lever.
+    """The solver, and how hard the block is solved.
 
-    The Riesz map needs the first block INVERTED, not solved: what the theory
+    The Riesz map needs the first block inverted, not solved: what the theory
     asks of it is spectral equivalence, and an inner Krylov run to a tight
     tolerance buys an accuracy the outer iteration cannot use. `block_its = 0`
     applies one ADS cycle as a fixed operator -- the cheapest thing that is
     still a Riesz map -- and anything larger is an inner CG, which makes the
-    preconditioner VARY and promotes the outer method to FGMRES.
+    preconditioner vary and promotes the outer method to FGMRES.
     """
     if name == "direct":
         return mk.SolverOptions()
@@ -77,7 +77,7 @@ def solver_options(name, rtol, block_its, block_rtol):
 
 def flow(mesh, dim, lo, direction, length, product):
     """p = ((x - x_min).n)/L on every boundary facet."""
-    model = mk.SinglePhaseModel(mesh, dim, 1.0, FLUX_PRODUCTS[product])
+    model = mk.FlowModel(mesh, dim, 1.0, FLUX_PRODUCTS[product])
     for f in mk.boundary_facets(mesh, dim):
         x = mk.centroid(mesh, dim - 1, f)
         model.add_pressure([f], float(np.dot(np.asarray(x)[:dim] - lo[:dim], direction) / length))
@@ -86,7 +86,7 @@ def flow(mesh, dim, lo, direction, length, product):
 
 def elasticity(mesh, dim, lo, direction, length, product, formulation=None):
     """u = (x - x_min)/L on every boundary facet, as an affine datum."""
-    model = mk.CauchyElasticityModel(
+    model = mk.CauchyMechanicsModel(
         mesh, dim, mk.ElasticMaterial(MU, LAM), STRESS_PRODUCTS[product],
         getattr(mk.StressFormulation, formulation) if formulation
         else FORMULATIONS.get(product, mk.StressFormulation.weak_symmetry))

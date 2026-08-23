@@ -7,7 +7,7 @@
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/physics/package.hpp"
 
-// FLUID STORAGE: the pressure's own contribution to the mass balance, and the
+// Fluid storage: the pressure's own contribution to the mass balance, and the
 // last piece the consolidation problem needs.
 //
 // The mass balance of a poroelastic medium is

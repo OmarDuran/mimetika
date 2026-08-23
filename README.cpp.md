@@ -22,24 +22,12 @@ beneath that; everything it adds is physics.
 A catalogue entry is a **composition of packages**, a few lines long. If one
 takes more than that, a package is missing and the right response is to write
 the package. The catalogue grows as a product — physics times domain times
-discretization — while the code grows as a sum, and that gap is the only
-thing that makes the catalogue survivable.
+discretization — while the code grows as a sum.
 
-Three axes must multiply by zero, and each for a specific reason:
-
-- **Poromechanics is not a physics.** It is flow ⊕ mechanics ⊕ a coupling
-  package that reads a pressure and a displacement without caring how many
-  components produced either.
-- **Single-phase flow is compositional flow at one component.** A field
-  count, not a different equation — provided a term takes its arity from the
-  fluid rather than from its own type.
-- **The domain type is not a model property.** Fixed, static
-  mixed-dimensional and dynamic are properties of the mesh and the driver.
-  exokal's stratified epoch already carries a term across every codimension
-  it applies to. A package that branches on the domain has reintroduced the
-  multiplication this layer exists to prevent.
-
-Design notes: `docs/model_catalogue.md`. exokal's own boundary:
+Three axes must multiply by zero: poromechanics is flow ⊕ mechanics ⊕ a
+coupling package, single-phase flow is compositional flow at one component,
+and the domain type is a property of the mesh and the driver rather than of a
+model. The reasons are in `docs/model_catalogue.md`; exokal's own boundary is
 `../exokal/docs/scope.md`.
 
 ## Building

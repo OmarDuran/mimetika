@@ -6,7 +6,7 @@
 #include "exokal/hodge/coefficient.hpp"
 #include "exokal/forms/epoch.hpp"
 #include "exokal/hodge/flux_operators.hpp"
-#include "mimetika/model/compositions/single_phase_flow.hpp"
+#include "mimetika/model/compositions/flow.hpp"
 
 using exokal::hodge::Coefficient;
 using exokal::hodge::FluxOperators;
@@ -15,15 +15,15 @@ using mimetika::physics::Composition;
 using mimetika::physics::ModelOptions;
 using mimetika::physics::Scope;
 
-// THE CATALOGUE IS A DECLARATION, and the two flow rows share one package.
+// The catalogue is a declaration, and the two flow rows share one package.
 // Single-phase flow and compositional flow differ by a component count, not
 // by an implementation — the property that keeps the catalogue's product on
 // top of the code's sum.
 MIMETIKA_TEST(both_flow_models_are_the_same_package) {
   const auto& cat = Catalogue::instance();
-  CHECK(cat.has("single_phase_flow") && cat.has("compositional_flow"));
+  CHECK(cat.has("flow") && cat.has("compositional_flow"));
 
-  const Composition single = cat.build("single_phase_flow", {});
+  const Composition single = cat.build("flow", {});
   ModelOptions o;
   o.components = 2;
   const Composition multi = cat.build("compositional_flow", o);
@@ -36,11 +36,11 @@ MIMETIKA_TEST(both_flow_models_are_the_same_package) {
   CHECK(multi.requirements_of(0, 3).fields.size() == 4);   // q, p, z0, z1
 }
 
-// THE SLOTS OF FLOW, at the three scopes. The out-of-plane permeability is
-// bound to a stratum pair and has nowhere to live in a per-cell field,
-// which is the whole reason the interface scope exists.
+// The slots of flow, at the three scopes. The out-of-plane permeability is
+// bound to a stratum pair and has nowhere to live in a per-cell field, which is
+// the reason the interface scope exists.
 MIMETIKA_TEST(flow_declares_its_closures_at_three_scopes) {
-  const Composition c = Catalogue::instance().build("single_phase_flow", {});
+  const Composition c = Catalogue::instance().build("flow", {});
   const auto slots = c.slots(3);
 
   int fluid = 0, rock = 0, iface = 0;
@@ -54,15 +54,15 @@ MIMETIKA_TEST(flow_declares_its_closures_at_three_scopes) {
   CHECK(iface == 1);  // normal_permeability
 }
 
-// AND IT RUNS. The composition's space is numbered, the package attaches
-// its term, and exokal assembles a residual and a Jacobian through it. This
-// is the seam between the two repositories, so it is tested end to end
-// rather than by inspection.
+// And it runs. The composition's space is numbered, the package attaches its
+// term, and exokal assembles a residual and a Jacobian through it. This is the
+// seam between the two repositories, so it is tested end to end rather than by
+// inspection.
 MIMETIKA_TEST(a_composed_flow_model_assembles) {
   const auto m = mimetika_test::hex_grid(3);
   const graphos::Complex& c = m.topology();
 
-  const Composition comp = Catalogue::instance().build("single_phase_flow", {});
+  const Composition comp = Catalogue::instance().build("flow", {});
   auto space = comp.space(c, 3);
   CHECK(space.n_fields() == 2);
   // named by codimension: this is the ambient stratum, so q_0 and p_0
@@ -72,7 +72,7 @@ MIMETIKA_TEST(a_composed_flow_model_assembles) {
   CHECK(space.map(space.index_of("q_0")).layout().degree() == 2);
   CHECK(space.map(space.index_of("p_0")).layout().degree() == 3);
 
-  // the SAME package one codimension down names them q_1 and p_1
+  // the same package one codimension down names them q_1 and p_1
   const auto sub = comp.space(c, 3, 1);
   CHECK(sub.has("q_1") && sub.has("p_1"));
 

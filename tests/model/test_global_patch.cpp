@@ -7,21 +7,20 @@
 #include "../mimetika_test.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
 #include "mimetika/mesh/structured.hpp"
-#include "mimetika/model/cauchy_elasticity_model.hpp"
-#include "mimetika/model/single_phase_model.hpp"
+#include "mimetika/model/cauchy_mechanics_model.hpp"
+#include "mimetika/model/flow_model.hpp"
 
-// THE LINEAR GLOBAL PATCH TEST, PURE DIRICHLET, ON FEWER THAN TEN CELLS.
+// The linear global patch test, pure Dirichlet, on fewer than ten cells.
 //
 // The one configuration both physics share: the exact field is prescribed as
-// NATURAL data on EVERY boundary facet -- the pressure for the flow, the
-// affine displacement for the mechanics -- nothing is strongly constrained,
-// and the discrete answer must be the field itself. It is the smallest test
-// that exercises the whole boundary machinery: the datum terms, the facet
-// frames, the incidence signs, and the pairing they feed. A boundary
-// condition that silently stops being applied fails HERE, on a mesh small
-// enough to debug by hand, rather than surviving until an external mesh.
+// natural data on every boundary facet -- the pressure for the flow, the affine
+// displacement for the mechanics -- nothing is strongly constrained, and the
+// discrete answer must be the field itself. It is the smallest test that
+// exercises the whole boundary machinery: the datum terms, the facet frames,
+// the incidence signs, and the pairing they feed. A boundary condition that
+// stops being applied fails here, on a mesh small enough to debug by hand.
 //
-// The field is a FULL affine map -- dilation, shear and rotation at once --
+// The field is a full affine map -- dilation, shear and rotation at once --
 // because a pure dilation cannot see a rotation readback that broke, and an
 // axis-aligned gradient cannot see a tangent frame that rotated. Every
 // realization is asserted on its own claim: the consistent products
@@ -29,9 +28,9 @@
 // isotropic second moment, which the cartesian patch is.
 
 using graphos::Index;
-using mimetika::CauchyElasticityModel;
+using mimetika::CauchyMechanicsModel;
 using mimetika::ElasticMaterial;
-using mimetika::SinglePhaseModel;
+using mimetika::FlowModel;
 using mimetika::mesh::Family;
 
 namespace {
@@ -67,16 +66,16 @@ exokal::Mesh patch_mesh(int dim, Family family) {
 
 // ---- the flow half ----------------------------------------------------------
 
-double flow_patch(int dim, Family family, SinglePhaseModel::Realization how) {
+double flow_patch(int dim, Family family, FlowModel::Realization how) {
   const exokal::Mesh m = patch_mesh(dim, family);
   CHECK(m.topology().count(dim) < 10);
 
-  SinglePhaseModel prob(m, dim, 1.0, how);
+  FlowModel prob(m, dim, 1.0, how);
   const std::array<double, 3> a{0.7, -0.4, dim == 3 ? 0.5 : 0.0};
   const auto p = [&](const exokal::Mesh::Point& x) {
     return a[0] * x[0] + a[1] * x[1] + a[2] * x[2];
   };
-  // the exact pressure on EVERY boundary facet, at its own centroid: pure
+  // the exact pressure on every boundary facet, at its own centroid: pure
   // Dirichlet, naturally imposed, no facet strongly constrained
   for (const Index f : mimetika::boundary_facets(m.topology(), dim)) {
     prob.flow().emplace<mimetika::PressureBC>(std::vector<Index>{f},
@@ -108,7 +107,7 @@ MIMETIKA_TEST(the_flow_patch_is_exact_where_the_datum_is_complete) {
   // trace, so nothing of a linear pressure is dropped and the answer is the
   // field. stabilized_rt and adaptive_rt everywhere; derham_rt where its
   // enrichment is consistent (see the pinned deficit below for the prism).
-  using R = SinglePhaseModel::Realization;
+  using R = FlowModel::Realization;
   for (const int dim : {2, 3}) {
     for (const Family family : {Family::cartesian, Family::simplex, Family::prism}) {
       for (const R how : {R::stabilized_rt, R::adaptive_rt}) {
@@ -122,36 +121,35 @@ MIMETIKA_TEST(the_flow_patch_is_exact_where_the_datum_is_complete) {
 }
 
 MIMETIKA_TEST(the_bdm_flow_datum_drops_the_linear_moments_and_says_so) {
-  // NOT A BOUNDARY-CONDITION BUG, AND PINNED SO IT CANNOT BECOME ONE
-  // SILENTLY. The BDM facet carries d moments; the natural pressure datum is
-  // one number per facet and lands entirely on the constant, so the linear
-  // part of p across each facet receives zero -- first order, documented in
-  // the flow example, and the mechanics does not share it because its
-  // displacement datum is affine and supplies every moment. If an affine
-  // pressure datum is ever added, this check flips and is updated
-  // deliberately rather than by surprise.
-  using R = SinglePhaseModel::Realization;
+  // Not a boundary-condition bug, and pinned so it cannot become one silently.
+  // The BDM facet carries d moments; the natural pressure datum is one number
+  // per facet and lands entirely on the constant, so the linear part of p
+  // across each facet receives zero -- first order, documented in the flow
+  // example. The mechanics does not share it because its displacement datum is
+  // affine and supplies every moment. If an affine pressure datum is ever
+  // added, this check flips.
+  using R = FlowModel::Realization;
   for (const int dim : {2, 3}) {
     CHECK(flow_patch(dim, Family::cartesian, R::derham_bdm) > 1e-3);
   }
 }
 
 MIMETIKA_TEST(derham_rt_on_prisms_is_not_yet_consistent_in_the_plane) {
-  // A PINNED DEFECT, exokal's: the curl-enriched derham_rt on a 3D prism
-  // reproduces an AXIAL linear pressure to round-off and loses an IN-PLANE
-  // one at O(1e-2), while stabilized_rt is exact in every direction on the
-  // same mesh with the same datum -- so the datum path is exonerated and the
-  // enriched product's consistency is what fails. This check flips the day
-  // the enrichment is fixed, and the exactness claim above then absorbs the
-  // prism row.
-  using R = SinglePhaseModel::Realization;
+  // A pinned defect, exokal's: the curl-enriched derham_rt on a 3D prism
+  // reproduces an axial linear pressure to round-off and loses an in-plane one
+  // at O(1e-2), while stabilized_rt is exact in every direction on the same
+  // mesh with the same datum -- so the datum path is exonerated and the
+  // enriched product's consistency is what fails. This check flips the day the
+  // enrichment is fixed, and the exactness claim above then absorbs the prism
+  // row.
+  using R = FlowModel::Realization;
   CHECK(flow_patch(3, Family::prism, R::derham_rt) > 1e-4);
   CHECK(flow_patch(3, Family::prism, R::stabilized_rt) < 1e-10);
 }
 
 MIMETIKA_TEST(the_flow_patch_is_exact_for_the_two_point_star_where_it_claims) {
   // the cartesian patch is K-orthogonal, which is the whole of TPFA's claim
-  using R = SinglePhaseModel::Realization;
+  using R = FlowModel::Realization;
   for (const int dim : {2, 3}) {
     CHECK(flow_patch(dim, Family::cartesian, R::diagonal_tpfa) < 1e-10);
   }
@@ -163,12 +161,12 @@ struct ElasticPatch {
   double u{0.0}, rot{0.0}, stress{0.0}, pressure{0.0};
 };
 
-ElasticPatch elastic_patch(int dim, Family family, CauchyElasticityModel::Realization how,
-                           CauchyElasticityModel::Formulation form) {
+ElasticPatch elastic_patch(int dim, Family family, CauchyMechanicsModel::Realization how,
+                           CauchyMechanicsModel::Formulation form) {
   const exokal::Mesh m = patch_mesh(dim, family);
   CHECK(m.topology().count(dim) < 10);
 
-  CauchyElasticityModel model(m, dim, ElasticMaterial{kMu, kLam}, how, form);
+  CauchyMechanicsModel model(m, dim, ElasticMaterial{kMu, kLam}, how, form);
   const std::array<double, 9> g = gradient(dim);
   // u = G (x - x_E) + G x_E on every boundary facet: the affine datum stated
   // about the facet's one cofacet, exactly as the external drivers state it
@@ -221,8 +219,8 @@ ElasticPatch elastic_patch(int dim, Family family, CauchyElasticityModel::Realiz
             std::max(out.stress, std::abs(s[static_cast<std::size_t>(i * 3 + j)] - want));
       }
     }
-    if (form == CauchyElasticityModel::Formulation::weak_symmetry_total ||
-        form == CauchyElasticityModel::Formulation::strong_symmetry_total) {
+    if (form == CauchyMechanicsModel::Formulation::weak_symmetry_total ||
+        form == CauchyMechanicsModel::Formulation::strong_symmetry_total) {
       out.pressure = std::max(out.pressure, std::abs(model.total_pressure(e) - kLam * tr));
     }
   }
@@ -230,8 +228,8 @@ ElasticPatch elastic_patch(int dim, Family family, CauchyElasticityModel::Realiz
 }
 
 MIMETIKA_TEST(the_elastic_patch_is_exact_for_the_weak_family) {
-  using R = CauchyElasticityModel::Realization;
-  using F = CauchyElasticityModel::Formulation;
+  using R = CauchyMechanicsModel::Realization;
+  using F = CauchyMechanicsModel::Formulation;
   for (const int dim : {2, 3}) {
     for (const Family family : {Family::cartesian, Family::simplex, Family::prism}) {
       for (const R how : {R::derham_bdm, R::stabilized_bdm}) {
@@ -249,8 +247,8 @@ MIMETIKA_TEST(the_elastic_patch_is_exact_for_the_weak_family) {
 }
 
 MIMETIKA_TEST(the_elastic_patch_is_exact_for_the_strong_family) {
-  using R = CauchyElasticityModel::Realization;
-  using F = CauchyElasticityModel::Formulation;
+  using R = CauchyMechanicsModel::Realization;
+  using F = CauchyMechanicsModel::Formulation;
   for (const Family family : {Family::cartesian, Family::simplex, Family::prism}) {
     for (const F form : {F::strong_symmetry, F::strong_symmetry_total}) {
       const ElasticPatch o = elastic_patch(3, family, R::stabilized_vem, form);
@@ -267,28 +265,27 @@ MIMETIKA_TEST(the_elastic_patch_is_exact_for_the_strong_family) {
   }
 }
 
-// THE BOUNDARY MACHINERY, SEPARATED FROM THE STAR'S CONSISTENCY -- because on
-// a simplex the two-point members are inconsistent by their own claim, and a
-// failed patch there says nothing about whether the data arrived. Two tests
-// that a broken datum fails and an inconsistent-but-correctly-driven star
-// cannot:
+// The boundary machinery, separated from the star's consistency: on a simplex
+// the two-point members are inconsistent by their own claim, and a failed patch
+// there says nothing about whether the data arrived. Two tests that a broken
+// datum fails and an inconsistent-but-correctly-driven star cannot:
 //
-//   * a RIGID MOTION has sigma = 0, so M sigma vanishes for ANY M: every
+//   * a rigid motion has sigma = 0, so M sigma vanishes for any M: every
 //     realization must reproduce it exactly on every family, and the only way
 //     to miss it is to mis-state the boundary pairing.
-//   * the LOAD IDENTITY: the datum pairs the SPACE, not the operator, so the
+//   * the load identity: the datum pairs the space, not the operator, so the
 //     assembled right-hand side of the diagonal star must equal the
 //     stabilized product's entry for entry on the same mesh with the same
 //     data.
 MIMETIKA_TEST(a_rigid_motion_is_exact_for_the_diagonal_star_on_every_family) {
-  using R = CauchyElasticityModel::Realization;
-  using F = CauchyElasticityModel::Formulation;
+  using R = CauchyMechanicsModel::Realization;
+  using F = CauchyMechanicsModel::Formulation;
   const std::array<double, 9> w = {0.0, 0.3, -0.2, -0.3, 0.0, 0.5, 0.2, -0.5, 0.0};
   const std::array<double, 3> a = {0.1, -0.2, 0.05};
   for (const Family family : {Family::cartesian, Family::simplex, Family::prism}) {
     for (const R how : {R::diagonal_vem, R::adaptive_vem, R::stabilized_vem}) {
       const exokal::Mesh m = patch_mesh(3, family);
-      CauchyElasticityModel model(m, 3, ElasticMaterial{kMu, kLam}, how,
+      CauchyMechanicsModel model(m, 3, ElasticMaterial{kMu, kLam}, how,
                                   F::strong_symmetry_total);
       for (const Index f : mimetika::boundary_facets(m.topology(), 3)) {
         const auto xE = exokal::centroid(m, 3, mimetika::cofacet_of(m, 3, f));
@@ -324,14 +321,14 @@ MIMETIKA_TEST(a_rigid_motion_is_exact_for_the_diagonal_star_on_every_family) {
 }
 
 MIMETIKA_TEST(the_diagonal_stars_load_is_the_stabilized_products_on_simplexes) {
-  using R = CauchyElasticityModel::Realization;
-  using F = CauchyElasticityModel::Formulation;
+  using R = CauchyMechanicsModel::Realization;
+  using F = CauchyMechanicsModel::Formulation;
   const exokal::Mesh m = patch_mesh(3, Family::simplex);
   const std::array<double, 9> g = gradient(3);
   std::array<std::vector<double>, 2> rhs;
   int slot = 0;
   for (const R how : {R::diagonal_vem, R::stabilized_vem}) {
-    CauchyElasticityModel model(m, 3, ElasticMaterial{kMu, kLam}, how,
+    CauchyMechanicsModel model(m, 3, ElasticMaterial{kMu, kLam}, how,
                                 F::strong_symmetry_total);
     for (const Index f : mimetika::boundary_facets(m.topology(), 3)) {
       const auto xE = exokal::centroid(m, 3, mimetika::cofacet_of(m, 3, f));
@@ -360,8 +357,8 @@ MIMETIKA_TEST(the_diagonal_stars_load_is_the_stabilized_products_on_simplexes) {
 MIMETIKA_TEST(the_elastic_patch_is_exact_for_the_two_point_stars_where_they_claim) {
   // the cartesian patch is face-orthogonal with isotropic second moment,
   // which is the whole of the diagonal members' claim
-  using R = CauchyElasticityModel::Realization;
-  using F = CauchyElasticityModel::Formulation;
+  using R = CauchyMechanicsModel::Realization;
+  using F = CauchyMechanicsModel::Formulation;
   for (const int dim : {2, 3}) {
     const ElasticPatch t = elastic_patch(dim, Family::cartesian, R::diagonal_afw,
                                          F::weak_symmetry_total);

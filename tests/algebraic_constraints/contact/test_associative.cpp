@@ -6,27 +6,27 @@
 #include "../../mimetika_test.hpp"
 #include "mimetika/algebraic_constraints/contact/laws.hpp"
 
-// THE ASSOCIATIVE MOHR-COULOMB RETURN MAPPING, and the consistent tangent that
+// The associative Mohr-Coulomb return mapping, and the consistent tangent that
 // exokal's AD produces from it.
 //
 // Three things are checked, each against something independent of the code that
 // computes it:
 //
-//   the projection really is the CLOSEST POINT -- against a direct search over
-//   the reduced two-dimensional feasible set, which is the definition rather
-//   than the implementation;
+//   the projection is the closest point -- against a direct search over the
+//   reduced two-dimensional feasible set, which is the definition rather than
+//   the implementation;
 //
-//   the consistent tangent really is the DERIVATIVE -- against central
-//   differences of the projection, over every branch the return map has;
+//   the consistent tangent is the derivative -- against central differences of
+//   the projection, over every branch the return map has;
 //
-//   it really is DIFFERENT from the partial return of SignoriniCoulomb, so that
-//   the two are not quietly the same code path under another name.
+//   it differs from the partial return of SignoriniCoulomb, so the two are not
+//   the same code path under another name.
 //
 // The second is the one the AD exists for. A hand-derived tangent on this law
 // carries four closed forms -- one per active set -- each of which must agree
 // with the branch the projection took; here the branch is chosen once, by the
 // values, and the derivative is whatever re-running that branch produces. The
-// test below sweeps 300 random trials precisely so that all four are hit.
+// test below sweeps 300 random trials so that all four are hit.
 
 using mimetika::contact::AssociativeMohrCoulomb;
 using mimetika::contact::SignoriniCoulomb;
@@ -60,11 +60,11 @@ Vec3 project(const SignoriniCoulomb& l, const Vec3& t) {
   return l.project(t, s, 3);
 }
 
-// THE PROJECTION BY DEFINITION, not by the code under test: the nearest
+// The projection by definition, not by the code under test: the nearest
 // admissible point, found by minimising the distance directly.
 //
 // Rotational symmetry about the normal axis collapses the problem to the two
-// unknowns (t_n, rho >= 0) on a convex planar set. For a FIXED t_n = a the
+// unknowns (t_n, rho >= 0) on a convex planar set. For a fixed t_n = a the
 // feasible rho is the interval [0, c - mu a], on which the nearest point to the
 // trial's rho is simply the clamp -- so the inner minimisation is exact and
 // what remains is one convex function of a alone,
@@ -121,10 +121,10 @@ Vec3 sample(double scale) {
 
 // -- it is the closest point --------------------------------------------------
 
-// AGAINST A DIRECT SEARCH over the feasible set: the tolerance is the search's,
-// not the law's. What this rules out is a candidate list that is complete for
-// the cases someone thought of and misses one -- the failure mode that closed
-// forms on a cone actually have.
+// Against a direct search over the feasible set: the tolerance is the search's,
+// not the law's. It rules out a candidate list that is complete for the cases
+// someone thought of and misses one, the failure mode closed forms on a cone
+// have.
 MIMETIKA_TEST(the_projection_is_the_metric_closest_point) {
   for (const Metric& m : kMetrics) {
     const AssociativeMohrCoulomb l = law(m);
@@ -154,7 +154,7 @@ MIMETIKA_TEST(the_result_is_always_admissible) {
   }
 }
 
-// INSIDE THE CONE THE PROJECTION IS THE IDENTITY, not a near-identity. A return
+// Inside the cone the projection is the identity, not a near-identity. A return
 // map that perturbs an already-admissible state would inject spurious work at
 // every sticking point of every step.
 MIMETIKA_TEST(an_admissible_trial_is_left_alone) {
@@ -174,9 +174,9 @@ MIMETIKA_TEST(the_projection_is_idempotent) {
   }
 }
 
-// ROTATIONAL SYMMETRY ABOUT THE NORMAL AXIS: the projection may shorten the
+// Rotational symmetry about the normal axis: the projection may shorten the
 // shear but cannot rotate it. This is what licenses collapsing the problem to
-// (t_n, rho) in the first place.
+// (t_n, rho).
 MIMETIKA_TEST(the_shear_stays_collinear_with_the_trial) {
   const AssociativeMohrCoulomb l = law({1.0, 2.5, 0.4});
   for (int trial = 0; trial < 200; ++trial) {
@@ -191,11 +191,11 @@ MIMETIKA_TEST(the_shear_stays_collinear_with_the_trial) {
 
 // -- the consistent tangent ---------------------------------------------------
 
-// THE AD TANGENT IS THE DERIVATIVE, over every branch. 300 random trials reach
+// The AD tangent is the derivative, over every branch. 300 random trials reach
 // all four active sets, and the exact tangent is compared against central
 // differences of the projection at each. Nothing in this test knows how the
-// tangent is obtained; what it certifies is that differentiating the return map
-// by re-running it agrees with differencing it.
+// tangent is obtained; it certifies that differentiating the return map by
+// re-running it agrees with differencing it.
 MIMETIKA_TEST(the_tangent_is_the_derivative_over_every_branch) {
   for (const Metric& m : kMetrics) {
     const AssociativeMohrCoulomb l = law(m);
@@ -223,10 +223,10 @@ MIMETIKA_TEST(the_tangent_is_the_derivative_over_every_branch) {
   }
 }
 
-// WHERE THE MAP IS THE IDENTITY SO IS ITS DERIVATIVE, and exactly: the shear
+// Where the map is the identity so is its derivative, and exactly: the shear
 // row is computed as (t_k / rho) * rho, whose derivative is the identity only
-// because the two dependences on rho cancel. That they cancel to round-off is
-// the statement that the AD carries the whole chain and not part of it.
+// because the two dependences on rho cancel. That they cancel to round-off says
+// the AD carries the whole chain.
 MIMETIKA_TEST(the_tangent_is_the_identity_where_the_map_is) {
   const AssociativeMohrCoulomb l = law({1.0, 1.0, 0.0});
   const State s;
@@ -236,9 +236,9 @@ MIMETIKA_TEST(the_tangent_is_the_identity_where_the_map_is) {
   }
 }
 
-// SLIDING SOFTENS THE TANGENT ALONG THE SLIP DIRECTION -- the rank-deficient
-// term I - m (x) m. No stiffness along the slip is the statement that further
-// slip costs no further traction.
+// Sliding softens the tangent along the slip direction -- the rank-deficient
+// term I - m (x) m. No stiffness along the slip means further slip costs no
+// further traction.
 MIMETIKA_TEST(sliding_softens_the_tangent_along_the_slip_direction) {
   const AssociativeMohrCoulomb l = law({1.0, 1.0, 0.0});
   const State s;
@@ -247,7 +247,7 @@ MIMETIKA_TEST(sliding_softens_the_tangent_along_the_slip_direction) {
   CHECK(J(1, 1) < J(2, 2));
 }
 
-// THE COUPLING BLOCK IS PRESENT, and it is what distinguishes the associative
+// The coupling block is present, and it is what distinguishes the associative
 // law from the partial return: correcting the shear moves the normal traction
 // and the other way about.
 MIMETIKA_TEST(the_associative_coupling_block_is_present) {
@@ -258,9 +258,8 @@ MIMETIKA_TEST(the_associative_coupling_block_is_present) {
   CHECK(std::max(std::abs(J(0, 1)), std::abs(J(0, 2))) > 1e-6);  // and normal to shear
 }
 
-// AND IT IS NOT SYMMETRIC. Coulomb friction is not associated in the classical
-// sense, so the tangent a Newton step must solve with is unsymmetric -- which
-// is a fact about the linear algebra the driver needs, not a curiosity.
+// And it is not symmetric. Coulomb friction is not associated in the classical
+// sense, so the tangent a Newton step must solve with is unsymmetric.
 MIMETIKA_TEST(the_tangent_is_not_symmetric) {
   const AssociativeMohrCoulomb l = law({3.0, 0.5, 0.0});
   const State s;
@@ -275,12 +274,11 @@ MIMETIKA_TEST(the_tangent_is_not_symmetric) {
 
 // -- every law's tangent is its own projection's derivative --------------------
 
-// THE SAME CERTIFICATE FOR THE WHOLE CATALOGUE. Each law states its projection
-// once and the tangent is that body re-run on the AD scalar, so the check that
-// matters is the same for all of them: the AD tangent agrees with differencing
-// the projection. SignoriniCoulomb is the one the benchmarks use, and its
-// nonsmooth branches -- clipping to compression, the friction disk -- are hit
-// by the sweep.
+// The same certificate for the whole catalogue. Each law states its projection
+// once and the tangent is that body re-run on the AD scalar, so the check is the
+// same for all of them: the AD tangent agrees with differencing the projection.
+// SignoriniCoulomb is the one the benchmarks use, and its nonsmooth branches --
+// clipping to compression, the friction disk -- are hit by the sweep.
 MIMETIKA_TEST(every_law_agrees_with_the_difference_quotient_of_its_projection) {
   const mimetika::contact::LinearContact linear(2.0, 3.0);
   const mimetika::contact::FrictionlessBilateral bilateral;
@@ -291,12 +289,12 @@ MIMETIKA_TEST(every_law_agrees_with_the_difference_quotient_of_its_projection) {
   const mimetika::contact::ContactLaw* laws[6] = {&linear,    &bilateral, &coulomb,
                                                   &weakening, &rate,      &associative};
 
-  // A JUMP, ITS PREDECESSOR AND A TIME STEP, so the two path- and rate-dependent
-  // laws are differentiated AWAY from their trivial branch: SlipWeakening at a
+  // A jump, its predecessor and a time step, so the two path- and rate-dependent
+  // laws are differentiated away from their trivial branch: SlipWeakening at a
   // partially weakened point, rate-and-state at a finite slip rate rather than
-  // at the floor. The tangent is with respect to the TRIAL TRACTION, so these
-  // are the step's data and are held fixed on both sides of the difference --
-  // which is exactly what `differentiate` does with them.
+  // at the floor. The tangent is with respect to the trial traction, so these
+  // are the step's data and are held fixed on both sides of the difference,
+  // which is what `differentiate` does with them.
   const Vec3 g_prev, g = [] {
     Vec3 v;
     v[1] = 5e-4;
@@ -330,9 +328,9 @@ MIMETIKA_TEST(every_law_agrees_with_the_difference_quotient_of_its_projection) {
   }
 }
 
-// AND IN TWO DIMENSIONS, where the shear is a single component and the friction
+// And in two dimensions, where the shear is a single component and the friction
 // disk degenerates to an interval. The laws are written over `dim` rather than
-// over 3, so this is the check that they mean it.
+// over 3, so this checks that they mean it.
 MIMETIKA_TEST(the_tangent_is_the_derivative_in_two_dimensions) {
   const SignoriniCoulomb coulomb(0.6, 0.1);
   const AssociativeMohrCoulomb associative(0.6, 0.1, 1.0, 2.5);
@@ -365,7 +363,7 @@ MIMETIKA_TEST(the_tangent_is_the_derivative_in_two_dimensions) {
 
 // -- it differs from the partial return ----------------------------------------
 
-// IF THESE AGREED EVERYWHERE the associative law would be dead code.
+// If these agreed everywhere the associative law would be dead code.
 MIMETIKA_TEST(it_is_not_the_same_as_the_partial_return) {
   const AssociativeMohrCoulomb associative(kFriction, 0.4, 1.0, 2.5);
   const SignoriniCoulomb partial(kFriction, 0.4);
@@ -381,7 +379,7 @@ MIMETIKA_TEST(it_is_not_the_same_as_the_partial_return) {
   CHECK(differing > 50);
 }
 
-// THE PHYSICAL SIGNATURE. The partial return updates t_n first and projects the
+// The physical signature. The partial return updates t_n first and projects the
 // shear at that fixed t_n, so sliding never alters the normal traction. The
 // closest-point correction moves along the cone normal, which has a component
 // along the axis -- the traction-space image of dilatancy.
@@ -402,9 +400,9 @@ MIMETIKA_TEST(the_two_agree_when_the_trial_is_admissible) {
   }
 }
 
-// THE METRIC SELECTS THE PROJECTION: eps_n and eps_t are not free knobs, they
-// choose which point of the cone is nearest. A very stiff normal metric resists
-// moving t_n and so approaches the partial return.
+// The metric selects the projection: eps_n and eps_t choose which point of the
+// cone is nearest. A very stiff normal metric resists moving t_n and so
+// approaches the partial return.
 MIMETIKA_TEST(the_metric_selects_the_projection) {
   const Vec3 t = make(-1.0, 5.0, 0.0);
   const Vec3 isotropic = project(AssociativeMohrCoulomb(kFriction, 0.0, 1.0, 1.0), t);

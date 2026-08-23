@@ -38,14 +38,13 @@ expands to an MPI symbol, so the MPI it was built against is linked as well —
 every PETSc is an MPI build even when it will only ever run on one rank.
 
 Without PETSc the build still works: `-DMIMETIKA_USE_PETSC=OFF`, or simply not
-having it. The operators can be assembled and compared without a solver, which
-is what the port's checkpoint actually needs.
+having it. The operators can be assembled and compared without a solver.
 
 ## The solver
 
-Direct, through MUMPS, and the choice is not incidental. These systems are
-saddle points with zero diagonal blocks — the (u, u) and (gamma, gamma) blocks
-that make the form mixed — and PETSc's built-in LU refuses them outright:
+Direct, through MUMPS. These systems are saddle points with zero diagonal
+blocks — the (u, u) and (gamma, gamma) blocks that make the form mixed — and
+PETSc's built-in LU refuses them outright:
 
     mumps  -> converged, residual 0.0e+00
     petsc  -> "Matrix is missing diagonal entries", solve fails

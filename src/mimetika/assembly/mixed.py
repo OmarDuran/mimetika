@@ -28,7 +28,7 @@ adjacent cells (the trace is single-valued and the outward normals are
 opposite), so the explicit boundary data appears only on ``\partial\Omega``.
 
 Because the local inner products satisfy strong consistency ``M N = R``, these
-global solves are **exact** whenever the exact solution is in the reconstruction
+global solves are exact whenever the exact solution is in the reconstruction
 space -- e.g. a linear potential or a linear displacement, on any mesh.
 """
 
@@ -68,7 +68,7 @@ def facet_cell_signs(mesh: Mesh) -> dict[int, int]:
 
 
 def discrete_divergence(mesh: Mesh, dofmap=None) -> sp.csr_matrix:
-    """``B`` with ``(B F)_E = \\int_E div F``: the **signed incidence matrix**.
+    """``B`` with ``(B F)_E = \\int_E div F``: the signed incidence matrix.
 
     Purely topological -- integer entries, no geometry at all.  This is the
     discrete exterior derivative, and Stokes makes it exact.
@@ -76,9 +76,8 @@ def discrete_divergence(mesh: Mesh, dofmap=None) -> sp.csr_matrix:
     That requires the flux DOF to be the *integrated* normal flux
     ``F_e = int_e F.n``, which is the natural evaluation of a ``(d-1)``-form on a
     facet, rather than the facet *average*.  With the average convention a
-    ``diag(|e|)`` has to be smuggled into this operator, which puts metric into
-    the one object that should carry none; the measures belong in the inner
-    product, where all the other metric lives.
+    ``diag(|e|)`` enters this operator, putting metric into the one object that
+    should carry none; the measures belong in the inner product.
 
     With a duplicating ``dofmap`` a fracture facet contributes to **one** cell
     per column, so ``un+`` and ``un-`` no longer cancel and the mass exchanged
@@ -89,8 +88,8 @@ def discrete_divergence(mesh: Mesh, dofmap=None) -> sp.csr_matrix:
         # Cached on the mesh.  This operator is *metric-free apart from the facet
         # measures* -- signed incidence, nothing else -- so it is the same matrix
         # for every physics on a given mesh: Darcy, elasticity, and the flow block
-        # of poromechanics all want this one object.  Rebuilding it per assemble
-        # is pure waste, and the multiphysics systems assemble it several times.
+        # of poromechanics all want this one object, and the multiphysics systems
+        # assemble it several times.
         cached = getattr(mesh, "_discrete_divergence", None)
         if cached is not None:
             return cached
@@ -327,8 +326,7 @@ BOUNDARY_ARGUMENTS = (
 def constraint_scales(A: sp.spmatrix, dofs) -> np.ndarray:
     """The diagonal each pinned row is scaled by in :func:`_constrain`.
 
-    Exposed so the condensed form can reproduce the elimination exactly rather
-    than re-deriving it and drifting out of step with it.
+    Exposed so the condensed form can reproduce the elimination exactly.
     """
     diagonal = np.abs(A.diagonal())
     reference = diagonal[diagonal > 0].mean() if np.any(diagonal > 0) else 1.0
@@ -353,8 +351,7 @@ def _constrain(A: sp.csr_matrix, rhs: np.ndarray, dofs, values):
     rhs = rhs - np.asarray(A[:, dofs] @ values).ravel()
 
     # Drop every entry in a pinned row or column in one pass, then put the scaled
-    # diagonal back.  Doing it per DOF through LIL assignment is quadratic in
-    # practice and dominated the assembly profile.
+    # diagonal back.  Doing it per DOF through LIL assignment is quadratic.
     coo = A.tocoo()
     pinned = np.zeros(A.shape[0], dtype=bool)
     pinned[dofs] = True
@@ -392,7 +389,7 @@ def _facet_normals_low_dim(mesh: Mesh) -> np.ndarray:
 class MixedElasticity:
     """Global weakly-symmetric Hellinger--Reissner problem with Dirichlet data.
 
-    This is the **classic three-field** formulation ``(sigma, u, s)``, kept as
+    This is the classic three-field formulation ``(sigma, u, s)``, kept as
     the reference implementation and the base class.  The standard formulation
     is the four-field split
     (:class:`~mimetika.assembly.four_field.FourFieldElasticity`), which carries
@@ -509,9 +506,8 @@ class MixedElasticity:
             ).reshape(nB, nf * ndf)
             sgn = np.repeat(signs_g, ndf, axis=1)
 
-            # div_h, scaled by |E|: the constant moment of each component
-            # where the constant moment of each component sits is a property of
-            # the stress space, not of the assembly -- see
+            # div_h, scaled by |E|: where the constant moment of each component
+            # sits is a property of the stress space, not of the assembly -- see
             # `constant_moment_offsets`.  The values below stay pure signs, so D
             # remains topological.
             offsets = self.inner.constant_moment_offsets(d)
@@ -645,8 +641,7 @@ class MixedElasticity:
         Passing the tensor is the safer of the two: the caller then never has to
         know which way a given facet's normal points, and the values produced
         here agree with :meth:`interpolate_stress` facet by facet.  A vector
-        traction assembled against the *wrong* normal is silently sign-flipped,
-        which is exactly the failure this signature exists to avoid.
+        traction assembled against the *wrong* normal is silently sign-flipped.
         """
         from mimetika.geometry.local_cell import LocalCell
 
@@ -729,13 +724,12 @@ class MixedElasticity:
         traction_facets=(),
         roller_facets=(),
     ):
-        """``(A, rhs)`` with **every** boundary condition applied.
+        """``(A, rhs)`` with every boundary condition applied.
 
         The single place that knows the full set of conditions.  Callers that
         need to add their own constraints on top -- the contact driver pins the
         fracture traction to the current multiplier -- start from here rather
-        than reimplementing the boundary handling, which is what lets them stay
-        ignorant of what conditions exist.
+        than reimplementing the boundary handling.
         """
         S, rhs = self.assemble(body_force, dirichlet, extra_rhs)
         if len(traction_facets):
@@ -756,10 +750,10 @@ class MixedElasticity:
         the driver never has to know the block layout.
 
         ``contact=False`` strips the embedded fracture compliance and returns
-        the rows of the **unfractured** system.  The distinction is the whole
-        story for a compliant fracture: at the solution the fractured row is
-        satisfied *exactly*, so its residual is zero, while the unfractured
-        residual equals ``A_f sigma`` -- the jump itself.
+        the rows of the **unfractured** system.  The distinction matters for a
+        compliant fracture: at the solution the fractured row is satisfied
+        *exactly*, so its residual is zero, while the unfractured residual
+        equals ``A_f sigma`` -- the jump itself.
         """
         M, D, A = self.assemble_operators()
         if not contact and self.contact is not None:

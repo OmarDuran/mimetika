@@ -78,7 +78,7 @@ Columns of `R` are *canonical* when the mode admits a potential (`K⁻¹w = ∇�
 giving `R_e = |e|(ψ̄_e − ψ̄_E)` by integration by parts; modes without a potential
 are completed by the minimum-norm solution of `NᵀR = |E|K̄`. (Completing *every*
 column that way reproduces the projection form `M1 = |E|N(NᵀN)⁻¹K̄(NᵀN)⁻¹Nᵀ`,
-which is exactly why that form fails strong consistency.)
+which is why that form fails strong consistency.)
 
 Everything is **dimension-generic**: a `d`-cell's DOFs live on its `(d−1)`-facets
 and all work happens in the cell's own affine frame ([`LocalCell`](src/mimetika/geometry/local_cell.py)).
@@ -105,9 +105,9 @@ ElasticityInnerProduct(cells["cube-unit"].mesh).stabilization_dim(0)      # -> 1
 
 ## Patch tests (local saddle-point exactness)
 
-The sharpest check of an inner product: form the **local mixed problem** on one
-cell, impose an exact linear field as data, **solve**, and require the discrete
-solution to be exact. See [`assembly/local.py`](src/mimetika/assembly/local.py).
+Form the **local mixed problem** on one cell, impose an exact linear field as
+data, **solve**, and require the discrete solution to be exact. See
+[`assembly/local.py`](src/mimetika/assembly/local.py).
 
 * **Scalar** — linear potential `p = a + b·x` ⟹ constant flux `F = −K∇p`.
   Recovers the flux DOFs and the element pressure to ~1e-15.

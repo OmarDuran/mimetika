@@ -8,23 +8,22 @@
 #include "mimetika/physics/terms/darcy.hpp"
 #include "mimetika/physics/package.hpp"
 
-// FLOW IN A POROUS MEDIUM, in mixed form.
+// Flow in a porous medium, in mixed form.
 //
 //     r_q = ⋆_{(λK)⁻¹} q − div^T p        the constitutive relation
 //     r_p = div q                          the mass balance
 //
-// The first row is a CLOSURE coupling pairing (n−1)-cochains with each
+// The first row is a closure coupling pairing (n−1)-cochains with each
 // other and with the n-cochain of the pressure; the second is the adjoint
 // of the same signs. Neither reaches out of a cell, so both are algebraic
 // in exokal's sense — the discrete Hodge is the whole of the metric content
 // and the divergence is pure topology.
 //
-// ONE PACKAGE FOR BOTH FLOW ROWS OF THE CATALOGUE. Single-phase flow is
+// One package for both flow rows of the catalogue. Single-phase flow is
 // compositional flow at one component: the equations are the same and only
 // the number of composition fields differs, which is data the fluid model
 // carries rather than a property of this type. A package that hard-coded a
-// phase count would turn one catalogue row into two implementations, which
-// is exactly the multiplication this layer exists to prevent.
+// phase count would turn one catalogue row into two implementations.
 
 namespace mimetika::physics {
 
@@ -42,13 +41,13 @@ struct FlowOptions {
   // facet during the step and is what makes backward Euler need no
   // time-stepping machinery at all.
   double mobility{1.0};
-  // MOMENTS PER FACET OF THE FLUX SPACE. Zero means d, the de Rham/BDM_1
+  // Moments per facet of the flux space. Zero means d, the de Rham/BDM_1
   // layout. One is the lowest-order single-flux-per-facet space -- RT_0 in its
   // de Rham realization, or the stabilized polytopal product.
   //
   // The package does not choose it and does not know which inner product will
   // be built: it lays out a space, and the layout has to match whatever star
-  // lands on it. The driver derives both from ONE realization so they cannot
+  // lands on it. The driver derives both from one realization so they cannot
   // disagree -- a mismatch here is not a wrong answer, it is a space of the
   // wrong size, and every index downstream is off.
   int flux_moments{0};
@@ -61,7 +60,7 @@ class Flow final : public Package {
 
   std::string name() const override { return "Flow"; }
 
-  // FIELDS ARE NAMED BY CODIMENSION. The same package placed on the ambient
+  // Fields are named by codimension. The same package placed on the ambient
   // stratum and on a fracture immersed in it declares q_0/p_0 and q_1/p_1 —
   // the same physics, distinct unknowns of one global system. A term
   // declares the quantity and exokal resolves it per stratum, so the
@@ -72,12 +71,11 @@ class Flow final : public Package {
     // the flux is a cochain on the facets, the pressure one per cell: the
     // lowest-order mixed pair, and the layouts that make the first row an
     // (n−1, n−1) pairing and the second an (n, n−1) one
-    // THE MOMENT COUNT COMES FROM THE REALIZATION. d of them is the BDM_1 /
-    // de Rham space, which is what a coupled poroelastic model needs because
-    // the stress space it pairs with has d^2; one is RT_0 or the stabilized
-    // polytopal product. These are DIFFERENT discretizations, not a finer and
-    // a coarser version of one, so the choice belongs to whoever states the
-    // model rather than to this package.
+    // The moment count comes from the realization: d is the BDM_1 / de Rham
+    // space, which a coupled poroelastic model needs because the stress space
+    // it pairs with has d^2; one is RT_0 or the stabilized polytopal product.
+    // These are different discretizations, not a finer and a coarser version
+    // of one, so the choice belongs to whoever states the model.
     r.fields.push_back(
         {at("q"),
          DofLayout::moments(dim, dim - 1, opt_.flux_moments > 0 ? opt_.flux_moments : dim)});

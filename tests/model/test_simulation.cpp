@@ -6,7 +6,7 @@
 #include "../mimetika_test.hpp"
 #include "exokal/hodge/coefficient.hpp"
 #include "exokal/hodge/flux_operators.hpp"
-#include "mimetika/model/compositions/single_phase_flow.hpp"
+#include "mimetika/model/compositions/flow.hpp"
 #include "mimetika/model/simulation.hpp"
 
 using exokal::hodge::Coefficient;
@@ -22,10 +22,10 @@ bool near(double a, double b, double tol) { return std::abs(a - b) <= tol; }
 
 }  // namespace
 
-// ONE OBJECT, THREE OPERATORS. A solver asks a discretized problem for a
-// residual, a tangent and the tangent's action; today those took six objects
-// wired in a particular order. Simulation is that wiring done once, and the
-// test is that all three come out of it consistently.
+// One object, three operators. A solver asks a discretized problem for a
+// residual, a tangent and the tangent's action; those take six objects wired in
+// a particular order. Simulation is that wiring done once, and the test is that
+// all three come out of it consistently.
 MIMETIKA_TEST(the_simulation_produces_residual_jacobian_and_action) {
   const auto m = mimetika_test::hex_grid(3);
   const graphos::Complex& c = m.topology();
@@ -34,7 +34,7 @@ MIMETIKA_TEST(the_simulation_produces_residual_jacobian_and_action) {
   exokal::forms::TermContext ctx;
   ctx.provide("flux_operators", hodge);
 
-  const Composition comp = Catalogue::instance().build("single_phase_flow", {});
+  const Composition comp = Catalogue::instance().build("flow", {});
   Simulation sim(comp, {StratumSpec{"ambient", &c, 3, 0}}, ctx);
   CHECK(sim.n_dofs() > 0);
   CHECK(sim.epoch().n_strata() == 1);
@@ -73,10 +73,10 @@ MIMETIKA_TEST(the_simulation_produces_residual_jacobian_and_action) {
   CHECK(nonzero);
 }
 
-// THE CONSTRAINTS MUST HOLD ON ALL THREE PATHS. A consumer that wires this
-// by hand typically remembers the Jacobian and forgets the action, and the
-// symptom is a Krylov method that quietly solves a different problem. Here
-// the same Constraints object serves every path, and the test checks each.
+// The constraints must hold on all three paths. A consumer that wires this by
+// hand typically remembers the Jacobian and forgets the action, and the symptom
+// is a Krylov method that solves a different problem. Here the same Constraints
+// object serves every path, and the test checks each.
 MIMETIKA_TEST(essential_constraints_hold_on_every_path) {
   const auto m = mimetika_test::hex_grid(3);
   const graphos::Complex& c = m.topology();
@@ -85,7 +85,7 @@ MIMETIKA_TEST(essential_constraints_hold_on_every_path) {
   exokal::forms::TermContext ctx;
   ctx.provide("flux_operators", hodge);
 
-  const Composition comp = Catalogue::instance().build("single_phase_flow", {});
+  const Composition comp = Catalogue::instance().build("flow", {});
   Simulation sim(comp, {StratumSpec{"ambient", &c, 3, 0}}, ctx);
 
   // pin a handful of degrees of freedom, as a roller or a sealed face would
@@ -116,7 +116,7 @@ MIMETIKA_TEST(essential_constraints_hold_on_every_path) {
   sim.state()[0] += 0.375;
   sim.residual(r);
   CHECK(near(r[0], s0 * 0.375, 1e-14 * std::max(1.0, s0)));
-  // and what the scale must NOT change: the step lands on the datum exactly,
+  // and what the scale must not change: the step lands on the datum exactly,
   // since s dx = -s (x - g) gives x + dx = g whatever s is
   CHECK(near(sim.state()[0] - r[0] / s0, 0.25 * 0.0, 1e-14));
   sim.state()[0] -= 0.375;

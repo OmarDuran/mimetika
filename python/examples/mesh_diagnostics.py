@@ -3,23 +3,23 @@
 
 Three questions, answered in order:
 
-  1. WHAT IS THE MESH. exokal's diagnose_vtu: the formal findings on the
+  1. What the mesh is. exokal's diagnose_vtu: the formal findings on the
      complex, the shape-regularity classification at the library constants,
      and the metric-degeneracy witnesses -- cells whose measure falls below a
      percentage of the mean over their vertex star, truly collapsed rather
      than merely small in a refined region.
 
-  2. WHAT A PRODUCT LOOKS LIKE ON IT, cell by cell and NOTHING ASSEMBLED. Any
+  2. What a product looks like on it, cell by cell and nothing assembled. Any
      flux or stress inner product is built as the model would build it, and
      every cell's block is sent to an eigensolver: its extreme eigenvalues and
-     their ratio, the CONDITIONING of that cell's flux (or stress) block. The
+     their ratio, the conditioning of that cell's flux (or stress) block. The
      statistics over the mesh say where a solver's trouble will come from; the
      worst cells say which ones. For the adaptive products the selection eta
      rides along, and for the two-point members the star's validity: a facet
-     the centroid does not see squarely has a NON-POSITIVE weight, and the
+     the centroid does not see squarely has a non-positive weight, and the
      spectrum shows it as a negative eigenvalue.
 
-  3. NAMED CELLS. --vtk-id takes the ids ParaView shows -- the file's own --
+  3. Named cells. --vtk-id takes the ids ParaView shows -- the file's own --
      and reports each such cell in every light at once: collapse percent,
      eta, star validity, and its block's spectrum.
 
@@ -90,8 +90,9 @@ def main():
                     help="report these cells, by the file's own (ParaView) cell ids")
     ap.add_argument("--worst", type=int, default=10,
                     help="how many worst-conditioned cells to list")
-    ap.add_argument("--vtu", help="write the per-cell fields (degenerate, eta, star_invalid, "
-                                  "cond, lambda_min, lambda_max) here")
+    ap.add_argument("--vtu", help="write the table as cell fields (n_dofs, lambda_min, "
+                                  "lambda_max, cond, eta, star_invalid, n_neighbours, "
+                                  "collapse_percent) here; counts and flags as Int32")
     ap.add_argument("--output", help="folder for diagnostics.txt and degenerate_cells.csv")
     ap.add_argument("--quiet", action="store_true", help="counts only, no full report")
     args = ap.parse_args()
@@ -125,11 +126,12 @@ def main():
     dim = mesh.dim
     n = mesh.count(dim)
     cell_of_vtk = {int(v): c for c, v in enumerate(vtk_ids)}
-    # the collapse percent of EVERY cell, so the tables never show a blank for
+    # the collapse percent of every cell, so the tables never show a blank for
     # a cell the scan merely did not flag: flagged means below the threshold,
-    # and the number itself is what says how far above it the others sit
+    # and the number itself says how far above it the others sit
     with stage("measuring every cell against its node star"):
         collapse = np.asarray(mk.cell_collapse_percent(mesh, dim))
+        neighbours = np.asarray(mk.cell_star_neighbours(mesh, dim))
 
     if args.physics == "flow":
         if args.product not in FLUX:
@@ -191,14 +193,14 @@ def main():
 
     def row(c):
         e = f"{eta[c]:4.0f}" if has_eta else f"{'-':>4s}"
-        st = f"{int(star[c]):5d}" if has_star else f"{'-':>5s}"
+        st = f"{int(star[c]):12d}" if has_star else f"{'-':>12s}"
         return (f"{c:9d} {int(ndof[c]):5d} {lmin[c]:12.3e} {lmax[c]:12.3e} "
                 f"{cond[c]:11.3e} {e} {st} {collapse[c]:11.5f}")
 
     order = np.argsort(-np.where(np.isfinite(cond), cond, np.inf))
     print(f"\n  worst {args.worst} cells by conditioning:")
     print(f"  {'vtk id':>9s} {'cell':>9s} {'dofs':>5s} {'lambda_min':>12s} {'lambda_max':>12s} "
-          f"{'cond':>11s} {'eta':>4s} {'star':>5s} {'collapse %':>11s}")
+          f"{'cond':>11s} {'eta':>4s} {'star_invalid':>12s} {'collapse %':>11s}")
     for c in order[:args.worst]:
         c = int(c)
         print(f"  {int(vtk_ids[c]):9d} {row(c)}")
@@ -207,7 +209,7 @@ def main():
     if args.vtk_id:
         print(f"\n  named cells ({label}):")
         print(f"  {'vtk id':>9s} {'cell':>9s} {'dofs':>5s} {'lambda_min':>12s} {'lambda_max':>12s} "
-              f"{'cond':>11s} {'eta':>4s} {'star':>5s} {'collapse %':>11s}")
+              f"{'cond':>11s} {'eta':>4s} {'star_invalid':>12s} {'collapse %':>11s}")
         for v in args.vtk_id:
             c = cell_of_vtk.get(int(v))
             if c is None:
@@ -222,17 +224,24 @@ def main():
             write_report(args.mesh, out, pct)
     if args.vtu:
         with stage(f"writing {args.vtu}"):
-            degenerate_flag = np.zeros(n)
-            for c in degenerate_pct:
-                degenerate_flag[c] = 1.0
-            mk.write_vtu(mesh, args.vtu, {
-                "degenerate": degenerate_flag,
-                "eta": eta,
-                "star_invalid": star.astype(float),
-                "cond": np.where(np.isfinite(cond), cond, -1.0),
+            # the table's columns, one cell field each, counts and flags as
+            # integers. Where a column has no meaning for the product -- eta
+            # off the adaptive members, the star off the two-point ones --
+            # the field carries -1 rather than a number that would read as a
+            # selection or a verdict; cond is -1 where the block is not
+            # positive (the eigenvalues say why), and collapse_percent is nan
+            # on a cell with no star neighbour.
+            fields = {
+                "n_dofs": ndof.astype(np.int32),
                 "lambda_min": lmin,
                 "lambda_max": lmax,
-            })
+                "cond": np.where(np.isfinite(cond), cond, -1.0),
+                "eta": eta.astype(np.int32) if has_eta else np.full(n, -1, dtype=np.int32),
+                "star_invalid": star.astype(np.int32) if has_star else np.full(n, -1, dtype=np.int32),
+                "n_neighbours": neighbours.astype(np.int32),
+                "collapse_percent": collapse,
+            }
+            mk.write_vtu(mesh, args.vtu, fields)
 
 
 if __name__ == "__main__":

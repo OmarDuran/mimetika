@@ -3,11 +3,11 @@
 
 #include "../mimetika_test.hpp"
 #include "mimetika/mesh/structured.hpp"
-#include "mimetika/model/cauchy_elasticity_model.hpp"
-#include "mimetika/model/single_phase_model.hpp"
+#include "mimetika/model/cauchy_mechanics_model.hpp"
+#include "mimetika/model/flow_model.hpp"
 #include "mimetika/linear_solver/fields.hpp"
 
-// THE FACTORS OF THE PRODUCT SPACE, AS INDEX SETS.
+// The factors of the product space, as index sets.
 //
 // A block preconditioner is only a preconditioner for the whole operator if its
 // blocks partition the unknowns: one left out of every block is never
@@ -42,7 +42,7 @@ const FieldBlock& named(const std::vector<FieldBlock>& b, const std::string& nam
 // The blocks tile the vector: every unknown in exactly one.
 MIMETIKA_TEST(the_flow_blocks_partition_the_unknowns) {
   const auto m = mimetika::mesh::annulus(6, 3, 2, mimetika::mesh::Family::simplex, 1.0, 10.0, 1.0);
-  mimetika::SinglePhaseModel model(m, 2, 1.0, exokal::hodge::FluxOperators::Realization::derham_rt);
+  mimetika::FlowModel model(m, 2, 1.0, exokal::hodge::FluxOperators::Realization::derham_rt);
   model.build();
   const auto& e = model.simulation().epoch();
 
@@ -59,7 +59,7 @@ MIMETIKA_TEST(the_flow_blocks_partition_the_unknowns) {
 // assumed.
 MIMETIKA_TEST(the_flow_blocks_are_the_flux_and_the_pressure) {
   const auto m = mimetika::mesh::annulus(6, 3, 2, mimetika::mesh::Family::simplex, 1.0, 10.0, 1.0);
-  mimetika::SinglePhaseModel model(m, 2, 1.0, exokal::hodge::FluxOperators::Realization::derham_rt);
+  mimetika::FlowModel model(m, 2, 1.0, exokal::hodge::FluxOperators::Realization::derham_rt);
   model.build();
   const auto blocks = field_blocks(model.simulation().epoch());
 
@@ -74,7 +74,7 @@ MIMETIKA_TEST(the_flow_blocks_are_the_flux_and_the_pressure) {
 // then agree, which is the case every fixed-dimensional problem is in.
 MIMETIKA_TEST(one_stratum_gives_each_field_a_single_run) {
   const auto m = mimetika::mesh::annulus(4, 2, 2, mimetika::mesh::Family::simplex, 1.0, 10.0, 1.0);
-  mimetika::CauchyElasticityModel model(m, 2, mimetika::ElasticMaterial(1.0, 1.0),
+  mimetika::CauchyMechanicsModel model(m, 2, mimetika::ElasticMaterial(1.0, 1.0),
                                         exokal::hodge::StressOperators::Realization::derham_bdm);
   model.build();
   const auto& e = model.simulation().epoch();
@@ -98,7 +98,7 @@ MIMETIKA_TEST(one_stratum_gives_each_field_a_single_run) {
 // what lets a strided IS stand in for an explicit index array.
 MIMETIKA_TEST(the_runs_are_contiguous_and_ordered) {
   const auto m = mimetika::mesh::annulus(4, 2, 3, mimetika::mesh::Family::simplex, 1.0, 10.0, 1.0);
-  mimetika::CauchyElasticityModel model(m, 3, mimetika::ElasticMaterial(1.0, 1.0),
+  mimetika::CauchyMechanicsModel model(m, 3, mimetika::ElasticMaterial(1.0, 1.0),
                                         exokal::hodge::StressOperators::Realization::derham_bdm);
   model.build();
   const auto atoms = stratum_field_blocks(model.simulation().epoch());

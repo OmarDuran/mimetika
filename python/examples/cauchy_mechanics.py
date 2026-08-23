@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cauchy elasticity on a quarter annulus: Lame's thick-walled tube.
+"""Cauchy mechanics on a quarter annulus: Lame's thick-walled tube.
 
 A tube from a to b under internal pressure p_a and external p_b, rollers on the
 symmetry planes. With
@@ -13,16 +13,16 @@ the closed form is
     u_r(r)      = A r / (2(lam + mu))  +  B / (2 mu r)
 
 Neither term is polynomial, so neither is in the reconstruction: as with the
-Dupuit profile, the error is a resolution and the refinement table is the point.
+Dupuit profile, the error is a resolution and the refinement table measures it.
 
-Note the boundary datum. The exact stress at r = a is NOT -p_a I, but its
-TRACTION is -p_a n, and a uniform -p_a I delivers exactly that -- so the
-condition is a constant tensor even though the solution is curved.
+The boundary datum: the exact stress at r = a is not -p_a I, but its traction
+is -p_a n, and a uniform -p_a I delivers exactly that -- so the condition is a
+constant tensor even though the solution is curved.
 
 Run it:
 
-    PYTHONPATH=.. python cauchy_elasticity.py
-    PYTHONPATH=.. python cauchy_elasticity.py --dim 3 --product stabilized_bdm
+    PYTHONPATH=.. python cauchy_mechanics.py
+    PYTHONPATH=.. python cauchy_mechanics.py --dim 3 --product stabilized_bdm
 """
 
 import argparse
@@ -43,10 +43,8 @@ FAMILIES = {
     "simplex": mk.Family.simplex,
     "prism": mk.Family.prism,
 }
-# THE LINEAR SOLVER. "riesz" is the Riesz map of the space the operator is an
-# isomorphism on -- P is the Gram matrix of its norm -- so its iteration count
-# does not grow with the mesh. "direct" is a full factorization: exact, and the
-# wrong instrument past a few hundred thousand unknowns.
+
+
 def solvers(rtol):
     """The linear solvers, at the residual tolerance asked for.
 
@@ -55,7 +53,7 @@ def solvers(rtol):
     with the mesh. "direct" is a full factorization: exact, and the wrong
     instrument past a few hundred thousand unknowns.
 
-    THE TOLERANCE IS ON THE RESIDUAL, not on the answer. An iterative solve
+    The tolerance is on the residual, not on the answer. An iterative solve
     cannot show the round-off floor a direct one leaves, so a patch test read
     through it is bounded by this number rather than by the method.
     """
@@ -63,11 +61,10 @@ def solvers(rtol):
         "riesz": mk.SolverOptions(
             method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000
         ),
-        # THE SAME MAP, WITH THE STRESS BLOCK INVERTED BY AN AUXILIARY SPACE.
-        #
+        # The same map, with the stress block inverted by an auxiliary space.
         # ADS splits an H(div) operator along the de Rham complex instead of
         # factorizing it, so it costs no fill and is linear in the unknowns.
-        # It is a 3D construction and it wants ONE unknown per facet; the AFW
+        # It is a 3D construction and it wants one unknown per facet; the AFW
         # facet carries d moments in each of d components, and reaches it
         # through the facet-constant subspace, as a two-level cycle.
         "ads": mk.SolverOptions(
@@ -87,7 +84,7 @@ def solvers(rtol):
 SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg")
 DEFAULT_RTOL = 1e-9
 
-# ADS IS A THREE-DIMENSIONAL CONSTRUCTION. Its auxiliary spaces are built from
+# ADS is a three-dimensional construction: its auxiliary spaces are built from
 # the discrete gradient and curl, d_1 and d_2, and in two dimensions the
 # H(div) unknowns sit on edges rather than faces -- the maps do not address
 # them, and hypre has no ADS for that case.
@@ -104,10 +101,10 @@ def require_three_dimensions(solver, dim):
 PRODUCTS = {
     "derham_bdm": mk.StressRealization.derham_bdm,
     "stabilized_bdm": mk.StressRealization.stabilized_bdm,
-    # NO RECONSTRUCTION: d per facet, one constant traction vector, and M the
+    # No reconstruction: d per facet, one constant traction vector, and M the
     # diagonal primal-dual star -- the two-point stress. Half the unknowns and
     # an eighth of the matrix entries of the products above, on any mesh, and
-    # CONSISTENT only where the mesh is face-orthogonal. The Lame annulus is
+    # consistent only where the mesh is face-orthogonal. The Lame annulus is
     # not, so run it here to see what that costs rather than to be exact.
     #
     # It exists in four fields only, which formulation_for enforces.
@@ -127,9 +124,9 @@ def formulation_for(product, asked):
     what the total-pressure form gives; in three fields the trace couples the
     traction components and the product does not exist.
     """
-    # OMITTED IS NOT THE SAME AS ASKED FOR. `asked` is None when the caller
+    # Omitted is not the same as asked for. `asked` is None when the caller
     # said nothing, and then the product decides: three fields for the BDM
-    # ones, four for diagonal_afw, which has no other form. Only an EXPLICIT
+    # ones, four for diagonal_afw, which has no other form. Only an explicit
     # --formulation weak_symmetry with diagonal_afw is a contradiction, and it
     # is the only case refused.
     if product == "diagonal_afw":
@@ -189,7 +186,7 @@ def solve(nr, nt, dim, family, how, mat, form=None, solver="riesz", rtol=DEFAULT
         else:
             outer.append(f)
 
-    model = mk.CauchyElasticityModel(mesh, dim, mat, how, form)
+    model = mk.CauchyMechanicsModel(mesh, dim, mat, how, form)
     model.add_traction(inner, isotropic(-P_INNER))
     model.add_traction(outer, isotropic(-P_OUTER))
     model.add_free_slip(symmetry)  # rollers: no normal displacement, no shear
@@ -200,7 +197,7 @@ def solve(nr, nt, dim, family, how, mat, form=None, solver="riesz", rtol=DEFAULT
     for e in range(model.n_cells):
         x = mk.centroid(mesh, dim, e)
         r = math.hypot(x[0], x[1])
-        # the RADIAL displacement, projected out of the cell's vector unknown
+        # the radial displacement, projected out of the cell's vector unknown
         u_r = (model.displacement(e, 0) * x[0] + model.displacement(e, 1) * x[1]) / r
         d = u_r - ex.u_r(r)
         worst = max(worst, abs(d))
@@ -208,7 +205,7 @@ def solve(nr, nt, dim, family, how, mat, form=None, solver="riesz", rtol=DEFAULT
     return model, mesh, ex, worst, math.sqrt(rms / model.n_cells)
 
 
-# ONE PROCESS SPEAKS AND WRITES. Under mpirun every rank runs this file and
+# One process speaks and writes. Under mpirun every rank runs this file and
 # solves the same problem -- the algebra is shared out, the script is not -- so
 # without this the report appears N times and N processes race to write the
 # same .vtu. The solve itself is unaffected: every rank takes part in it, and

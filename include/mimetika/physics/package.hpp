@@ -12,7 +12,7 @@
 #include "exokal/spaces/dof_map.hpp"
 #include "exokal/spaces/product_space.hpp"
 
-// A PHYSICS PACKAGE: one set of equations, with the fields it introduces,
+// A physics package: one set of equations, with the fields it introduces,
 // the closures it must be given, and the terms it attaches.
 //
 // This is the unit the model catalogue is built from, and the reason the
@@ -24,19 +24,19 @@
 // caring how many components produced either.
 //
 // A package declares rather than assumes. It says which capabilities it
-// PROVIDES and which it NEEDS, so a composition missing a package is
+// provides and which it needs, so a composition missing a package is
 // rejected by name — "PoroCoupling needs 'displacement', provided by no
 // package" — instead of a term indexing past the end of a stencil at
-// assembly time. It declares its closure SLOTS the same way, so the
+// assembly time. It declares its closure slots the same way, so the
 // complete configuration surface of a model can be reported before anything
 // is built.
 //
-// WHAT A PACKAGE MAY NOT DO. It may not mention the domain type. Whether
-// the mesh is a single stratum, a static stratification, or one that
-// changes between epochs is a property of the mesh and the driver, never of
-// the equations — exokal's stratified epoch already carries a term across
-// every codimension it makes sense on. A package that branches on the
-// domain has reintroduced the multiplication this layer exists to avoid.
+// A package may not mention the domain type. Whether the mesh is a single
+// stratum, a static stratification, or one that changes between epochs is a
+// property of the mesh and the driver, never of the equations — exokal's
+// stratified epoch already carries a term across every codimension it makes
+// sense on. A package that branches on the domain has reintroduced the
+// multiplication this layer exists to avoid.
 
 namespace mimetika::physics {
 
@@ -44,12 +44,11 @@ using exokal::spaces::DofLayout;
 using exokal::spaces::DofMap;
 using exokal::spaces::ProductSpace;
 
-// Where a closure is bound. Conflating these is what makes a configuration
-// surface feel unbounded; there are exactly three.
+// Where a closure is bound. There are exactly three.
 enum class Scope {
   fluid,      // a property of the phase: density, viscosity, enthalpy
   rock,       // a property of a stratum: porosity, permeability
-  interface,  // a property of a stratum PAIR: the normal permeability
+  interface,  // a property of a stratum pair: the normal permeability
               // governing exchange across a codimension gap
 };
 
@@ -87,7 +86,7 @@ class Package {
   virtual std::string name() const = 0;
 
   // The layouts depend on the dimension of the stratum the package will run
-  // on, and the field NAMES on its codimension, which is why this is a query
+  // on, and the field names on its codimension, which is why this is a query
   // rather than a constant. A package declares the quantity; the stratum
   // decides what it is called there.
   virtual Requirements requirements(int dim, int codim = 0) const = 0;
@@ -98,10 +97,10 @@ class Package {
   virtual void attach(exokal::forms::Model& model, const exokal::forms::TermContext& ctx) const = 0;
 };
 
-// SEVERAL PACKAGES, VALIDATED TOGETHER. The composition is where the
-// catalogue's product collapses back onto the code's sum: it takes packages
-// that know nothing of each other and checks that what one needs another
-// provides, before a single degree of freedom is numbered.
+// Several packages, validated together. This is where the catalogue's
+// product collapses back onto the code's sum: it takes packages that know
+// nothing of each other and checks that what one needs another provides,
+// before a single degree of freedom is numbered.
 class Composition {
  public:
   Composition& add(std::unique_ptr<Package> p) {
@@ -148,7 +147,7 @@ class Composition {
   // The product space every package contributes to. Field order is the
   // order packages were added, and no term depends on it — exokal resolves
   // a term's fields by name against whatever space it is given, which is
-  // what lets flow ⊕ mechanics be a composition rather than a rewrite.
+  // what lets flow ⊕ mechanics be a composition.
   ProductSpace space(const graphos::Complex& c, int cell_dim = -1, int codim = 0) const {
     const int dim = cell_dim < 0 ? c.dim() : cell_dim;
     validate(dim, codim);

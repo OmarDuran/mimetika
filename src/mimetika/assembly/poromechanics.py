@@ -16,8 +16,8 @@ Governing equations (tension-positive, ``Sigma = C eps(u) - alpha p I``):
 Why the mixed form is robust where a displacement formulation is not
 ---------------------------------------------------------------------
 Inverting the constitutive law gives ``eps(u) = C^{-1}(Sigma + alpha p I)``, so
-the operator the scheme actually inverts is ``C^{-1}``, **not** ``C``.  Three
-consequences, and they are exactly the three regimes that break naive schemes:
+the operator the scheme actually inverts is ``C^{-1}``, not ``C``.  Three
+consequences, in the three regimes that break naive schemes:
 
 * **Incompressible solid** (``nu -> 1/2``).  ``C^{-1}`` stays bounded -- it tends
   to the deviatoric projector -- so there is no volumetric locking and nothing
@@ -38,7 +38,7 @@ It is built from the same per-facet expansions as ``div_h`` and ``as_h`` -- the
 identity plays the role the rigid rotations play for the asymmetry.
 
 Assembled system (backward Euler over ``dt``; the flux row is scaled by ``-dt``
-and the pressure row by ``dt`` so the whole thing stays **symmetric**)::
+and the pressure row by ``dt`` so the whole thing stays symmetric)::
 
     [  M      D^T   A^T    0        Tc^T   ] [sigma]   [ g_u  ]
     [  D       0     0     0         0     ] [ u   ]   [ f    ]
@@ -47,13 +47,13 @@ and the pressure row by ``dt`` so the whole thing stays **symmetric**)::
     [  Tc      0     0   dt B      S|E|    ] [ p   ]   [ rhs  ]
 
 with ``Tc = diag(alpha/(dK)) T``.  Setting ``dt = None`` drops the flow rows and
-treats the pressure as **given data** -- the quasi-steady regime the fault
+treats the pressure as given data -- the quasi-steady regime the fault
 benchmarks use, where the pressure field is prescribed cell by cell.
 
 ``Tc`` couples each cell pressure to *every* facet DOF of that cell.  The
 four-field variant (:class:`.four_field.FourFieldPoroMechanics`) carries the
 solid pressure ``p_s = tr_h(sigma)/d`` as an explicit unknown, and there the
-same physics enters through a **diagonal** cell--cell block instead -- ``Tc``
+same physics enters through a diagonal cell--cell block instead -- ``Tc``
 disappears from the matrix entirely.
 """
 
@@ -380,15 +380,15 @@ class PoroMechanics:
                 }
             )
         n4 = n3 + self.n_flux
-        # CPR split: everything against the **pressure**, which is the elliptic
+        # CPR split: everything against the pressure, which is the elliptic
         # field and is last and contiguous in [sigma, u, s, q, p].  The Schur
         # complement of this split is `B diag(M)^-1 B^T + S|E|` -- the cell-centred
         # pressure operator -- so AMG on it is exactly the CPR idea.
         #
-        # The previous split, `(n_stress + n_flux, ...)`, named no field at all:
-        # entries n1..n1+n_flux are displacement and rotation, not flux, because
-        # q sits at offset n3.  That silently mis-targeted both the fieldsplit
-        # preconditioner and the block scaling.
+        # The first block runs to n4: q sits at offset n3, so a split at
+        # `n_stress + n_flux` would name displacement and rotation entries as
+        # flux and mis-target both the fieldsplit preconditioner and the block
+        # scaling.
         x = solve_saddle(A, rhs, (n4, self.n_cells), **solver)
         return MixedSolution(
             {

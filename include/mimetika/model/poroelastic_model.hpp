@@ -17,11 +17,10 @@
 #include "mimetika/physics/boundary_terms.hpp"
 #include "mimetika/linear_solver/linear.hpp"
 
-// A POROELASTIC PROBLEM, STATED AS DATA.
+// A poroelastic problem, stated as data.
 //
-// Terzaghi's column and Coussy's borehole are not two models. They are ONE
-// model -- Biot poroelasticity, the mimetic-AFW-BDM de Rham discretization --
-// given two configurations:
+// Terzaghi's column and Coussy's borehole are one model -- Biot poroelasticity,
+// the mimetic-AFW-BDM de Rham discretization -- given two configurations:
 //
 //                    consolidation              borehole
 //   domain           a column, 2D or 3D         a quarter annulus, plane strain
@@ -34,17 +33,16 @@
 //                                               radial boundaries (natural)
 //
 // Everything that differs is in this struct; nothing that differs is in a
-// term, a package or a model. That is the claim the catalogue makes and this
-// is where it either holds or does not.
+// term, a package or a model. That is the claim the catalogue makes.
 //
-// THE CONDITIONS ARE FORMS, so a curved wall is not a special case. The
+// The conditions are forms, so a curved wall is not a special case. The
 // borehole's inner boundary has a different normal on every facet, and
 // "the radial stress is -p1 there" is one statement about all of them.
 
 namespace mimetika {
 
 // The five numbers a Biot medium needs, plus what the discretization derives
-// from them. All are d-DEPENDENT through the compliance, so the dimension is
+// from them. All are d-dependent through the compliance, so the dimension is
 // asked for rather than assumed -- plane strain is not three dimensions with a
 // direction ignored, it is d = 2 with its own compliance coefficient.
 struct PoroelasticMaterial {
@@ -84,35 +82,34 @@ struct PoroelasticMaterial {
   }
 };
 
-// THE TWO PHYSICS CARRY THEIR OWN CONDITIONS. See boundary_conditions.hpp:
+// The two physics carry their own conditions. See boundary_conditions.hpp:
 // a face may be traction-loaded and sealed, or roller-supported and drained,
 // and the mechanical and hydraulic sets need not coincide.
 
 class PoroelasticModel {
  public:
-  // WHICH SCALAR DE RHAM LAYER THE WHOLE MODEL STANDS ON -- one choice, not
-  // two, and that is the mathematics rather than a convenience.
+  // Which scalar de Rham layer the whole model stands on -- one choice, not
+  // two.
   //
   // A stress space is d copies of a flux space plus a rank-one trace, and the
   // Biot coupling pairs the discrete trace of the stress against the pressure
-  // of the SAME cell. Copying BDM for the stress while giving the flux RT would
+  // of the same cell. Copying BDM for the stress while giving the flux RT would
   // pair a traction that varies over a facet with a flux that does not, on
-  // either side of every interior facet: not de Rham compatible, and not a
-  // discretization of anything. So the layer is chosen once and both spaces
-  // follow it.
+  // either side of every interior facet: not de Rham compatible. So the layer
+  // is chosen once and both spaces follow it.
   //
   //   bdm             d moments per facet: flux d per facet, stress d^2, both
   //                   de Rham -- derham_bdm under derham_bdm. The
   //                   mimetic-AFW-BDM formulation. Any cell type, either
   //                   dimension.
-  //   bdm_stabilized  the SAME layout and the same flux, with the stress star
+  //   bdm_stabilized  the same layout and the same flux, with the stress star
   //                   realized as stabilized_bdm: the full linear tensor
   //                   reconstruction, stabilized on ker(N^T) where a polytope
   //                   leaves one. On a simplex mesh it coincides with `bdm`
   //                   cell by cell, since the stabilization vanishes and both
   //                   reduce to the conforming AFW element.
   //   rt              one per facet: flux 1, stress d. d copies of the minimal
-  //                   de Rham pair; sound as a product, and NOT an element --
+  //                   de Rham pair; sound as a product, and not an element --
   //                   its weak-symmetry inf-sup degenerates (see
   //                   test_dimensions).
   enum class Layer { bdm, bdm_stabilized, rt };
@@ -150,7 +147,7 @@ class PoroelasticModel {
   // ---- assemble the problem this configuration describes ----------------
   void build() {
     const graphos::Complex& c = mesh_->topology();
-    // ONE de Rham selection for both products; it does not know the material
+    // one de Rham selection for both products; it does not know the material
     const bool bdm = layer_ != Layer::rt;  // both bdm layers share the layout and the flux
     // the K-independent mode selection, shared by the de Rham flux and the
     // derham_bdm stress; the stabilized stress builds without it
@@ -164,7 +161,7 @@ class PoroelasticModel {
         *mesh_, dim_, material_.shear, material_.lame, stress_how,
         exokal::hodge::StressOperators::Formulation::weak_symmetry,
         layer_ == Layer::bdm ? &geometry_ : nullptr);
-    // BACKWARD EULER WITHOUT STEPPING MACHINERY: the flux over a step is
+    // backward Euler without stepping machinery: the flux over a step is
     // q~ = dt q, which is the Darcy mobility set to dt
     flux_ = exokal::hodge::FluxOperators::build(
         *mesh_, dim_, exokal::hodge::Coefficient::uniform(material_.mobility),
@@ -183,7 +180,7 @@ class PoroelasticModel {
     o.storage = material_.storage(dim_);
     o.volumetric_compliance = material_.volumetric_compliance(dim_);
     o.biot = material_.biot;
-    // ONE layer, both layouts: the space and the star cannot disagree because
+    // one layer, both layouts: the space and the star cannot disagree because
     // neither is stated independently of the other
     o.flux_moments = moments_per_facet();
     o.traction_moments = moments_per_facet();
@@ -191,13 +188,13 @@ class PoroelasticModel {
         physics::Catalogue::instance().build("consolidation", o),
         std::vector<StratumSpec>{StratumSpec{"ambient", &c, dim_, 0}}, ctx_);
     // the natural pressure datum is a boundary term of the same model, and it
-    // is attached only when the FLOW set actually prescribes one -- the
-    // column's drained face is the HOMOGENEOUS natural case and needs nothing
+    // is attached only when the flow set actually prescribes one -- the
+    // column's drained face is the homogeneous natural case and needs nothing
     if (any_pressure) sim_->model().add("prescribed_pressure", exokal::forms::On::all(), {});
 
-    // EACH PHYSICS RESOLVES ITS OWN CONDITIONS against the space, which is
-    // what gives every condition its dofs, and then the strong ones hand their
-    // forms to the constraint set. The natural ones are already data.
+    // each physics resolves its own conditions against the space, which gives
+    // every condition its dofs; the strong ones then hand their forms to the
+    // constraint set. The natural ones are already data.
     const auto& sp = sim_->epoch().stratum(0).space();
     mechanics_.resolve(*mesh_, dim_, sp);
     flow_.resolve(*mesh_, dim_, sp);
@@ -232,9 +229,9 @@ class PoroelasticModel {
     sim_->jacobian(jac_);
     system_ = solver::SparseSystem::from(jac_);
 
-    // the ACCUMULATION blocks: the pressure row against the stress and against
+    // the accumulation blocks: the pressure row against the stress and against
     // itself. Taking them from the assembled operator rather than re-deriving
-    // them is what keeps the step consistent with the system it steps.
+    // them keeps the step consistent with the system it steps.
     const auto p_end = p_off + static_cast<std::size_t>(sp.map(sp.index_of("p_0")).size());
     const auto s_end = s_off + static_cast<std::size_t>(sp.map(sp.index_of("s_0")).size());
     for (std::size_t k = 0; k < system_.nnz(); ++k) {

@@ -5,19 +5,18 @@
 #include "mimetika/algebraic_constraints/contact/trace.hpp"
 #include "mimetika/mesh/structured.hpp"
 
-// THE FRACTURE AND ITS FRAMES: the addressing the trace operator stands on.
+// The fracture and its frames: the addressing the trace operator stands on.
 //
 // The trace itself -- the jump as the adjoint of D and A -- is exercised
 // against a solved problem in test_contact_elasticity.cpp, where a known
 // displacement field can be imposed and the recovered jump compared to it.
-// What is checked here is everything that must hold BEFORE a solve: that a
+// What is checked here is everything that must hold before a solve: that a
 // fracture is interior, that both cofaces read one frame, and that the rotation
 // into and out of that frame is an isometry.
 //
-// That last point is not decoration. The traction and the jump are rotated by
-// the same frame in opposite directions, so an error there would cancel in any
-// round trip and show up only as a wrong friction cone -- the kind of defect
-// that survives every test that does not name it.
+// The traction and the jump are rotated by the same frame in opposite
+// directions, so an error there cancels in any round trip and shows up only as
+// a wrong friction cone.
 
 using graphos::Index;
 using mimetika::contact::Fracture;
@@ -41,9 +40,9 @@ std::vector<Index> facets_at(const exokal::Mesh& m, int dim, double z, double to
 
 }  // namespace
 
-// A FRACTURE IS INTERIOR: a jump needs two sides, and a boundary facet has one.
-// Refusing at construction is what keeps the driver from producing a plausible
-// answer on a fault that is really a boundary.
+// A fracture is interior: a jump needs two sides, and a boundary facet has one.
+// Refusing at construction keeps the driver from producing a plausible answer
+// on a fault that is really a boundary.
 MIMETIKA_TEST(a_fracture_facet_must_have_two_cofaces) {
   const exokal::Mesh m = mimetika::mesh::column(4, 3, Family::cartesian, 1.0, 1.0);
   // the base of the column: a boundary facet
@@ -87,8 +86,8 @@ MIMETIKA_TEST(an_empty_fracture_and_a_bad_moment_count_are_refused) {
   CHECK(refused == 3);
 }
 
-// THE FRAME IS THE FACET'S, so both cofaces read one convention. The normal is
-// the CANONICAL one -- the direction the traction dofs are numbered in -- and
+// The frame is the facet's, so both cofaces read one convention. The normal is
+// the canonical one -- the direction the traction dofs are numbered in -- and
 // the tangents follow from it alone, which is what makes the two sides of a
 // fracture agree on what a shear component means.
 MIMETIKA_TEST(the_frame_is_orthonormal_and_facet_intrinsic) {
@@ -121,9 +120,9 @@ MIMETIKA_TEST(the_frame_is_orthonormal_and_facet_intrinsic) {
   }
 }
 
-// THE ROTATION IS AN ISOMETRY, in both directions. The traction goes one way
-// and the jump the other, so an error here would cancel in a round trip and
-// surface only as a wrong friction cone.
+// The rotation is an isometry, in both directions. The traction goes one way
+// and the jump the other, so an error here cancels in a round trip and surfaces
+// only as a wrong friction cone.
 MIMETIKA_TEST(the_frame_rotation_preserves_the_norm_and_round_trips) {
   const exokal::Mesh m = mimetika::mesh::column(4, 3, Family::cartesian, 1.0, 1.0);
   const std::vector<Index> f = facets_at(m, 3, 0.5);
@@ -148,7 +147,7 @@ MIMETIKA_TEST(the_frame_rotation_preserves_the_norm_and_round_trips) {
   }
 }
 
-// THE NORMAL COMPONENT IS THE NORMAL COMPONENT: a facet-frame vector that is
+// The normal component is the normal component: a facet-frame vector that is
 // purely normal rotates to a multiple of the facet normal, and nothing else.
 // This is what makes "t_n < 0 is compression" a statement about the fracture
 // rather than about a coordinate axis.
@@ -167,7 +166,7 @@ MIMETIKA_TEST(a_purely_normal_traction_rotates_onto_the_facet_normal) {
   }
 }
 
-// SEVERAL FRACTURES COEXIST, which is the reason a driver owns a facet set
+// Several fractures coexist, which is the reason a driver owns a facet set
 // rather than the mesh owning one fracture: two laws on two disjoint sets are
 // two drivers, and neither knows about the other.
 MIMETIKA_TEST(disjoint_fractures_are_independent) {

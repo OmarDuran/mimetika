@@ -13,7 +13,7 @@
 #include "exokal/hodge/flux_operators.hpp"
 #include "exokal/hodge/hybrid_flux.hpp"
 #include "mimetika/model/boundary_conditions.hpp"
-#include "mimetika/model/compositions/single_phase_flow.hpp"
+#include "mimetika/model/compositions/flow.hpp"
 #include "mimetika/model/conditioning.hpp"
 #include "mimetika/model/hybrid_interface.hpp"
 #include "mimetika/model/partition.hpp"
@@ -21,60 +21,56 @@
 #include "mimetika/physics/boundary_terms.hpp"
 #include "mimetika/linear_solver/linear.hpp"
 
-// SINGLE-PHASE FLOW, STATED AS DATA -- the poroelastic problem with one physics
+// Single-phase flow, stated as data -- the poroelastic problem with one physics
 // instead of two.
 //
 //     div q = 0,   q = -(K/mu) grad p
 //
-// It exists for the same reason PoroelasticModel does, and it earns its
-// keep twice over. It is the configuration a flow-only benchmark needs, and it
-// is the SMALLEST problem that exercises the flux space, the natural pressure
-// datum and the strong flux condition without any mechanics in the way. When a
-// poroelastic answer is wrong, this is what says whether the flow half is.
+// It is the configuration a flow-only benchmark needs, and the smallest problem
+// that exercises the flux space, the natural pressure datum and the strong flux
+// condition without any mechanics in the way. When a poroelastic answer is
+// wrong, this is what says whether the flow half is.
 //
-// Both of its closed forms are one line and hold in any dimension:
+// Both of its closed forms hold in any dimension:
 //
 //     a column   p linear between the two ends          the Laplace solution
 //     an annulus p = p_a + (p_b - p_a) ln(r/a)/ln(b/a)  Dupuit
-//
-// so a discretization that claims a cell type can be asked to prove it.
 
 namespace mimetika {
 
-class SinglePhaseModel {
+class FlowModel {
  public:
-  // WHICH DISCRETE HODGE, chosen here rather than fixed. exokal offers two de
+  // Which discrete Hodge, chosen here rather than fixed. exokal offers two de
   // Rham realizations of the flux star and one stabilized polytopal product,
   // and they are different discretizations of the same equations:
   //
-  //   derham      d moments per facet. On a simplex this IS BDM_1 -- 3 edges
+  //   derham      d moments per facet. On a simplex this is BDM_1 -- 3 edges
   //               x 2 in the plane, 4 facets x 3 in space -- unisolvent with
   //               no enrichment. On a polytope the moments are completed with
   //               div-free curl modes. The space a coupled poroelastic model
   //               needs, because the stress space it pairs with carries d^2.
   //   derham_rt   one flux per facet: RT_0, the minimal de Rham pair, whose
   //               radial mode x - x_E is what lets div reach P_0 at all.
-  //               SIMPLICES IN SPACE ONLY today; it refuses anything else
+  //               Simplices in space only today; it refuses anything else
   //               rather than stabilizing it.
   //   stabilized  one flux per facet on any polytope, consistency plus a
   //               stabilization -- not a de Rham construction.
   //   diagonal_tpfa  one flux per facet and no reconstruction: the diagonal
   //               primal-dual star, exact only where the mesh is K-orthogonal.
-  //   adaptive_rt one flux per facet: the per-cell SELECTION between the two
+  //   adaptive_rt one flux per facet: the per-cell selection between the two
   //               above, carried as eta in {0, 1}. Ones everywhere -- the
   //               stabilized product -- and 0 on the cells the metric-
-  //               degeneracy scan flags, which take the diagonal star: a
-  //               reconstruction over a collapsed cell is what the selection
-  //               exists to avoid. The threshold is exokal's
-  //               default_degeneracy_percent unless set_degeneracy_percent()
-  //               names one.
+  //               degeneracy scan flags, which take the diagonal star rather
+  //               than a reconstruction over a collapsed cell. The threshold
+  //               is exokal's default_degeneracy_percent unless
+  //               set_degeneracy_percent() names one.
   //
-  // The realization decides the SPACE as well as the star, and the two must
-  // agree on moments per facet or every index after the first facet is wrong.
-  // So both are derived from this one field and neither is stated twice.
+  // The realization decides the space as well as the star, and the two must
+  // agree on moments per facet or every index after the first facet is wrong,
+  // so both are derived from this one field.
   using Realization = exokal::hodge::FluxOperators::Realization;
 
-  SinglePhaseModel(const exokal::Mesh& mesh, int cell_dim, double mobility = 1.0,
+  FlowModel(const exokal::Mesh& mesh, int cell_dim, double mobility = 1.0,
                    Realization how = Realization::derham_bdm)
       : mesh_(&mesh), dim_(cell_dim), mobility_(mobility), how_(how) {}
 
@@ -88,14 +84,14 @@ class SinglePhaseModel {
   FlowBoundary& flow() { return flow_; }
   const FlowBoundary& flow() const { return flow_; }
 
-  // THE adaptive_rt THRESHOLD: scan for metrically degenerate cells at this
+  // The adaptive_rt threshold: scan for metrically degenerate cells at this
   // percentage of the node-star mean and give them the diagonal star, eta = 0.
-  // eta is NOT a free field -- it is derived, ones with the flagged cells
-  // zeroed -- so what is set here is the one number the scan needs. Unset,
-  // exokal scans at its own default_degeneracy_percent.
+  // eta is derived -- ones with the flagged cells zeroed -- so what is set here
+  // is the one number the scan needs. Unset, exokal scans at its own
+  // default_degeneracy_percent.
   void set_degeneracy_percent(double percent) { degeneracy_percent_ = percent; }
 
-  // THE SECOND SELECTOR, BY CONDITIONING: a cell whose stabilized block has
+  // The second selector, by conditioning: a cell whose stabilized block has
   // lambda_max / lambda_min above this takes the diagonal star as well. The
   // scan sees a collapsed cell; this sees a sliver of ordinary volume, which
   // the scan does not. It composes with the scan -- either flag zeroes eta --
@@ -105,17 +101,17 @@ class SinglePhaseModel {
   // how many cells the conditioning selector switched, as built
   std::size_t n_ill_conditioned() const { return n_ill_conditioned_; }
 
-  // The selection AS BUILT, one value per cell: 1 is the stabilized product,
-  // 0 the diagonal star. That is the field to write next to the solution,
-  // because it is the one the operator was actually assembled from.
+  // The selection as built, one value per cell: 1 is the stabilized product,
+  // 0 the diagonal star -- the field to write next to the solution, since it
+  // is the one the operator was assembled from.
   const std::vector<double>& eta() const {
     if (sim_ == nullptr) {
-      throw std::logic_error("SinglePhaseModel: not built yet; call build() or solve() first");
+      throw std::logic_error("FlowModel: not built yet; call build() or solve() first");
     }
     return flux_.eta();
   }
 
-  // THE VALIDITY GATE OF THE DIAGONAL STAR, which exokal records and leaves to
+  // The validity gate of the diagonal star, which exokal records and leaves to
   // the consumer: a facet the cell centroid does not see squarely carries a
   // non-positive two-point weight, M is not positive there, and whatever is
   // built on it -- the Riesz map, a condensation -- is meaningless while still
@@ -123,13 +119,13 @@ class SinglePhaseModel {
   // cells its scan handed to the star.
   std::size_t n_not_star_shaped() const {
     if (sim_ == nullptr) {
-      throw std::logic_error("SinglePhaseModel: not built yet; call build() or solve() first");
+      throw std::logic_error("FlowModel: not built yet; call build() or solve() first");
     }
     return flux_.n_not_star_shaped();
   }
   const std::vector<Index>& not_star_shaped() const {
     if (sim_ == nullptr) {
-      throw std::logic_error("SinglePhaseModel: not built yet; call build() or solve() first");
+      throw std::logic_error("FlowModel: not built yet; call build() or solve() first");
     }
     return flux_.not_star_shaped();
   }
@@ -140,25 +136,25 @@ class SinglePhaseModel {
 
   // Dereferencing an unbuilt model is a null read, and from Python that is an
   // abort rather than an exception -- so it is refused by name instead.
-  // NON-CONST, for the one caller that configures the simulation rather than
+  // Non-const, for the one caller that configures the simulation rather than
   // reading it: the partition, which tells it which sites to assemble.
   Simulation& simulation() {
     if (!sim_) {
-      throw std::logic_error("SinglePhaseModel: not built yet; call build() or solve() first");
+      throw std::logic_error("FlowModel: not built yet; call build() or solve() first");
     }
     return *sim_;
   }
 
   const Simulation& simulation() const {
     if (sim_ == nullptr) {
-      throw std::logic_error("SinglePhaseModel: not built yet; call build() or solve() first");
+      throw std::logic_error("FlowModel: not built yet; call build() or solve() first");
     }
     return *sim_;
   }
   const solver::SparseSystem& system() const { return system_; }
   std::size_t n_cells() const { return n_cells_; }
 
-  // SHARE THIS MODEL OUT over `n_ranks` processes. Nothing happens until
+  // Share this model out over `n_ranks` processes. Nothing happens until
   // build(): the partition needs the space, and the space is built there.
   // `reduce` sums a vector across the processes, and is used once per
   // assembly, on the scales of the constrained rows alone.
@@ -172,7 +168,7 @@ class SinglePhaseModel {
 
   void build() {
     const graphos::Complex& c = mesh_->topology();
-    // THE PARTITION COMES FIRST, because the products below are per cell and
+    // The partition comes first, because the products below are per cell and
     // are the bulk of the work: a process builds its own and no others.
     if (n_ranks_ > 1) distribution_ = partition_cells(*mesh_, dim_, n_ranks_, rank_);
     const std::vector<char>* only =
@@ -181,13 +177,13 @@ class SinglePhaseModel {
     if (how_ == Realization::derham_bdm) {
       geometry_ = exokal::hodge::DeRhamGeometryCache::build(*mesh_, dim_);
     }
-    // THE SELECTION, DERIVED RATHER THAN GIVEN: ones, with 0 on the cells the
+    // The selection, derived rather than given: ones, with 0 on the cells the
     // scan flags at the caller's threshold. exokal forces its own default-
     // threshold zeros on top either way, so a caller can only widen the set.
     if ((degeneracy_percent_ >= 0.0 || cond_threshold_ >= 0.0) &&
         how_ != Realization::adaptive_rt) {
       throw std::invalid_argument(
-          "SinglePhaseModel: the degeneracy and conditioning thresholds are adaptive_rt's "
+          "FlowModel: the degeneracy and conditioning thresholds are adaptive_rt's "
           "cell selection");
     }
     std::vector<double> eta;
@@ -231,7 +227,7 @@ class SinglePhaseModel {
     physics::ModelOptions o;
     o.flux_moments = moments_per_facet();
     sim_ = std::make_unique<Simulation>(
-        physics::Catalogue::instance().build("single_phase_flow", o),
+        physics::Catalogue::instance().build("flow", o),
         std::vector<StratumSpec>{StratumSpec{"ambient", &c, dim_, 0}}, ctx_);
     if (any_pressure) sim_->model().add("prescribed_pressure", exokal::forms::On::all(), {});
 
@@ -240,11 +236,11 @@ class SinglePhaseModel {
     flow_.impose(sim_->constraints());
     sim_->freeze_constraints();
 
-    // THE PARTITION, APPLIED WHERE THE SPACE EXISTS. Asked for before the
+    // The partition, applied where the space exists. Asked for before the
     // build, because the assembly below is the thing it divides.
     if (n_ranks_ > 1) {
       add_dof_ownership(distribution_, *mesh_, dim_, sim_->epoch(), n_ranks_, rank_);
-      // ASSEMBLE the halo as well, WRITE only what this process owns: the
+      // assemble the halo as well, write only what this process owns: the
       // rows it owns are then complete without a single message.
       sim_->distribute_over(distribution_.assembled_cells, distribution_.assembled_facets,
                             distribution_.owned_dofs, reduce_);
@@ -254,7 +250,7 @@ class SinglePhaseModel {
     sim_->jacobian(jac);
     system_ = solver::SparseSystem::from(jac);
 
-    // THE STEADY RIGHT-HAND SIDE. Everything the terms contribute that does not
+    // The steady right-hand side. Everything the terms contribute that does not
     // depend on the unknowns is a load, and the residual at the zero state is
     // exactly minus that load -- so it is read off rather than re-derived. The
     // strongly imposed rows carry their own datum, scaled as their equation is.
@@ -263,8 +259,8 @@ class SinglePhaseModel {
     sim_->residual(r);
     rhs_.assign(sim_->n_dofs(), 0.0);
     for (std::size_t i = 0; i < sim_->n_dofs(); ++i) {
-      // -r is a CONTRIBUTION and is summed across the processes; a constrained
-      // row is a REPLACEMENT and is written by whichever process owns it, so
+      // -r is a contribution and is summed across the processes; a constrained
+      // row is a replacement and is written by whichever process owns it, so
       // the others leave it at zero rather than adding a copy of it.
       const bool mine = sim_->owned_dofs().empty() || sim_->owned_dofs()[i] != 0;
       rhs_[i] = sim_->constraints().pinned(i)
@@ -282,8 +278,8 @@ class SinglePhaseModel {
 
   // ---- the hybridized route ------------------------------------------------
   //
-  // A SECOND ELIMINATION, AND A DIFFERENT SYSTEM. The mixed form condenses its
-  // flux only when the star is diagonal; hybridization takes ANY product.
+  // A second elimination, and a different system. The mixed form condenses its
+  // flux only when the star is diagonal; hybridization takes any product.
   // Each cell keeps its own facet flux, normal continuity moves to a
   // multiplier on the facets -- the facet pressure, in the flux's own moment
   // chart -- and what a solver sees is the interface system alone: symmetric
@@ -292,10 +288,10 @@ class SinglePhaseModel {
   // adaptive ones included, where the condensed mixed system exists for the
   // diagonal star alone and the Riesz map pays for an H(div) block.
   //
-  // THE BOUNDARY ROLES SWAP. The multiplier IS the facet pressure, so a
-  // pressure datum PINS a multiplier to its value, and a normal-flux datum is
-  // NATURAL: it loads the free row of its facet. A boundary facet given no
-  // condition is therefore SEALED here, where the mixed form reads it as
+  // The boundary roles swap. The multiplier is the facet pressure, so a
+  // pressure datum pins a multiplier to its value, and a normal-flux datum is
+  // natural: it loads the free row of its facet. A boundary facet given no
+  // condition is therefore sealed here, where the mixed form reads it as
   // p = 0 -- the homogeneous natural condition of each form is the other's
   // essential one. The Robin condition couples a facet flux to a cell
   // pressure and is not expressed in this form; it is refused.
@@ -312,7 +308,7 @@ class SinglePhaseModel {
 
   HybridReport hybridized(solver::LinearSolver& linear) {
     if (sim_ == nullptr) {
-      throw std::logic_error("SinglePhaseModel::hybridized: not built yet; call build() first");
+      throw std::logic_error("FlowModel::hybridized: not built yet; call build() first");
     }
     const exokal::hodge::HybridFluxOperators hops =
         exokal::hodge::HybridFluxOperators::build(*mesh_, dim_, flux_);
@@ -320,7 +316,7 @@ class SinglePhaseModel {
     const graphos::Complex& topo = mesh_->topology();
     const auto n_facets = static_cast<std::size_t>(topo.count(dim_ - 1));
 
-    // THE FREE MASK IS THE BOUNDARY CONDITION. Every facet is free unless a
+    // The free mask is the boundary condition. Every facet is free unless a
     // pressure is prescribed on it; the datum is the multiplier's value. The
     // chart has chi_0 = 1 and zero-mean higher functions, so a uniform datum
     // is its constant coefficient alone.
@@ -342,7 +338,7 @@ class SinglePhaseModel {
           has_flux[static_cast<std::size_t>(f)] = 1;
         }
       } else {
-        throw std::invalid_argument("SinglePhaseModel::hybridized: the '" + bc.name() +
+        throw std::invalid_argument("FlowModel::hybridized: the '" + bc.name() +
                                     "' condition is not expressed in the hybridized form");
       }
     }
@@ -356,8 +352,8 @@ class SinglePhaseModel {
     std::vector<double> b =
         exokal::hodge::hybrid_interface_load(*mesh_, dim_, hops, fp, pinned, &free);
 
-    // THE NORMAL-FLUX DATUM, natural here. The multiplier row of a facet
-    // reads sum_E s_E w_E(f) = 0 -- continuity on an interior facet, a SEALED
+    // The normal-flux datum, natural here. The multiplier row of a facet
+    // reads sum_E s_E w_E(f) = 0 -- continuity on an interior facet, a sealed
     // boundary facet where there is one cofacet -- and a prescribed canonical
     // flux g|f| on that facet moves the row's right-hand side off zero. The
     // local coupling carries +s into the flux row, so the load is -s g|f| on
@@ -378,7 +374,7 @@ class SinglePhaseModel {
         const auto k1 = static_cast<std::size_t>(cob.offsets[f + 1]);
         if (k1 - k0 != 1) {
           throw std::invalid_argument(
-              "SinglePhaseModel::hybridized: a normal-flux datum on an interior facet");
+              "FlowModel::hybridized: a normal-flux datum on an interior facet");
         }
         const auto& c = hops.cell(cob.indices[k0]);
         double sign = 0.0;
@@ -420,9 +416,9 @@ class SinglePhaseModel {
   }
   double cell_pressure(Index e) const { return state_[p_offset_ + static_cast<std::size_t>(e)]; }
 
-  // THE CELL'S FLUX VECTOR, FROM THE FACET FLUXES THAT ARE THE UNKNOWNS.
+  // The cell's flux vector, from the facet fluxes that are the unknowns.
   //
-  // The unknown on a facet is the moment int_f q.n against the CANONICAL
+  // The unknown on a facet is the moment int_f q.n against the canonical
   // normal, so a cell reads it through its own incidence to get an outward
   // flux, and
   //
@@ -433,7 +429,7 @@ class SinglePhaseModel {
   // q + (div q)(x - x_E). It is the flow's cell_stress: the same lever arm
   // against the same leading moment, with a scalar in place of a traction.
   //
-  // The FACETS COME FROM THE TOPOLOGY rather than from the product, because
+  // The facets come from the topology rather than from the product, because
   // FluxOperators::cell is the dense inner product alone -- it carries no face
   // list, where StressOperators::Cell does.
   std::array<double, 3> cell_flux(Index e) const {

@@ -6,7 +6,7 @@
 
 #include "mimetika/linear_solver/linear.hpp"
 
-// STATIC CONDENSATION OF A DIAGONAL BLOCK.
+// Static condensation of a diagonal block.
 //
 // A diagonal star -- exokal's diagonal_tpfa and diagonal_afw -- makes the
 // first block of the saddle point diagonal, and a diagonal block is inverted by
@@ -24,14 +24,14 @@
 // two-point stencil, and S is smaller than M alone -- 27 unknowns against 135
 // on a 3^3 mesh of hexahedra, 189 against 513.
 //
-// WHY IT IS WORTH DOING BEYOND THE SIZE. The saddle point is indefinite and its
+// Why it is worth doing beyond the size. The saddle point is indefinite and its
 // first block is what a Riesz map spends its effort on; S has no such block.
-// And the elimination is rank-revealing where a factorization is not: handed
+// The elimination is also rank-revealing where a factorization is not: handed
 // the Kuhn tetrahedra, on which diagonal_afw carries one spurious rotation per
 // interior cube face, MUMPS reports CONVERGED and returns 1e16, while the
 // condensation runs out of pivots and says so.
 //
-// THE COST IS ONE PASS. Each eliminated unknown contributes the outer product
+// The cost is one pass. Each eliminated unknown contributes the outer product
 // of its own row with its own column, and that row has the entries of the two
 // cells sharing its facet -- fourteen of them for TPSA in space -- so the whole
 // term is a few hundred multiplications per facet and no fill anywhere else.
@@ -58,8 +58,8 @@ struct Condensation {
 
   std::size_t size() const { return rest.size(); }
 
-  // THE ELIMINATED FIELD, BACK OUT OF ITS OWN ROWS. One division per unknown:
-  // no solve, and no communication, because the row of a facet unknown reaches
+  // The eliminated field, back out of its own rows. One division per unknown:
+  // no solve and no communication, because the row of a facet unknown reaches
   // only the two cells that share it.
   std::vector<double> expand(const std::vector<double>& y, const std::vector<double>& b) const {
     if (y.size() != rest.size()) {
@@ -82,9 +82,9 @@ struct Condensation {
   }
 };
 
-// IS THE BLOCK DIAGONAL? The question the specialization turns on, and it is
-// asked of the assembled matrix rather than of the product's name: a star that
-// stops being diagonal, for any reason, must stop being condensed here.
+// Is the block diagonal? The question the specialization turns on, asked of the
+// assembled matrix rather than of the product's name: a star that stops being
+// diagonal, for any reason, must stop being condensed here.
 inline bool block_is_diagonal(const SparseSystem& A, const std::vector<int>& first) {
   std::vector<char> mine(A.n, 0);
   for (const int i : first) mine[static_cast<std::size_t>(i)] = 1;
@@ -102,16 +102,16 @@ inline bool block_is_diagonal(const SparseSystem& A, const std::vector<int>& fir
 // for the condensation of a block that is not diagonal, or that has a zero on
 // its diagonal, has named the wrong field.
 //
-// ON SEVERAL PROCESSES, `owners` NAMES WHO EMITS WHAT. Distributed assembly
+// On several processes, `owners` names who emits what. Distributed assembly
 // gives a rank complete rows for the unknowns it owns and for its halo, so:
 //
-//   a reduced row is emitted by the rank that OWNS it, once. Row i of S sums
+//   a reduced row is emitted by the rank that owns it, once. Row i of S sums
 //   A(i,g) M_gg^-1 A(g,.) over the eliminated unknowns g in row i, and those
 //   are the facets of an owned cell -- halo, therefore complete here. No
 //   contribution ever lands on another rank's row, so nothing is stashed.
 //
 //   the eliminated field is recovered wherever its row is complete, which is
-//   owned AND halo: exactly the unknowns a cell's stress reconstruction reads.
+//   owned and halo: exactly the unknowns a cell's stress reconstruction reads.
 //
 // Serially `owners` is null and every row is this one's.
 inline Condensation condense(const SparseSystem& A, const std::vector<double>& b,
@@ -150,10 +150,10 @@ inline Condensation condense(const SparseSystem& A, const std::vector<double>& b
       throw std::invalid_argument("condense: the block named is not diagonal");
     }
   }
-  // A ZERO DIAGONAL IS A ROW THIS RANK DOES NOT HOLD, not a singular star.
-  // Serially there is no such row and a zero is the error it always was;
-  // distributed, an unknown outside this rank's owned and halo sets has no
-  // entries here at all, and is simply not this rank's to eliminate.
+  // A zero diagonal is a row this rank does not hold, not a singular star.
+  // Serially there is no such row and a zero is an error; distributed, an
+  // unknown outside this rank's owned and halo sets has no entries here at
+  // all, and is not this rank's to eliminate.
   c.inv.assign(c.first.size(), 0.0);
   std::vector<char> usable(c.first.size(), 0);
   for (std::size_t k = 0; k < c.first.size(); ++k) {
@@ -188,13 +188,13 @@ inline Condensation condense(const SparseSystem& A, const std::vector<double>& b
     }
   }
 
-  // THE COUPLINGS OF EACH KEPT ROW, gathered by row: its direct (rest, rest)
+  // The couplings of each kept row, gathered by row: its direct (rest, rest)
   // entries and its (rest, g) reaches into the eliminated block.
   //
   // S = C - A10 M^-1 A01, and the outer-product form of that correction emits
-  // one triplet per (row, g, column) TRIPLE -- 196 per eliminated stress slot,
+  // one triplet per (row, g, column) triple -- 196 per eliminated stress slot,
   // gigabytes of duplicates on a few hundred thousand cells, for a matrix
-  // whose true row holds a few dozen entries. So S is formed ROW BY ROW
+  // whose true row holds a few dozen entries. So S is formed row by row
   // instead: a scratch the size of the reduced system, stamped per row,
   // accumulates every contribution in place and each row is emitted once,
   // already merged. The peak is the merged matrix, not the algebra's

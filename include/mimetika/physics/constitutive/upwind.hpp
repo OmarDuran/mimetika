@@ -22,9 +22,9 @@
 // counter-currently, and each passive phase joins the side of the member it is
 // nearer in density.
 //
-// THE DENSITY WEIGHT IS FROZEN, AND ITS TYPE SAYS SO. w_g depends on the
+// The density weight is frozen, and its type says so. w_g depends on the
 // densities alone, so it is constant under saturation variation and
-// carries no Jacobian — it is re-evaluated BETWEEN nonlinear iterations,
+// carries no Jacobian — it is re-evaluated between nonlinear iterations,
 // never differentiated within one. That is why it takes and returns plain
 // doubles while the mobilities carry whatever scalar the caller chose:
 // the signature makes it impossible to let it into the derivative path by

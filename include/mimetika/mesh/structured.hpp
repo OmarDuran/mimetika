@@ -8,20 +8,19 @@
 
 #include "exokal/core/mesh.hpp"
 
-// STRUCTURED DOMAINS, in either dimension and every cell family.
+// Structured domains, in either dimension and every cell family.
 //
-// A benchmark is a domain plus a material plus conditions, and the domain is
-// the part that has to stop being a special case. The same column and the same
-// annulus are generated here as quadrilaterals or triangles in the plane, and
-// as hexahedra, tetrahedra or PRISMS in space -- so a solver is exercised
-// against the same closed form on every cell type it claims to support.
+// A benchmark is a domain plus a material plus conditions. The same column and
+// the same annulus are generated here as quadrilaterals or triangles in the
+// plane, and as hexahedra, tetrahedra or prisms in space, so a solver is
+// exercised against the same closed form on every cell type it claims to
+// support.
 //
-// The prism is the interesting one. It is neither a simplex nor a
-// tensor-product cell: five faces, two triangles and three quadrilaterals, and
-// a mimetic construction that works on it is genuinely polytopal rather than
-// hex-and-tet with extra steps. In two dimensions a prism over an interval IS
-// a quadrilateral, so the family coincides with cartesian there and says so
-// rather than pretending to be different.
+// The prism is neither a simplex nor a tensor-product cell: five faces, two
+// triangles and three quadrilaterals, so a mimetic construction that works on
+// it is genuinely polytopal rather than hex-and-tet with extra steps. In two
+// dimensions a prism over an interval is a quadrilateral, so the family
+// coincides with cartesian there.
 
 namespace mimetika::mesh {
 
@@ -41,23 +40,22 @@ inline const char* name(Family f) {
 
 namespace structured_detail {
 
-// A LAYER OF PLANAR CELLS, EXTRUDED. Quadrilaterals become hexahedra;
+// A layer of planar cells, extruded. Quadrilaterals become hexahedra;
 // triangles become prisms, kept whole or split into three tetrahedra.
 //
 // THE SPLIT MUST AGREE ACROSS A SHARED FACE. A prism's three quadrilateral
 // faces each need a diagonal, and two prisms meeting on one must cut it the
 // same way -- otherwise the tetrahedra do not share faces, the complex is still
 // valid, and it describes a domain riddled with internal boundary. Ordering the
-// triangle's vertices by GLOBAL INDEX before applying a fixed rule is what
+// triangle's vertices by global index before applying a fixed rule is what
 // makes two neighbours agree: they see the same two indices on the shared face.
 inline exokal::Mesh extrude(std::vector<Point> plane, const std::vector<std::vector<Index>>& cells,
                             double h, int layers, Family family) {
   const auto n = static_cast<Index>(plane.size());
   std::vector<Point> pts;
-  // THE PLANE'S OWN HEIGHT IS WHERE THE EXTRUSION STARTS. Dropping q[2] and
-  // starting at zero costs nothing while every caller hands in a plane at the
-  // origin, and silently moves the mesh for the one that does not -- a box
-  // asked for at z = 0.25 came back at z = 0.
+  // The plane's own height is where the extrusion starts. Dropping q[2] and
+  // starting at zero silently moves a mesh whose plane is not at the origin:
+  // a box asked for at z = 0.25 lands at z = 0.
   for (int L = 0; L <= layers; ++L) {
     for (const Point& q : plane) pts.push_back({q[0], q[1], q[2] + L * h / layers});
   }
@@ -71,11 +69,10 @@ inline exokal::Mesh extrude(std::vector<Point> plane, const std::vector<std::vec
         std::sort(v.begin(), v.end());
         const Index a = at(v[0], L), b = at(v[1], L), c = at(v[2], L);
         const Index A = at(v[0], L + 1), B = at(v[1], L + 1), C = at(v[2], L + 1);
-        // NO WINDING FIXUP HERE. A subdivision that tiles may still hand back
-        // cells wound the other way -- the Freudenthal cut of a cube
-        // alternates -- and it does not matter: exokal::Mesh orients what it is
-        // given, coherently and then globally, so a generator states the
-        // subdivision and nothing else.
+        // No winding fixup here. A subdivision that tiles may hand back cells
+        // wound the other way -- the Freudenthal cut of a cube alternates --
+        // and exokal::Mesh orients what it is given, coherently and then
+        // globally, so a generator states the subdivision and nothing else.
         for (std::vector<Index> q : {std::vector<Index>{a, b, c, C}, std::vector<Index>{a, b, B, C},
                                      std::vector<Index>{a, A, B, C}}) {
           out.push_back(std::move(q));
@@ -109,7 +106,7 @@ inline exokal::Mesh extrude(std::vector<Point> plane, const std::vector<std::vec
 
 }  // namespace structured_detail
 
-// A COLUMN of `n` cells along the last coordinate, unit cross-section.
+// A column of `n` cells along the last coordinate, unit cross-section.
 inline exokal::Mesh column(int n, int dim, Family family, double height = 1.0, double width = 1.0) {
   if (dim == 2) {
     // in the plane a prism over an interval is a quadrilateral
@@ -146,7 +143,7 @@ inline exokal::Mesh column(int n, int dim, Family family, double height = 1.0, d
   return structured_detail::extrude(std::move(plane), cells, height, n, family);
 }
 
-// A BOX of `n[k]` cells along each axis, spanning `lengths` from `origin`.
+// A box of `n[k]` cells along each axis, spanning `lengths` from `origin`.
 //
 // What a column cannot express and a benchmark stated in metres needs: an
 // origin away from zero, a different size and a different resolution per axis.
@@ -164,10 +161,10 @@ inline exokal::Mesh box(const std::array<int, 3>& n, int dim, Family family,
   }
   const int nx = n[0], ny = n[1];
   const double lx = lengths[0], ly = lengths[1];
-  // THE PLANE IS TRIANGULATED FOR EVERYTHING BUT CARTESIAN, which is the same
-  // rule `column` follows: a prism is a triangle extruded, so a quadrilateral
-  // plane would have produced hexahedra under the name `prism` -- quietly, the
-  // count being the same either way.
+  // The plane is triangulated for everything but cartesian, the same rule
+  // `column` follows: a prism is a triangle extruded, so a quadrilateral plane
+  // would produce hexahedra under the name `prism` -- quietly, the count being
+  // the same either way.
   const bool tri = family != Family::cartesian;
 
   std::vector<Point> plane;
@@ -199,26 +196,26 @@ inline exokal::Mesh box(const std::array<int, 3>& n, int dim, Family family,
 
 // -- graded coordinate lines ---------------------------------------------------
 //
-// NODE COORDINATES THAT HONOUR A SET OF INTERFACES and cluster cells at them.
+// Node coordinates that honour a set of interfaces and cluster cells at them.
 //
 // Every interface becomes a node, so a discontinuity in material or loading
-// lands on a cell FACE rather than bisecting a cell -- where a cell-centred test
+// lands on a cell face rather than bisecting a cell -- where a cell-centred test
 // would put it on the wrong side and shift the answer by half a cell. That is
-// the same requirement Benchmark 0's reservoir boundary has, stated once and
-// satisfied by construction instead of checked after the fact.
+// the same requirement Benchmark 0's reservoir boundary has, satisfied by
+// construction rather than checked after the fact.
 //
-// RESOLUTION IS CONCENTRATED AT THE INTERFACES, not spread evenly between them,
+// Resolution is concentrated at the interfaces, not spread evenly between them,
 // because that is where the error lives: the fields are non-smooth across a
 // loading jump -- in the displaced-fault benchmark the analytic Coulomb stress
 // is logarithmically singular at the reservoir edges -- so the discretization
 // error is dominated by the few cells nearest each interface and is negligible a
-// handful of cells away. `spacing` is therefore the size AT an interface; cells
+// handful of cells away. `spacing` is therefore the size at an interface; cells
 // grow by `growth` away from it, towards mid-span between two interfaces and
 // outwards to the extent beyond the outermost.
 
 namespace grading_detail {
 
-// Cell sizes across [left, right]: smallest at BOTH ends, largest mid-span.
+// Cell sizes across [left, right]: smallest at both ends, largest mid-span.
 //
 // A one-sided geometric fan would refine one interface and starve the other.
 // The weights are growth^min(i, n-1-i), which is symmetric, so both bounding
@@ -287,7 +284,7 @@ inline std::vector<double> graded_coordinates(std::vector<double> interfaces,
   return nodes;
 }
 
-// A TENSOR-PRODUCT MESH FROM EXPLICIT COORDINATE LINES, which is what a graded
+// A tensor-product mesh from explicit coordinate lines, which is what a graded
 // mesh is: `box` with the spacing chosen per node rather than uniformly.
 inline exokal::Mesh tensor_product(const std::vector<double>& xs, const std::vector<double>& ys,
                                    Family family = Family::cartesian) {
@@ -319,7 +316,7 @@ inline exokal::Mesh tensor_product(const std::vector<double>& xs, const std::vec
              : exokal::Mesh::from_polygons(std::move(p), cells);
 }
 
-// A QUARTER ANNULUS from `a` to `b`, graded geometrically in the radius so the
+// A quarter annulus from `a` to `b`, graded geometrically in the radius so the
 // cells are fine where the gradient is; in three dimensions, one layer of it.
 inline exokal::Mesh annulus(int nr, int nt, int dim, Family family, double a = 1.0, double b = 10.0,
                             double height = 1.0, int layers = 1) {

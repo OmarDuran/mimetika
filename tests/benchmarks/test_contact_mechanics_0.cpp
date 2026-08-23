@@ -8,38 +8,37 @@
 #include "../mimetika_test.hpp"
 #include "mimetika/benchmarks/novikov_2024.hpp"
 #include "mimetika/mesh/structured.hpp"
-#include "mimetika/model/cauchy_elasticity_model.hpp"
+#include "mimetika/model/cauchy_mechanics_model.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
 
-// BENCHMARK 0 of Novikov et al. (2024): the in-situ state and the depletion
-// response, with NO FAULT. The case that has to be right before contact can be
-// asked about anything.
+// Benchmark 0 of Novikov et al. (2024): the in-situ state and the depletion
+// response, with no fault.
 //
-// Two independent claims, checked separately and against different things:
+// Two independent claims, checked separately:
 //
-//   THE IN-SITU PROFILES the paper prints follow from the Table 2 parameters.
-//   That is a statement about the SETUP and needs no solver, so it is checked
+//   The in-situ profiles the paper prints follow from the Table 2 parameters.
+//   That is a statement about the setup and needs no solver, so it is checked
 //   first; a benchmark whose initial state is wrong will disagree with the
-//   reference for reasons that have nothing to do with the discretization.
+//   reference for reasons unrelated to the discretization.
 //
-//   THE DEPLETION RESPONSE is reproduced by the mixed solver. A uniformly
+//   The depletion response is reproduced by the mixed solver. A uniformly
 //   depleted, laterally confined domain compacts uniaxially, and the closed
 //   forms
 //
 //       eps_yy = alpha Dp / Kv ,  D sigma'_xx = nu/(1-nu) alpha Dp ,  sigma_yy = 0
 //
-//   are EXACT for this discretization -- so they are checked to round-off, not
-//   to a few digits. Lateral confinement is imposed with ROLLERS: prescribed
-//   normal displacement and free slip, which in Hellinger-Reissner means pinning
-//   the SHEAR traction dofs, the displacement side being natural there.
+//   are exact for this discretization, so they are checked to round-off.
+//   Lateral confinement is imposed with rollers: prescribed normal displacement
+//   and free slip, which in Hellinger-Reissner means pinning the shear traction
+//   dofs, the displacement side being natural there.
 //
-// THE MECHANICS ALONE IS SOLVED, which is how the benchmark is posed: the
+// Only the mechanics is solved, which is how the benchmark is posed: the
 // pressure is data, not an unknown, and it enters as the load alpha T^T p. That
 // term carries the same coefficient and the same operator as the coupled
 // solver's Biot block, so the two agree exactly wherever both are posed.
 
 using graphos::Index;
-using mimetika::CauchyElasticityModel;
+using mimetika::CauchyMechanicsModel;
 using mimetika::ElasticMaterial;
 using mimetika::benchmarks::linear_fit;
 using mimetika::benchmarks::Parameters;
@@ -70,23 +69,22 @@ struct Response {
   double sigma_yy_total{0.0};
 };
 
-// UNIFORM DEPLETION OF A CONFINED BLOCK. The response is a STRAIN, so the domain
+// Uniform depletion of a confined block. The response is a strain, so the domain
 // size enters only through Dh = h eps_yy, applied afterwards -- the mesh is the
 // unit square. Rollers all round but the top, which is a free surface.
 //
 // `clamp_sides` is the premise guard: with the sides fully clamped instead of
-// free to slide the problem is no longer uniaxial and the closed form fails,
-// which is what makes the rollers load bearing rather than decorative.
+// free to slide the problem is no longer uniaxial and the closed form fails.
 //
-// STRESS IS MEASURED IN UNITS OF THE SHEAR MODULUS, and that is not a
-// convenience. The mixed system is the saddle point [M, -D^T; D, 0] with
-// M ~ h^d/G and D ~ h^{d-1}; stated in pascals with G = 6.5 GPa the two blocks
-// sit 10^10 apart at h = 1/6 and the gap widens as h^{-1}, so the direct
-// factorization breaks down -- at n = 6 in pascals, at n = 24 in megapascals.
-// Dividing every stress-dimensioned quantity by G makes M ~ h^d against
-// D ~ h^{d-1}, a ratio of h, and the same solve is exact to eleven digits at
-// n = 96. Strain is dimensionless and comes back unchanged; the stresses are
-// multiplied by G on the way out, so the caller sees pascals throughout.
+// Stress is measured in units of the shear modulus. The mixed system is the
+// saddle point [M, -D^T; D, 0] with M ~ h^d/G and D ~ h^{d-1}; stated in pascals
+// with G = 6.5 GPa the two blocks sit 10^10 apart at h = 1/6 and the gap widens
+// as h^{-1}, so the direct factorization breaks down -- at n = 6 in pascals, at
+// n = 24 in megapascals. Dividing every stress-dimensioned quantity by G makes
+// M ~ h^d against D ~ h^{d-1}, a ratio of h, and the same solve is exact to
+// eleven digits at n = 96. Strain is dimensionless and comes back unchanged; the
+// stresses are multiplied by G on the way out, so the caller sees pascals
+// throughout.
 Response depletion_response(const Parameters& p, int n, Realization how, bool clamp_sides = false) {
   const int dim = 2;
   const double unit = p.shear_modulus;
@@ -103,7 +101,7 @@ Response depletion_response(const Parameters& p, int n, Realization how, bool cl
   }
   for (Index e = 0; e < c.count(dim); ++e) cells.push_back(e);
 
-  CauchyElasticityModel model(mesh, dim, ElasticMaterial{s.shear_modulus, s.lame()}, how);
+  CauchyMechanicsModel model(mesh, dim, ElasticMaterial{s.shear_modulus, s.lame()}, how);
   model.mechanics().emplace<mimetika::TractionBC>(top, std::array<double, 9>{});
   if (clamp_sides) {
     model.prescribe_displacement(sides, {0.0, 0.0, 0.0});
@@ -130,9 +128,9 @@ Response depletion_response(const Parameters& p, int n, Realization how, bool cl
   out.sigma_xx_effective = out.sigma_xx_total + p.biot * p.depletion;
   out.sigma_yy_total = unit * syy;
 
-  // THE VERTICAL STRAIN FROM THE DISPLACEMENT FIELD, by fitting u_y against y
+  // The vertical strain from the displacement field, by fitting u_y against y
   // over the cell centroids. Under uniaxial strain u_y is exactly linear, so the
-  // fit is a reading of the gradient and not a smoothing of it.
+  // fit reads the gradient rather than smoothing it.
   std::vector<double> y, uy;
   for (Index e = 0; e < c.count(dim); ++e) {
     y.push_back(exokal::centroid(mesh, dim, e)[1]);
@@ -145,12 +143,12 @@ Response depletion_response(const Parameters& p, int n, Realization how, bool cl
 
 // -- Fig. 4: the finite reservoir ----------------------------------------------
 
-// DEPLETE A RESERVOIR OF FINITE THICKNESS inside the full domain: different from
-// the uniform case above, and harder. That one depletes the WHOLE domain, which
-// is why it reproduces the uniaxial closed form to round-off -- there is nothing
-// for the rock to arch over. Fig. 4 needs a 225 m reservoir inside a 4500 m
-// domain, so the stress steps sharply at the reservoir top and bottom and the
-// uniaxial formulae survive only in the interior.
+// Deplete a reservoir of finite thickness inside the full domain. The uniform
+// case above depletes the whole domain, which is why it reproduces the uniaxial
+// closed form to round-off -- there is nothing for the rock to arch over. Fig. 4
+// needs a 225 m reservoir inside a 4500 m domain, so the stress steps sharply at
+// the reservoir top and bottom and the uniaxial formulae survive only in the
+// interior.
 struct Field {
   exokal::Mesh mesh;
   std::vector<std::array<double, 9>> stress;  // the INCREMENT, in Pa
@@ -163,16 +161,16 @@ Field finite_reservoir(const Parameters& p, int nx, int ny,
   const int dim = 2;
   const double half = 0.5 * p.reservoir_height();
   const double spacing = p.height / ny;
-  // THE DEPLETION IS ASSIGNED PER CELL, so a reservoir boundary that bisects a
+  // The depletion is assigned per cell, so a reservoir boundary that bisects a
   // cell shifts the step by half a cell. With ny = 180 the boundary at 112.5 m
-  // lands on a cell CENTRE: that cell is half inside, the centroid test excludes
-  // it, and the figure comes out plausible and wrong by 16 MPa over one cell. It
-  // is refused rather than silently approximated.
+  // lands on a cell centre: that cell is half inside, the centroid test excludes
+  // it, and the figure comes out wrong by 16 MPa over one cell. Refused rather
+  // than silently approximated.
   if (std::abs(half / spacing - std::round(half / spacing)) > 1e-9) {
     throw std::invalid_argument("finite_reservoir: the reservoir boundary falls inside a cell");
   }
 
-  // AND LENGTH IN UNITS OF THE DOMAIN HEIGHT, for the same reason stress is in
+  // And length in units of the domain height, for the same reason stress is in
   // units of G: on a 4500 m domain the divergence block carries the cell size
   // and the compliance block its square, so stating the geometry in metres puts
   // three more orders between them on top of the material's. Nondimensionalizing
@@ -202,7 +200,7 @@ Field finite_reservoir(const Parameters& p, int nx, int ny,
     if (inside) depleted.push_back(e);
   }
 
-  CauchyElasticityModel model(out.mesh, dim, ElasticMaterial{s.shear_modulus, s.lame()}, how);
+  CauchyMechanicsModel model(out.mesh, dim, ElasticMaterial{s.shear_modulus, s.lame()}, how);
   model.mechanics().emplace<mimetika::TractionBC>(top, std::array<double, 9>{});
   model.mechanics().emplace<mimetika::FreeSlipBC>(rest);
   model.pressurize(depleted, s.depletion, s.biot, s.volumetric_compliance(dim));
@@ -226,9 +224,9 @@ struct Profile {
   std::vector<double> y, normal, shear;
 };
 
-// SAMPLED ALONG THE LINE THE FAULT WOULD OCCUPY -- at `dip` to the horizontal
+// Sampled along the line the fault would occupy -- at `dip` to the horizontal
 // through the reservoir centre -- and resolved onto that plane. "Combined" means
-// the in-situ state PLUS the depletion increment, which is what the figure plots.
+// the in-situ state plus the depletion increment, which is what the figure plots.
 Profile combined_stress_profile(const Parameters& p, int nx, int ny, double dip,
                                 double extent = 250.0) {
   const Field f = finite_reservoir(p, nx, ny);
@@ -265,11 +263,11 @@ Profile combined_stress_profile(const Parameters& p, int nx, int ny, double dip,
 
 // -- the in-situ state derives from Table 2 ------------------------------------
 
-// DERIVED FROM (rho_s, rho_fl, phi, g, D0, K0, alpha, p0) -- not tabulated. The
+// Derived from (rho_s, rho_fl, phi, g, D0, K0, alpha, p0) -- not tabulated. The
 // tolerance is set by the paper's own precision: it prints three significant
-// figures, so 2.35 against a computed 2.340 is agreement, not disagreement.
+// figures, so 2.35 against a computed 2.340 is agreement.
 //
-// The shear is compared in MAGNITUDE: its sign depends on which way the fault
+// The shear is compared in magnitude: its sign depends on which way the fault
 // tangent is taken, and the paper's choice is opposite to this one.
 MIMETIKA_TEST(the_in_situ_profiles_match_the_paper) {
   const Parameters p;
@@ -322,7 +320,7 @@ MIMETIKA_TEST(the_bulk_density_and_uniaxial_modulus_are_the_published_ones) {
   CHECK(close(p.uniaxial_modulus(), 15.79e9, 1e-3));
 }
 
-// THE PAPER STATES THESE AS LINEAR PROFILES, so a fit must be exact rather than
+// The paper states these as linear profiles, so a fit must be exact rather than
 // close -- if any of them curved, the coefficients it prints would not describe it.
 MIMETIKA_TEST(the_in_situ_state_is_genuinely_linear_in_depth) {
   const Parameters p;
@@ -341,9 +339,9 @@ MIMETIKA_TEST(the_in_situ_state_is_genuinely_linear_in_depth) {
   }
 }
 
-// K0 ACTS ON EFFECTIVE STRESS. Using the total stress instead is the classic
-// slip in this setup, and it is invisible in the profile shape -- both are
-// linear in y -- so it is worth an assertion of its own.
+// K0 acts on effective stress. Using the total stress instead is invisible in
+// the profile shape -- both are linear in y -- so it gets an assertion of its
+// own.
 MIMETIKA_TEST(the_earth_pressure_coefficient_relates_the_effective_stresses) {
   const Parameters p;
   for (const double y : samples(-1000.0, 1000.0, 9)) {
@@ -362,9 +360,9 @@ MIMETIKA_TEST(the_state_is_compressive_everywhere) {
   }
 }
 
-// THE RESOLUTION ONTO THE FAULT IS A GENUINE ROTATION: normal and shear must be
-// the tensor contractions, and the trace must be invariant. An error here would
-// move every reported fault stress by a fixed factor and look like a material
+// The resolution onto the fault is a rotation: normal and shear must be the
+// tensor contractions, and the trace must be invariant. An error here would move
+// every reported fault stress by a fixed factor and look like a material
 // discrepancy.
 MIMETIKA_TEST(the_resolved_traction_is_a_genuine_rotation) {
   const Parameters p;
@@ -382,8 +380,8 @@ MIMETIKA_TEST(the_resolved_traction_is_a_genuine_rotation) {
   }
 }
 
-// AT DIP 90 THE FAULT NORMAL IS -e_x: a sanity anchor for the rotation, where
-// the answer is the horizontal stress itself and no shear at all.
+// At dip 90 the fault normal is -e_x: the answer is the horizontal stress itself
+// and no shear.
 MIMETIKA_TEST(a_vertical_fault_sees_the_horizontal_stress_and_no_shear) {
   const Parameters p;
   for (const double y : samples(-500.0, 500.0, 5)) {
@@ -395,9 +393,9 @@ MIMETIKA_TEST(a_vertical_fault_sees_the_horizontal_stress_and_no_shear) {
 
 // -- the depletion response is reproduced by the solver -------------------------
 
-// THE UNIAXIAL CLOSED FORMS, TO ROUND-OFF, on both stress products. The state is
+// The uniaxial closed forms, to round-off, on both stress products. The state is
 // uniform, so this is not a convergence statement: either the discretization
-// reproduces it exactly or it does not reproduce it at all.
+// reproduces it exactly or not at all.
 MIMETIKA_TEST(the_depletion_response_is_the_uniaxial_closed_form) {
   const Parameters p;
   for (const Realization how : {Realization::derham_bdm, Realization::stabilized_bdm}) {
@@ -415,14 +413,14 @@ MIMETIKA_TEST(the_depletion_response_is_the_uniaxial_closed_form) {
     CHECK(close(r.sigma_xx_total, p.horizontal_total_increment(), 1e-9));
     CHECK(close(r.sigma_xx_effective, -3.97e6, 1e-3));  // the paper's printed values
     CHECK(close(r.sigma_xx_total, 18.53e6, 1e-3));
-    // the top is traction free, so sigma_yy must VANISH rather than be small
+    // the top is traction free, so sigma_yy must vanish rather than be small
     CHECK(r.sigma_yy_total < 1e-6 * std::abs(p.depletion));
   }
 }
 
-// A UNIFORM STATE: refinement must change nothing at all. Any drift here would
-// be the discretization failing to represent a constant, which no amount of
-// resolution repairs.
+// A uniform state: refinement must change nothing. Any drift would be the
+// discretization failing to represent a constant, which no amount of resolution
+// repairs.
 MIMETIKA_TEST(the_response_is_mesh_independent) {
   const Parameters p;
   for (const int n : {3, 6, 12}) {
@@ -432,12 +430,10 @@ MIMETIKA_TEST(the_response_is_mesh_independent) {
   }
 }
 
-// THE ROLLERS ARE WHAT MAKE IT UNIAXIAL, and that premise is worth guarding.
-// Compared against the same problem with the sides FULLY CLAMPED rather than
-// free to slide: a genuinely unconfined block would be the more obvious
-// contrast, but prescribing traction all round leaves the rigid-body modes
-// undetermined and the system singular, so clamping is the well-posed
-// alternative -- and it gives a visibly different answer.
+// The rollers are what make it uniaxial. Compared against the same problem with
+// the sides fully clamped rather than free to slide: prescribing traction all
+// round would leave the rigid-body modes undetermined and the system singular,
+// so clamping is the well-posed alternative.
 MIMETIKA_TEST(rollers_are_what_make_the_response_uniaxial) {
   const Parameters p;
   const Response rolling = depletion_response(p, 4, Realization::derham_bdm, false);
@@ -452,16 +448,14 @@ MIMETIKA_TEST(rollers_are_what_make_the_response_uniaxial) {
 
 // -- Fig. 4: combined stresses across the depleted reservoir ---------------------
 //
-// A different computation from the uniform-depletion check above: the reservoir
-// is 225 m thick inside a 4500 m domain. Because it spans the FULL WIDTH and the
-// sides are rollers, the problem is one-dimensional -- so the increment is
-// exactly uniaxial inside the reservoir and exactly zero outside it, which is
-// the two-plateau step the figure shows. Both plateaus are therefore checked
-// exactly rather than approximately.
+// The reservoir is 225 m thick inside a 4500 m domain. Because it spans the full
+// width and the sides are rollers, the problem is one-dimensional: the increment
+// is exactly uniaxial inside the reservoir and exactly zero outside it, the
+// two-plateau step the figure shows. Both plateaus are checked exactly.
 
-// THE PUBLISHED PLATEAU VALUES: Sigma_perp and Sigma_par inside and outside,
-// which is what Fig. 4's two levels are. Analytic, so this is a check on the
-// setup before the profile is computed at all.
+// The published plateau values: Sigma_perp and Sigma_par inside and outside,
+// Fig. 4's two levels. Analytic, so this checks the setup before the profile is
+// computed.
 MIMETIKA_TEST(the_published_plateau_values) {
   const Parameters p;
   const auto out = p.plateau_outside(kDip), in = p.plateau_inside(kDip);
@@ -479,9 +473,9 @@ namespace {
 Profile fig4() { return combined_stress_profile(Parameters(), 8, 120, kDip); }
 }  // namespace
 
-// INSIDE, THE INCREMENT IS EXACTLY Delta sigma_xx with Delta sigma_yy = 0. The
+// Inside, the increment is exactly Delta sigma_xx with Delta sigma_yy = 0. The
 // reservoir is full width and the sides are rollers, so there is nothing to arch
-// over and the uniaxial form is not an approximation.
+// over and the uniaxial form is exact.
 MIMETIKA_TEST(the_reservoir_interior_matches_the_uniaxial_closed_form) {
   const Parameters p;
   const Profile f = fig4();
@@ -496,10 +490,9 @@ MIMETIKA_TEST(the_reservoir_interior_matches_the_uniaxial_closed_form) {
   CHECK(close(f.shear[centre], in[1], 1e-6));
 }
 
-// AND OUTSIDE IT VANISHES. A full-width reservoir with roller sides leaves the
-// seal unstressed -- not approximately: with eps_xx = 0 and sigma_yy = 0 the
-// problem is one-dimensional, so outside the depleted band the increment is
-// identically zero and the combined stress is the in-situ state.
+// And outside it vanishes. With eps_xx = 0 and sigma_yy = 0 the problem is
+// one-dimensional, so outside the depleted band the increment is identically
+// zero and the combined stress is the in-situ state.
 MIMETIKA_TEST(outside_the_reservoir_the_increment_vanishes) {
   const Parameters p;
   const Profile f = fig4();
@@ -515,8 +508,8 @@ MIMETIKA_TEST(outside_the_reservoir_the_increment_vanishes) {
   CHECK(checked > 100);
 }
 
-// THE STEP IS THE SIGNATURE OF FIG. 4, and it sits at +-h/2 -- which is what the
-// per-cell depletion and the aligned grid together guarantee.
+// The step sits at +-h/2, which the per-cell depletion and the aligned grid
+// together guarantee.
 MIMETIKA_TEST(the_profile_steps_at_the_reservoir_boundary) {
   const Parameters p;
   const Profile f = fig4();
@@ -536,7 +529,7 @@ MIMETIKA_TEST(the_profile_steps_at_the_reservoir_boundary) {
   CHECK(a.first > 10e6);  // a real step, over 10 MPa
 }
 
-// DEPLETION UNLOADS THE HORIZONTAL STRESS, so the reservoir interior moves
+// Depletion unloads the horizontal stress, so the reservoir interior moves
 // toward zero relative to the seal that confines it.
 MIMETIKA_TEST(the_reservoir_is_less_compressive_than_the_seal) {
   const Parameters p;
@@ -561,8 +554,7 @@ MIMETIKA_TEST(the_reservoir_is_less_compressive_than_the_seal) {
   CHECK(in_sum / ni > out_sum / no + 10e6);  // by more than 10 MPa
 }
 
-// |Sigma_par| RISES FROM ~8 TO ~14 MPa, which is what drives fault reactivation
-// and the whole reason the later benchmarks have a fault at all.
+// |Sigma_par| rises from ~8 to ~14 MPa, which drives fault reactivation.
 MIMETIKA_TEST(the_shear_grows_inside_the_reservoir) {
   const Parameters p;
   const Profile f = fig4();
@@ -585,7 +577,7 @@ MIMETIKA_TEST(the_shear_grows_inside_the_reservoir) {
   CHECK(close(in_sum / ni / 1e6, 14.2, 2e-2));
 }
 
-// AND THE WHOLE PROFILE IS THE ANALYTIC CURVE, TO ROUND-OFF. No arching for an
+// And the whole profile is the analytic curve, to round-off. No arching for an
 // infinitely wide reservoir, so this is exact rather than close: one pascal on a
 // quantity of order 10^8.
 MIMETIKA_TEST(the_profile_matches_the_analytic_curve_to_round_off) {
@@ -603,9 +595,8 @@ MIMETIKA_TEST(the_profile_matches_the_analytic_curve_to_round_off) {
   CHECK(worst_s < 1.0);
 }
 
-// A GRID THAT BISECTS THE RESERVOIR BOUNDARY IS REFUSED. The depletion is
-// assigned per cell, so the boundary must land on a cell face; ny = 180 puts it
-// on a cell CENTRE and the step lands half a cell away from where it belongs.
+// A grid that bisects the reservoir boundary is refused: the depletion is
+// assigned per cell, so the boundary must land on a cell face.
 MIMETIKA_TEST(a_grid_that_bisects_the_reservoir_boundary_is_rejected) {
   const Parameters p;
   for (const int ny : {180, 100, 30}) {

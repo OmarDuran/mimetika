@@ -19,11 +19,11 @@ both through time together.
 
 What to plot
 ------------
-The two physics ask for different things, and the difference is not cosmetic:
+The two physics ask for different things:
 
 * **Darcy** (scalar).  Pressure and flux, in the bulk *and along the fracture* --
-  the fracture carries its own tangential flow, which is the entire reason for
-  the lower-dimensional unknowns.  :func:`darcy_fields`.
+  the fracture carries its own tangential flow, which is the reason for the
+  lower-dimensional unknowns.  :func:`darcy_fields`.
 * **Elasticity** (vector).  On the fracture, the **traction** and the
   **displacement jump** and nothing else -- there is no fracture stress field to
   plot, because a fault is a contact interface rather than a thin material, so
@@ -147,8 +147,7 @@ def facet_vectors(mesh: Mesh, facets, values) -> np.ndarray:
 def contact_fields(driver, state) -> dict[str, np.ndarray]:
     """Fracture fields for elasticity: **traction and displacement jump only**.
 
-    A fault is a contact interface, not a thin material, so this is its entire
-    state.  Both are given as ambient vectors (glyphable) and split into normal
+    Both are given as ambient vectors (glyphable) and split into normal
     and tangential parts, which is how they are actually read: ``t_n < 0`` is
     compression, ``g_n > 0`` is opening, and the tangential magnitude is the slip.
     """
@@ -169,10 +168,7 @@ def contact_fields(driver, state) -> dict[str, np.ndarray]:
 def mechanics_fields(problem, solution, pressure=None) -> dict[str, np.ndarray]:
     """Bulk fields for elasticity: displacement and stress in the rock.
 
-    The companion to :func:`contact_fields`, which covers the fracture.  Both are
-    needed to read a fault problem: the fracture carries traction and jump, the
-    rock around it carries the displacement and the stress state that drives
-    them, and a fault plotted without its surroundings has no context.
+    The companion to :func:`contact_fields`, which covers the fracture.
 
     ``displacement`` is returned as an ambient 3-vector so ParaView can glyph or
     warp by it -- the DOFs live in the mesh frame, which for a 2D mesh is not the
@@ -208,7 +204,7 @@ def darcy_fields(problem, solution) -> tuple[dict, dict]:
     Pressure and a reconstructed Darcy velocity on both sides.  The fracture's
     velocity is *tangential* by construction -- it is reconstructed on the
     fracture's own mesh from its own flux unknowns, so it shows the flow running
-    **along** the fracture, which is what the lower-dimensional model is for.
+    **along** the fracture.
     """
     from mimetika.postprocess.reconstruct import reconstruct_flux
 

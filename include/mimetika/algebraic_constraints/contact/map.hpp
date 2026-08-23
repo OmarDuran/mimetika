@@ -9,36 +9,35 @@
 #include "exokal/numerics/dense.hpp"
 #include "mimetika/algebraic_constraints/contact/laws.hpp"
 
-// THE CONTACT PROBLEM AS A NONLINEAR ALGEBRAIC FUNCTION y = CD(x).
+// The contact problem as a nonlinear algebraic function y = CD(x).
 //
 // Contact is a fixed-point problem in the contact traction, and nothing more:
 //
 //     y = CD(x),   CD(x) = P(x + r g(x)),   g(x) = J z,   A(x) z = b(x)
 //
 // where A(x) is the mechanics system with the fracture traction degrees of
-// freedom PINNED to x. One evaluation is: pin, solve, read the gap, project.
+// freedom pinned to x. One evaluation is: pin, solve, read the gap, project.
 // The solution of x = CD(x) is the converged contact state.
 //
-// WHY THIS IS THE RIGHT SEAM. Everything here is algebra: a linear solve, two
-// linear maps, an index set and a projection. There is no mesh, no material, no
-// boundary condition and no model object -- those sit behind the Mechanics
-// interface below. That matters three ways:
+// The seam. Everything here is algebra: a linear solve, two linear maps, an
+// index set and a projection. There is no mesh, no material, no boundary
+// condition and no model object -- those sit behind the Mechanics interface
+// below. That matters three ways:
 //
-//   * THE MECHANICS IS INTERCHANGEABLE. Whatever supplies (A, b) -- the mixed
-//     elasticity of CauchyElasticityModel, or the poromechanics of
+//   * The mechanics is interchangeable. Whatever supplies (A, b) -- the mixed
+//     elasticity of CauchyMechanicsModel, or the poromechanics of
 //     PoroelasticModel with its pore-pressure coupling on the right-hand side --
 //     is invisible here, so adding a boundary condition upstream needs no
-//     change at all in the contact code. This is the whole of what makes the
-//     driver plug into both.
-//   * THE ITERATION IS INTERCHANGEABLE. CD is just a function, so the relaxed
+//     change in the contact code, and the driver plugs into both.
+//   * The iteration is interchangeable. CD is just a function, so the relaxed
 //     Picard iteration in fixed_point() can be replaced by Newton or Anderson
 //     acceleration without touching the map.
-//   * IT IS TESTABLE WITHOUT A MESH. Feed CD any x and check y: contraction,
+//   * It is testable without a mesh. Feed CD any x and check y: contraction,
 //     the fixed point and the projection can each be checked on stub mechanics,
 //     separately from the discretization.
 //
-// WHAT x CONTAINS. x and y are always the same object: the contact traction at
-// the ENFORCEMENT POINTS, in the facet frame, normal component first --
+// What x contains. x and y are always the same object: the contact traction at
+// the enforcement points, in the facet frame, normal component first --
 // (t_n, t_t) in the plane, (t_n, t_t1, t_t2) in space -- under the convention
 // t_n < 0 in compression, g_n > 0 open. The space is therefore identical for
 // every law; what changes is the subset of it CD can return.
@@ -46,7 +45,7 @@
 namespace mimetika::contact {
 
 // ---------------------------------------------------------------------------
-// WHAT CONTACT NEEDS FROM A MECHANICS PROBLEM, and nothing more.
+// What contact needs from a mechanics problem, and nothing more.
 //
 // Three operations, all linear-algebraic. A model implements this and gains
 // contact; contact never learns what a model is. The pinned solve is the only
@@ -60,10 +59,10 @@ class ContactMechanics {
   virtual int dim() const = 0;
   virtual std::size_t n_dofs() const = 0;
 
-  // THE AFFINE SOLUTION OPERATOR S : m -> z(m): the solution of the mechanics
+  // The affine solution operator S : m -> z(m): the solution of the mechanics
   // on the affine subspace { z : sigma|_F = m }, where F indexes the fracture
-  // traction moments. An ESSENTIAL condition, since in the mixed form the
-  // traction IS a degree of freedom, so prescribing it is a Dirichlet condition
+  // traction moments. An essential condition, since in the mixed form the
+  // traction is a degree of freedom, so prescribing it is a Dirichlet condition
   // on the unknown rather than a penalty.
   //
   //     A_CC z_C = b_C - A_CF m ,   z_F = m ,
@@ -77,26 +76,24 @@ class ContactMechanics {
   // linear map the pinning consumes
   virtual void to_moments(const std::vector<Vec3>& x, std::vector<double>& moments) const = 0;
 
-  // THE GAP, from a solution vector. It is the RESIDUAL of the replaced fault
+  // The gap, from a solution vector. It is the residual of the replaced fault
   // rows, -(row . z - b_f), not `J z` alone: reading J z by itself imposes a
   // spurious jump equal to b_f's coefficients -- the Biot pore-coupling term,
-  // for one, which is exactly what appears when this is a poromechanics
-  // problem. An implementation that forgets it is wrong only when coupled,
-  // which is the worst way to be wrong.
+  // for one, which is what appears when this is a poromechanics problem. An
+  // implementation that forgets it is wrong only when coupled.
   virtual void gap(const std::vector<double>& z, std::vector<Vec3>& g) const = 0;
 };
 
 // ---------------------------------------------------------------------------
 
-// WHAT THE AUGMENTATION MULTIPLIES: the total normal gap, but the tangential
-// INCREMENT.
+// What the augmentation multiplies: the total normal gap, but the tangential
+// increment.
 //
-// The two components are not treated alike, and the asymmetry is physical. The
-// normal condition g_n >= 0 is a statement about the ABSOLUTE gap, so the normal
-// term is driven by the total jump. Coulomb friction instead opposes the slip
-// RATE -- eq. (2e) of Frigo et al. (2025) reads g_T . t_T = tau_max |g_T| with
-// g_T a rate -- which a quasi-static scheme discretizes as the backward
-// increment g_T,n - g_T,n-1.
+// The asymmetry is physical. The normal condition g_n >= 0 is a statement about
+// the absolute gap, so the normal term is driven by the total jump. Coulomb
+// friction instead opposes the slip rate -- eq. (2e) of Frigo et al. (2025)
+// reads g_T . t_T = tau_max |g_T| with g_T a rate -- which a quasi-static
+// scheme discretizes as the backward increment g_T,n - g_T,n-1.
 //
 // Driving the tangential part with the total jump instead is equivalent only
 // while the loading is monotone and proportional: the first step from rest, or
@@ -143,17 +140,16 @@ class ContactMap {
   const ContactLaw& law() const { return *law_; }
   const std::vector<double>& augmentation() const { return augmentation_; }
 
-  // THE IN-SITU TRACTION at the enforcement points, if the unknown is an
-  // INCREMENT.
+  // The in-situ traction at the enforcement points, when the unknown is an
+  // increment.
   //
-  // A contact law constrains the TOTAL traction: Signorini says the total
+  // A contact law constrains the total traction: Signorini says the total
   // normal traction is compressive, not that some increment is. When only an
   // increment is solved for -- a depletion response on top of an in-situ state
   // -- the law must still be shown the total, or a unilateral condition will
   // read a tensile increment on a firmly closed fault as opening. The prestress
   // is added before the projection and removed after, so x stays the
-  // incremental unknown the mechanics constrains while the law sees physical
-  // reality.
+  // incremental unknown the mechanics constrains while the law sees the total.
   void set_prestress(std::vector<Vec3> p) {
     if (p.size() != n_points()) throw std::invalid_argument("ContactMap: prestress size");
     prestress_ = std::move(p);
@@ -164,7 +160,7 @@ class ContactMap {
   std::vector<Vec3> initial_guess() const { return std::vector<Vec3>(n_points()); }
   std::vector<State> initial_state() const { return std::vector<State>(n_points()); }
 
-  // ONE EVALUATION: pin, solve, read the gap, project.
+  // One evaluation: pin, solve, read the gap, project.
   MapEvaluation evaluate(const std::vector<Vec3>& x, const std::vector<State>* internal = nullptr,
                          const std::vector<Vec3>* g_prev = nullptr, double dt = 0.0) const {
     if (x.size() != n_points()) throw std::invalid_argument("ContactMap: x size");
@@ -242,13 +238,13 @@ struct FixedPointOptions {
 
 // -- the condensed map, and Newton on it -----------------------------------------
 
-// THE NONLINEAR SYSTEM IS SMALL: n_points * dim unknowns, a handful per fracture
-// facet. Evaluating it through a global solve every iteration is backwards, and
-// two facts remove the need to.
+// The nonlinear system is small: n_points * dim unknowns, a handful per
+// fracture facet. Two facts remove the need to evaluate it through a global
+// solve every iteration.
 //
-// The constrained matrix DOES NOT DEPEND ON x -- pinning zeroes the same rows and
+// The constrained matrix does not depend on x -- pinning zeroes the same rows and
 // columns whatever the pinned values are, so only the right-hand side moves --
-// and that dependence is AFFINE:
+// and that dependence is affine:
 //
 //     b(x) = b_0 + B W x ,   z(x) = A^{-1} b(x) ,
 //     g(x) = g_0 + Ghat x ,  Ghat = J A^{-1} B W .
@@ -317,29 +313,29 @@ inline CondensedMap condense(const ContactMechanics& mech) {
   return c;
 }
 
-// SEMISMOOTH NEWTON ON F(x) = CD(x) - x = 0.
+// Semismooth Newton on F(x) = CD(x) - x = 0.
 //
-// Picard is a good solver only when CD is a CONTRACTION, which needs the
-// augmentation to match the fracture compliance AND that compliance to be close
+// Picard is a good solver only when CD is a contraction, which needs the
+// augmentation to match the fracture compliance and that compliance to be close
 // to diagonal. Neither holds for a fault that cuts the domain: Ghat is dense,
 // every facet feels every other, and no scalar r makes I + r Ghat a contraction.
 // Rescaling r cannot fix a spectral radius problem caused by off-diagonal
 // coupling -- which is why the displaced-fault benchmark diverges under Picard
 // while its slip profile is already right.
 //
-// Newton does not care. With
+// Newton does not need it. With
 //
 //     F(x) = P(x + r (g_0 + Ghat x)) - x ,
 //     J    = T (I + r Ghat) - I ,          T = dP/dt ,
 //
-// the step is a dense solve of size n_points * dim -- small, which is the whole
-// point of condensing. For an AFFINE law (a frictionless fault) the residual is
-// linear and this converges in a SINGLE iteration.
+// the step is a dense solve of size n_points * dim. For an affine law (a
+// frictionless fault) the residual is linear and this converges in a single
+// iteration.
 //
-// T IS THE CONSISTENT TANGENT, and it is the law's own AD tangent: the same
-// projection body re-run on exokal's Local. A hand-differentiated T would have
-// to agree with the branch the projection took at this very trial, which is the
-// thing that silently drifts.
+// T is the consistent tangent: the law's own AD tangent, the same projection
+// body re-run on exokal's Local. A hand-differentiated T would have to agree
+// with the branch the projection took at this trial, which is what silently
+// drifts.
 inline FixedPointResult newton(const ContactMap& map, const CondensedMap& cond,
                                const FixedPointOptions& opt = {},
                                const std::vector<Vec3>* x0 = nullptr,
@@ -445,12 +441,12 @@ inline FixedPointResult newton(const ContactMap& map, const CondensedMap& cond,
   return res;
 }
 
-// SOLVE x = CD(x) BY RELAXED PICARD ITERATION.
+// Solve x = CD(x) by relaxed Picard iteration.
 //
-// Under-relaxation is not cosmetic. While the fracture STICKS the tangential
-// update is a contraction and relaxation = 1 converges; while it SLIDES it is
-// not, and the plain iteration settles into a limit cycle of constant amplitude
-// rather than converging. Damping restores convergence.
+// While the fracture sticks the tangential update is a contraction and
+// relaxation = 1 converges; while it slides it is not, and the plain iteration
+// settles into a limit cycle of constant amplitude rather than converging.
+// Damping restores convergence.
 //
 // Deliberately separate from ContactMap: the map is the problem, this is one way
 // of solving it, and a Newton or Anderson variant would replace only this

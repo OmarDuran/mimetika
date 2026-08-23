@@ -134,7 +134,7 @@ def solve_darcy(mesh):
 
 # -- elasticity drivers --------------------------------------------------------
 
-def solve_elasticity(problem):
+def solve_cauchy_mechanics(problem):
     t0 = time.perf_counter()
     sol = problem.solve(dirichlet=disp_exact, body_force=body_force)
     t_tot = time.perf_counter() - t0
@@ -186,7 +186,7 @@ def run(sizes):
             errs_s, errs_d = [], []
             print(name)
             for n in sizes:
-                es, eu, tt = solve_elasticity(make(gen(n, n)))
+                es, eu, tt = solve_cauchy_mechanics(make(gen(n, n)))
                 errs_s.append(es)
                 errs_d.append(eu)
                 print(

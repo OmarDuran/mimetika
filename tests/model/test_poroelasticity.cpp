@@ -7,7 +7,7 @@
 #include "exokal/hodge/flux_operators.hpp"
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/model/compositions/poroelasticity.hpp"
-#include "mimetika/model/compositions/single_phase_flow.hpp"
+#include "mimetika/model/compositions/flow.hpp"
 #include "mimetika/model/simulation.hpp"
 
 using exokal::hodge::StressOperators;
@@ -20,7 +20,7 @@ namespace {
 bool near(double a, double b, double tol) { return std::abs(a - b) <= tol; }
 }  // namespace
 
-// THE CATALOGUE CLAIM, tested rather than asserted: poroelasticity adds no
+// The catalogue claim, tested rather than asserted: poroelasticity adds no
 // implementation. It is flow plus mechanics plus a coupling that contributes
 // no field of its own, so its space is exactly the union of the other two.
 MIMETIKA_TEST(poroelasticity_adds_no_field_of_its_own) {
@@ -28,7 +28,7 @@ MIMETIKA_TEST(poroelasticity_adds_no_field_of_its_own) {
   const graphos::Complex& c = m.topology();
 
   const Composition mech = Catalogue::instance().build("linear_elasticity", {});
-  const Composition flow = Catalogue::instance().build("single_phase_flow", {});
+  const Composition flow = Catalogue::instance().build("flow", {});
   const Composition poro = Catalogue::instance().build("poroelasticity", {});
   CHECK(mech.size() == 1 && flow.size() == 1 && poro.size() == 3);
 
@@ -52,7 +52,7 @@ MIMETIKA_TEST(poroelasticity_adds_no_field_of_its_own) {
   CHECK(threw);
 }
 
-// THE STRESS DEGREES OF FREEDOM ARE d^2 PER FACET, and the rotation carries
+// The stress degrees of freedom are d^2 per facet, and the rotation carries
 // the d(d-1)/2 components weak symmetry needs. Getting either count wrong
 // changes the method rather than breaking it, so it is pinned.
 MIMETIKA_TEST(the_mixed_elasticity_space_has_the_afw_counts) {
@@ -69,25 +69,24 @@ MIMETIKA_TEST(the_mixed_elasticity_space_has_the_afw_counts) {
   CHECK(s.map(s.index_of("u_0")).layout().degree() == 3);  // cell-wise
 }
 
-// THE SYSTEM IS A SADDLE POINT WITH ADJOINT COUPLINGS, in the convention the
+// The system is a saddle point with adjoint couplings, in the convention the
 // flux term set: [M, -B^T; +B, 0]. So a constitutive block is symmetric and
-// every off-diagonal pair is the NEGATIVE transpose of its partner.
+// every off-diagonal pair is the negative transpose of its partner.
 //
-// That every physics uses the same convention is the load-bearing part. Flow,
-// mechanics and the Biot coupling all land in one system, and two conventions
-// meeting there would give a matrix neither symmetric nor antisymmetric —
-// structure no solver could exploit, and nothing would visibly break.
+// Every physics uses the same convention. Flow, mechanics and the Biot coupling
+// all land in one system, and two conventions meeting there would give a matrix
+// neither symmetric nor antisymmetric — structure no solver could exploit, and
+// nothing would visibly break.
 //
-// The displacement and rotation blocks must also be EMPTY, which is what
-// makes this a saddle point rather than a positive-definite system in
-// disguise.
+// The displacement and rotation blocks must also be empty, which is what makes
+// this a saddle point rather than a positive-definite system in disguise.
 MIMETIKA_TEST(the_poroelastic_system_is_a_saddle_point_with_adjoint_couplings) {
   const auto m = mimetika_test::hex_grid(2);
   const graphos::Complex& c = m.topology();
 
   const StressOperators ops = StressOperators::build(m, 3, 1.0, 1.0);
   CHECK(ops.size() == static_cast<std::size_t>(c.count(3)));
-  // WHETHER A CELL STABILIZES IS A PROPERTY OF THE SPACE, not of the cell.
+  // Whether a cell stabilizes is a property of the space, not of the cell.
   // The default de Rham realization reconstructs each stress row on the
   // enriched scalar space, so its N is square and unisolvent and there is
   // nothing left for a stabilization to see -- on hexahedra as on simplices.
@@ -136,7 +135,7 @@ MIMETIKA_TEST(the_poroelastic_system_is_a_saddle_point_with_adjoint_couplings) {
   const auto [g0, g1] = blk("g_0");
   const auto [p0, p1] = blk("p_0");
 
-  // ADJOINTNESS everywhere: |A_ij| = |A_ji|, because every coupling was
+  // Adjointness everywhere: |A_ij| = |A_ji|, because every coupling was
   // written from one array of coefficients
   double worst = 0.0;
   for (std::size_t i = 0; i < n; ++i) {
@@ -146,12 +145,12 @@ MIMETIKA_TEST(the_poroelastic_system_is_a_saddle_point_with_adjoint_couplings) {
   }
   CHECK(worst < 1e-10);
 
-  // AND THE SIGNS, which adjointness-in-magnitude cannot see. The two
+  // And the signs, which adjointness-in-magnitude cannot see. The two
   // couplings of a poroelastic system are not the same kind of object:
   //
-  //   (s,p)  the BIOT coupling, a constitutive symmetry. Both blocks are
+  //   (s,p)  the Biot coupling, a constitutive symmetry. Both blocks are
   //          second derivatives of one free energy, so A_ij = +A_ji.
-  //   (q,p)  the DARCY pair, adjoint differential operators, which exokal
+  //   (q,p)  the Darcy pair, adjoint differential operators, which exokal
   //          writes antisymmetrically as [M, -B^T; +B, 0]: A_ij = -A_ji.
   //
   // Giving the Biot block the Darcy convention leaves every structural
@@ -191,7 +190,7 @@ MIMETIKA_TEST(the_poroelastic_system_is_a_saddle_point_with_adjoint_couplings) {
   CHECK(empty(u0, u1, g0, g1) == 0.0);
   CHECK(empty(u0, u1, p0, p1) == 0.0);  // the Biot coupling goes through the STRESS
 
-  // the Biot coupling is present, and it is the PLAIN transpose: the pore
+  // the Biot coupling is present, and it is the plain transpose: the pore
   // pressure enters the constitutive relation exactly as the volumetric
   // response enters the mass balance, from one coefficient and with one sign.
   // Its symmetry is checked above, with the Darcy pair's antisymmetry beside

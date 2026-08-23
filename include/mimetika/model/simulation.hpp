@@ -13,33 +13,29 @@
 #include "mimetika/model/constraints.hpp"
 #include "mimetika/physics/package.hpp"
 
-// THE COMPUTATIONAL MODEL: everything needed to advance a state, behind one
+// The computational model: everything needed to advance a state, behind one
 // object.
 //
-// A benchmark, a driver and a solver all want the same three things from a
-// discretized problem, and today they each have to assemble them by hand out
-// of an epoch, a model, a context, a workspace and a state vector. That is
-// six objects whose lifetimes and wiring order matter — the offsets must be
-// set before the carrier maps are completed, the context must outlive the
-// model, the space must outlive the epoch — and every consumer that
-// rediscovers that order is a consumer that can get it wrong.
+// A benchmark, a driver and a solver want the same three things from a
+// discretized problem, otherwise assembled by hand out of an epoch, a model, a
+// context, a workspace and a state vector. Those are six objects whose
+// lifetimes and wiring order matter — the offsets must be set before the
+// carrier maps are completed, the context must outlive the model, the space
+// must outlive the epoch.
 //
-// Simulation is that wiring, done once. What it exposes is exactly what a
-// solver needs and nothing else:
+// Simulation is that wiring, done once. What it exposes:
 //
 //     residual(r)          r(x)
 //     jacobian(sink)       the tangent, as triplets
 //     apply(v, y)          y = J(x) v, with no matrix
 //
-// all three from ONE form source, and all three respecting the essential
+// all three from one form source, and all three respecting the essential
 // constraints, which is the part a hand-wired consumer most often forgets on
 // one path and not the others.
 //
-// WHAT IT DELIBERATELY IS NOT. It does not solve. A linear solver is a
-// dependency and a choice — direct or iterative, and with which
-// preconditioner — and binding one into the model would make the model a
-// hostage to it. Simulation produces the operators; something else consumes
-// them.
+// It does not solve. A linear solver is a dependency and a choice — direct or
+// iterative, and with which preconditioner — so Simulation produces the
+// operators and something else consumes them.
 
 namespace mimetika {
 
@@ -62,7 +58,7 @@ struct StratumSpec {
 class Simulation {
  public:
   // The context carries the data named terms read — closures, discrete
-  // operators — and is NOT owned, so it must outlive the simulation. That is
+  // operators — and is not owned, so it must outlive the simulation. That is
   // the same contract Epoch and Model already keep, kept once here instead
   // of once per consumer.
   Simulation(const physics::Composition& composition, std::vector<StratumSpec> strata,
@@ -83,11 +79,10 @@ class Simulation {
 
   const StratifiedEpoch& epoch() const { return epoch_; }
   const Model& model() const { return model_; }
-  // MUTABLE UNTIL THE CONSTRAINTS ARE FROZEN. A composition declares the
-  // physics; a PROBLEM may still need a boundary term the physics cannot know
+  // Mutable until the constraints are frozen. A composition declares the
+  // physics; a problem may still need a boundary term the physics cannot know
   // about -- a prescribed pressure applies to the borehole and not to the
-  // column, and it is a property of the configuration rather than of the
-  // model. Adding it here keeps that distinction where it belongs.
+  // column, and is a property of the configuration rather than of the model.
   Model& model() { return model_; }
   std::size_t n_dofs() const { return state_.size(); }
 
@@ -97,10 +92,10 @@ class Simulation {
   // ---- what this process is responsible for -------------------------------
   //
   // Set together or not at all. `cells` is which sites of the top stratum this
-  // process assembles, and `dofs` is which unknowns it writes a CONSTRAINT row
-  // for -- and those are different questions. A term's contribution is a SUM,
+  // process assembles, and `dofs` is which unknowns it writes a constraint row
+  // for -- and those are different questions. A term's contribution is a sum,
   // so it may be split across processes and added back together; a constraint
-  // row is a REPLACEMENT, so exactly one process may write it or the equation
+  // row is a replacement, so exactly one process may write it or the equation
   // appears several times over.
   //
   // `reduce` sums a vector across the processes. It is used on the scales
@@ -184,7 +179,7 @@ class Simulation {
     return owned_dofs_.empty() || owned_dofs_[dof] != 0;
   }
 
-  // THE SCALE, MEASURED FROM AN ASSEMBLED TANGENT.
+  // The scale, measured from an assembled tangent.
   //
   // What is wanted is the diagonal the terms write on each constrained row:
   // the constitutive factor of the equation being replaced, which for a linear
@@ -196,7 +191,7 @@ class Simulation {
         diagonal[static_cast<std::size_t>(sink.row[k])] += sink.value[k];
       }
     }
-    // THE DIAGONAL OF A ROW IS NOT LOCAL, even where the row is: an interior
+    // The diagonal of a row is not local, even where the row is: an interior
     // facet is assembled from both its cells, and those can belong to two
     // processes. A constrained row scaled by half its diagonal on one process
     // and half on another is two different equations, so the scales are summed
@@ -216,10 +211,9 @@ class Simulation {
     constraints_.set_scales(diagonal);
   }
 
-  // A residual or a tangent-action asked for BEFORE any tangent has nothing to
-  // read the scale from, so it assembles one. That is the only path that pays
-  // for it, and a consumer that assembles a tangent first — which is every
-  // solver — never reaches this.
+  // A residual or a tangent-action asked for before any tangent has nothing to
+  // read the scale from, so it assembles one. A consumer that assembles a
+  // tangent first — which is every solver — never reaches this.
   void ensure_scales() const {
     if (constraints_.scaled()) return;
     exokal::forms::TripletSink probe(state_.size());
@@ -242,10 +236,9 @@ class Simulation {
     sink.row.resize(w);
     sink.col.resize(w);
     sink.value.resize(w);
-    // THE ROW IS THE FORM. A one-term form gives back a single scaled diagonal,
-    // which is the familiar substitution; a normal traction on a facet whose
-    // normal is not an axis gives d entries in that row, which is the same
-    // statement written where it is actually true.
+    // The row is the form. A one-term form gives back a single scaled diagonal,
+    // the familiar substitution; a normal traction on a facet whose normal is
+    // not an axis gives d entries in that row.
     for (std::size_t d = 0; d < state_.size(); ++d) {
       if (!constraints_.pinned(d)) continue;
       // a replacement, so exactly one process writes it

@@ -8,20 +8,20 @@
 #include "graphos/core/incidence.hpp"
 #include "graphos/core/types.hpp"
 
-// THE MODEL'S UNKNOWNS, SHARED OUT AMONG THE PROCESSES.
+// The model's unknowns, shared out among the processes.
 //
 // Nothing here decides anything about the partition: exokal's geometric
 // bisection cuts the mesh, and exokal's ownership rule -- an entity belongs to
-// the LOWEST-numbered rank in its star -- says who owns what. This translates
+// the lowest-numbered rank in its star -- says who owns what. This translates
 // that answer into the three things the rest of mimetika asks for, which are
-// three different questions and are often confused:
+// three different questions:
 //
-//   owner_of_dof   for the SOLVER: the layout of the algebra, one rank per
+//   owner_of_dof   for the solver: the layout of the algebra, one rank per
 //                  global unknown, which is what a renumbering is built from
-//   owned_cells    for the ASSEMBLY: which sites a process evaluates terms on.
+//   owned_cells    for the assembly: which sites a process evaluates terms on.
 //                  A term's contribution is a sum, so a row may be assembled
 //                  in pieces on several processes and added back together
-//   owned_dofs     for the CONSTRAINTS: which rows a process WRITES. A
+//   owned_dofs     for the constraints: which rows a process writes. A
 //                  constraint is a replacement, not a contribution, so exactly
 //                  one process may write each of them
 //
@@ -36,20 +36,20 @@ using graphos::Index;
 struct Distribution {
   std::vector<int> owner_of_dof;
   std::vector<char> owned_cells;
-  // A TERM IS NOT ALWAYS EVALUATED ON A CELL. A prescribed pressure is a form
+  // A term is not always evaluated on a cell. A prescribed pressure is a form
   // on the boundary facets, an interface term on the interior ones; those
   // sites are facets, and a mask indexed by cell number would select the wrong
   // ones -- silently, since both are just indices. exokal names the
   // distinction (`evaluated_on_facets`), so both masks are carried.
   std::vector<char> owned_facets;
   std::vector<char> owned_dofs;
-  // OWNED PLUS HALO: the cells whose terms this process evaluates.
+  // Owned plus halo: the cells whose terms this process evaluates.
   //
-  // exokal names two conventions. Own the CELLS -- assemble what you own and
+  // exokal names two conventions. Own the cells -- assemble what you own and
   // let the matrix carry your contributions to rows owned elsewhere -- costs
   // one exchange per assembly, and PETSc's off-process stash made that
   // exchange cost more than the assembly it saved (310 s against 2 s on a
-  // 22k-cell mesh). Own the ROWS -- assemble everything that contributes to a
+  // 22k-cell mesh). Own the rows -- assemble everything that contributes to a
   // row you own, including cells you do not -- communicates nothing at all,
   // and pays for it by evaluating the halo twice. The halo is a surface and
   // the subdomain is a volume, so that is the cheaper of the two.
@@ -61,7 +61,7 @@ struct Distribution {
   bool empty() const { return owner_of_dof.empty(); }
 };
 
-// THE CELL PARTITION ALONE, which is all the mesh can answer before the space
+// The cell partition alone, which is all the mesh can answer before the space
 // exists -- and it is needed there: the per-cell products are built before any
 // space is, and they are the bulk of the work to divide.
 template <class MeshT>
@@ -84,7 +84,7 @@ Distribution partition_cells(const MeshT& mesh, int dim, int n_ranks, int rank) 
     for (const Index f : part.owned) out.owned_facets[static_cast<std::size_t>(f)] = 1;
   }
 
-  // THE HALO: the cells across a facet from an owned one.
+  // The halo: the cells across a facet from an owned one.
   //
   // That is the stencil of a space whose unknowns live on facets and cells,
   // which is every space here -- two cells interact exactly when they share a

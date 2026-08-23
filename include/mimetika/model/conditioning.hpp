@@ -1,6 +1,6 @@
 #pragma once
 
-// THE CONDITIONING OF ONE CELL'S INNER PRODUCT, and the selection it drives.
+// The conditioning of one cell's inner product, and the selection it drives.
 //
 // The metric-degeneracy scan judges a cell by its measure against its node
 // star, which catches a collapsed cell and misses a sliver of ordinary volume:
@@ -32,7 +32,7 @@ inline double block_conditioning(const exokal::numerics::Dense& M) {
   return lo > 0.0 ? hi / lo : std::numeric_limits<double>::infinity();
 }
 
-// eta[e] = 0 wherever block(e) -- the STABILIZED member's block, built with
+// eta[e] = 0 wherever block(e) -- the stabilized member's block, built with
 // ones everywhere -- has cond > threshold; a cell already at eta = 0 is
 // left alone. Returns how many cells this selector switched. An empty block
 // (a cell this process does not own) is not judged.

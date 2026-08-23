@@ -5,21 +5,21 @@
 #include <cstddef>
 #include <vector>
 
-// THE FAULT-REACTIVATION BENCHMARKS of Novikov, Voskov et al. (2024),
+// The fault-reactivation benchmarks of Novikov, Voskov et al. (2024),
 // "Benchmark study of fault reactivation induced by pressure depletion".
 //
 // A depleting reservoir at depth loads a fault; the question is when, where and
 // how much it slips. Four cases share one setup, which is what lives here:
 // Table 2's parameters and the in-situ state they imply. Nothing in this file
-// solves anything -- it is the DATA and the CLOSED FORMS a solve is judged
+// solves anything -- it is the data and the closed forms a solve is judged
 // against, so an error in the setup surfaces before any solver runs.
 //
-// GEOMETRY AND SIGN CONVENTIONS. y is measured UPWARDS from the reservoir
-// reference level, so depth is D0 - y. Stresses are TENSION POSITIVE throughout
+// Geometry and sign conventions. y is measured upwards from the reservoir
+// reference level, so depth is D0 - y. Stresses are tension positive throughout
 // -- the paper's figures are too -- which makes every in-situ stress negative.
 // Effective stress uses the Biot convention sigma' = sigma + alpha p.
 //
-// THE IN-SITU STATE IS DERIVED, NOT TABULATED. Everything in the paper's
+// The in-situ state is derived, not tabulated. Everything in the paper's
 // eqs. (17)-(19) follows from the Table 2 parameters:
 //
 //     rho_b        = phi rho_fl + (1 - phi) rho_s          bulk density
@@ -28,11 +28,11 @@
 //     sigma'_xx    = K0 sigma'_yy                          lateral earth pressure
 //     sigma_xx     = sigma'_xx - alpha p
 //
-// Reproducing the paper's printed coefficients FROM the parameters, rather than
-// pasting them in, is what makes the setup checkable -- and the tests do exactly
-// that before they run a solver.
+// Reproducing the paper's printed coefficients from the parameters rather than
+// pasting them in makes the setup checkable, and the tests do that before they
+// run a solver.
 //
-// ONE DEVIATION, and it is deliberate. The tabulated fluid density gives a
+// One deviation, deliberate. The tabulated fluid density gives a
 // pressure gradient of 1020 * 9.81 = 10.01 kPa/m, while the paper quotes
 // 10.06 kPa/m. The latter corresponds to rho_fl = 1025, which is the value used
 // here so that the published in-situ profiles are reproduced exactly.
@@ -67,8 +67,7 @@ struct Parameters {
   // h = a + b = 225 m. Table 2 gives the domain but not the reservoir's own
   // thickness; it is fixed by the displaced-fault geometry of benchmark 1,
   // where the reservoir spans [-b, a] on one side of the fault and [-a, b] on
-  // the other. That reproduces the reported compaction of -0.32 m, which is the
-  // independent confirmation that the reading is right.
+  // the other. That reproduces the reported compaction of -0.32 m.
   double reservoir_height() const { return fault_a + fault_b; }
   // vertical offset of the reservoir across the fault, b - a = 75 m
   double throw_() const { return fault_b - fault_a; }
@@ -148,13 +147,13 @@ struct Parameters {
   // -- the frictionless displaced fault (paper section 3, eqs. 18-21) ---------
   //
   // Jansen & Meulenbroek (2022), quoted by the paper as eqs. (18)-(22). A
-  // reservoir offset across a VERTICAL fault by the throw b - a puts reservoir
+  // reservoir offset across a vertical fault by the throw b - a puts reservoir
   // against seal on both sides, which loads the fault in shear; with no friction
   // it slips until it carries no shear stress at all.
   //
-  // BOTH ARE DERIVED FOR AN UNBOUNDED MEDIUM, which is why a simulation on a
+  // Both are derived for an unbounded medium, which is why a simulation on a
   // finite box is compared on the profile shape and the peak rather than
-  // pointwise -- and why the box has to be made wide before even those agree.
+  // pointwise, and why the box has to be made wide before even those agree.
 
   // C = (1-2nu) alpha Dp / (2 pi (1-nu)) -- eq. (19), -2.95e6 Pa
   double slip_stress_scale() const {
@@ -163,9 +162,9 @@ struct Parameters {
   // A = G / (2 pi (1 - nu)) -- eq. (21), 1.2171e9 Pa
   double slip_stiffness() const { return shear_modulus / (2.0 * M_PI * (1.0 - poisson)); }
 
-  // Sigma_C(y) -- eq. (18). LOGARITHMICALLY SINGULAR at y = +-a and y = +-b,
-  // which is not a defect of the formula: those are the four reservoir edges,
-  // where the loading jumps, and no cell-centred value can follow it there.
+  // Sigma_C(y) -- eq. (18). Logarithmically singular at y = +-a and y = +-b:
+  // those are the four reservoir edges, where the loading jumps, and no
+  // cell-centred value can follow it there.
   double analytic_coulomb_stress(double y) const {
     const double a = fault_a, b = fault_b;
     const double num = (y - a) * (y - a) * (y + a) * (y + a);
@@ -174,7 +173,7 @@ struct Parameters {
   }
 
   // delta(y) -- eq. (20), the five-interval piecewise profile. Continuous,
-  // piecewise linear, and FLAT at (C/A)(a-b) over the overlap |y| < a where
+  // piecewise linear, and flat at (C/A)(a-b) over the overlap |y| < a where
   // reservoir faces reservoir across the fault.
   double analytic_slip(double y) const {
     const double a = fault_a, b = fault_b;
@@ -206,7 +205,7 @@ struct Parameters {
 
   // -- Fig. 4: the combined state across the depleted reservoir ---------------
 
-  // The analytic combined profile: EXACTLY piecewise, because the reservoir is
+  // The analytic combined profile: exactly piecewise, because the reservoir is
   // infinitely wide. There is no arching, so outside the depleted band the
   // increment is identically zero and the combined stress is the in-situ state,
   // while inside it is the in-situ state plus the uniaxial increment

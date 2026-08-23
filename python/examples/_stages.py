@@ -1,9 +1,8 @@
 """Which stage an example is in, and how long it took.
 
-A mesh from a preprocessor may hold a thousand cells or two million, and the
-stages that dominate -- reading, assembling, factorizing -- produce no output
-of their own. A silent process is indistinguishable from a hung one, so every
-stage names itself before it starts and reports its own cost when it ends.
+The stages that dominate -- reading, assembling, factorizing -- produce no
+output of their own, and a silent process is indistinguishable from a hung one.
+Every stage names itself before it starts and reports its cost when it ends.
 """
 
 import contextlib

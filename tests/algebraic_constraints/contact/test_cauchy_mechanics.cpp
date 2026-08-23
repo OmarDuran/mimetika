@@ -6,7 +6,7 @@
 #include "mimetika/algebraic_constraints/contact/driver.hpp"
 #include "mimetika/mesh/structured.hpp"
 
-// CONTACT OVER CAUCHY ELASTICITY, end to end: the adapter, and the driver on top
+// Contact over Cauchy elasticity, end to end: the adapter, and the driver on top
 // of it.
 //
 // Everything below the adapter has been checked in isolation -- the laws
@@ -17,7 +17,7 @@
 // on a real mesh.
 
 using graphos::Index;
-using mimetika::CauchyElasticityModel;
+using mimetika::CauchyMechanicsModel;
 using mimetika::ElasticMaterial;
 using mimetika::contact::CauchyContactMechanics;
 using mimetika::contact::ContactDriver;
@@ -47,22 +47,21 @@ std::vector<Index> facets_at(const exokal::Mesh& m, int dim, double z, double to
   return out;
 }
 
-// A COLUMN CUT AT MID-HEIGHT: rollers all round, a traction on top, and the
+// A column cut at mid-height: rollers all round, a traction on top, and the
 // fracture across the middle. Everything is uniaxial, so what the fracture does
 // is the whole of the answer.
 struct Problem {
   exokal::Mesh mesh;
   std::vector<Index> fault;
-  std::unique_ptr<CauchyElasticityModel> model;
+  std::unique_ptr<CauchyMechanicsModel> model;
   double load{0.0};
 };
 
-// DISPLACEMENT ON THE WHOLE BOUNDARY, which is how the Python poses every
-// driver test and is not a detail. Under pure traction data a fracture spanning
-// the domain leaves each side with a rigid-body null mode, and equilibrium then
-// FIXES the fault traction -- there is nothing for a law to decide, and the
-// constrained operator is singular. With the displacement prescribed the
-// traction is genuinely an unknown.
+// Displacement on the whole boundary, which is how the Python poses every
+// driver test. Under pure traction data a fracture spanning the domain leaves
+// each side with a rigid-body null mode, and equilibrium then fixes the fault
+// traction -- there is nothing for a law to decide, and the constrained operator
+// is singular. With the displacement prescribed the traction is an unknown.
 //
 // The datum is the confined strain u = (0, 0, e z): the exact solution of the
 // bonded problem, so whatever the fracture does is the whole of the difference.
@@ -79,12 +78,12 @@ Problem build(int n, int dim, Family family, double strain) {
   std::array<double, 9> gradient{};
   gradient[static_cast<std::size_t>(axis * 3 + axis)] = strain;  // u_axis = e x_axis
 
-  p.model = std::make_unique<CauchyElasticityModel>(p.mesh, dim, ElasticMaterial{kMu, kLam});
-  // THE AFFINE DATUM EXPANDS ABOUT THE ADJACENT CELL'S CENTROID -- that is
+  p.model = std::make_unique<CauchyMechanicsModel>(p.mesh, dim, ElasticMaterial{kMu, kLam});
+  // The affine datum expands about the adjacent cell's centroid -- that is
   // where the stress operators take their facet moments -- so the constant is
-  // the datum's value THERE, not at the facet. Using the facet's own centroid
-  // leaves a residual displacement of order eps * (x_f - x_E), which is exactly
-  // the size of the gap being measured.
+  // the datum's value there, not at the facet. Using the facet's own centroid
+  // leaves a residual displacement of order eps * (x_f - x_E), the size of the
+  // gap being measured.
   const graphos::CoboundaryOperator cob = graphos::coboundary(c, dim - 1);
   for (const Index f : all) {
     const Index cell =
@@ -94,7 +93,7 @@ Problem build(int n, int dim, Family family, double strain) {
     a[static_cast<std::size_t>(axis)] = strain * xE[static_cast<std::size_t>(axis)];
     p.model->prescribe_displacement({f}, a, gradient);
   }
-  // BEFORE build(): prescribing the traction changes which equations exist
+  // before build(): prescribing the traction changes which equations exist
   p.model->prescribe_traction(p.fault);
   p.model->build();
   return p;
@@ -102,7 +101,7 @@ Problem build(int n, int dim, Family family, double strain) {
 
 }  // namespace
 
-// A UNIFORM TRACTION LANDS ENTIRELY ON THE LEADING MOMENT, because the facet
+// A uniform traction lands entirely on the leading moment, because the facet
 // chart has chi_0 = 1 and int_f chi_b = 0 for b >= 1. The higher moments being
 // exactly zero is what makes one enforcement point per facet a consistent
 // statement rather than an approximation.
@@ -143,7 +142,7 @@ ContactState run(Problem& p, const Law& law, int dim) {
 
 // -- Signorini ----------------------------------------------------------------
 
-// TENSION OPENS THE FRACTURE WITH ZERO TRACTION. Pulling the column apart, the
+// Tension opens the fracture with zero traction. Pulling the column apart, the
 // unilateral condition must let it separate and carry nothing -- the one thing
 // a bonded solve cannot do.
 MIMETIKA_TEST(tension_opens_the_fracture_with_zero_traction) {
@@ -159,8 +158,8 @@ MIMETIKA_TEST(tension_opens_the_fracture_with_zero_traction) {
   }
 }
 
-// COMPRESSION CLOSES WITHOUT INTERPENETRATION, and the traction it settles on
-// is the EXACT confined stress -K_oed * eps. That number is the test: a scheme
+// Compression closes without interpenetration, and the traction it settles on
+// is the exact confined stress -K_oed * eps. That number is the test: a scheme
 // that merely closed the gap could still carry the wrong load.
 MIMETIKA_TEST(compression_closes_at_the_exact_confined_stress) {
   const double strain = -0.01;
@@ -178,9 +177,9 @@ MIMETIKA_TEST(compression_closes_at_the_exact_confined_stress) {
   }
 }
 
-// COMPLEMENTARITY: g_n >= 0, t_n <= 0 and g_n t_n = 0 at every enforcement
+// Complementarity: g_n >= 0, t_n <= 0 and g_n t_n = 0 at every enforcement
 // point, under tension, compression and no load alike. The three conditions
-// together ARE Signorini, so checking them separately is checking the law.
+// together are Signorini.
 MIMETIKA_TEST(complementarity_holds_under_tension_compression_and_neither) {
   for (const double strain : {+0.01, -0.01, 0.0}) {
     Problem p = build(4, 3, Family::cartesian, strain);
@@ -200,8 +199,8 @@ MIMETIKA_TEST(complementarity_holds_under_tension_compression_and_neither) {
 
 // -- the bilateral law, for contrast ------------------------------------------
 
-// A BILATERAL FAULT IS HELD SHUT AND MAY CARRY TENSION, which is the modelling
-// choice an INCREMENTAL problem needs: a fault under in-situ compression must
+// A bilateral fault is held shut and may carry tension, which is the modelling
+// choice an incremental problem needs: a fault under in-situ compression must
 // not be opened by a tensile increment. The same load that opens it under
 // Signorini leaves it closed here.
 MIMETIKA_TEST(the_bilateral_law_holds_a_tensioned_fault_shut) {
@@ -212,15 +211,15 @@ MIMETIKA_TEST(the_bilateral_law_holds_a_tensioned_fault_shut) {
               s.traction[0][0], s.jump[0][0]);
   CHECK(s.converged);
   for (std::size_t i = 0; i < s.traction.size(); ++i) {
-    CHECK(s.traction[i][0] > 0.0);                         // carrying TENSION, and holding
+    CHECK(s.traction[i][0] > 0.0);                         // carrying tension, and holding
     CHECK(std::abs(s.jump[i][0]) < 1e-8);                  // shut
     CHECK(std::abs(s.traction[i].shear_norm(3)) < 1e-10);  // and free to slide
   }
 }
 
-// A FRACTURE MUST BE PRESCRIBED BEFORE THE MODEL IS BUILT, because prescribing
+// A fracture must be prescribed before the model is built, because prescribing
 // changes which equations the system has. Catching the mismatch at construction
-// is what keeps a silently bonded solve from being reported as a contact one.
+// keeps a silently bonded solve from being reported as a contact one.
 MIMETIKA_TEST(a_fracture_the_model_did_not_prescribe_is_refused) {
   const exokal::Mesh m = mimetika::mesh::column(4, 3, Family::cartesian, 1.0);
   const graphos::Complex& c = m.topology();
@@ -231,10 +230,10 @@ MIMETIKA_TEST(a_fracture_the_model_did_not_prescribe_is_refused) {
   }
   std::array<double, 9> applied{};
   applied[8] = -0.5;
-  CauchyElasticityModel model(m, 3, ElasticMaterial{kMu, kLam});
+  CauchyMechanicsModel model(m, 3, ElasticMaterial{kMu, kLam});
   model.mechanics().emplace<mimetika::TractionBC>(loaded, applied);
   model.mechanics().emplace<mimetika::FreeSlipBC>(confined);
-  model.build();  // NO prescribe_traction
+  model.build();  // no prescribe_traction
 
   const Fracture fr(m, 3, facets_at(m, 3, 0.5), 3);
   bool refused = false;

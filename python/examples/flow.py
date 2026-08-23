@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Single-phase Darcy flow on a quarter annulus: the Dupuit profile.
+"""Flow, of Darcy type, on a quarter annulus: the Dupuit profile.
 
 Steady radial flow between two concentric boundaries, pressure prescribed on
 both radii and the symmetry planes sealed. The closed form is logarithmic,
 
     p(r) = p_a + (p_b - p_a) log(r/a) / log(b/a)
 
-which is NOT in the discrete space -- no polynomial reconstruction contains a
-radial harmonic -- so the error here is a resolution rather than a defect, and
-the refinement table is the point: it must fall, and at first order.
+which is not in the discrete space -- no polynomial reconstruction contains a
+radial harmonic -- so the error here is a resolution. The refinement table must
+fall, and at first order.
 
 Run it:
 
-    PYTHONPATH=.. python single_phase_flow.py
-    PYTHONPATH=.. python single_phase_flow.py --dim 3 --family simplex
-    PYTHONPATH=.. python single_phase_flow.py --vtu dupuit.vtu
+    PYTHONPATH=.. python flow.py
+    PYTHONPATH=.. python flow.py --dim 3 --family simplex
+    PYTHONPATH=.. python flow.py --vtu dupuit.vtu
 """
 
 import argparse
@@ -34,20 +34,18 @@ FAMILIES = {
     "simplex": mk.Family.simplex,
     "prism": mk.Family.prism,
 }
-# THE LINEAR SOLVER. "riesz" is the Riesz map of H(div) x L^2 -- P is the Gram
-# matrix of ||q||^2 = (K^-1 q,q) + ||div q||^2 and ||p||^2 = ||p||_L2^2 -- so
-# its iteration count does not grow with the mesh. "direct" is a full
-# factorization: exact, and the wrong instrument past a few hundred thousand
-# unknowns.
+
+
 def solvers(rtol):
     """The linear solvers, at the residual tolerance asked for.
 
-    "riesz" is the Riesz map of the space the operator is an isomorphism on --
-    P is the Gram matrix of its norm -- so its iteration count does not grow
-    with the mesh. "direct" is a full factorization: exact, and the wrong
-    instrument past a few hundred thousand unknowns.
+    "riesz" is the Riesz map of H(div) x L^2 -- P is the Gram matrix of
+    ||q||^2 = (K^-1 q,q) + ||div q||^2 and ||p||^2 = ||p||_L2^2 -- so its
+    iteration count does not grow with the mesh. "direct" is a full
+    factorization: exact, and the wrong instrument past a few hundred thousand
+    unknowns.
 
-    THE TOLERANCE IS ON THE RESIDUAL, not on the answer. An iterative solve
+    The tolerance is on the residual, not on the answer. An iterative solve
     cannot show the round-off floor a direct one leaves, so a patch test read
     through it is bounded by this number rather than by the method.
     """
@@ -55,11 +53,10 @@ def solvers(rtol):
         "riesz": mk.SolverOptions(
             method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000
         ),
-        # THE SAME MAP, WITH THE FLUX BLOCK INVERTED BY AN AUXILIARY SPACE.
-        #
+        # The same map, with the flux block inverted by an auxiliary space.
         # ADS splits an H(div) operator along the de Rham complex instead of
         # factorizing it, so it costs no fill and is linear in the unknowns.
-        # It is a 3D construction and it wants ONE unknown per facet; a facet
+        # It is a 3D construction and it wants one unknown per facet; a facet
         # carrying several moments (derham_bdm) reaches it through the
         # facet-constant subspace, as a two-level cycle.
         "ads": mk.SolverOptions(
@@ -79,7 +76,7 @@ def solvers(rtol):
 SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg")
 DEFAULT_RTOL = 1e-9
 
-# ADS IS A THREE-DIMENSIONAL CONSTRUCTION. Its auxiliary spaces are built from
+# ADS is a three-dimensional construction: its auxiliary spaces are built from
 # the discrete gradient and curl, d_1 and d_2, and in two dimensions the
 # H(div) unknowns sit on edges rather than faces -- the maps do not address
 # them, and hypre has no ADS for that case.
@@ -97,20 +94,19 @@ PRODUCTS = {
     "derham_bdm": mk.FluxRealization.derham_bdm,
     "derham_rt": mk.FluxRealization.derham_rt,
     "stabilized_rt": mk.FluxRealization.stabilized_rt,
-    # ONE FLUX PER FACET AND NO RECONSTRUCTION: M is the diagonal primal-dual
+    # One flux per facet and no reconstruction: M is the diagonal primal-dual
     # star, M_ff = (|sigma*|/|sigma|) / (n.K n), which is the two-point flux
     # approximation. The same space as derham_rt and stabilized_rt -- one
     # unknown per facet -- and a different operator: it is strongly consistent
-    # only where the mesh is K-ORTHOGONAL, so on a box it reproduces a linear
+    # only where the mesh is K-orthogonal, so on a box it reproduces a linear
     # pressure to round-off and on a curved or polytopal one it does not.
     "diagonal_tpfa": mk.FluxRealization.diagonal_tpfa,
-    # THE PER-CELL SELECTION between the two above, carried as eta in {0, 1}:
+    # The per-cell selection between the two above, carried as eta in {0, 1}:
     # the stabilized product everywhere (eta = 1) and the diagonal star on the
-    # cells the metric-degeneracy scan flags (eta = 0) -- a reconstruction
-    # over a collapsed cell is what the selection exists to avoid. The scan
-    # runs at exokal's default threshold; --degeneracy-percent names another.
-    # The model reports the selection AS BUILT, and that is the eta cell data
-    # written to the .vtu.
+    # cells the metric-degeneracy scan flags (eta = 0), which avoids a
+    # reconstruction over a collapsed cell. The scan runs at exokal's default
+    # threshold; --degeneracy-percent names another. The model reports the
+    # selection as built, and that is the eta cell data written to the .vtu.
     "adaptive_rt": mk.FluxRealization.adaptive_rt,
 }
 
@@ -124,7 +120,7 @@ def solve(nr, nt, dim, family, how, solver="riesz", rtol=DEFAULT_RTOL, degenerac
     """Build the annulus, impose the three conditions, solve, measure."""
     mesh = mk.annulus(nr, nt, dim, family, A, B, HZ)
 
-    # SORT THE BOUNDARY INTO THREE SETS. A facet is on a symmetry plane, on the
+    # Sort the boundary into three sets: a facet is on a symmetry plane, on the
     # inner radius, or on the outer one -- decided from its centroid, so the
     # same code works whatever the family meshed it with.
     rmid = math.sqrt(A * B)
@@ -143,7 +139,7 @@ def solve(nr, nt, dim, family, how, solver="riesz", rtol=DEFAULT_RTOL, degenerac
         else:
             outer.append(f)
 
-    model = mk.SinglePhaseModel(mesh, dim, 1.0, how)
+    model = mk.FlowModel(mesh, dim, 1.0, how)
     model.add_normal_flux(sealed)  # no flow through the symmetry planes
     model.add_pressure(inner, P_INNER)
     model.add_pressure(outer, P_OUTER)
@@ -159,7 +155,7 @@ def solve(nr, nt, dim, family, how, solver="riesz", rtol=DEFAULT_RTOL, degenerac
     return model, mesh, worst, math.sqrt(rms / model.n_cells)
 
 
-# ONE PROCESS SPEAKS AND WRITES. Under mpirun every rank runs this file and
+# One process speaks and writes. Under mpirun every rank runs this file and
 # solves the same problem -- the algebra is shared out, the script is not -- so
 # without this the report appears N times and N processes race to write the
 # same .vtu. The solve itself is unaffected: every rank takes part in it, and
@@ -219,8 +215,8 @@ def main():
         p = np.array([model.cell_pressure(e) for e in range(n)])
         q = np.array([exact(mk.centroid(mesh, args.dim, e)) for e in range(n)])
         fields = {"pressure": p, "dupuit": q, "error": p - q}
-        # the blend AS BUILT -- with the forced zeros -- next to the solution
-        # it produced, which is what makes a wrong cell attributable
+        # the blend as built -- with the forced zeros -- next to the solution
+        # it produced, so a wrong cell is attributable
         if args.product == "adaptive_rt":
             fields["eta"] = model.eta
         mk.write_vtu(mesh, args.vtu, fields)

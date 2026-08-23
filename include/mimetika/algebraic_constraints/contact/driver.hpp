@@ -10,7 +10,7 @@
 #include "mimetika/algebraic_constraints/contact/laws.hpp"
 #include "mimetika/algebraic_constraints/contact/map.hpp"
 
-// THE CONTACT DRIVER: turns a law into a solve, one step at a time.
+// The contact driver: turns a law into a solve, one step at a time.
 //
 // The driver owns everything a constitutive law should not know about -- the
 // augmentation parameter, the outer iteration, the state carried between steps
@@ -18,30 +18,30 @@
 // the moduli, the facets. What sits between them is the ContactMechanics
 // interface, so the driver names no model and the map names no mesh.
 //
-// AUGMENTED LAGRANGIAN (UZAWA). The multiplier lambda IS the physical contact
+// Augmented Lagrangian (Uzawa). The multiplier lambda is the physical contact
 // traction. Each outer iteration
 //
-//   1. solves the mechanics with the fracture traction CONSTRAINED to lambda
+//   1. solves the mechanics with the fracture traction constrained to lambda
 //      (an essential condition, since the traction is a degree of freedom here),
 //   2. recovers the gap g from the jump operator, and
 //   3. updates lambda <- law.project(lambda + r g).
 //
-// It matters that the traction is CONSTRAINED rather than tied to lambda + r g
-// through a compliance: with the augmented relation inside the operator the
-// solved traction is the TRIAL value, so an open fracture would come out
-// carrying tension. Constraining it keeps t = lambda exactly, and an open point
-// is then genuinely traction free.
+// The traction is constrained rather than tied to lambda + r g through a
+// compliance: with the augmented relation inside the operator the solved
+// traction is the trial value, so an open fracture would come out carrying
+// tension. Constraining it keeps t = lambda exactly, and an open point is then
+// traction free.
 //
 // AN EXACTLY LINEAR LAW NEEDS NO OUTER ITERATION AT ALL. The driver detects it
 // through ContactLaw::has_linear_compliance and does one solve with the
 // compliance block instead -- which is why LinearContact never reaches the
 // fixed-point map in practice.
 //
-// STEPPING. solve_step advances ONE step. The caller owns the loop, which is
-// what keeps the driver free to be embedded in a staggered poromechanics
-// scheme: the same object serves CauchyElasticityModel for pure contact
-// mechanics and PoroelasticModel for contact poromechanics, because in both
-// cases all it sees is a ContactMechanics.
+// Stepping. solve_step advances one step; the caller owns the loop, so the
+// driver can be embedded in a staggered poromechanics scheme: the same object
+// serves CauchyMechanicsModel for pure contact mechanics and PoroelasticModel
+// for contact poromechanics, because in both cases all it sees is a
+// ContactMechanics.
 
 namespace mimetika::contact {
 
@@ -58,20 +58,20 @@ struct ContactState {
 };
 
 struct DriverOptions {
-  // Uzawa under-relaxation; 1.0 is none. Damping is what restores convergence
-  // while the fracture SLIDES, where the plain iteration is not a contraction.
+  // Uzawa under-relaxation; 1.0 is none. Damping restores convergence while
+  // the fracture slides, where the plain iteration is not a contraction.
   double relaxation{0.5};
   double tolerance{1e-10};
   int max_iterations{200};
   // the augmentation r; non-positive means "derive it from the geometry"
   double augmentation{-1.0};
 
-  // WHICH SOLVER SOLVES x = CD(x).
+  // Which solver solves x = CD(x).
   //
   //   picard   the relaxed Uzawa sweep. Converges when CD is a contraction,
-  //            which needs r to match the fracture compliance AND that
+  //            which needs r to match the fracture compliance and that
   //            compliance to be close to diagonal.
-  //   newton   semismooth Newton on the CONDENSED map, using the law's AD
+  //   newton   semismooth Newton on the condensed map, using the law's AD
   //            tangent. Needed whenever the second condition fails -- a fault
   //            that cuts the domain has a dense Ghat, every facet feels every
   //            other, and no scalar r makes I + r Ghat a contraction. It costs
@@ -83,15 +83,15 @@ struct DriverOptions {
 
 // ---------------------------------------------------------------------------
 
-// A PER-POINT AUGMENTATION PARAMETER r, FROM GEOMETRY AND MODULI.
+// A per-point augmentation parameter r, from geometry and moduli.
 //
-// Uzawa converges only when r is comparable to the STIFFNESS THE FRACTURE SEES:
+// Uzawa converges only when r is comparable to the stiffness the fracture sees:
 // the update lambda <- P(lambda + r g) contracts when r < 2 / compliance, and
 // oscillates in a two-cycle otherwise. The surrounding rock behaves as a spring
 // of compliance L / (2 mu + lam), where L is the distance from the two adjacent
 // cell centroids to the facet, so the natural choice is its inverse.
 //
-// L IS MEASURED DIRECTLY as |(x_f - x_E) . n_f| summed over the two cells. A
+// L is measured directly as |(x_f - x_E) . n_f| summed over the two cells. A
 // volume/area shortcut would be exact only for boxes -- on a tetrahedron it
 // gives h/6 instead of h/4, mis-scaling r badly enough to stall the iteration.
 inline std::vector<double> default_augmentation(const exokal::Mesh& mesh, int cell_dim,
@@ -134,17 +134,14 @@ inline std::vector<double> default_augmentation(const exokal::Mesh& mesh, int ce
 
 class ContactDriver {
  public:
-  // `mechanics` is the ONLY route by which boundary conditions, materials or a
+  // `mechanics` is the only route by which boundary conditions, materials or a
   // pore-pressure right-hand side reach the contact problem -- the driver never
   // names one. `law` supplies the projection. Neither is owned.
-  // A TEMPORARY LAW IS A COMPILE ERROR, deliberately.
   //
-  // The driver holds the law by POINTER -- it does not own it, because a law is
-  // configuration that outlives any one step -- so binding a temporary leaves it
-  // dangling the moment the constructor returns. That is not a hypothetical: it
-  // cost a stack-use-after-scope that stayed latent for two benchmarks, since
-  // the freed slot kept plausible bytes until an unrelated change moved the
-  // frame. The mistake is easy and silent, so it is refused here instead.
+  // The driver holds the law by pointer and does not own it, because a law is
+  // configuration that outlives any one step, so binding a temporary leaves it
+  // dangling when the constructor returns. A temporary law is refused at
+  // compile time.
   ContactDriver(const ContactMechanics&, ContactLaw&&, std::vector<double>,
                 DriverOptions = {}) = delete;
 
@@ -173,7 +170,7 @@ class ContactDriver {
   ContactState initial_state() const {
     ContactState s;
     s.traction.assign(n_points(), Vec3{});
-    // THE LAW SUPPLIES ITS OWN INITIAL STATE. Zero is right for Coulomb and
+    // The law supplies its own initial state. Zero is right for Coulomb and
     // wrong for rate-and-state, whose theta starts at theta0 and whose
     // coefficient carries log(theta).
     s.internal.assign(n_points(), law_->initial_state());
@@ -181,9 +178,9 @@ class ContactDriver {
     return s;
   }
 
-  // ADVANCE ONE LOAD OR TIME STEP by solving x = CD(x). The caller owns the
-  // loop -- which is what lets this be embedded in a staggered poromechanics
-  // scheme, where the pressure solve sits between two calls to this.
+  // Advance one load or time step by solving x = CD(x). The caller owns the
+  // loop; in a staggered poromechanics scheme the pressure solve sits between
+  // two calls to this.
   ContactState solve_step(const ContactState* previous = nullptr, double dt = 0.0) const {
     const ContactState state = previous != nullptr ? *previous : initial_state();
 
@@ -201,13 +198,12 @@ class ContactDriver {
     return solve_step_condensed(nullptr, previous, dt);
   }
 
-  // THE CONDENSATION IS REUSABLE, and hoisting it out is the difference between
-  // a feasible outer iteration and an infeasible one.
+  // The condensation is reusable.
   //
-  // Ghat and g_0 depend on the MECHANICS alone -- the matrix, the load, the
+  // Ghat and g_0 depend on the mechanics alone -- the matrix, the load, the
   // prescribed facets. They do not depend on the law, on its coefficients, or
   // on x. So an outer loop that only changes the projection (a frozen friction
-  // coefficient, a load-stepped multiplier) can condense ONCE and then run
+  // coefficient, a load-stepped multiplier) can condense once and then run
   // entirely inside the small dense system: each further step is a matvec and a
   // projection, not n_points * dim + 1 global back-substitutions.
   CondensedMap condensed() const { return condense(*mechanics_); }
@@ -262,8 +258,8 @@ class ContactDriver {
     out.iterations = res.iterations;
     out.converged = res.converged;
 
-    // COMMIT the internal variables: the slip a weakening law will read next
-    // step is what THIS step accumulated.
+    // Commit the internal variables: the slip a weakening law reads next step
+    // is what this step accumulated.
     out.internal = res.internal;
     for (std::size_t p = 0; p < n_points(); ++p) {
       law_->advance(out.traction[p], &out.jump[p], out.internal[p], dim(), &state.jump[p], dt);

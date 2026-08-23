@@ -8,7 +8,7 @@
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/model/boundary.hpp"
 #include "mimetika/model/compositions/poroelasticity.hpp"
-#include "mimetika/model/compositions/single_phase_flow.hpp"
+#include "mimetika/model/compositions/flow.hpp"
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
 
@@ -22,7 +22,7 @@ namespace {
 bool near(double a, double b, double tol) { return std::abs(a - b) <= tol; }
 }  // namespace
 
-// A SOLVER IS TESTED ON A MATRIX NOBODY ASSEMBLED FROM PHYSICS. If the first
+// A solver is tested on a matrix nobody assembled from physics. If the first
 // thing it sees is a saddle point from a mixed method, a wrong answer has two
 // possible causes and the test cannot separate them.
 MIMETIKA_TEST(the_direct_solver_solves_a_known_system) {
@@ -53,13 +53,13 @@ MIMETIKA_TEST(the_direct_solver_solves_a_known_system) {
   CHECK(rep.residual < 1e-13);
 }
 
-// AN INDEFINITE SYSTEM IS THE POINT. A saddle point has zero diagonal
+// An indefinite system is the point. A saddle point has zero diagonal
 // entries, which a factorization without symmetric pivoting will divide by.
 // This one is small enough to check by hand and has exactly that structure.
 MIMETIKA_TEST(the_direct_solver_handles_a_saddle_point) {
   SparseSystem A;
   A.n = 3;
-  // [ 2 0 1 ; 0 2 -1 ; 1 -1 0 ] — the last diagonal is ZERO
+  // [ 2 0 1 ; 0 2 -1 ; 1 -1 0 ] — the last diagonal is zero
   const int r[] = {0, 0, 1, 1, 2, 2};
   const int c[] = {0, 2, 1, 2, 0, 1};
   const double v[] = {2, 1, 2, -1, 1, -1};
@@ -76,10 +76,10 @@ MIMETIKA_TEST(the_direct_solver_handles_a_saddle_point) {
   CHECK(rep.residual < 1e-12);
 }
 
-// AND THEN THE REAL THING: the assembled poroelastic system, solved directly.
-// A direct factorization answers "is the operator right" with no
-// preconditioner standing between the question and the answer — which is
-// exactly what is wanted while a discretization is being validated.
+// And then the real thing: the assembled poroelastic system, solved directly.
+// A direct factorization answers "is the operator right" with no preconditioner
+// standing between the question and the answer, which is what is wanted while a
+// discretization is being validated.
 MIMETIKA_TEST(the_assembled_poroelastic_system_solves) {
   const auto m = mimetika_test::hex_grid(2);
   const graphos::Complex& c = m.topology();

@@ -4,11 +4,11 @@
 discrete operators, local AD and assembly, and owns everything below —
 models, closures, drivers. exokal itself contains no physics and no Python.*
 
-Python drives; the model is C++. That decision is settled, and it moves the
-whole design problem to one place: how the supported models are organized so
-that the catalogue can grow without the code growing with it.
+Python drives; the model is C++. The design problem is then how the supported
+models are organized so that the catalogue can grow without the code growing
+with it.
 
-## The problem, stated honestly
+## The problem
 
 The models we intend to support read as a product:
 
@@ -20,9 +20,8 @@ The models we intend to support read as a product:
 | domain | fixed, static mixed-dimensional, dynamic mixed-dimensional |
 
 Five physics rows against three domain types is fifteen models today, before
-thermal, before the discretization choice, and before anything anyone adds
-next year. Written as fifteen implementations this is already unmaintainable
-and the sixteenth is worse.
+thermal and before the discretization choice. Written as fifteen
+implementations this is unmaintainable.
 
 **The product is the catalogue. The sum is the code.** Every entry below is a
 composition of components that exist once. If adding a model requires writing
@@ -77,13 +76,13 @@ choice.
 | `Energy` package | the thermal axis |
 | `Interface` package | mixed-dimensional coupling terms |
 
-Five components for fifteen catalogue entries, and the ratio improves as the
-catalogue grows, which is the only property that makes this survivable.
+Five components for fifteen catalogue entries; the ratio improves as the
+catalogue grows.
 
 ## The shape in C++
 
 A package declares what it adds and what it needs, so a composition is
-*validated* rather than hoped for.
+*validated*.
 
 ```cpp
 namespace exokal::physics {
@@ -145,9 +144,8 @@ Driver only: it selects a compiled composition, supplies numbers and paths,
 runs the loop, and reads results back. Python never defines a term, never
 evaluates physics per cell, and never appears in an inner loop.
 
-Naming the composition is the small half of it — the closures are most of what
-is actually configured, and they need the builder in the next section. The
-composition itself is one line:
+The closures need the builder in the next section. The composition itself is
+one line:
 
 ```python
 m = exokal.model("compositional_poromechanics", mesh="fractured.vtu",
@@ -165,8 +163,7 @@ closures, and those are most of what a user actually configures. Single-phase
 flow alone requires a porosity law, a density law, a viscosity law, a
 permeability field on every stratum, and a normal permeability on every
 interface between strata. Each of those is its own catalogue. Flat keyword
-arguments cannot express this, and pretending otherwise was the flaw in the
-first sketch of the Python surface.
+arguments cannot express this.
 
 ### A slot is the mobility pattern, generalized
 
@@ -182,16 +179,15 @@ Instantiated at `double` it is a residual contribution; at `ad::Local` its
 derivatives are exact. So the constitutive layer introduces no new mechanism.
 It generalizes one slot to many.
 
-**The declaration is load-bearing, not bookkeeping.** A `poroelastic` porosity
-reads the volumetric strain, so choosing it *creates* the (p, u) Jacobian block
-that a `constant` porosity never touches. The choice of a closure changes the
+**The declaration is load-bearing.** A `poroelastic` porosity reads the
+volumetric strain, so choosing it *creates* the (p, u) Jacobian block that a
+`constant` porosity never touches. The choice of a closure changes the
 sparsity pattern, and `inputs()` is how the assembler learns that before it
 assembles anything.
 
 ### Three binding scopes
 
-Conflating these is what makes the configuration feel unbounded. There are
-exactly three, and every slot belongs to exactly one.
+There are exactly three scopes, and every slot belongs to exactly one.
 
 | scope | slots | bound to |
 | --- | --- | --- |
@@ -226,8 +222,7 @@ Requirements Flow::requirements() const {
 ```
 
 The composition then knows, before anything is built, the complete list of
-what must be supplied and where — which is what makes the configuration
-introspectable rather than a matter of reading the source.
+what must be supplied and where.
 
 ### Slots have their own registries
 
@@ -241,18 +236,17 @@ inline const RegisterClosure<CubicLaw>     cl{"permeability", "cubic_law",
 ```
 
 Adding a porosity law is one file and one registration. It never touches the
-packages, the terms, or the catalogue — which is the whole point of the slot
-being a named indirection. Closures may carry `needs` tags of their own, so a
-cubic-law permeability on a bulk stratum is rejected by name rather than
-producing silent nonsense.
+packages, the terms, or the catalogue. Closures may carry `needs` tags of their
+own, so a cubic-law permeability on a bulk stratum is rejected by name rather
+than producing silent nonsense.
 
 ### The Python surface
 
-A builder rather than one call, because the configuration is genuinely
-nested and because an incremental object can report what is still missing:
+A builder rather than one call: the configuration is nested, and an
+incremental object can report what is still missing:
 
 ```python
-m = exokal.model("single_phase_flow", mesh="fractured.vtu", discretization="mimetic")
+m = exokal.model("flow", mesh="fractured.vtu", discretization="mimetic")
 
 m.fluid.density("slightly_compressible", rho0=1000.0, c=4.5e-10, p_ref=1e5)
 m.fluid.viscosity("constant", mu=1e-3)
@@ -267,16 +261,15 @@ m.interface("matrix", "fracture").normal_permeability("constant", kn=1e-12)
 sim = m.build()          # validates every slot on every stratum and interface
 ```
 
-Every name resolves to a compiled C++ closure; every value is data. Python
-still authors no physics and appears in no inner loop.
+Every name resolves to a compiled C++ closure; every value is data.
 
-### Introspection is required, not optional
+### Introspection is required
 
 With this many choices the surface is unusable unless it can describe itself,
 and all of it is already in the registries:
 
 ```python
-exokal.describe("single_phase_flow")
+exokal.describe("flow")
 # fluid     : density, viscosity
 # rock      : porosity, permeability          (per stratum)
 # interface : normal_permeability             (per stratum pair)
@@ -293,10 +286,10 @@ has no porosity model" — rather than failing later inside an assembly.
 
 The same pattern, a third registry: time integrator, nonlinear solver, linear
 solver and preconditioner are named choices with their own parameters. It is
-listed here only to record that it is *not* a new mechanism and not part of the
-model composition — a model is the equations and their closures; how it is
-solved is bound separately, so the same model can be run monolithically or
-with a fixed-stress split without being redeclared.
+not a new mechanism and not part of the model composition — a model is the
+equations and their closures; how it is solved is bound separately, so the
+same model can be run monolithically or with a fixed-stress split without
+being redeclared.
 
 ## What blocks this today
 
@@ -305,16 +298,15 @@ with a fixed-stress split without being redeclared.
 happens to list `q` then `p`. The moment `Mechanics` contributes `u` to the
 same space, every index shifts and every term breaks.
 
-Positional indexing is exactly the mechanism by which the axes would start to
+Positional indexing is the mechanism by which the axes would start to
 multiply — each combination would need its own field ordering, and therefore
-its own term. **Field lookup by name is a prerequisite for this catalogue, not
-a nicety.** A term must resolve its field names against the composed space
-once at construction, and cache the block indices it found.
+its own term. **Field lookup by name is a prerequisite for this catalogue.**
+A term must resolve its field names against the composed space once at
+construction, and cache the block indices it found.
 
 ## Testing
 
 The code is a sum; the tests must be the product. Every catalogue entry gets a
 cheap smoke assembly on a small mesh, asserting the space has the expected
 fields, the model resolves against them, and the Jacobian's block structure
-matches what the packages declared. Fifteen of those are seconds, and they are
-what stops an orthogonality violation from being discovered by a user.
+matches what the packages declared. Fifteen of those are seconds.

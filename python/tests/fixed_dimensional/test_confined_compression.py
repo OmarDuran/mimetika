@@ -41,7 +41,7 @@ class Result:
 
 def confined(mesh, d, how=DERHAM) -> Result:
     """Solve confined compression on `mesh` and measure both closed forms."""
-    prob = mk.ElasticityProblem(mesh, d, MU, LAM, how)
+    prob = mk.CauchyMechanicsProblem(mesh, d, MU, LAM, how)
     axis = d - 1  # the column axis is the last coordinate
 
     loaded, confined_facets = [], []
@@ -130,7 +130,7 @@ def test_the_rt_layer_is_locally_sound_but_globally_unstable():
     # LOCAL soundness: the stacked constraint block [Dv; As] has full row rank
     # on both stars, so neither is locally deficient
     for how, label in ((DERHAM, "derham_bdm"), (DERHAM_RT, "derham_rt")):
-        prob = mk.ElasticityProblem(cube(2, True), 3, MU, LAM, how)
+        prob = mk.CauchyMechanicsProblem(cube(2, True), 3, MU, LAM, how)
         b = prob.constraint_block(0)
         scale = np.max(np.abs(b))
         rank = np.linalg.matrix_rank(b, tol=1e-10 * (scale if scale > 0 else 1.0))

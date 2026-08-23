@@ -1,44 +1,43 @@
 #!/usr/bin/env python3
-"""Single-phase Darcy flow on a mesh read from a .vtu: the linear patch test.
+"""Flow, of Darcy type, on a mesh read from a .vtu: the linear patch test.
 
 The Dupuit example builds its own annulus and compares against a logarithmic
-closed form. This one takes the mesh as DATA and so cannot know a closed form
+closed form. This one takes the mesh as data and so cannot know a closed form
 for it. It prescribes one instead:
 
     p(x) = ((x - x_min) . n) / L ,   n = diag / L ,   L = |diag|
 
 the diagonal of the bounding box, running from 0 at the low corner of the box
-to 1 at the high one, imposed on EVERY boundary facet. Pure Dirichlet: no flux
+to 1 at the high one, imposed on every boundary facet. Pure Dirichlet: no flux
 is given anywhere, so the pressure data alone fixes the solution.
 
 A linear pressure is the one field whose answer is known on any mesh. Darcy
-sends it to a CONSTANT flux, q = -K grad p, which the lowest-order flux space
+sends it to a constant flux, q = -K grad p, which the lowest-order flux space
 contains exactly; the cell unknown is a cell average, and the average of a
 linear function is its value at the centroid. So the computed pressure should
 equal p(x_E) to round-off, on a good mesh and a bad one alike.
 
-    THAT HOLDS FOR derham_rt AND stabilized_rt, AND NOT FOR derham_bdm.
+    That holds for derham_rt and stabilized_rt, and not for derham_bdm.
 
 The reason is the datum, not the method. A prescribed pressure is natural here,
 carried per facet as a single number, and the term places it entirely on the
-CONSTANT moment of the facet's flux. RT has exactly one moment per facet, so
+constant moment of the facet's flux. RT has exactly one moment per facet, so
 that is the whole datum and nothing is lost. BDM has `dim` of them, and the
 linear part of p across each facet belongs to the higher moments -- which
 receive zero. The mechanics side does not have this problem: its displacement
 datum is affine, u = a + B (x - x_E), so both moments are supplied.
 
 The resulting error converges at first order, so it reads as a discretization
-error and is not one. The example reports it rather than hiding it: run with
---product derham_bdm to see it.
+error and is not one. Run with --product derham_bdm to see it.
 
 Run it:
 
-    PYTHONPATH=.. python single_phase_flow_external_mesh.py --mesh domain.vtu
-    PYTHONPATH=.. python single_phase_flow_external_mesh.py --mesh domain.vtu --vtu out.vtu
+    PYTHONPATH=.. python flow_external_mesh.py --mesh domain.vtu
+    PYTHONPATH=.. python flow_external_mesh.py --mesh domain.vtu --vtu out.vtu
 
 with --make-mesh to produce a sample file first, if there is none to hand:
 
-    PYTHONPATH=.. python single_phase_flow_external_mesh.py --make-mesh domain.vtu
+    PYTHONPATH=.. python flow_external_mesh.py --make-mesh domain.vtu
 """
 
 import argparse
@@ -54,25 +53,22 @@ from _stages import stage
 
 MOBILITY = 1.0
 
-# THE LINEAR SOLVER. "riesz" is the Riesz map of H(div) x L^2 -- P is the Gram
-# matrix of ||q||^2 = (K^-1 q,q) + ||div q||^2 and ||p||^2 = ||p||_L2^2 -- so
-# its iteration count does not grow with the mesh. "direct" is a full
-# factorization: exact, and the wrong instrument past a few hundred thousand
-# unknowns.
+
 def solvers(rtol):
     """The linear solvers, at the residual tolerance asked for.
 
-    "riesz" is the Riesz map of the space the operator is an isomorphism on --
-    P is the Gram matrix of its norm -- so its iteration count does not grow
-    with the mesh. "direct" is a full factorization: exact, and the wrong
-    instrument past a few hundred thousand unknowns.
+    "riesz" is the Riesz map of H(div) x L^2 -- P is the Gram matrix of
+    ||q||^2 = (K^-1 q,q) + ||div q||^2 and ||p||^2 = ||p||_L2^2 -- so its
+    iteration count does not grow with the mesh. "direct" is a full
+    factorization: exact, and the wrong instrument past a few hundred thousand
+    unknowns.
 
     "ads" and "ads-cg" are the same map with its first block inverted by an
     auxiliary-space solver instead of a factorization; "riesz" picks that route
-    by itself once the block is large enough, so they are here to be MEASURED
+    by itself once the block is large enough, so they are here to be measured
     against the default rather than to be needed.
 
-    THE TOLERANCE IS ON THE RESIDUAL, not on the answer. An iterative solve
+    The tolerance is on the residual, not on the answer. An iterative solve
     cannot show the round-off floor a direct one leaves, so a patch test read
     through it is bounded by this number rather than by the method.
     """
@@ -80,7 +76,7 @@ def solvers(rtol):
         "riesz": mk.SolverOptions(
             method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000
         ),
-        # THE SAME MAP, WITH THE BIG BLOCK INVERTED BY AN AUXILIARY SPACE.
+        # The same map, with the big block inverted by an auxiliary space.
         #
         # P's first block is H(div)-like and it is most of the unknowns. A
         # Cholesky of it is exact and creates fill, so the cost per iteration
@@ -91,14 +87,14 @@ def solvers(rtol):
         # 0.14 us per dof per iteration while icc goes 0.17 -> 1.4 and Cholesky
         # 0.11 -> 0.68.
         #
-        # Only for ONE UNKNOWN PER FACET in 3D (derham_rt, stabilized_rt),
+        # Only for one unknown per facet in 3D (derham_rt, stabilized_rt),
         # which is the space ADS is written for.
         "ads": mk.SolverOptions(
             method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000,
             riesz_block_pc="ads",
         ),
         # a short CG under ADS rather than a single V-cycle: the block is then
-        # SOLVED to a tolerance instead of approximated once, and the outer
+        # solved to a tolerance instead of approximated once, and the outer
         # count stops drifting up with the mesh (60 -> 21 at 96k unknowns).
         # Each iteration costs more, so which of the two wins is a measurement.
         "ads-cg": mk.SolverOptions(
@@ -117,19 +113,19 @@ PRODUCTS = {
     "derham_bdm": mk.FluxRealization.derham_bdm,
     "derham_rt": mk.FluxRealization.derham_rt,
     "stabilized_rt": mk.FluxRealization.stabilized_rt,
-    # ONE FLUX PER FACET AND NO RECONSTRUCTION: M is the diagonal primal-dual
+    # One flux per facet and no reconstruction: M is the diagonal primal-dual
     # star, M_ff = (|sigma*|/|sigma|) / (n.K n), which is the two-point flux
     # approximation. The same space as derham_rt and stabilized_rt -- one
     # unknown per facet -- and a different operator: it is strongly consistent
-    # only where the mesh is K-ORTHOGONAL, so on a box it reproduces a linear
+    # only where the mesh is K-orthogonal, so on a box it reproduces a linear
     # pressure to round-off and on a curved or polytopal one it does not.
     "diagonal_tpfa": mk.FluxRealization.diagonal_tpfa,
-    # THE PER-CELL SELECTION between the two above, carried as eta in {0, 1}:
+    # The per-cell selection between the two above, carried as eta in {0, 1}:
     # the stabilized product everywhere (eta = 1) and the diagonal star on the
-    # cells the metric-degeneracy scan flags (eta = 0) -- a reconstruction
-    # over a collapsed cell is what the selection exists to avoid. The scan
-    # runs at exokal's default threshold unless --degeneracy-percent names
-    # one; the selection AS BUILT is the eta cell data written to the .vtu.
+    # cells the metric-degeneracy scan flags (eta = 0), which avoids a
+    # reconstruction over a collapsed cell. The scan runs at exokal's default
+    # threshold unless --degeneracy-percent names one; the selection as built
+    # is the eta cell data written to the .vtu.
     "adaptive_rt": mk.FluxRealization.adaptive_rt,
 }
 
@@ -173,15 +169,13 @@ def cell_fields(model, mesh, dim, lo, direction, length):
 
 
 def report_error(volume, p_h, p, q_h, q, dim, moments):
-    """||e||_{L2(D)}, relative, and the extreme cell norms, for u = p and u = q.
-
-    """
+    """||e||_{L2(D)}, relative, and the extreme cell norms, for u = p and u = q."""
     print()
     print("  error.  e = Pi_0(u - u_h), with Pi_0 v|_E = |E|^-1 int_E v the L2")
     print("  projection onto cell-wise constants; D is the domain and E a cell.")
     if moments == 1:
         # q.n is then constant on each facet, so pairing the moment against the
-        # lever arm integrates it exactly and cell_flux IS Pi_0 q_h; Pi_0 being
+        # lever arm integrates it exactly and cell_flux is Pi_0 q_h; Pi_0 being
         # an orthogonal projection, the flux row bounds ||q - q_h|| below.
         print("  p_h is cell-wise constant and cell_flux returns Pi_0 q_h exactly, so")
         print("  e_p is the whole error in the pressure and ||e_q||_D <= ||q - q_h||_D.")
@@ -216,7 +210,7 @@ def prescribe_linear_pressure(model, mesh, dim, lo, direction, length):
     return len(facets)
 
 
-# THE PARTITION, WRITTEN OUT WITH THE ANSWER. A partition is a picture: a rank
+# The partition, written out with the answer. A partition is a picture: a rank
 # holding a disconnected piece, or most of the mesh, is obvious in ParaView and
 # invisible in a timing. `--partition N` previews an N-way split without
 # running on N processes; with no argument it shows the one this run used.
@@ -234,15 +228,15 @@ def make_mesh(path):
     print(f"wrote {path}: {mesh.count(2)} cells, {mesh.count(0)} vertices")
 
 
-# ONE PROCESS SPEAKS AND WRITES. Under mpirun every rank runs this file and
+# One process speaks and writes. Under mpirun every rank runs this file and
 # solves the same problem -- the algebra is shared out, the script is not -- so
 # without this the report appears N times and N processes race to write the
 # same .vtu. The solve itself is unaffected: every rank takes part in it, and
 # every rank ends up with the whole answer.
-# WHAT THE RUN IS SHARED OUT OVER, said once rather than inferred from eight
-# copies of the output. The balance is the partition's own report: a bisection
-# that has gone wrong shows up here as a rank holding most of the mesh, long
-# before it shows up as a timing.
+# What the run is shared out over, said once rather than inferred from N copies
+# of the output. The balance is the partition's own report: a bisection that
+# has gone wrong shows up here as a rank holding most of the mesh, long before
+# it shows up as a timing.
 def report_processes(mesh, dim):
     size = mk.mpi_size()
     if size < 2:
@@ -365,7 +359,7 @@ def main():
     )
     print(f"  characteristic length L = {length:.6g}  (the box diagonal)")
     print(f"  mobility = {MOBILITY}")
-    # WHAT ACTUALLY RUNS, NOT WHAT WAS ASKED FOR: --hybrid removes the H(div)
+    # What actually runs, not what was asked for: --hybrid removes the H(div)
     # block a Riesz map would split along, so the interface system gets
     # conjugate gradients and an algebraic multigrid whatever --solver said.
     solver_name = "cg + boomeramg (hybridized)" if args.hybrid else f"{args.solver} solver"
@@ -377,7 +371,7 @@ def main():
     print()
 
     with stage("creating the model"):
-        model = mk.SinglePhaseModel(mesh, dim, MOBILITY, how)
+        model = mk.FlowModel(mesh, dim, MOBILITY, how)
         # the threshold reaches the model only where it is the model's: for
         # any other product it stays what it always was, the diagnostics dial
         if args.product == "adaptive_rt" and args.degeneracy_percent is not None:
@@ -410,7 +404,7 @@ def main():
         )
     else:
         report = model.solve(progress=True, options=solvers(args.rtol)[args.solver])
-    # THE TWO ASSEMBLIES, ALWAYS. They are what scales with the mesh, and they
+    # The two assemblies, always. They are what scales with the mesh, and they
     # are separate costs: the Jacobian is the physics, the preconditioner is the
     # price of being able to solve it iteratively.
     print(
@@ -435,8 +429,8 @@ def main():
         f"{model.moments_per_facet} moment(s) per facet\n"
     )
     if args.product == "adaptive_rt":
-        # the selection as built: how many cells the scan actually handed to
-        # the diagonal star, which is the number that explains the error below
+        # the selection as built: how many cells the scan handed to the
+        # diagonal star, which is the number that explains the error below
         n_star = int((model.eta == 0.0).sum())
         pct = args.degeneracy_percent
         print(
@@ -448,10 +442,10 @@ def main():
             + ")\n"
         )
 
-    # THE FLUX IS RECONSTRUCTED PER CELL, AND THE GATHER IS COLLECTIVE.
+    # The flux is reconstructed per cell, and the gather is collective.
     #
     # A rank reconstructs only the cells it owns, so the field is summed over
-    # the processes -- and that sum is an MPI_Allreduce, which EVERY rank has to
+    # the processes -- and that sum is an MPI_Allreduce, which every rank has to
     # reach. It happens here, before the norms, because a rank measuring its own
     # partial flux would report an error that is an artefact of the partition;
     # and unconditionally, because putting it behind `--vtu` or `and root`

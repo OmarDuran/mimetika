@@ -7,12 +7,11 @@
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/physics/package.hpp"
 
-// THE BIOT COUPLING — and this package is the argument of the whole
-// catalogue, made concrete.
+// The Biot coupling.
 //
 // Poromechanics is not a third physics beside flow and mechanics. It is the
 // two of them plus the exchange between them, and that exchange contributes
-// NO FIELD OF ITS OWN: it reads a pressure that flow declared and a stress
+// no field of its own: it reads a pressure that flow declared and a stress
 // that mechanics declared, and adds two terms.
 //
 //     r_sigma += -c T^T p        the pore pressure in the momentum balance
@@ -21,21 +20,20 @@
 // T is the discrete trace, tr_h(tau)_E = (1/|E|) sum_e int_e (tau n_e).(x - x_E),
 // which is the volumetric coupling every stress space exposes.
 //
-// THE COEFFICIENT IS NOT THE BIOT NUMBER ALONE. What multiplies the trace is
+// The coefficient is not the Biot number alone. What multiplies the trace is
 //
 //     c = alpha * (1 - 2nu) / (2 mu (1 - 2nu + d nu))
 //
-// the Biot coefficient times the skeleton's VOLUMETRIC COMPLIANCE — 1/(dK) in
-// three dimensions. Using alpha by itself is not a scaling error to be
-// absorbed elsewhere: it makes the coupling independent of how stiff the
-// skeleton is, so a rigid medium would respond to pressure exactly as a soft
-// one does.
+// the Biot coefficient times the skeleton's volumetric compliance — 1/(dK) in
+// three dimensions. Using alpha by itself makes the coupling independent of
+// how stiff the skeleton is, so a rigid medium would respond to pressure
+// exactly as a soft one does.
 //
-// Written this way rather than as alpha/(dK) because it stays FINITE at
+// Written this way rather than as alpha/(dK) because it stays finite at
 // nu = 1/2, where it is zero: the incompressible limit arrives continuously
 // instead of through a division by an infinite bulk modulus.
 //
-// BOTH BLOCKS COME FROM ONE ARRAY. Writing them separately would let them
+// Both blocks come from one array. Writing them separately would let them
 // drift, and a poroelastic system whose coupling is not adjoint loses the
 // energy structure that makes it solvable — quietly, since it still runs.
 
@@ -107,10 +105,9 @@ class PoroCoupling final : public Package {
 
   std::string name() const override { return "PoroCoupling"; }
 
-  // NO FIELDS. That is the point: the coupling reads what the two physics it
-  // joins already declared, so `{single-phase poromechanics, compositional
-  // multiphase poromechanics}` is two catalogue rows and zero
-  // implementations.
+  // No fields: the coupling reads what the two physics it joins already
+  // declared, so `{single-phase poromechanics, compositional multiphase
+  // poromechanics}` is two catalogue rows and zero implementations.
   Requirements requirements(int, int) const override {
     Requirements r;
     r.needs = {"pressure", "displacement"};

@@ -12,9 +12,9 @@
 #include "exokal/geometry/reference.hpp"
 #include "mimetika/model/constraints.hpp"
 
-// BOUNDARY CONDITIONS AS FORMS ON THE DEGREES OF FREEDOM.
+// Boundary conditions as forms on the degrees of freedom.
 //
-// In a mixed method a boundary condition is a statement about a QUANTITY, and
+// In a mixed method a boundary condition is a statement about a quantity, and
 // the quantity is generally a linear form on a facet's unknowns rather than one
 // of them. Writing conditions as forms is what makes the same statement mean
 // the same thing on a box, on a borehole wall, and in either dimension:
@@ -30,18 +30,18 @@
 // facet they do not, and the difference is not a refinement issue: the wrong
 // condition is imposed, exactly, forever.
 //
-// WHICH KIND IS WHICH is the opposite of what the primal form trains you to
-// expect, and it follows from one rule -- the quantity carried as an unknown is
-// imposed STRONGLY, and the one that is not enters naturally:
+// Which kind is which is the opposite of what the primal form trains you to
+// expect, and follows from one rule -- the quantity carried as an unknown is
+// imposed strongly, and the one that is not enters naturally:
 //
-//   mixed flow          the FLUX is the unknown, so a prescribed flux is
-//                       strong and a prescribed PRESSURE is natural
-//   mixed elasticity    the TRACTION is the unknown, so a prescribed traction
-//                       is strong and a prescribed DISPLACEMENT is natural
+//   mixed flow          the flux is the unknown, so a prescribed flux is
+//                       strong and a prescribed pressure is natural
+//   mixed elasticity    the traction is the unknown, so a prescribed traction
+//                       is strong and a prescribed displacement is natural
 //
 // A roller is the pair: the vanishing shear traction is strong (the forms
 // below) and the vanishing normal displacement is natural, enforced by leaving
-// the normal traction FREE so that its own equation reads u.n = 0 weakly.
+// the normal traction free so that its own equation reads u.n = 0 weakly.
 
 namespace mimetika {
 
@@ -62,26 +62,26 @@ inline std::vector<Index> boundary_facets(const graphos::Complex& c, int cell_di
   return out;
 }
 
-// A FACET'S ORTHONORMAL FRAME: its canonical normal and d-1 tangents.
+// A facet's orthonormal frame: its canonical normal and d-1 tangents.
 //
-// The normal is the CANONICAL one -- the direction the space numbers the
+// The normal is the canonical one -- the direction the space numbers the
 // facet's unknowns in -- so a form written here needs no knowledge of which
 // cell is asking. The tangents come from the same argmin-|n_k| rule the
 // discrete facet basis is built with, so the frame a condition is expressed in
 // and the frame the degrees of freedom live in are the same frame.
 struct FacetFrame {
-  Point normal{0.0, 0.0, 0.0};   // CANONICAL: the direction the dofs are numbered in
-  Point outward{0.0, 0.0, 0.0};  // OUTWARD: the direction a condition is about
+  Point normal{0.0, 0.0, 0.0};   // canonical: the direction the dofs are numbered in
+  Point outward{0.0, 0.0, 0.0};  // outward: the direction a condition is about
   double incidence{1.0};         // outward = incidence * normal
   std::array<Point, 2> tangent{Point{0.0, 0.0, 0.0}, Point{0.0, 0.0, 0.0}};
   int n_tangents{0};  // d - 1
   double measure{0.0};
 
-  // THE FRAME COMES FROM THE REFERENCE-SPACE NORMAL, so it is right for a facet
+  // The frame comes from the reference-space normal, so it is right for a facet
   // of a volume cell, of a surface cell tilted anywhere in space, and of a line.
-  // Turning an edge tangent a quarter turn in the xy-plane is the special case
-  // that happens to work on a planar mesh lying in that plane and silently
-  // produces a vector outside the surface on any other.
+  // Turning an edge tangent a quarter turn in the xy-plane works only on a
+  // planar mesh lying in that plane and silently produces a vector outside the
+  // surface on any other.
   //
   // `cell` supplies the plane the facet's normal lives in. For a volume cell it
   // is ignored; for a surface cell it is the whole content of the question.
@@ -91,10 +91,10 @@ struct FacetFrame {
     fr.measure = std::sqrt(av[0] * av[0] + av[1] * av[1] + av[2] * av[2]);
     if (!(fr.measure > 0.0)) throw std::runtime_error("FacetFrame: degenerate facet");
     for (int k = 0; k < 3; ++k) fr.normal[k] = av[k] / fr.measure;
-    // AND THE OUTWARD ONE, which is what a boundary condition means. The two
+    // and the outward one, which is what a boundary condition means. The two
     // differ by the stored boundary coefficient on about half the facets of
-    // any mesh, and leaving that conversion to the caller is what produces
-    // sign errors no assertion catches.
+    // any mesh, and leaving that conversion to the caller produces sign errors
+    // no assertion catches.
     const exokal::Point ov = exokal::outward_normal_vector(mesh, cell_dim, cell, facet);
     for (int k = 0; k < 3; ++k) fr.outward[k] = ov[k] / fr.measure;
     fr.incidence = (fr.outward[0] * fr.normal[0] + fr.outward[1] * fr.normal[1] +
@@ -122,7 +122,7 @@ struct FacetFrame {
                        fr.normal[2] * t1[0] - fr.normal[0] * t1[2],
                        fr.normal[0] * t1[1] - fr.normal[1] * t1[0]};
     } else if (cell_dim == 2) {
-      // one tangent: the edge's own direction, taken from the FACET rather
+      // one tangent: the edge's own direction, taken from the facet rather
       // than from a coordinate rotation of the normal
       const exokal::Frame ef = exokal::tangent_frame(mesh, 1, facet);
       fr.tangent[0] = ef.axis[0];
@@ -139,7 +139,7 @@ struct FacetFrame {
 // exactly one, which is what makes it a boundary facet.
 // The cell bounding each of `facets`, for a whole batch at once.
 //
-// The coboundary is built ONCE here. `cofacet_of` builds it per call, which is
+// The coboundary is built once here. `cofacet_of` builds it per call, which is
 // O(mesh) each time, so a Python loop over the boundary spends all of its time
 // rebuilding the same operator -- measured at 1.28 s for 5255 facets on a 22k
 // cell mesh, against 3 ms for every other part of that loop.
@@ -247,13 +247,13 @@ inline FacetDofs facet_dofs(const exokal::spaces::ProductSpace& space, const std
   return out;
 }
 
-// PRESCRIBE A DIRECTIONAL COMPONENT OF A VECTOR-VALUED FACET QUANTITY.
+// Prescribe a directional component of a vector-valued facet quantity.
 //
 //     e . (sigma n) = value      on every facet of the set
 //
 // with `e` any direction, supplied per facet so it can be that facet's own
 // normal or tangent. The value is the pointwise one; it lands entirely on the
-// CONSTANT moment scaled by the measure it is integrated against, and the
+// constant moment scaled by the measure it is integrated against, and the
 // higher moments are set to zero, which is what "uniform over the facet" means
 // discretely.
 inline void impose_component(Constraints& c, const exokal::spaces::ProductSpace& space,
@@ -281,7 +281,7 @@ inline void impose_component(Constraints& c, const exokal::spaces::ProductSpace&
 }
 
 // n . (sigma n) = value: the normal traction, or the normal flux of a scalar
-// field whose single component IS the normal one.
+// field whose single component is the normal one.
 inline void impose_normal(Constraints& c, const exokal::spaces::ProductSpace& space,
                           const std::string& field, int cell_dim, const exokal::Mesh& mesh,
                           const std::vector<Index>& facets, double value = 0.0, Index offset = 0) {
@@ -290,7 +290,7 @@ inline void impose_normal(Constraints& c, const exokal::spaces::ProductSpace& sp
       [value](const Point&) { return value; }, offset);
 }
 
-// t_a . (sigma n) = 0 for every tangent: FREE SLIP, the strong half of a
+// t_a . (sigma n) = 0 for every tangent: free slip, the strong half of a
 // roller. Works on any facet orientation, because the tangents are that
 // facet's own.
 inline void impose_free_slip(Constraints& c, const exokal::spaces::ProductSpace& space,
@@ -305,10 +305,10 @@ inline void impose_free_slip(Constraints& c, const exokal::spaces::ProductSpace&
   }
 }
 
-// sigma n = g, the whole traction vector, from the STRESS TENSOR rather than a
-// traction vector. Passing a tensor is what makes it safe: the caller never has
-// to know which way a facet's canonical normal points, and a vector assembled
-// against the wrong one is silently sign-flipped.
+// sigma n = g, the whole traction vector, from the stress tensor rather than a
+// traction vector: the caller never has to know which way a facet's canonical
+// normal points, and a vector assembled against the wrong one is silently
+// sign-flipped.
 inline void impose_traction(Constraints& c, const exokal::spaces::ProductSpace& space,
                             const std::string& field, int cell_dim, const exokal::Mesh& mesh,
                             const std::vector<Index>& facets,
@@ -340,7 +340,7 @@ inline void impose_traction(Constraints& c, const exokal::spaces::ProductSpace& 
       c, space, field, cell_dim, mesh, facets, [stress](const Point&) { return stress; }, offset);
 }
 
-// q . n = value on a SCALAR facet field, whose one component is already the
+// q . n = value on a scalar facet field, whose one component is already the
 // normal one, so the form is a single term per moment. Zero is a sealed facet.
 inline void impose_normal_flux(Constraints& c, const exokal::spaces::ProductSpace& space,
                                const std::string& field, int cell_dim, const exokal::Mesh& mesh,
@@ -357,9 +357,9 @@ inline void impose_normal_flux(Constraints& c, const exokal::spaces::ProductSpac
   }
 }
 
-// A ROBIN CONDITION: a (q.n) + b p_E = g, coupling a facet's normal flux to the
-// pressure of the cell behind it. One form, two fields -- which is exactly why
-// the constraint layer takes forms rather than values.
+// A Robin condition: a (q.n) + b p_E = g, coupling a facet's normal flux to the
+// pressure of the cell behind it. One form, two fields, which is why the
+// constraint layer takes forms rather than values.
 inline void impose_robin(Constraints& c, const exokal::spaces::ProductSpace& space,
                          const std::string& flux_field, const std::string& cell_field, int cell_dim,
                          const exokal::Mesh& mesh, const std::vector<Index>& facets, double a,
@@ -389,7 +389,7 @@ inline void impose_robin(Constraints& c, const exokal::spaces::ProductSpace& spa
 
 // ------------------------------------------------------------------ natural
 //
-// The datum for the quantity that is NOT an unknown, per facet. A term reads it
+// The datum for the quantity that is not an unknown, per facet. A term reads it
 // from the context; facets it says nothing about contribute nothing, which is
 // exactly a homogeneous natural condition and is why a drained face at zero
 // pressure costs nothing to impose.
@@ -412,12 +412,12 @@ class BoundaryData {
   std::vector<char> set_;
 };
 
-// A VECTOR DATUM, affine per facet: u(x) = a + B (x - x_E).
+// A vector datum, affine per facet: u(x) = a + B (x - x_E).
 //
 // Affine rather than constant because that is what a patch test needs: a mixed
 // method of this family reproduces linear displacement fields exactly, and the
 // only way to see that is to prescribe one.
-// A SCALAR PER CELL: a reservoir is a region at a changed pressure, and zero
+// A scalar per cell: a reservoir is a region at a changed pressure, and zero
 // outside it. The facet-indexed holders above are about boundaries; this one is
 // about a body load.
 class CellData {
@@ -471,9 +471,9 @@ class BoundaryVectorData {
   std::vector<char> set_;
 };
 
-// THE PRESCRIBED DISPLACEMENT AS THE STRONG FAMILY'S SLOT COEFFICIENTS: the
+// The prescribed displacement as the strong family's slot coefficients: the
 // expansion of u_D against the six-moment facet basis, one block per facet,
-// PRECOMPUTED by the model. The basis needs the facet's chart and second
+// precomputed by the model. The basis needs the facet's chart and second
 // moments, which the operators do not carry per cell -- and the datum is
 // affine, so a fixed quadrature evaluates the six integrals exactly once at
 // build. The term then reads numbers, as every other natural datum does.

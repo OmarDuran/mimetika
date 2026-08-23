@@ -33,7 +33,7 @@ def dupuit(nr, dim=2, family=None, product=None):
     family = mk.Family.simplex if family is None else family
     product = mk.FluxRealization.derham_rt if product is None else product
     mesh = mk.annulus(nr, nr // 2, dim, family, A_IN, B_OUT, 1.0)
-    model = mk.SinglePhaseModel(mesh, dim, 1.0, product)
+    model = mk.FlowModel(mesh, dim, 1.0, product)
     rmid = math.sqrt(A_IN * B_OUT)
     inner, outer, sealed = [], [], []
     for f in mk.boundary_facets(mesh, dim):
@@ -199,7 +199,7 @@ def patch(nr, dim=2, family=None, product=None, formulation=None):
     pts = [mesh.point(v) for v in range(mesh.count(0))]
     lo = [min(p[k] for p in pts) for k in range(3)]
     length = max(max(p[k] for p in pts) - lo[k] for k in range(dim))
-    model = mk.CauchyElasticityModel(
+    model = mk.CauchyMechanicsModel(
         mesh, dim, mk.ElasticMaterial(MU, LAM), product, formulation
     )
     gradient = [0.0] * 9

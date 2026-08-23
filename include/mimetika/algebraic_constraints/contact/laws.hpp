@@ -10,33 +10,33 @@
 
 #include "exokal/ad/local.hpp"
 
-// CONTACT LAWS ON A FRACTURE: the constitutive part, free of any degree of
+// Contact laws on a fracture: the constitutive part, free of any degree of
 // freedom.
 //
-// Every law relates the TRACTION on the fracture to the DISPLACEMENT JUMP.
+// Every law relates the traction on the fracture to the displacement jump.
 // Both are presented in the facet frame (n, t1, t2) under one fixed
 // convention:
 //
-//     g_n > 0   the fracture is OPEN (a gap)
-//     t_n < 0   the fracture is in COMPRESSION
+//     g_n > 0   the fracture is open (a gap)
+//     t_n < 0   the fracture is in compression
 //
 // so Signorini reads g_n >= 0, t_n <= 0, g_n t_n = 0. A law never sees a
 // degree of freedom, a mesh, or a basis: the driver owns the rotation into
 // this frame, the moment/point conversion, assembly and the solve.
 //
-// THE GENERAL CONTRACT IS IMPLICIT, C(t, g, state) = 0, because that is the
+// The general contract is implicit, C(t, g, state) = 0, because that is the
 // only form covering unilateral contact -- a compliance g = A t cannot express
 // t_n <= 0. Laws differ along axes that each force something on the driver:
 //
 //   relation form    compliance / implicit    compliance => one linear solve
 //   smoothness       smooth / nonsmooth       nonsmooth => outer iteration
-//   tangent symmetry symmetric / not          friction is NOT symmetric
+//   tangent symmetry symmetric / not          friction is not symmetric
 //   path dependence  none / incremental       load steps
 //   internal state   none / slip              state array, committed per step
 //   enforcement      averaged / pointwise     where the projection is applied
 //
-// SOLUTION STRATEGY. The driver runs an augmented Lagrangian (Uzawa) outer
-// iteration in which the multiplier lambda IS the physical contact traction:
+// Solution strategy. The driver runs an augmented Lagrangian (Uzawa) outer
+// iteration in which the multiplier lambda is the physical contact traction:
 // the mechanics is solved with the fracture traction constrained to lambda,
 // the gap g is recovered, and then
 //
@@ -47,23 +47,22 @@
 // the iteration contracts only for r < 2 / compliance, so the driver derives it
 // from the stiffness the fracture actually sees.
 //
-// A NOTE ON WHAT IS VERIFIED. Of the laws here, SignoriniCoulomb (which
-// subsumes the frictionless case at mu = 0) and FrictionlessBilateral are the
-// ones the Novikov et al. (2024) benchmarks exercise, against the mimetic-AFW
-// stress product. SlipWeakening derives from SignoriniCoulomb by overriding
-// the friction coefficient alone, which is why `friction_at` is virtual: a
+// What is verified. Of the laws here, SignoriniCoulomb (which subsumes the
+// frictionless case at mu = 0) and FrictionlessBilateral are the ones the
+// Novikov et al. (2024) benchmarks exercise, against the mimetic-AFW stress
+// product. SlipWeakening derives from SignoriniCoulomb by overriding the
+// friction coefficient alone, which is why `friction_at` is virtual: a
 // user-supplied law should need to state only what differs.
 //
-// THE CONSISTENT TANGENT IS NOT WRITTEN DOWN ANYWHERE. dt/dt_trial is what
-// turns the fixed-point sweep into a semismooth Newton iteration -- linear
-// convergence into quadratic -- and it is the one part of a contact law that
-// implementations reliably get wrong: the projection has branches, the
-// derivative has the same branches, and the two drift apart the moment either
-// is edited. So no law here differentiates itself. Each states its projection
-// ONCE, as a template over the scalar type, and `differentiate` re-runs that
-// same body on exokal's local AD type. The branch is chosen by the values, the
-// derivative is carried by the arithmetic, and the two cannot disagree because
-// there is only one body.
+// The consistent tangent is not written down anywhere. dt/dt_trial turns the
+// fixed-point sweep into a semismooth Newton iteration -- linear convergence
+// into quadratic -- and is the part of a contact law that implementations
+// reliably get wrong: the projection has branches, the derivative has the same
+// branches, and the two drift apart the moment either is edited. So no law here
+// differentiates itself. Each states its projection once, as a template over
+// the scalar type, and `differentiate` re-runs that same body on exokal's local
+// AD type. The branch is chosen by the values, the derivative is carried by the
+// arithmetic, and the two cannot disagree because there is only one body.
 //
 // That is also why AssociativeMohrCoulomb -- whose closest-point return map has
 // four active sets, each with its own closed form -- costs no more to
@@ -73,7 +72,7 @@ namespace mimetika::contact {
 
 namespace detail {
 // the value of a scalar, whichever scalar it is: the only thing the projections
-// need that is not arithmetic, and it appears solely where a BRANCH is chosen
+// need that is not arithmetic, and it appears solely where a branch is chosen
 inline double val(double x) { return x; }
 inline double val(const exokal::ad::Local& x) { return x.value(); }
 }  // namespace detail
@@ -82,7 +81,7 @@ inline double val(const exokal::ad::Local& x) { return x.value(); }
 // first, then the dim-1 shear components. Held at fixed width 3 so a 2D and a
 // 3D law share one type; `dim` says how much of it is live.
 //
-// Templated on the scalar so ONE projection body serves both the value and its
+// Templated on the scalar so one projection body serves both the value and its
 // derivative: T = double evaluates it, T = exokal::ad::Local differentiates it.
 template <class T>
 struct VecN {
@@ -95,11 +94,10 @@ struct VecN {
 
   // |t_t|: the shear magnitude over the live components.
   //
-  // AT THE ORIGIN THE NORM IS NOT DIFFERENTIABLE, and sqrt would hand back an
-  // infinite derivative rather than say so. Returning the constant 0 selects
-  // the subgradient 0 there, which is the choice that makes the projection's
-  // tangent the identity on a shear-free trial -- the correct limit from every
-  // direction that matters, since the friction radius is nonnegative and a
+  // At the origin the norm is not differentiable, and sqrt would return an
+  // infinite derivative. Returning the constant 0 selects the subgradient 0
+  // there, which makes the projection's tangent the identity on a shear-free
+  // trial -- the correct limit, since the friction radius is nonnegative and a
   // vanishing shear can never exceed it.
   T shear_norm(int dim) const {
     using std::sqrt;
@@ -140,14 +138,14 @@ enum class Status { open = 0, stick = 1, slip = 2 };
 
 // ---------------------------------------------------------------------------
 
-// THE PROJECTION'S DERIVATIVE, BY RUNNING THE PROJECTION.
+// The projection's derivative, by running the projection.
 //
 // The trial traction is the independent variable -- dim components, one local
 // block -- and the law's own `project_at` template is evaluated on exokal's
-// Local. Every branch it takes is decided by the VALUES, which are the same
+// Local. Every branch it takes is decided by the values, which are the same
 // values the double instantiation would see, so the derivative returned is the
-// derivative OF THE BRANCH ACTUALLY TAKEN. That is what "consistent" means in
-// consistent tangent, and here it is structural rather than maintained.
+// derivative of the branch actually taken. That is what "consistent" means in
+// consistent tangent.
 //
 // The state and the jump are held fixed: they are the step's data, not the
 // unknown, which is why a slip-weakening coefficient enters as a constant. The
@@ -198,7 +196,7 @@ class ContactLaw {
   // internal variables carried per enforcement point
   virtual std::size_t n_state() const { return 0; }
 
-  // THE STATE A POINT STARTS A SIMULATION IN, which is not always zero: a
+  // The state a point starts a simulation in, which is not always zero: a
   // rate-and-state fault begins at theta = theta0, and starting it at zero puts
   // log(0) in the friction coefficient on the first step. The driver asks the
   // law rather than assuming, so a law that needs a nonzero initial state gets
@@ -206,12 +204,12 @@ class ContactLaw {
   virtual State initial_state() const { return State{}; }
   // needs the jump of the previous step (slip history)
   virtual bool path_dependent() const { return false; }
-  // needs a time increment (slip RATE)
+  // needs a time increment (slip rate)
   virtual bool rate_dependent() const { return false; }
   // whether the exact tangent is symmetric -- friction is not
   virtual bool symmetric_tangent() const { return true; }
 
-  // A_f in the facet frame when the law is EXACTLY LINEAR, else absent.
+  // A_f in the facet frame when the law is exactly linear, else absent.
   //
   // The diagonal in the (n, t_1, ..., t_{dim-1}) components. A law that
   // supplies one is solved in a single linear solve, with no outer iteration
@@ -220,21 +218,21 @@ class ContactLaw {
   virtual bool has_linear_compliance() const { return false; }
   virtual Vec3 linear_compliance(int /*dim*/) const { return Vec3{}; }
 
-  // THE PROJECTION onto the admissible set: the whole of what a nonsmooth law
+  // The projection onto the admissible set: the whole of what a nonsmooth law
   // must supply. `trial` is lambda + r g in the facet frame.
   virtual Vec3 project(const Vec3& trial, State& state, int dim, const Vec3* g = nullptr,
                        const Vec3* g_prev = nullptr, double dt = 0.0) const = 0;
 
-  // THE CONSISTENT TANGENT dt/dt_trial, which turns the fixed-point sweep into
+  // The consistent tangent dt/dt_trial, which turns the fixed-point sweep into
   // a semismooth Newton iteration.
   //
   // Every law shipped here obtains it from `differentiate` -- its own
   // projection re-run on exokal's AD scalar -- so it is exact and cannot drift
-  // out of step with the projection. The default below is a CENTRAL DIFFERENCE,
-  // and it exists only so that the contract of this class stays what it says it
-  // is: a law must supply its projection, and nothing else. A law that takes
-  // the default pays the accuracy of a difference quotient near the
-  // nonsmooth branches, which is exactly where a contact law lives.
+  // out of step with the projection. The default below is a central difference,
+  // and exists so the contract of this class stays what it says it is: a law
+  // must supply its projection, and nothing else. A law that takes the default
+  // pays the accuracy of a difference quotient near the nonsmooth branches,
+  // where a contact law lives.
   virtual Tangent tangent(const Vec3& trial, const State& state, int dim, const Vec3* g = nullptr,
                           const Vec3* g_prev = nullptr, double dt = 0.0) const {
     const double h = 1e-6 * std::max(1.0, std::abs(trial[0]) + trial.shear_norm(dim));
@@ -302,21 +300,21 @@ class LinearContact final : public ContactLaw {
   double kn_, kt_;
 };
 
-// A CLOSED, FRICTIONLESS FAULT: t_t = 0 and g_n = 0.
+// A closed, frictionless fault: t_t = 0 and g_n = 0.
 //
 // Bilateral in the normal direction -- the fault is held shut and may carry
 // tension -- and free to slide tangentially. The projection keeps the normal
 // traction and zeroes the shear, so the converged state has no opening and no
 // shear stress: the classical frictionless crack.
 //
-// WHY NOT SignoriniCoulomb(friction = 0). That law also clips the normal
-// traction to compression, which is right for a TOTAL-stress problem and wrong
-// for an INCREMENTAL one. A fault sitting under tens of MPa of in-situ
+// Why not SignoriniCoulomb(friction = 0). That law also clips the normal
+// traction to compression, which is right for a total-stress problem and wrong
+// for an incremental one. A fault sitting under tens of MPa of in-situ
 // compression stays firmly closed, so an incremental solve -- where only the
 // depletion response is computed -- must not read an incremental normal tension
 // as opening. Signorini there would open the fault spuriously wherever the
 // increment happens to be tensile. The choice between the two is a modelling
-// decision about WHAT THE UNKNOWN IS, not about the physics of the fault.
+// decision about what the unknown is, not about the physics of the fault.
 class FrictionlessBilateral final : public ContactLaw {
  public:
   std::string name() const override { return "frictionless_bilateral"; }
@@ -332,7 +330,7 @@ class FrictionlessBilateral final : public ContactLaw {
   MIMETIKA_CONTACT_PROJECTION
 };
 
-// UNILATERAL CONTACT WITH COULOMB FRICTION (the Alart-Curnier projection).
+// Unilateral contact with Coulomb friction (the Alart-Curnier projection).
 //
 //   normal      g_n >= 0, t_n <= 0, g_n t_n = 0  -- no interpenetration, no
 //               tension; the fracture may open and lose contact
@@ -340,17 +338,16 @@ class FrictionlessBilateral final : public ContactLaw {
 //
 // The projection clips the normal traction to the compressive half-line, then
 // projects the tangential traction onto the friction disk whose radius follows
-// from the PROJECTED normal traction -- so an open point carries no shear,
-// automatically.
+// from the projected normal traction, so an open point carries no shear.
 //
 // State is the accumulated tangential slip, which this law does not itself use
 // but which makes the slip path available to callers and to the laws derived
 // from it.
 //
-// `friction_at` IS VIRTUAL, and that is the extension point: a slip-weakening
-// or rate-and-state law differs from Coulomb in the coefficient alone, so it
-// overrides one short function and inherits the projection, the state handling
-// and the status diagnostic unchanged.
+// `friction_at` is virtual: a slip-weakening or rate-and-state law differs from
+// Coulomb in the coefficient alone, so it overrides one short function and
+// inherits the projection, the state handling and the status diagnostic
+// unchanged.
 class SignoriniCoulomb : public ContactLaw {
  public:
   explicit SignoriniCoulomb(double friction = 0.6, double cohesion = 0.0)
@@ -366,12 +363,12 @@ class SignoriniCoulomb : public ContactLaw {
   double friction() const { return friction_; }
   double cohesion() const { return cohesion_; }
 
-  // THE COEFFICIENT THIS POINT SEES: constant for Coulomb, and the single thing
+  // The coefficient this point sees: constant for Coulomb, and the single thing
   // a weakening or rate-and-state law overrides.
   //
   // It is handed the whole of the step's data -- the state, the current jump,
   // the previous one and the time increment -- because that is what the family
-  // spans: slip weakening reads the jump, rate-and-state reads the RATE, and
+  // spans: slip weakening reads the jump, rate-and-state reads the rate, and
   // neither should have to restate the projection to get at it.
   virtual double friction_at(const State& /*state*/, const Vec3* /*g*/, const Vec3* /*g_prev*/,
                              double /*dt*/, int /*dim*/) const {
@@ -387,7 +384,7 @@ class SignoriniCoulomb : public ContactLaw {
     // normal: onto the compressive half-line
     t[0] = min(trial[0], T(0.0));
     // tangential: onto the friction disk of radius -mu t_n + c, with the
-    // radius taken from the PROJECTED normal traction
+    // radius taken from the projected normal traction
     const double mu = friction_at(state, g, g_prev, dt, dim);
     const T radius = max(-mu * t[0] + cohesion_, T(0.0));
     const T mag = trial.shear_norm(dim);
@@ -421,17 +418,15 @@ class SignoriniCoulomb : public ContactLaw {
   double friction_, cohesion_;
 };
 
-// SLIP-WEAKENING FRICTION (Novikov et al. 2024, Eq. 23): the coefficient falls
+// Slip-weakening friction (Novikov et al. 2024, Eq. 23): the coefficient falls
 // linearly from mu_s to mu_d over a critical slip distance d_c,
 //
 //     mu(|g_t|) = max(mu_d, mu_s - (mu_s - mu_d) |g_t| / d_c).
 //
-// Only the coefficient changes, so only friction_at is overridden -- the
-// Alart-Curnier projection, the slip accumulation and the status diagnostic all
-// come from Coulomb unchanged. This is the law of Benchmark 3, and the reason
-// friction_at takes the JUMP as well as the state: the weakening is driven by
-// the tangential slip at the current iterate, not only by what has been
-// committed.
+// Only the coefficient changes, so only friction_at is overridden. This is the
+// law of Benchmark 3, and the reason friction_at takes the jump as well as the
+// state: the weakening is driven by the tangential slip at the current iterate,
+// not only by what has been committed.
 class SlipWeakening final : public SignoriniCoulomb {
  public:
   SlipWeakening(double mu_static, double mu_dynamic, double critical_slip, double cohesion = 0.0)
@@ -466,7 +461,7 @@ class SlipWeakening final : public SignoriniCoulomb {
   double static_, dynamic_, d_c_;
 };
 
-// RATE- AND STATE-DEPENDENT FRICTION (regularised, with the aging law).
+// Rate- and state-dependent friction (regularised, with the aging law).
 //
 // The coefficient is no longer a property of the fault but of how fast it is
 // moving and how long it has been in contact:
@@ -474,27 +469,27 @@ class SlipWeakening final : public SignoriniCoulomb {
 //     mu(V, theta) = mu0 + a ln(V/V0) + b ln(V0 theta / Dc)
 //
 // with the slip rate V = |g_t - g_t_prev| / dt and the state variable theta
-// evolving by the aging law dtheta/dt = 1 - V theta / Dc. The DIRECT effect
-// a ln(V/V0) strengthens the fault as it accelerates; the EVOLUTION effect
+// evolving by the aging law dtheta/dt = 1 - V theta / Dc. The direct effect
+// a ln(V/V0) strengthens the fault as it accelerates; the evolution effect
 // b ln(V0 theta/Dc) strengthens it as contact matures. Whether the fault is
 // velocity-weakening -- and so capable of unstable slip -- is the sign of
 // a - b, which is why both appear separately rather than as one number.
 //
-// THE AGING LAW IS INTEGRATED IMPLICITLY,
+// The aging law is integrated implicitly,
 //
 //     theta_new = (theta + dt) / (1 + dt V / Dc),
 //
-// which is unconditionally stable AND unconditionally positive: theta can never
+// which is unconditionally stable and unconditionally positive: theta can never
 // be driven negative by too large a step, so log(theta) never fails. The
 // explicit form theta + dt(1 - V theta/Dc) does both at dt > Dc/V, which on a
 // seismic-cycle problem is every step but the first.
 //
-// EVERYTHING ELSE IS INHERITED, and that is the point of the taxonomy: the
-// unilateral normal condition and the projection onto the friction disk are
-// Coulomb's, and only the RADIUS of that disk changes. The law therefore states
-// the coefficient, the state evolution, and nothing else -- and its consistent
-// tangent comes from the same AD pass as every other law's, with mu frozen at
-// the step's rate, which is the linearization the projection actually performs.
+// Everything else is inherited: the unilateral normal condition and the
+// projection onto the friction disk are Coulomb's, and only the radius of that
+// disk changes. The law states the coefficient and the state evolution; its
+// consistent tangent comes from the same AD pass as every other law's, with mu
+// frozen at the step's rate, which is the linearization the projection
+// performs.
 class RateAndStateFriction final : public SignoriniCoulomb {
  public:
   RateAndStateFriction(double mu0 = 0.6, double a = 0.010, double b = 0.015, double Dc = 1e-4,
@@ -535,9 +530,9 @@ class RateAndStateFriction final : public SignoriniCoulomb {
   double initial_theta() const { return theta0_; }
   double minimum_rate() const { return v_min_; }
 
-  // V = |g_t - g_t_prev| / dt, FLOORED at Vmin. The floor is not cosmetic: a
-  // stuck point has V = 0 exactly, and log(0) would take the coefficient to
-  // minus infinity on precisely the points that are not moving.
+  // V = |g_t - g_t_prev| / dt, floored at Vmin: a stuck point has V = 0
+  // exactly, and log(0) would take the coefficient to minus infinity on
+  // precisely the points that are not moving.
   double slip_rate(const Vec3* g, const Vec3* g_prev, double dt, int dim) const {
     if (g == nullptr || g_prev == nullptr || dt == 0.0) return v_min_;
     double acc = 0.0;
@@ -576,9 +571,9 @@ class RateAndStateFriction final : public SignoriniCoulomb {
   double mu0_, a_, b_, d_c_, v0_, theta0_, v_min_;
 };
 
-// MOHR-COULOMB BY CLOSEST-POINT PROJECTION.
+// Mohr-Coulomb by closest-point projection.
 //
-// The SAME admissible set as SignoriniCoulomb -- the truncated cone
+// The same admissible set as SignoriniCoulomb -- the truncated cone
 //
 //     S* = { t_n <= 0 ,  |t_t| <= c - mu t_n }
 //
@@ -588,39 +583,38 @@ class RateAndStateFriction final : public SignoriniCoulomb {
 //
 //     d(t_tr, t)^2 = (t_n,tr - t_n)^2 / eps_n + |t_t,tr - t_t|^2 / eps_t,
 //
-// which is the return mapping of ASSOCIATIVE elastoplasticity with the
+// which is the return mapping of associative elastoplasticity with the
 // augmentation parameters in the role of the elastic moduli.
 //
-// ASSOCIATIVE VERSUS NON-ASSOCIATIVE. SignoriniCoulomb performs the PARTIAL
-// return: t_n is clipped first and the shear is then projected RADIALLY at that
+// Associative versus non-associative. SignoriniCoulomb performs the partial
+// return: t_n is clipped first and the shear is then projected radially at that
 // fixed t_n, so sliding never alters the normal traction -- non-associative
 // friction, appropriate to a smooth fault. The closest-point projection moves
 // along the cone's own normal, so correcting an over-stressed shear state also
-// CHANGES the normal traction: shear and normal response are energetically
+// changes the normal traction: shear and normal response are energetically
 // coupled, which is the traction-space image of dilatancy on a rough fault. The
 // two agree only where the projection happens to be radial; elsewhere they are
-// genuinely different constitutive assumptions, not two approximations of one.
+// different constitutive assumptions, not two approximations of one.
 //
-// WHY THE METRIC MATTERS. eps_n and eps_t are not free numerical knobs here:
-// they weight the distance, so they select which point of the cone is nearest.
-// At eps_n = eps_t the projection is the plain Euclidean shortest path. They
-// must be the values the augmented-Lagrangian update itself uses, or the return
-// mapping and the iteration are minimising different things.
+// The metric. eps_n and eps_t are not free numerical knobs: they weight the
+// distance, so they select which point of the cone is nearest. At
+// eps_n = eps_t the projection is the plain Euclidean shortest path. They must
+// be the values the augmented-Lagrangian update itself uses, or the return
+// mapping and the iteration minimise different things.
 //
-// HOW IT IS SOLVED. By rotational symmetry about the t_n axis the shear stays
+// How it is solved. By rotational symmetry about the t_n axis the shear stays
 // collinear with the trial, so the problem collapses to two unknowns (t_n, rho)
 // with rho = |t_t| >= 0. The convex feasible set has three faces, giving four
 // candidate active sets -- the trial itself, the lateral cone, the truncation
 // disc t_n = 0, and the axis rho = 0. Each has a closed form, so the projection
-// evaluates all four and takes the nearest FEASIBLE one. That is exact and free
-// of nested case analysis, which matters: hand-written case logic on a cone is
-// where these implementations usually go wrong.
+// evaluates all four and takes the nearest feasible one. That is exact and free
+// of nested case analysis; hand-written case logic on a cone is where these
+// implementations usually go wrong.
 //
-// AND ITS TANGENT COSTS NOTHING. Four active sets means a hand-derived tangent
-// would carry four separate closed forms of its own, each having to agree with
-// the branch the projection took. Here the branch is selected by the values and
-// the winning candidate's closed form is then differentiated by re-running it
-// -- so the four cases exist once, in the projection, and nowhere else.
+// Its tangent costs nothing: a hand-derived tangent would carry the four closed
+// forms again, each having to agree with the branch the projection took. Here
+// the branch is selected by the values and the winning candidate is
+// differentiated by re-running it, so the four cases exist once.
 class AssociativeMohrCoulomb final : public SignoriniCoulomb {
  public:
   AssociativeMohrCoulomb(double friction = 0.6, double cohesion = 0.0, double eps_n = 1.0,
@@ -657,16 +651,16 @@ class AssociativeMohrCoulomb final : public SignoriniCoulomb {
     cn[3] = min(tn, T(0.0));  // the axis
     cr[3] = T(0.0);
 
-    // THE BRANCH IS CHOSEN BY THE VALUES, and only by the values: nearest
-    // among the feasible candidates, ties to the lower index. Under AD this is
-    // the same selection the double instantiation makes, which is precisely why
-    // the derivative below belongs to the branch actually taken.
+    // The branch is chosen by the values alone: nearest among the feasible
+    // candidates, ties to the lower index. Under AD this is the same selection
+    // the double instantiation makes, so the derivative below belongs to the
+    // branch actually taken.
     double scale = 1.0;
     for (int q = 0; q < 4; ++q) scale = std::max(scale, std::abs(detail::val(cn[q])));
     const double tol = 1e-12 * scale;
     const double a0 = detail::val(tn), r0 = detail::val(rho);
 
-    int region = 3;  // the axis is always feasible, so this is never the fallback it looks like
+    int region = 3;  // the axis is always feasible, so this default is a valid region
     double best = std::numeric_limits<double>::infinity();
     for (int q = 0; q < 4; ++q) {
       const double a = detail::val(cn[q]), b = detail::val(cr[q]);

@@ -8,85 +8,84 @@
 #include "mimetika/linear_solver/fields.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
 #include "mimetika/mesh/structured.hpp"
-#include "mimetika/model/cauchy_elasticity_model.hpp"
-#include "mimetika/model/single_phase_model.hpp"
+#include "mimetika/model/cauchy_mechanics_model.hpp"
+#include "mimetika/model/flow_model.hpp"
 
-// THE DIAGONAL PRODUCTS CONDENSE, AND WHAT IS LEFT IS THE FINITE VOLUME METHOD.
+// The diagonal products condense, and what is left is the finite volume method.
 //
 // A diagonal star makes the first block of the saddle point diagonal, so the
-// flux or the stress is eliminated CELL BY CELL -- no factorization, no fill,
+// flux or the stress is eliminated cell by cell -- no factorization, no fill,
 // one division per unknown -- and the Schur complement is the whole system:
 //
 //     [ M  A01 ] [ x0 ]   [ b0 ]                      -1
 //     [ A10 C  ] [ y  ] = [ b1 ]  =>  S = C - A10 M     A01
 //
-// For diagonal_tpfa S is the pressure alone and IS the two-point flux
+// For diagonal_tpfa S is the pressure alone and is the two-point flux
 // approximation: seven entries a row on a Cartesian mesh in space. For
 // diagonal_afw it is the displacement, the rotation and the total pressure,
 // which is the FV-TPSA system of Nordbotten & Keilegavlen (their Eq. 3.9) --
 // the same three cell-centered unknowns, reached by eliminating a stress those
 // authors never introduce.
 //
-// WHAT THIS IS NOT. exokal owns the inner product M and tests it: diagonal
-// under condensation, and positive. Nothing here re-litigates that -- the
-// premise below only CONFIRMS the block is diagonal, so that the specialization
-// is applied to the products it belongs to. What is measured here is the
-// GLOBAL Schur complement, which is M together with the divergence, the weak
-// symmetry, the trace and the total-pressure row: a different matrix, and the
-// one a solver is actually handed.
+// exokal owns the inner product M and tests it: diagonal under condensation,
+// and positive. The premise below only confirms the block is diagonal, so that
+// the specialization is applied to the products it belongs to. What is measured
+// here is the global Schur complement, which is M together with the divergence,
+// the weak symmetry, the trace and the total-pressure row: a different matrix,
+// and the one a solver is actually handed.
 //
 // This file asserts, on meshes small enough to take dense linear algebra to:
 //
-//   the first block is diagonal   -- and is NOT for the de Rham and stabilized
+//   the first block is diagonal   -- and is not for the de Rham and stabilized
 //                                    products, so the specialization is theirs
 //   S has the two-point stencil   -- every entry couples two cells sharing a
 //                                    facet, and no others
 //   S is symmetric               -- which the assembled matrix is not, since a
 //                                    pinned row is one the constraint set
-//                                    rewrote; the symmetry REAPPEARS under the
+//                                    rewrote; the symmetry reappears under the
 //                                    elimination
 //   S solves the same problem     -- condensed answer against the saddle
 //                                    point's own, to round-off
 //
-// WHAT KIND OF SYMMETRIC IS NOT THE SAME FOR THE TWO PRODUCTS, and it is the
+// What kind of symmetric is not the same for the two products, and it is the
 // one thing a solver has to be told:
 //
-//   diagonal_tpfa   S is the pressure alone and is POSITIVE DEFINITE, as
+//   diagonal_tpfa   S is the pressure alone and is positive definite, as
 //                   assembled, with no sign to flip: conjugate gradients and
-//                   an algebraic multigrid, and the matrix IS the two-point
+//                   an algebraic multigrid, and the matrix is the two-point
 //                   flux approximation -- seven entries a row on a Cartesian
 //                   mesh in space.
 //
 //   diagonal_afw   S is displacement, rotation and total pressure, and is
-//                   SYMMETRIC QUASI-DEFINITE: (u, r) positive definite, p
+//                   symmetric quasi-definite: (u, r) positive definite, p
 //                   negative definite. That is not SPD and no scaling makes it
 //                   so -- a diagonal similarity cannot change the sign of a
 //                   diagonal block -- so it is MINRES or an LDL^T, not CG.
-//                   Negating the pressure EQUATION alone trades the symmetry
+//                   Negating the pressure equation alone trades the symmetry
 //                   for coercivity and gives the form the finite volume
 //                   literature writes: Nordbotten & Keilegavlen Eq. (3.9),
 //                   whose weak form (their 5.5) pairs +(p, div u') against
 //                   -(div u, p'). Both are asserted below.
 //
-//                   On TETRAHEDRA it is invertible but not quasi-definite --
+//                   On tetrahedra it is invertible but not quasi-definite --
 //                   see Case below for the ratio that decides it.
 //
-// BOUNDARY DATA. The cases here prescribe the pressure and the displacement,
-// which are natural in a mixed form. An ESSENTIAL condition on the first field
+// Boundary data. The cases here prescribe the pressure and the displacement,
+// which are natural in a mixed form. An essential condition on the first field
 // -- a traction, or the tangential half of a roller -- pins stress unknowns,
 // and for diagonal_afw that costs [Dv; As] its row rank, which leaves S
 // singular rather than definite. That is a property of the rotation closure and
 // not of the condensation, and it is not asserted here.
 
 using graphos::Index;
-using mimetika::CauchyElasticityModel;
+using mimetika::CauchyMechanicsModel;
 using mimetika::ElasticMaterial;
-using mimetika::SinglePhaseModel;
+using mimetika::FlowModel;
 using mimetika::mesh::Family;
 using mimetika::solver::SparseSystem;
-using Formulation = CauchyElasticityModel::Formulation;
-using Stress = CauchyElasticityModel::Realization;
-using Flux = SinglePhaseModel::Realization;
+using Formulation = CauchyMechanicsModel::Formulation;
+using Stress = CauchyMechanicsModel::Realization;
+using Flux = FlowModel::Realization;
 
 namespace {
 
@@ -263,7 +262,7 @@ double worst_off_diagonal(const Dense& A, const std::vector<std::size_t>& idx) {
 // S = C - A10 M^-1 A01, with M the diagonal first block. A10 and A01 are taken
 // separately rather than as one transpose: a pinned unknown is a row the
 // constraint set rewrote, so the assembled matrix is not symmetric even where
-// the operator is, and S is where the symmetry has to REAPPEAR.
+// the operator is, and S is where the symmetry has to reappear.
 Dense condense(const Dense& A, const Split& s, const std::vector<double>& b,
                std::vector<double>* rhs = nullptr) {
   Dense S(s.rest.size(), s.rest.size());
@@ -352,20 +351,20 @@ exokal::Mesh box_of(int n, int dim, Family family) {
   return mimetika::mesh::box({n, n, dim == 3 ? n : 1}, dim, family);
 }
 
-// THE TETRAHEDRA COME FROM THE ANNULUS, NOT THE BOX. box(simplex) is the
-// Kuhn subdivision -- six congruent tetrahedra a cube, every cell a translate
-// of every other -- and that pattern is degenerate for diagonal_afw: it
-// carries exactly one spurious rotation mode per interior CUBE face, which the
-// last test in this file measures. Tetrahedra as such are not the problem, and
-// a mesh whose cells differ from one another shows it.
+// The tetrahedra come from the annulus, not the box. box(simplex) is the Kuhn
+// subdivision -- six congruent tetrahedra a cube, every cell a translate of
+// every other -- and that pattern is degenerate for diagonal_afw: it carries
+// exactly one spurious rotation mode per interior cube face, which the last
+// test in this file measures. Tetrahedra as such are not the problem, and a
+// mesh whose cells differ from one another shows it.
 struct Case {
   const char* name;
   int dim;
   exokal::Mesh mesh;
-  // QUASI-DEFINITE WHERE THE PAIRING HAS SLACK. A cell carries d unknowns per
+  // Quasi-definite where the pairing has slack. A cell carries d unknowns per
   // facet against the d + d(d-1)/2 rows the divergence and the weak symmetry
   // impose: 4 against 3 on a quadrilateral, 9 against 6 on a hexahedron, 7.5
-  // against 6 on a prism -- and exactly 6 against 6 on a TETRAHEDRON. At that
+  // against 6 on a prism -- and exactly 6 against 6 on a tetrahedron. At that
   // ratio the displacement block and the rotation block stay positive definite
   // separately and their union does not, so the matrix is symmetric and
   // invertible but not quasi-definite: MINRES rather than an LDL^T.
@@ -384,7 +383,7 @@ std::vector<Case> cases() {
 }
 
 // p prescribed on the whole boundary: natural data, nothing pinned
-void build_flow(SinglePhaseModel& prob, const exokal::Mesh& m, int dim) {
+void build_flow(FlowModel& prob, const exokal::Mesh& m, int dim) {
   for (const Index f : mimetika::boundary_facets(m.topology(), dim)) {
     const auto x = exokal::centroid(m, dim - 1, f);
     prob.flow().emplace<mimetika::PressureBC>(std::vector<Index>{f}, x[0] + 2.0 * x[1]);
@@ -393,7 +392,7 @@ void build_flow(SinglePhaseModel& prob, const exokal::Mesh& m, int dim) {
 }
 
 // u = x on the whole boundary, as an affine datum: also natural
-void build_elasticity(CauchyElasticityModel& prob, const exokal::Mesh& m, int dim) {
+void build_elasticity(CauchyMechanicsModel& prob, const exokal::Mesh& m, int dim) {
   std::array<double, 9> grad{};
   for (int k = 0; k < dim; ++k) grad[static_cast<std::size_t>(k * 3 + k)] = 1.0;
   for (const Index f : mimetika::boundary_facets(m.topology(), dim)) {
@@ -417,7 +416,7 @@ MIMETIKA_TEST(only_the_diagonal_products_leave_a_diagonal_first_block) {
        {std::tuple{Flux::diagonal_tpfa, "diagonal_tpfa", true},
         std::tuple{Flux::stabilized_rt, "stabilized_rt", false},
         std::tuple{Flux::derham_bdm, "derham_bdm", false}}) {
-    SinglePhaseModel prob(m, 3, 1.0, how);
+    FlowModel prob(m, 3, 1.0, how);
     build_flow(prob, m, 3);
     const double worst = worst_off_diagonal(dense_of(prob.system()), split_of(prob).first);
     std::printf("  flow  %-14s off-diagonal in the flux block %.2e\n", name, worst);
@@ -429,7 +428,7 @@ MIMETIKA_TEST(only_the_diagonal_products_leave_a_diagonal_first_block) {
         std::tuple{Stress::stabilized_bdm, "stabilized_bdm", Formulation::weak_symmetry_total,
                    false},
         std::tuple{Stress::derham_bdm, "derham_bdm", Formulation::weak_symmetry, false}}) {
-    CauchyElasticityModel prob(m, 3, ElasticMaterial{kMu, kLam}, how, form);
+    CauchyMechanicsModel prob(m, 3, ElasticMaterial{kMu, kLam}, how, form);
     build_elasticity(prob, m, 3);
     const double worst = worst_off_diagonal(dense_of(prob.system()), split_of(prob).first);
     std::printf("  solid %-14s off-diagonal in the stress block %.2e\n", name, worst);
@@ -444,7 +443,7 @@ MIMETIKA_TEST(eliminating_the_flux_leaves_an_spd_two_point_pressure_system) {
     {
       const exokal::Mesh& m = c.mesh;
       const int dim = c.dim;
-      SinglePhaseModel prob(m, dim, 1.0, Flux::diagonal_tpfa);
+      FlowModel prob(m, dim, 1.0, Flux::diagonal_tpfa);
       build_flow(prob, m, dim);
       const Split s = split_of(prob);
       const Dense S = condense(dense_of(prob.system()), s, prob.rhs());
@@ -464,29 +463,26 @@ MIMETIKA_TEST(eliminating_the_flux_leaves_an_spd_two_point_pressure_system) {
   }
 }
 
-// QUASI-DEFINITE EVERYWHERE BUT ON TETRAHEDRA, and the exception is the space
-// rather than the condensation. diagonal_afw carries d unknowns a facet, so a
-// cell holds d x (facets/cell) of them against the d + d(d-1)/2 rows the
-// divergence and the weak symmetry impose: 4 against 3 on a quadrilateral, 9
-// against 6 on a hexahedron -- and exactly 6 against 6 on a TETRAHEDRON, where
-// the pairing has no slack at all. There the displacement block and the
-// rotation block are each positive definite and their union is not, which is
-// the same marginality that costs [Dv; As] its row rank once a traction is
-// imposed. The system remains symmetric and nonsingular -- the solve below
-// says so on every cell type -- so MINRES is what applies generally, and the
-// LDL^T a quasi-definite matrix admits is available on the rest.
+// Quasi-definite everywhere but on tetrahedra, and the exception is the space
+// rather than the condensation: on a tetrahedron the pairing has no slack (see
+// Case above), so the displacement block and the rotation block are each
+// positive definite and their union is not. That is the same marginality that
+// costs [Dv; As] its row rank once a traction is imposed. The system remains
+// symmetric and nonsingular -- the solve below says so on every cell type -- so
+// MINRES is what applies generally, and the LDL^T a quasi-definite matrix
+// admits is available on the rest.
 MIMETIKA_TEST(eliminating_the_stress_leaves_displacement_rotation_and_pressure) {
   for (const Case& c : cases()) {
     {
       const exokal::Mesh& m = c.mesh;
       const int dim = c.dim;
-      CauchyElasticityModel prob(m, dim, ElasticMaterial{kMu, kLam}, Stress::diagonal_afw,
+      CauchyMechanicsModel prob(m, dim, ElasticMaterial{kMu, kLam}, Stress::diagonal_afw,
                                  Formulation::weak_symmetry_total);
       build_elasticity(prob, m, dim);
       const Split s = split_of(prob);
       const Dense S = condense(dense_of(prob.system()), s, prob.rhs());
 
-      // QUASI-DEFINITE: the kinematic half positive, the pressure negative.
+      // quasi-definite: the kinematic half positive, the pressure negative.
       const auto is_pressure = [&](std::size_t i) {
         return s.names[static_cast<std::size_t>(s.field_of[i])][0] == 'p';
       };
@@ -494,7 +490,7 @@ MIMETIKA_TEST(eliminating_the_stress_leaves_displacement_rotation_and_pressure) 
       Dense pressure = negated(diagonal_block(S, is_pressure));
       const bool quasi = cholesky(kinematic) && cholesky(pressure);
 
-      // and the finite volume form: the pressure EQUATION negated is coercive
+      // and the finite volume form: the pressure equation negated is coercive
       Dense flipped = S;
       for (std::size_t i = 0; i < S.rows(); ++i) {
         if (!is_pressure(i)) continue;
@@ -518,7 +514,7 @@ MIMETIKA_TEST(eliminating_the_stress_leaves_displacement_rotation_and_pressure) 
       CHECK(asymmetry(S) < 1e-12);
       CHECK(quasi == c.quasi_definite);
       CHECK(positive == c.quasi_definite);
-      CHECK(!definite);  // it is NOT SPD, and a solver told otherwise will fail
+      CHECK(!definite);  // it is not SPD, and a solver told otherwise will fail
       CHECK(stray == 0);
     }
   }
@@ -531,11 +527,8 @@ MIMETIKA_TEST(eliminating_the_stress_leaves_displacement_rotation_and_pressure) 
 // unknown, and the eliminated field is recovered and compared too -- x0 =
 // M^-1 (b0 - A01 y) is the whole cost of getting the flux or the stress back.
 MIMETIKA_TEST(the_condensed_solve_is_the_saddle_point_solve) {
-  // The condensed answer against the saddle point's own, unknown by unknown,
-  // and the eliminated field recovered too: x0 = M^-1 (b0 - A01 y) is the whole
-  // cost of getting the flux or the stress back. `singular` marks the case
-  // where there is nothing to agree with -- see the header -- and the
-  // conditioning is asserted there instead.
+  // `singular` marks the case where there is nothing to agree with -- see the
+  // header -- and the conditioning is asserted there instead.
   const auto compare = [&](const SparseSystem& A, const std::vector<double>& b, const Split& s,
                            const std::string& what, bool singular) {
     const Dense full = dense_of(A);
@@ -549,7 +542,7 @@ MIMETIKA_TEST(the_condensed_solve_is_the_saddle_point_solve) {
     const auto rep = petsc.solve(A, b, x);
     CHECK(rep.converged);
 
-    // the residual of BOTH answers in the condensed system, which is what says
+    // the residual of both answers in the condensed system, which is what says
     // whether a disagreement is the condensation or the solve
     double mine = 0.0, theirs = 0.0, scale = 0.0;
     for (std::size_t i = 0; i < s.rest.size(); ++i) {
@@ -591,11 +584,11 @@ MIMETIKA_TEST(the_condensed_solve_is_the_saddle_point_solve) {
       const int dim = c.dim;
       const std::string where = c.name;
 
-      SinglePhaseModel flow(m, dim, 1.0, Flux::diagonal_tpfa);
+      FlowModel flow(m, dim, 1.0, Flux::diagonal_tpfa);
       build_flow(flow, m, dim);
       compare(flow.system(), flow.rhs(), split_of(flow), where + " tpfa", false);
 
-      CauchyElasticityModel solid(m, dim, ElasticMaterial{kMu, kLam}, Stress::diagonal_afw,
+      CauchyMechanicsModel solid(m, dim, ElasticMaterial{kMu, kLam}, Stress::diagonal_afw,
                                   Formulation::weak_symmetry_total);
       build_elasticity(solid, m, dim);
       // the tetrahedron is the ratio at which the rotation is not determined
@@ -609,21 +602,20 @@ MIMETIKA_TEST(the_condensed_solve_is_the_saddle_point_solve) {
 //
 // box(simplex) is the Kuhn subdivision: six congruent tetrahedra to a cube,
 // every cell a translate or reflection of every other. On the TPSA layout --
-// one mean traction per facet -- that PATTERN cost the condensed operator one
-// dimension per interior CUBE face, 3 n^2 (n - 1) of them: a cellwise-
-// alternating rotation the facet means could not see, with the stress and the
-// pressure identically zero. The direct solver on the saddle point reported
-// CONVERGED and returned 1e16; the condensation ran out of pivots and said so.
+// one mean traction per facet -- that pattern costs the condensed operator one
+// dimension per interior cube face, 3 n^2 (n - 1) of them: a cellwise-
+// alternating rotation the facet means cannot see, with the stress and the
+// pressure identically zero. The direct solver on the saddle point reports
+// CONVERGED and returns 1e16; the condensation runs out of pivots and says so.
 //
 // The wrench layout closes it: with the d(d+1)/2 rigid-motion moments on each
 // facet the multiplier's kernel is the global rigid motion alone, so the
 // condensed operator on the same tetrahedra is nonsingular and no pivot is
-// lost. This test pinned the defect while it existed and now pins its
-// absence; both numbers are the ones exokal's afw_stress.hpp states.
+// lost. Both numbers are the ones exokal's afw_stress.hpp states.
 MIMETIKA_TEST(the_kuhn_tetrahedra_keep_every_rotation_on_the_wrench) {
   for (const int n : {2, 3}) {
     const exokal::Mesh m = box_of(n, 3, Family::simplex);
-    CauchyElasticityModel prob(m, 3, ElasticMaterial{kMu, kLam}, Stress::diagonal_afw,
+    CauchyMechanicsModel prob(m, 3, ElasticMaterial{kMu, kLam}, Stress::diagonal_afw,
                                Formulation::weak_symmetry_total);
     build_elasticity(prob, m, 3);
     const Split s = split_of(prob);
@@ -635,9 +627,7 @@ MIMETIKA_TEST(the_kuhn_tetrahedra_keep_every_rotation_on_the_wrench) {
                 "pivots lost %2zu   interior cube faces %2zu\n",
                 n, static_cast<std::size_t>(prob.n_cells()), S.rows(), S.rows(), pivot_ratio,
                 tiny_pivots, interior_cube_faces);
-    // THE DAY CAME: on the wrench layout the multiplier's kernel is the global
-    // rigid motion alone, the condensed operator is nonsingular, and the
-    // pivots this test used to count as lost are all there
+    // on the wrench layout the condensed operator is nonsingular: no pivot lost
     CHECK(pivot_ratio > 1e-12);
     CHECK(tiny_pivots == 0);
   }
@@ -648,7 +638,7 @@ MIMETIKA_TEST(the_kuhn_tetrahedra_keep_every_rotation_on_the_wrench) {
 // Everything above is arithmetic done in the test. This is the solver's own
 // path: told which unknowns may be divided out, PetscSolver eliminates them,
 // solves S, and puts the eliminated field back -- and the answer has to be the
-// one the saddle point gives, on every unknown INCLUDING the eliminated ones.
+// one the saddle point gives, on every unknown including the eliminated ones.
 //
 // Naming the field is a permission, not an instruction. The same call on a de
 // Rham or stabilized product must leave the saddle point alone, because their
@@ -660,7 +650,7 @@ MIMETIKA_TEST(the_solver_condenses_when_it_is_allowed_to_and_only_then) {
   for (const auto [how, name, diagonal] :
        {std::tuple{Flux::diagonal_tpfa, "diagonal_tpfa", true},
         std::tuple{Flux::stabilized_rt, "stabilized_rt", false}}) {
-    SinglePhaseModel prob(m, 3, 1.0, how);
+    FlowModel prob(m, 3, 1.0, how);
     build_flow(prob, m, 3);
     const std::vector<int> first = mimetika::solver::first_field_dofs(prob.simulation().epoch());
 
@@ -688,7 +678,7 @@ MIMETIKA_TEST(the_solver_condenses_when_it_is_allowed_to_and_only_then) {
   }
 
   // the stress, four fields, and the same statement
-  CauchyElasticityModel solid(m, 3, ElasticMaterial{kMu, kLam}, Stress::diagonal_afw,
+  CauchyMechanicsModel solid(m, 3, ElasticMaterial{kMu, kLam}, Stress::diagonal_afw,
                               Formulation::weak_symmetry_total);
   build_elasticity(solid, m, 3);
   mimetika::solver::PetscSolver saddle;

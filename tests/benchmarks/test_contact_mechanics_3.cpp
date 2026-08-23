@@ -4,35 +4,35 @@
 #include "../mimetika_test.hpp"
 #include "novikov_fault.hpp"
 
-// BENCHMARK 3 of Novikov et al. (2024): the inclined displaced fault with
-// SLIP-WEAKENING friction (paper 4.2).
+// Benchmark 3 of Novikov et al. (2024): the inclined displaced fault with
+// slip-weakening friction (paper 4.2).
 //
 // The configuration of benchmark 2, with the coefficient falling linearly from
 // mu_s = 0.52 to mu_d = 0.20 over a critical slip distance delta_c = 0.02 m
-// (paper Eq. 23). Slip now REDUCES the fault's carrying capacity, so the
-// problem stops being monotone: below a NUCLEATION PRESSURE p* no quasi-static
-// equilibrium exists at all and the fault runs away -- a seismic event.
+// (paper Eq. 23). Slip now reduces the fault's carrying capacity, so the
+// problem stops being monotone: below a nucleation pressure p* no quasi-static
+// equilibrium exists and the fault runs away -- a seismic event.
 //
-// THE ANSWER IS A PRESSURE, not a profile. The paper's semi-analytical estimate
+// The answer is a pressure, not a profile. The paper's semi-analytical estimate
 // (Uenishi & Rice 2003 as modified by Jansen & Meulenbroek 2022) is
 // p* = -17.41 MPa and its own DARTS simulation reaches -17.27 MPa. The
-// benchmark walks the depletion down, each level WARM-STARTED from the previous
+// benchmark walks the depletion down, each level warm-started from the previous
 // equilibrium, until the stable branch is lost; the level that fails brackets
 // p*.
 //
-// AND IT IS A RESOLUTION-CRITICAL ANSWER. The Uenishi--Rice critical nucleation
+// The answer is resolution-critical. The Uenishi--Rice critical nucleation
 // length here is
 //
 //     h* ~ 1.16 G delta_c / ((1 - nu)(mu_s - mu_d) |sigma_n'|)  ~  16 m,
 //
 // so a mesh that does not resolve h* makes every resolvable slipping patch
 // supercritical the moment it appears, and the computed p* collapses onto the
-// mesh-dependent constant-friction slip ONSET instead of the nucleation
-// pressure. The Python reference records exactly this, and the paper's own grid
-// is 2 m on the fault. What is asserted below is therefore split: the
-// law-and-branch statements hold at any resolution, and p* is REPORTED against
-// the paper with the mesh it was computed on named, rather than asserted at a
-// resolution that cannot support it.
+// mesh-dependent constant-friction slip onset instead of the nucleation
+// pressure. The Python reference records this, and the paper's own grid is 2 m
+// on the fault. What is asserted below is therefore split: the law-and-branch
+// statements hold at any resolution, and p* is reported against the paper with
+// the mesh it was computed on named, rather than asserted at a resolution that
+// cannot support it.
 
 using namespace novikov;  // the shared inclined-fault setup
 using mimetika::contact::SlipWeakening;
@@ -52,9 +52,9 @@ double nucleation_length(const Parameters& p, double effective_normal) {
 
 // -- the law ---------------------------------------------------------------------
 
-// THE COEFFICIENT WEAKENS AND THEN SATURATES, which is the whole of Eq. 23 and
-// is what makes the branch fold. Checked here on the benchmark's own numbers so
-// that a failure downstream cannot be blamed on the law.
+// The coefficient weakens and then saturates, which is the whole of Eq. 23 and
+// what makes the branch fold. Checked on the benchmark's own numbers so that a
+// failure downstream cannot be blamed on the law.
 MIMETIKA_TEST(the_benchmark_three_law_is_the_published_one) {
   std::setvbuf(stdout, nullptr, _IONBF, 0);  // survive a crash mid-sweep
   const SlipWeakening law(kMuStatic, kMuDynamic, kCritical);
@@ -72,8 +72,8 @@ MIMETIKA_TEST(the_benchmark_three_law_is_the_published_one) {
   CHECK(std::abs(law.friction_at(past, nullptr, nullptr, 0.0, 2) - kMuDynamic) < 1e-14);
 }
 
-// AND h* IS A LENGTH THE MESH MUST RESOLVE. Reported rather than assumed,
-// because it is what decides whether a computed p* means anything.
+// And h* is a length the mesh must resolve. Reported rather than assumed,
+// because it decides whether a computed p* means anything.
 MIMETIKA_TEST(the_critical_nucleation_length_is_of_the_order_of_ten_metres) {
   const Parameters p = wide();
   // the effective normal traction the fault sits on at the reservoir edge
@@ -87,28 +87,27 @@ MIMETIKA_TEST(the_critical_nucleation_length_is_of_the_order_of_ten_metres) {
 
 // -- the depletion walk ------------------------------------------------------------
 
-// WALKING DOWN TO NUCLEATION. Each level is warm-started from the previous
-// equilibrium, which is what makes this a continuation along the stable branch
-// rather than a sequence of unrelated solves: past the fold there is no
-// equilibrium to find from any start, and the failure to find one IS the
-// physics rather than a solver defect.
+// Walking down to nucleation. Each level is warm-started from the previous
+// equilibrium, which makes this a continuation along the stable branch rather
+// than a sequence of unrelated solves: past the fold there is no equilibrium to
+// find from any start, and the failure to find one is the physics rather than a
+// solver defect.
 //
 // Two things must hold at any resolution, and they are what is asserted:
 //
-//   AN EQUILIBRIUM EXISTS WELL ABOVE p*. At shallow depletion the fault is
+//   An equilibrium exists well above p*. At shallow depletion the fault is
 //   barely loaded and the weakening law behaves like Coulomb at mu_s.
 //
-//   THE BRANCH IS EVENTUALLY LOST. Continue far enough and the solve stops
+//   The branch is eventually lost. Continue far enough and the solve stops
 //   converging, or the slip runs past every scale the law has -- 50 delta_c is
-//   the Python's own runaway test. A law that never lost the branch would not
-//   be weakening at all.
-// PLAIN COULOMB AT A FROZEN, PER-POINT FRICTION COEFFICIENT.
+//   the Python's own runaway test.
+// Plain Coulomb at a frozen, per-point friction coefficient.
 //
 // The outer iteration below feeds each enforcement point its own mu, taken from
-// the previous iterate's slip. The law itself must therefore be Coulomb -- not
-// slip-weakening -- with the coefficient READ rather than computed, which is
-// exactly what `friction_at` being virtual is for. The frozen value is carried
-// in the point's own state, so nothing outside the law has to know about it.
+// the previous iterate's slip. The law itself must therefore be Coulomb, not
+// slip-weakening, with the coefficient read rather than computed, which is what
+// `friction_at` being virtual is for. The frozen value is carried in the point's
+// own state, so nothing outside the law has to know about it.
 class FrozenCoulomb final : public SignoriniCoulomb {
  public:
   explicit FrozenCoulomb(double fallback) : SignoriniCoulomb(fallback) {}
@@ -119,27 +118,25 @@ class FrozenCoulomb final : public SignoriniCoulomb {
   }
 };
 
-// THE SLIP-WEAKENING BRANCH, TRACKED BY THE MU-UPDATE MAP.
+// The slip-weakening branch, tracked by the mu-update map.
 //
 // Handing the coupled law to Newton does not work near the fold: the stable and
 // the fully-weakened equilibria draw close and Newton hops between their basins,
-// reporting a runaway at a pressure where the branch is still alive. That is
-// what produced a spurious p* here before.
+// reporting a runaway at a pressure where the branch is still alive.
 //
-// The physical tracker is an OUTER FIXED POINT ON A FROZEN COEFFICIENT: solve
+// The physical tracker is an outer fixed point on a frozen coefficient: solve
 // plain Coulomb at mu, read the slip, recompute mu from it, repeat. The
-// linearisation of that map IS the slip-weakening stability operator, so it
-// contracts exactly while the quasi-static branch is stable and diverges at the
-// Uenishi--Rice fold -- the iteration's own behaviour is the diagnostic, and
-// p* is where it stops contracting.
+// linearisation of that map is the slip-weakening stability operator, so it
+// contracts while the quasi-static branch is stable and diverges at the
+// Uenishi--Rice fold; p* is where it stops contracting.
 //
-// NEAR THE FOLD THE CONTRACTION FACTOR APPROACHES ONE and the iteration creeps,
+// Near the fold the contraction factor approaches one and the iteration creeps,
 // so an iteration cap cannot tell slow convergence from divergence. The
-// MU-UPDATE MAGNITUDE can: it shrinks on the stable side and grows past the
+// mu-update magnitude can: it shrinks on the stable side and grows past the
 // fold, which is what the `growing` counter watches.
 //
-// ONLY MU IS CONTINUED ACROSS LEVELS. The inner solves are deliberately cold:
-// with a warm previous jump the tangential driving becomes increment-based and
+// Only mu is continued across levels. The inner solves are cold: with a warm
+// previous jump the tangential driving becomes increment-based and
 // near-threshold facets flip slip direction on noise-scale increments, which
 // loses the branch earlier than it is really lost.
 MIMETIKA_TEST(the_stable_branch_is_followed_and_then_lost) {
@@ -147,10 +144,10 @@ MIMETIKA_TEST(the_stable_branch_is_followed_and_then_lost) {
   const Setup s = build(p, 2.0, 1500.0, 300.0, 20.0, 1.0);
   const FrozenCoulomb inner(kMuStatic);
   const std::size_t n = s.fault.size();
-  // ONE construction, one factorization, for the whole sweep
+  // one construction, one factorization, for the whole sweep
   novikov::Prepared prep = novikov::prepare(s, p);
 
-  // ONE LEVEL: the frozen-mu outer fixed point. Returns whether the branch held.
+  // one level: the frozen-mu outer fixed point. Returns whether the branch held.
   std::vector<double> mu;  // continued across levels; only mu is
   Slipped best;
   const auto attempt = [&](double level, std::vector<double>& mu_io, Slipped& got) {
@@ -160,7 +157,7 @@ MIMETIKA_TEST(the_stable_branch_is_followed_and_then_lost) {
     bool converged = false, runaway = false;
     Slipped r;
     for (outer = 1; outer <= 120; ++outer) {
-      // PRECONDITIONED, NOT COLD. Zero traction with a zero jump is not a state
+      // Preconditioned, not cold. Zero traction with a zero jump is not a state
       // the mechanics could be in -- the fault carries nothing while the rock
       // is fully loaded -- and the first projection then absorbs the whole
       // in-situ imbalance and leaves the physical basin. The locked solve is an
@@ -219,10 +216,10 @@ MIMETIKA_TEST(the_stable_branch_is_followed_and_then_lost) {
     last_stable = level;
   }
 
-  // BISECT THE BRACKET. The paper's p* sits in a window far narrower than any
+  // Bisect the bracket. The paper's p* sits in a window far narrower than any
   // fixed step: 0.016 MPa. The fold is where the mu-update map stops
-  // contracting, and that is a property of the level, so it is found by halving
-  // the interval between the deepest equilibrium and the first level without one.
+  // contracting, a property of the level, so it is found by halving the interval
+  // between the deepest equilibrium and the first level without one.
   if (nucleated < 0.0 && last_stable < 0.0) {
     for (int k = 0; k < 4; ++k) {
       const double mid = 0.5 * (last_stable + nucleated);
@@ -255,10 +252,10 @@ MIMETIKA_TEST(the_stable_branch_is_followed_and_then_lost) {
     return;
   }
 
-  // FIG. 14 IS A COMPARISON OF THE PRE-NUCLEATION STATE, not a pointwise one.
+  // Fig. 14 is a comparison of the pre-nucleation state, not a pointwise one.
   //
   // The paper's curve is its own last equilibrium, at p* = -17.41 MPa; ours is
-  // at whatever level our fold lands on. Those are DIFFERENT PRESSURES, so
+  // at whatever level our fold lands on. Those are different pressures, so
   // demanding pointwise equality would be demanding that two solutions of two
   // different problems coincide. What is comparable is the state: how far the
   // fault has slipped and the shape of the profile -- the peak and the rms.

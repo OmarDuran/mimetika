@@ -4,36 +4,36 @@
 
 #include "../../mimetika_test.hpp"
 #include "mimetika/mesh/structured.hpp"
-#include "mimetika/model/cauchy_elasticity_model.hpp"
+#include "mimetika/model/cauchy_mechanics_model.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
 
-// THE TRACE OPERATOR, AGAINST A SOLVED SYSTEM.
+// The trace operator, against a solved system.
 //
 //     g_f = -( M sigma - D^T u - A^T gamma )_f
 //         = - sum_{E in {E+, E-}} ( M_E sigma - D_E^T u_E - A_E^T gamma_E )|_f
 //
 // Two claims, and the first is what fixes the formula:
 //
-//   THE JUMP VANISHES ON A BONDED INTERIOR FACET. Per cell the constitutive row
+//   The jump vanishes on a bonded interior facet. Per cell the constitutive row
 //   is M_E sigma - D_E^T u - A_E^T gamma = -int_{dE} u.(tau n); the two cofaces
 //   of an interior facet carry opposite outward normals, so when the
 //   displacement is continuous their boundary terms cancel and the assembled
-//   residual is zero. That IS the discrete statement [[u]] = 0.
+//   residual is zero. That is the discrete statement [[u]] = 0.
 //
-//   EVERY TERM IS NEEDED. Dropping M sigma leaves 4e-2 on a unit column instead
+//   Every term is needed. Dropping M sigma leaves 4e-2 on a unit column instead
 //   of round-off. The adjoint pair D^T u + A^T gamma names the operators whose
-//   adjoints see the facet from both sides -- and the outward incidence is
-//   already inside them, which is why the assembled SUM is a difference and no
-//   explicit sign belongs in the loop -- but it is not by itself the gap: on the
-//   annulus it sums to +3.26e-04 and is cancelled exactly by M sigma's -3.26e-04.
+//   adjoints see the facet from both sides -- the outward incidence is already
+//   inside them, which is why the assembled sum is a difference and no explicit
+//   sign belongs in the loop -- but it is not by itself the gap: on the annulus
+//   it sums to +3.26e-04 and is cancelled exactly by M sigma's -3.26e-04.
 //
-//   AND g IS IN METRES. [M sigma] = [D^T u] = [A^T gamma] = m, independently of
+//   And g is in metres. [M sigma] = [D^T u] = [A^T gamma] = m, independently of
 //   the dimension: a displacement, not a moment. That is the dimensional content
 //   of carrying no Gram^{-1} -- a second inversion would give m^{2-d}, i.e. 1/m
 //   in space, which is the 1/h growth under refinement seen as a units error.
 
 using graphos::Index;
-using mimetika::CauchyElasticityModel;
+using mimetika::CauchyMechanicsModel;
 using mimetika::ElasticMaterial;
 using mimetika::mesh::Family;
 
@@ -41,13 +41,13 @@ namespace {
 
 constexpr double kMu = 1.0, kLam = 1.0;
 
-// the worst |g_f| over every INTERIOR facet of a solved problem
+// the worst |g_f| over every interior facet of a solved problem
 struct Worst {
   double value{0.0};
   std::size_t facets{0};
 };
 
-Worst worst_interior_jump(const CauchyElasticityModel& model, const exokal::Mesh& m, int d) {
+Worst worst_interior_jump(const CauchyMechanicsModel& model, const exokal::Mesh& m, int d) {
   const graphos::Complex& c = m.topology();
   const graphos::CoboundaryOperator cob = graphos::coboundary(c, d - 1);
   Worst out;
@@ -63,7 +63,7 @@ Worst worst_interior_jump(const CauchyElasticityModel& model, const exokal::Mesh
   return out;
 }
 
-void solve(CauchyElasticityModel& model) {
+void solve(CauchyMechanicsModel& model) {
   model.build();
   mimetika::solver::PetscSolver petsc;
   std::vector<double> x;
@@ -72,7 +72,7 @@ void solve(CauchyElasticityModel& model) {
   model.accept(std::move(x));
 }
 
-// confined uniaxial compression: a UNIFORM stress state
+// confined uniaxial compression: a uniform stress state
 Worst column_case(int n, int dim, Family family) {
   const double h = 1.0, load = 0.5;
   const exokal::Mesh m = mimetika::mesh::column(n, dim, family, h);
@@ -86,15 +86,15 @@ Worst column_case(int n, int dim, Family family) {
   std::array<double, 9> applied{};
   applied[static_cast<std::size_t>(axis * 3 + axis)] = -load;
 
-  CauchyElasticityModel model(m, dim, ElasticMaterial{kMu, kLam});
+  CauchyMechanicsModel model(m, dim, ElasticMaterial{kMu, kLam});
   model.mechanics().emplace<mimetika::TractionBC>(loaded, applied);
   model.mechanics().emplace<mimetika::FreeSlipBC>(confined);
   solve(model);
   return worst_interior_jump(model, m, dim);
 }
 
-// Lame's tube: sigma_rr = A - B/r^2, a genuinely NON-UNIFORM stress state, which
-// is where a formula that happens to work by symmetry stops working
+// Lame's tube: sigma_rr = A - B/r^2, a non-uniform stress state, where a formula
+// that works by symmetry alone stops working
 Worst annulus_case(int nr, int nt, int dim, Family family) {
   const double a = 1.0, b = 4.0, hz = 1.0, p_a = 1.0, p_b = 0.25;
   const exokal::Mesh m = mimetika::mesh::annulus(nr, nt, dim, family, a, b, hz);
@@ -119,7 +119,7 @@ Worst annulus_case(int nr, int nt, int dim, Family family) {
     si[static_cast<std::size_t>(k * 3 + k)] = -p_a;
     so[static_cast<std::size_t>(k * 3 + k)] = -p_b;
   }
-  CauchyElasticityModel model(m, dim, ElasticMaterial{kMu, kLam});
+  CauchyMechanicsModel model(m, dim, ElasticMaterial{kMu, kLam});
   model.mechanics().emplace<mimetika::TractionBC>(inner, si);
   model.mechanics().emplace<mimetika::TractionBC>(outer, so);
   model.mechanics().emplace<mimetika::FreeSlipBC>(sym);
@@ -129,9 +129,9 @@ Worst annulus_case(int nr, int nt, int dim, Family family) {
 
 }  // namespace
 
-// THE JUMP VANISHES WHEREVER THE MATERIAL IS CONTINUOUS -- on every interior
+// The jump vanishes wherever the material is continuous -- on every interior
 // facet, every cell type, both dimensions. This is the identity the trace rests
-// on, and the one that decided its formula: it is the discrete [[u]] = 0.
+// on and the one that decided its formula: the discrete [[u]] = 0.
 MIMETIKA_TEST(the_jump_vanishes_on_every_bonded_interior_facet) {
   for (const int dim : {2, 3}) {
     for (const Family f : {Family::cartesian, Family::simplex, Family::prism}) {
@@ -144,10 +144,10 @@ MIMETIKA_TEST(the_jump_vanishes_on_every_bonded_interior_facet) {
   }
 }
 
-// AND UNDER A NON-UNIFORM STRESS STATE, which is the case that distinguishes
-// the formula from one that merely works by symmetry: on the column the two
-// cofaces contribute exactly equal halves of M sigma, on Lame's tube they do
-// not, and the identity holds either way.
+// And under a non-uniform stress state, which distinguishes the formula from
+// one that works by symmetry alone: on the column the two cofaces contribute
+// exactly equal halves of M sigma, on Lame's tube they do not, and the identity
+// holds either way.
 MIMETIKA_TEST(the_jump_vanishes_under_a_non_uniform_stress_state) {
   for (const int dim : {2, 3}) {
     for (const Family f : {Family::cartesian, Family::simplex}) {
@@ -160,10 +160,9 @@ MIMETIKA_TEST(the_jump_vanishes_under_a_non_uniform_stress_state) {
   }
 }
 
-// EVERY TERM IS LOAD BEARING. Removing M sigma leaves a residual of the order of
+// Every term is load bearing. Removing M sigma leaves a residual of the order of
 // the displacement across a cell -- 4e-2 on this column against a 1e-16 total --
-// so the adjoint pair alone is not the gap, and the test says so with the number
-// rather than by assertion.
+// so the adjoint pair alone is not the gap.
 MIMETIKA_TEST(the_compliance_term_is_not_optional) {
   const double h = 1.0, load = 0.5;
   const int dim = 3;
@@ -176,7 +175,7 @@ MIMETIKA_TEST(the_compliance_term_is_not_optional) {
   }
   std::array<double, 9> applied{};
   applied[8] = -load;
-  CauchyElasticityModel model(m, dim, ElasticMaterial{kMu, kLam});
+  CauchyMechanicsModel model(m, dim, ElasticMaterial{kMu, kLam});
   model.mechanics().emplace<mimetika::TractionBC>(loaded, applied);
   model.mechanics().emplace<mimetika::FreeSlipBC>(confined);
   solve(model);
@@ -223,11 +222,11 @@ MIMETIKA_TEST(the_compliance_term_is_not_optional) {
   const double full = model.trace(face, z)[2];
   std::printf("  adjoint pair alone %.6e   full residual %.2e\n", adjoint_only, full);
 
-  // THE FULL RESIDUAL VANISHES and the adjoint pair does not, by four orders
+  // the full residual vanishes and the adjoint pair does not, by four orders
   CHECK(std::abs(full) < 1e-12);
   CHECK(std::abs(adjoint_only) > 1e-3);
 
-  // AND IT IS THE DISPLACEMENT OVER THE TWO HALF-CELLS, in metres: with
+  // and it is the displacement over the two half-cells, in metres: with
   // K_oed = lam + 2mu = 3, eps = -load/K_oed, over 2 x h/(2n) = 0.25 m
   const double eps = -load / (kLam + 2.0 * kMu);
   CHECK(std::abs(std::abs(adjoint_only) - std::abs(eps * 0.25)) < 1e-12);

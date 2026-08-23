@@ -53,13 +53,13 @@ breaks.
 ## The order of the port
 
 Each step ends with the C++ and the Python agreeing on something checkable, so
-the Python is deleted only against evidence and never on faith.
+the Python is deleted only against evidence.
 
 1. ~~Natural BCs~~ and the elasticity product — both done, the second checked
    cell by cell against the Python operator.
-2. Mechanics alone: a linear elasticity patch test. The pieces are in place —
-   an affine displacement datum is exact at the boundary, so what the test
-   measures is the method rather than the boundary integration.
+2. Mechanics alone: a linear elasticity patch test. An affine displacement
+   datum is exact at the boundary, so the test measures the method and not the
+   boundary integration.
 4. Poroelastic coupling: the Biot blocks, adjointness, and one time step.
 5. Terzaghi, against the closed form and against the Python's own numbers.
 6. Delete: `simulation/poromechanics.py`, `operators/elasticity.py`,

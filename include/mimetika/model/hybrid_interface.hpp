@@ -8,33 +8,33 @@
 #include "exokal/hodge/hybrid_stress.hpp"
 #include "mimetika/linear_solver/linear.hpp"
 
-// THE INTERFACE SYSTEM, ASSEMBLED SPARSELY.
+// The interface system, assembled sparsely.
 //
 // exokal hybridizes a cell: it inverts the local saddle once and hands back
 // the Steklov block S_E = C^T A_E^-1 C, the cell's displacement-to-traction
-// map on its own boundary. What is left is a system in the FACET MULTIPLIERS
+// map on its own boundary. What is left is a system in the facet multipliers
 // alone -- the facet displacement in the moment chart the tractions carry --
 // and assembling it is this file's whole job.
 //
-// exokal's own assemblers are DENSE, and say so: they are the contract, and
-// the oracle a sparse one is held to. The contract is one sentence -- two
-// multiplier blocks couple iff their facets share a cell -- so the sparsity is
-// the facet adjacency through cells, and nothing here has to be discovered:
+// exokal's own assemblers are dense: they are the contract, and the oracle a
+// sparse one is held to. The contract is one sentence -- two multiplier blocks
+// couple iff their facets share a cell -- so the sparsity is the facet
+// adjacency through cells:
 //
 //     for each cell E, for each pair of its facets (f, g),
 //         S[lambda(f), lambda(g)] += S_E[f-block, g-block]
 //
 // A facet's multiplier block is nf = facet_dofs unknowns, contiguous, and a
-// PINNED facet has no block at all: the essential condition of a hybridized
+// pinned facet has no block at all: the essential condition of a hybridized
 // method is the facet displacement itself, which is why the boundary roles
 // swap relative to the mixed form.
 //
-// WHY IT IS WORTH THE SECOND ELIMINATION. S is SPD once any facet is pinned --
+// Why the second elimination is worth it: S is SPD once any facet is pinned --
 // each S_E is symmetric positive semidefinite with the cell's rigid motions
-// for a kernel, and pinning removes the global ones. That is the property the
-// two-point condensation cannot offer for these realizations: the condensed
-// mixed system is quasi-definite and wants MINRES, this one takes a conjugate
-// gradient and an algebraic multigrid.
+// for a kernel, and pinning removes the global ones. The two-point condensation
+// cannot offer that for these realizations: the condensed mixed system is
+// quasi-definite and wants MINRES, this one takes a conjugate gradient and an
+// algebraic multigrid.
 
 namespace mimetika {
 
@@ -51,10 +51,10 @@ inline std::vector<char> hybrid_free_facets(const exokal::Mesh& mesh, int cell_d
 
 // The interface system as triplets, in the multiplier numbering the free mask
 // induces: facet f's block begins at the f-th free facet's offset, nf wide.
-// ONE ASSEMBLER FOR BOTH PHYSICS. The flux and the stress hybridize to the
+// One assembler for both physics: the flux and the stress hybridize to the
 // same shape -- a Steklov block per cell over its facets' multiplier blocks --
-// and the sparsity clause is the same sentence, so the walk is written once
-// and instantiated per operator type. Only the offset helper lives in a
+// and the sparsity clause is the same, so the walk is written once and
+// instantiated per operator type. Only the offset helper lives in a
 // per-physics namespace upstream, which is what the trait below names.
 template <class Hops>
 inline solver::SparseSystem hybrid_interface_sparse_of(const exokal::Mesh& mesh, int cell_dim,
@@ -116,19 +116,16 @@ inline solver::SparseSystem hybrid_interface_sparse(
   return hybrid_interface_sparse_of(mesh, cell_dim, hops, free_facets);
 }
 
-// THE LOAD, THE PINNED DATUM AND THE RECOVERY ARE EXOKAL'S.
+// The load, the pinned datum and the recovery are exokal's.
 //
-// They were mimetika's for exactly as long as exokal lacked them: the load
-// carries the pinned multiplier's contribution to the free rows, and the
-// recovery reads the multiplier over every facet rather than skipping the
-// pinned ones. Both now live upstream -- hybrid_interface_load takes
+// The load carries the pinned multiplier's contribution to the free rows, and
+// the recovery reads the multiplier over every facet rather than skipping the
+// pinned ones. Both live upstream -- hybrid_interface_load takes
 // `lambda_data`, hybrid_recovery takes lambda over the whole stratum -- so
-// they are called rather than copied.
-//
-// Copying them was what dated: upstream also changed the SIGN of the coupling
-// so that the multiplier is the displacement rather than its negative, and a
-// local copy went on answering the old convention while the system it fed
-// answered the new one. Only the system assembly is mimetika's, because only
-// that one has a sparsity question to answer.
+// they are called rather than copied: upstream's sign convention is that the
+// multiplier is the displacement rather than its negative, and a local copy
+// would go on answering an older one while the system it feeds answers this.
+// Only the system assembly is mimetika's, because only that one has a
+// sparsity question to answer.
 
 }  // namespace mimetika

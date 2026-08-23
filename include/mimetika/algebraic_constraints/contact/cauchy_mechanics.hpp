@@ -5,9 +5,9 @@
 
 #include "mimetika/algebraic_constraints/contact/map.hpp"
 #include "mimetika/algebraic_constraints/contact/trace.hpp"
-#include "mimetika/model/cauchy_elasticity_model.hpp"
+#include "mimetika/model/cauchy_mechanics_model.hpp"
 
-// CONTACT OVER CAUCHY ELASTICITY: the adapter, and nothing more.
+// Contact over Cauchy elasticity: the adapter, and nothing more.
 //
 // ContactMechanics asks for three operations and this supplies them by
 // delegation -- it computes nothing itself:
@@ -19,13 +19,12 @@
 //                       factorizes once and back-substitutes thereafter
 //   gap                 the model's trace, rotated into the facet frame
 //
-// That it is thin IS the design. The contact code above it names no model; the
-// model below it names no contact. Replacing CauchyElasticityModel with
-// PoroelasticModel is a second file of this shape -- the fracture pressure
-// enters the model's own trace through the Biot coupling and its right-hand
-// side is nonzero on the prescribed rows, which is why `gap` must be the row
-// RESIDUAL rather than J z -- and laws.hpp, map.hpp and driver.hpp do not
-// change by one line.
+// The contact code above it names no model; the model below it names no
+// contact. Replacing CauchyMechanicsModel with PoroelasticModel is a second
+// file of this shape -- the fracture pressure enters the model's own trace
+// through the Biot coupling and its right-hand side is nonzero on the
+// prescribed rows, which is why `gap` must be the row residual rather than
+// J z -- and laws.hpp, map.hpp and driver.hpp do not change.
 
 namespace mimetika::contact {
 
@@ -34,7 +33,7 @@ class CauchyContactMechanics final : public ContactMechanics {
   // The model must already have been told which facets carry a prescribed
   // traction, and built: the structure of the constrained problem is fixed at
   // build time and only the values move afterwards.
-  CauchyContactMechanics(const CauchyElasticityModel& model, Fracture fracture)
+  CauchyContactMechanics(const CauchyMechanicsModel& model, Fracture fracture)
       : model_(&model), fracture_(std::move(fracture)) {
     if (fracture_.dim() != model.dim()) {
       throw std::invalid_argument(
@@ -65,11 +64,11 @@ class CauchyContactMechanics final : public ContactMechanics {
 
   const Fracture& fracture() const { return fracture_; }
 
-  // FACET-FRAME VALUES -> TRACTION MOMENTS.
+  // Facet-frame values -> traction moments.
   //
   // A traction dof is the moment m_b = int_f (sigma n) chi_b. The facet chart is
   // orthonormalized in L^2(f) with chi_0 = 1 and int_f chi_b = 0 for b >= 1, so
-  // a traction taken CONSTANT over the facet -- which is what one enforcement
+  // a traction taken constant over the facet -- which is what one enforcement
   // point per facet means -- lands entirely on the leading moment, t_k |f|, and
   // contributes nothing to the higher ones. The same statement TractionBC makes
   // for a prescribed boundary traction, and for the same reason.
@@ -94,7 +93,7 @@ class CauchyContactMechanics final : public ContactMechanics {
     z = model_->solution_operator(moments);
   }
 
-  // THE GAP, from the trace: the residual of the UNFRACTURED constitutive row,
+  // The gap, from the trace: the residual of the unfractured constitutive row,
   // rotated into the facet frame. It is a displacement in metres, and its
   // leading moment is the facet mean -- the quantity one enforcement point per
   // facet is about.
@@ -112,7 +111,7 @@ class CauchyContactMechanics final : public ContactMechanics {
   }
 
  private:
-  const CauchyElasticityModel* model_;
+  const CauchyMechanicsModel* model_;
   Fracture fracture_;
   std::size_t ndf_{0};
 };

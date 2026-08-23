@@ -360,9 +360,9 @@ class Geometry:
         incidence sign is* ``+1``.  In 3D that holds by construction -- the
         canonical loop is the one the ``+1`` cell traverses outward -- but the
         2D rotation of an edge direction carries no such guarantee, so it is
-        enforced here.  The convention is not cosmetic: the sign of the gap is
-        tied to it, and Signorini (``g_n >= 0``, ``t_n <= 0``) is *not* invariant
-        under flipping the normal.
+        enforced here.  The sign of the gap is tied to this convention, and
+        Signorini (``g_n >= 0``, ``t_n <= 0``) is *not* invariant under flipping
+        the normal.
         """
         d = self.complex.dim
         if d == 3:
@@ -396,8 +396,7 @@ class Geometry:
 
         Cached per dimension.  It is a whole-mesh quantity that callers ask for
         one cell at a time -- the contact code wants it once per fracture facet --
-        so recomputing it made the cost quadratic in the number of facets, and it
-        dominated the benchmark profile.
+        so recomputing it per call is quadratic in the number of facets.
         """
         cache = self.__dict__.setdefault("_second_moments", {})
         if k in cache:

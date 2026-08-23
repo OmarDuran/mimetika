@@ -33,7 +33,7 @@ def test_poroelasticity_adds_no_field_of_its_own():
     m = hex_grid(2)
 
     mech = mk.build_composition("linear_elasticity")
-    flow = mk.build_composition("single_phase_flow")
+    flow = mk.build_composition("flow")
     poro = mk.build_composition("poroelasticity")
     assert mech.size == 1 and flow.size == 1 and poro.size == 3
 

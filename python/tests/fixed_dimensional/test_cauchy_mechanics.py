@@ -1,6 +1,6 @@
 """Cauchy elasticity through the Python interface.
 
-The Python-side mirror of tests/model/test_cauchy_elasticity.cpp: the same two
+The Python-side mirror of tests/model/test_cauchy_mechanics_model.cpp: the same two
 problems (a confined column with a closed form, and Lame's thick-walled tube
 without one), the same three cell families, the same two products, the same
 tolerances.
@@ -60,7 +60,7 @@ def column_case(n, dim, family, how, form=WEAK, degeneracy=None) -> Outcome:
     applied = [0.0] * 9
     applied[axis * 3 + axis] = -load
 
-    model = mk.CauchyElasticityModel(m, dim, _material(), how, form)
+    model = mk.CauchyMechanicsModel(m, dim, _material(), how, form)
     model.add_traction(loaded, applied)
     model.add_free_slip(confined)
     if degeneracy is not None:
@@ -136,7 +136,7 @@ def annulus_case(nr, nt, dim, family, how, mat=None, form=WEAK) -> Outcome:
         si[k * 3 + k] = -p_a
         so[k * 3 + k] = -p_b
 
-    model = mk.CauchyElasticityModel(m, dim, mat, how, form)
+    model = mk.CauchyMechanicsModel(m, dim, mat, how, form)
     model.add_traction(inner, si)
     model.add_traction(outer, so)
     model.add_free_slip(sym)
@@ -238,7 +238,7 @@ def test_the_two_products_are_one_element_on_a_simplex_mesh(dim):
 def test_the_model_refuses_the_realization_that_is_not_an_element():
     m = mk.column(2, 3, mk.Family.simplex)
     with pytest.raises(ValueError):
-        mk.CauchyElasticityModel(m, 3, _material(), DERHAM_RT)
+        mk.CauchyMechanicsModel(m, 3, _material(), DERHAM_RT)
 
 
 # NEITHER PRODUCT LOCKS. As nu -> 1/2 the volumetric term dominates the
@@ -318,7 +318,7 @@ def test_the_adaptive_vem_selection_matches_its_members_at_the_ends():
 
 def test_the_adaptive_vem_selection_is_reported_as_built():
     m = mk.column(3, 3, mk.Family.cartesian, 1.0)
-    model = mk.CauchyElasticityModel(m, 3, _material(), ADAPTIVE_VEM, STRONG_TOTAL)
+    model = mk.CauchyMechanicsModel(m, 3, _material(), ADAPTIVE_VEM, STRONG_TOTAL)
     model.add_traction(mk.boundary_facets(m, 3), [0.0] * 9)
     with pytest.raises(Exception):
         model.eta  # as built -- so not before the build
@@ -343,7 +343,7 @@ def test_the_adaptive_vem_conditioning_selector_reaches_both_members():
     applied[8] = -0.5
 
     def confined_model():
-        model = mk.CauchyElasticityModel(m, 3, _material(), ADAPTIVE_VEM, STRONG_TOTAL)
+        model = mk.CauchyMechanicsModel(m, 3, _material(), ADAPTIVE_VEM, STRONG_TOTAL)
         model.add_traction(loaded, applied)
         model.add_free_slip(confined)
         return model
@@ -382,7 +382,7 @@ def test_the_adaptive_vem_conditioning_selector_reaches_both_members():
 def test_the_strong_wiring_refuses_what_it_must(how, form, dim):
     m = mk.column(2, dim, mk.Family.cartesian, 1.0)
     with pytest.raises(Exception):
-        mk.CauchyElasticityModel(m, dim, _material(), how, form)
+        mk.CauchyMechanicsModel(m, dim, _material(), how, form)
 
 
 def test_the_threshold_is_refused_off_the_adaptive_vem_product():
