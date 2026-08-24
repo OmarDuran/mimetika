@@ -17,18 +17,23 @@ contains exactly; the cell unknown is a cell average, and the average of a
 linear function is its value at the centroid. So the computed pressure should
 equal p(x_E) to round-off, on a good mesh and a bad one alike.
 
-    That holds for derham_rt and stabilized_rt, and not for derham_bdm.
+    It holds for every product here, RT and BDM alike -- provided the
+    datum is given as a FIELD and not as a number.
 
-The reason is the datum, not the method. A prescribed pressure is natural here,
-carried per facet as a single number, and the term places it entirely on the
-constant moment of the facet's flux. RT has exactly one moment per facet, so
-that is the whole datum and nothing is lost. BDM has `dim` of them, and the
-linear part of p across each facet belongs to the higher moments -- which
-receive zero. The mechanics side does not have this problem: its displacement
-datum is affine, u = a + B (x - x_E), so both moments are supplied.
+A prescribed pressure is natural here: it enters the flux row as
+int_f p_D (tau.n), and a facet carrying d flux moments tests it against d basis
+functions. The chart is equilibrated, so the facet Gram is |f| I and moment b
+wants (1/|f|) int_f p_D phi_b. For RT there is one moment, the basis is the
+constant, and a single number -- the facet average, which for a linear field is
+the centroid value -- is the whole datum. For BDM the higher basis functions
+are centred: they are blind to a constant and see exactly the VARIATION of p
+across the facet. A number cannot express that, so `add_pressure` takes the
+gradient too, and prescribe_linear_pressure passes it.
 
-The resulting error converges at first order, so it reads as a discretization
-error and is not one. Run with --product derham_bdm to see it.
+Given only the number, the BDM products lose the patch -- 2.9e-02 on a Kuhn box,
+1.3e+00 on a simplicial annulus, against round-off with the gradient. That is
+the datum, not the discretization: the same operator is exact once its rows are
+told what the field does inside each facet.
 
 Run it:
 
@@ -87,8 +92,11 @@ def solvers(rtol):
         # 0.14 us per dof per iteration while icc goes 0.17 -> 1.4 and Cholesky
         # 0.11 -> 0.68.
         #
-        # Only for one unknown per facet in 3D (derham_rt, stabilized_rt),
-        # which is the space ADS is written for.
+        # ADS is a 3D construction and is written for ONE unknown per facet
+        # (derham_rt, stabilized_rt, and the eta = 1 cells of adaptive_rt). A
+        # facet carrying d moments -- derham_bdm, stabilized_bdm -- is not
+        # refused: it reaches ADS through the facet-constant subspace, as a
+        # two-level cycle whose coarse operator is where ADS runs.
         "ads": mk.SolverOptions(
             method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000,
             riesz_block_pc="ads",
@@ -111,6 +119,13 @@ DEFAULT_RTOL = 1e-9
 
 PRODUCTS = {
     "derham_bdm": mk.FluxRealization.derham_bdm,
+    # The BDM order's other half: the same [P_1]^d space and the same d
+    # moments per facet as derham_bdm, reached by PENALIZING the surplus
+    # rather than by enriching to unisolvence. On a simplex the kernel is
+    # empty, the stabilization vanishes and the two coincide with BDM_1; on a
+    # polytope they are different operators. It is the flux the stabilized_bdm
+    # stress is d copies of.
+    "stabilized_bdm": mk.FluxRealization.stabilized_bdm,
     "derham_rt": mk.FluxRealization.derham_rt,
     "stabilized_rt": mk.FluxRealization.stabilized_rt,
     # One flux per facet and no reconstruction: M is the diagonal primal-dual
@@ -185,6 +200,8 @@ def report_error(volume, p_h, p, q_h, q, dim, moments):
         print("  p_h is cell-wise constant, so e_p is the whole error in the pressure;")
         print(f"  the facet carries {moments} flux moments and cell_flux pairs only the")
         print("  constant one, so the flux row carries a reconstruction error too.")
+        print("  The datum is affine here -- value and gradient -- which is what those")
+        print("  moments need; given only the value the pressure loses the patch.")
     print("  S, the norm each row is measured against, is ||Pi_0 p||_D for the")
     print("  pressure and ||q||_D for the flux.")
     print()
@@ -198,15 +215,23 @@ def report_error(volume, p_h, p, q_h, q, dim, moments):
 
 
 def prescribe_linear_pressure(model, mesh, dim, lo, direction, length):
-    """p on every boundary facet, at the value the field takes at its centroid.
+    """p on every boundary facet: the centroid value AND the gradient.
 
-    The datum is one number per facet, so the value that belongs there is the
-    facet average -- and for a linear field that is exactly the centroid value.
+    THE GRADIENT IS NOT DECORATION. The flux row of a boundary facet carries
+    int_f p_D (tau.n), and a facet holding d flux moments tests that datum
+    against d basis functions, not one. The centroid value is the whole datum
+    only where the facet carries a single moment -- there the basis is the
+    constant and the facet average is exactly the centroid value of a linear
+    field. With d moments the higher basis functions are centred, so they see
+    only the VARIATION of p across the facet, which the gradient supplies and a
+    number cannot. Omit it and the BDM products lose the patch they reproduce
+    exactly: 2.9e-02 on the Kuhn box against 8.4e-15 with it.
     """
     facets = mk.boundary_facets(mesh, dim)
+    gradient = [float(direction[k]) / length if k < dim else 0.0 for k in range(3)]
     for f in facets:
         x_f = mk.centroid(mesh, dim - 1, f)
-        model.add_pressure([f], exact(x_f, lo, direction, length, dim))
+        model.add_pressure([f], exact(x_f, lo, direction, length, dim), gradient)
     return len(facets)
 
 

@@ -1734,6 +1734,13 @@ PYBIND11_MODULE(_core, m) {
       .value("derham_bdm", FluxOperators::Realization::derham_bdm)
       .value("derham_rt", FluxOperators::Realization::derham_rt)
       .value("stabilized_rt", FluxOperators::Realization::stabilized_rt)
+      // The BDM order's other half: [P_1]^d from d moments per facet, like
+      // derham_bdm, but reached by penalizing the surplus rather than by
+      // enriching to unisolvence -- so it is strongly consistent on ANY
+      // polytope, where the enriched construction is not. On a simplex the
+      // kernel is empty and the two coincide with BDM_1. It is the flux the
+      // stabilized_bdm stress is d copies of.
+      .value("stabilized_bdm", FluxOperators::Realization::stabilized_bdm)
       // One flux per facet and no reconstruction: M is the diagonal
       // primal-dual star, which is the two-point flux approximation. Exact
       // where the mesh is K-orthogonal and only there -- see the flow example.
@@ -1871,10 +1878,16 @@ PYBIND11_MODULE(_core, m) {
           py::arg("facets"))
       .def(
           "add_pressure",
-          [](mimetika::FlowModel& s, const std::vector<Index>& facets, double value) {
-            s.flow().emplace<mimetika::PressureBC>(facets, value);
+          [](mimetika::FlowModel& s, const std::vector<Index>& facets, double value,
+             py::object gradient) {
+            std::array<double, 3> g{0.0, 0.0, 0.0};
+            if (!gradient.is_none()) g = py::cast<std::array<double, 3>>(gradient);
+            s.flow().emplace<mimetika::PressureBC>(facets, value, g);
           },
-          py::arg("facets"), py::arg("value"))
+          py::arg("facets"), py::arg("value"), py::arg("gradient") = py::none(),
+          "p_D = value + gradient . (x - x_f) on each facet. The gradient is what a "
+          "facet carrying several flux moments needs: with one moment per facet the "
+          "datum is the facet average, which for an affine field is the centroid value")
       .def(
           "set_permeability",
           [](mimetika::FlowModel& s, const py::object& k) {

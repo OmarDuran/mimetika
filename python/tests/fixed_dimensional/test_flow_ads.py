@@ -62,6 +62,16 @@ ONE_PER_FACET = {
     "adaptive_rt": R.adaptive_rt,
 }
 
+# the BDM order: d moments per facet, [P_1]^d. ADS is not written for that
+# space -- but the Riesz block is still reachable, through the TWO-LEVEL cycle
+# whose coarse space is the facet CONSTANTS, where ADS applies. Both members
+# reconstruct the same space and part only on a polytope, where derham_bdm
+# enriches to unisolvence and stabilized_bdm penalizes the surplus.
+BDM = {
+    "derham_bdm": R.derham_bdm,
+    "stabilized_bdm": R.stabilized_bdm,
+}
+
 RTOL = 1e-8
 
 
@@ -86,12 +96,18 @@ def _linear(x):
 
 def patch(mesh, product=R.stabilized_rt, permeability=None):
     """A linear pressure prescribed on the whole boundary: no constraint rows,
-    and for the mimetic products an answer known in closed form."""
+    and for the mimetic products an answer known in closed form.
+
+    The datum carries its GRADIENT as well as its value, which is what a facet
+    holding d flux moments needs -- the centred basis functions of the facet see
+    only the variation across it. Without it the BDM products lose the patch,
+    and an iteration count measured on a wrong answer is not a measurement.
+    """
     model = mk.FlowModel(mesh, 3, 1.0, product)
     if permeability is not None:
         model.set_permeability(permeability)
     for f in mk.boundary_facets(mesh, 3):
-        model.add_pressure([f], _linear(mk.centroid(mesh, 2, f)))
+        model.add_pressure([f], _linear(mk.centroid(mesh, 2, f)), list(GRADIENT))
     return model
 
 
@@ -156,6 +172,65 @@ def test_ads_cg_is_h_robust(name):
         model = patch(cube(n), ONE_PER_FACET[name])
         counts.append(_count(model, "ads-cg"))
         print(f"  {name:14s} {model.n_cells:6d} cells {model.n_dofs:7d} dofs   {counts[-1]:4d} its")
+    assert counts[-1] <= counts[0] + 6
+
+
+# THE STABILIZATION VANISHES ON A SIMPLEX, and this compares the OPERATORS
+# rather than the solutions to say so. On a simplex D = d(d+1) = m: N is
+# square and invertible, ker(N^T) is empty, M_2 = s(I - QQ^T) = 0, and
+# stabilized_bdm IS derham_bdm -- both the conforming BDM_1 element. On a
+# polytope the kernel is real (18 - 12 = 6 on a hexahedron) and the two are
+# different operators.
+#
+# Solutions would be the weaker instrument: the linear patch does not excite
+# the kernel, so the two AGREE on a cartesian box to round-off while their
+# blocks differ by 35%. The eigenvalues of the cell blocks cannot hide that.
+def test_the_stabilization_vanishes_on_a_simplex_and_not_on_a_polytope():
+    for label, mesh, coincide in (
+        ("simplex", wedge(4), True),
+        ("hexahedra", cube(3), False),
+        ("prism", wedge(4, mk.Family.prism), False),
+    ):
+        a = mk.flux_cell_spectra(mesh, 3, R.derham_bdm, 1.0)
+        b = mk.flux_cell_spectra(mesh, 3, R.stabilized_bdm, 1.0)
+        worst = 0.0
+        for key in ("lambda_min", "lambda_max", "cond"):
+            u, v = np.asarray(a[key]), np.asarray(b[key])
+            worst = max(worst, float(np.max(np.abs(u - v) / np.maximum(np.abs(u), 1e-300))))
+        print(f"  {label:10s} {a['n_dofs'][0]:3d} dofs/cell   max relative spectral"
+              f" difference {worst:.2e}")
+        if coincide:
+            assert worst < 1e-10
+        else:
+            assert worst > 1e-2
+
+
+# THE SAME TWO PROPERTIES AT BDM ORDER, which is the whole question the
+# stabilized_bdm flux was added to answer: its block is three times wider per
+# facet and its coarse space is the same facet-constant one, so h-robustness
+# here is a statement about the CYCLE -- smoother plus coarse correction --
+# rather than about ADS alone.
+@pytest.mark.parametrize("name", sorted(BDM))
+def test_the_bdm_cycle_is_h_robust(name):
+    _needs_hypre()
+    counts = []
+    for n in (3, 4, 6, 8):
+        model = patch(cube(n), BDM[name])
+        its = _count(model, "ads-cg")
+        counts.append(its)
+        print(f"  {name:14s} {model.n_cells:6d} cells {model.n_dofs:7d} dofs   {its:4d} its")
+    assert counts[-1] <= counts[0] + 6
+
+
+@pytest.mark.parametrize("name", sorted(BDM))
+def test_the_bdm_cycle_is_h_robust_on_simplices(name):
+    _needs_hypre()
+    counts = []
+    for nr in (4, 6, 8, 12):
+        model = patch(wedge(nr), BDM[name])
+        its = _count(model, "ads-cg")
+        counts.append(its)
+        print(f"  {name:14s} {model.n_cells:6d} cells {model.n_dofs:7d} dofs   {its:4d} its")
     assert counts[-1] <= counts[0] + 6
 
 
@@ -226,6 +301,24 @@ def test_the_count_does_not_track_the_contrast(kind):
         model = patch(mesh, R.stabilized_rt, enclosure(mesh, p))
         counts.append(_count(model, kind))
         print(f"  {kind:6s} K_in = 1e{p:+03d}   {counts[-1]:4d} its")
+    assert max(counts) <= min(counts) + 8
+
+
+# CONTRAST AT BDM ORDER. The norm's K-scalar is per cell, not per dof, so it
+# reaches a d-moment block exactly as it reaches a one-moment one -- and the
+# coarse operator is Galerkin, so the coefficient is in the auxiliary spaces
+# either way. Both members are checked: the enriched and the stabilized
+# reconstruction see the same jump through different local products.
+@pytest.mark.parametrize("name", sorted(BDM))
+def test_the_bdm_count_does_not_track_the_contrast(name):
+    _needs_hypre()
+    mesh = cube(8)
+    counts = []
+    for p in JUMPS:
+        model = patch(mesh, BDM[name], enclosure(mesh, p))
+        its = _count(model, "ads-cg")
+        counts.append(its)
+        print(f"  {name:14s} K_in = 1e{p:+03d}   {its:4d} its")
     assert max(counts) <= min(counts) + 8
 
 
@@ -376,22 +469,43 @@ def test_an_anisotropic_tensor_is_solved_and_is_the_direct_answer(kind):
 # ---- 6. the products ADS is not for ----------------------------------------
 #
 # ADS is a statement about the lowest-order space: one unknown per facet, in
-# 3D. derham_bdm carries d moments on each facet, so there is no ADS to run on
-# its block -- and the solver says so by falling back to the exact factorization
-# rather than preconditioning a space it was not given the complex for. What
-# must not happen is a wrong answer.
-def test_the_bdm_block_falls_back_rather_than_misapplying_ads():
+# 3D. A BDM block carries d moments on each facet, which is NOT the space ADS
+# is written for -- and the solver does not refuse it, nor misapply ADS to it:
+# it builds the TWO-LEVEL cycle, whose coarse space is the facet constants (one
+# scalar per facet, injected per component) and whose smoother is facet-local.
+# ADS then runs where it is defined, on the coarse operator, and the answer is
+# still the direct answer.
+@pytest.mark.parametrize("name", sorted(BDM))
+@pytest.mark.parametrize("kind", ["ads", "ads-cg"])
+def test_the_bdm_block_reaches_ads_through_the_coarse_space(name, kind):
     _needs_hypre()
     mesh = wedge(8)
-    direct = patch(mesh, R.derham_bdm)
+    direct = patch(mesh, BDM[name])
     direct.solve()
-    asked = patch(mesh, R.derham_bdm)
-    its = _count(asked, "ads")
+    asked = patch(mesh, BDM[name])
+    its = _count(asked, kind)
     worst = max(
         abs(direct.cell_pressure(e) - asked.cell_pressure(e)) for e in range(direct.n_cells)
     )
-    print(f"  derham_bdm asked for ads: {its} its, max |ads - direct| = {worst:.2e}")
+    print(f"  {name:14s} {kind:6s} {its:3d} its   max |ads - direct| = {worst:.2e}")
     assert worst < 1e-6
+
+
+# WHY THE TWO VARIANTS AGREE HERE, where they part on a one-dof-per-facet
+# block. `ads` means a single V-cycle only when ADS is applied to the block
+# ITSELF; on a BDM block the cycle is two-level, and a two-level cycle whose
+# coarse correction is inexact is not a preconditioner of fixed quality, so the
+# solver wraps it in the inner CG either way -- 500 steps against ads-cg's 50,
+# a cap neither run reaches. So the block is solved to tolerance in both, and
+# the outer count is the Riesz map's in both. Pinned because a future change to
+# the budget would otherwise silently turn `ads` into a sampled cycle here.
+@pytest.mark.parametrize("name", sorted(BDM))
+def test_the_two_variants_agree_on_a_bdm_block(name):
+    _needs_hypre()
+    mesh = cube(6)
+    counts = [_count(patch(mesh, BDM[name]), kind) for kind in ("ads", "ads-cg")]
+    print(f"  {name:14s} ads {counts[0]:3d} its   ads-cg {counts[1]:3d} its")
+    assert abs(counts[0] - counts[1]) <= 1
 
 
 # The two-point star leaves a DIAGONAL first block, so the flux is eliminated

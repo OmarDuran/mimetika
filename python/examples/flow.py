@@ -92,6 +92,13 @@ def require_three_dimensions(solver, dim):
 
 PRODUCTS = {
     "derham_bdm": mk.FluxRealization.derham_bdm,
+    # The BDM order's other half: the same [P_1]^d space and the same d
+    # moments per facet as derham_bdm, reached by PENALIZING the surplus
+    # rather than by enriching to unisolvence. On a simplex the kernel is
+    # empty, the stabilization vanishes and the two coincide with BDM_1; on a
+    # polytope they are different operators. It is the flux the stabilized_bdm
+    # stress is d copies of.
+    "stabilized_bdm": mk.FluxRealization.stabilized_bdm,
     "derham_rt": mk.FluxRealization.derham_rt,
     "stabilized_rt": mk.FluxRealization.stabilized_rt,
     # One flux per facet and no reconstruction: M is the diagonal primal-dual

@@ -36,6 +36,7 @@ class PrescribedPressure {
   PrescribedPressure() = default;
   PrescribedPressure(const Params&, const TermContext& ctx)
       : data_(&ctx.require<BoundaryData>("boundary_pressure")),
+        moments_data_(ctx.find<BoundaryMoments>("boundary_pressure_moments")),
         moments_(ctx.require<exokal::hodge::FluxOperators>("flux_operators").moments_per_facet()) {}
 
   static constexpr std::size_t kQ = 0;
@@ -50,12 +51,29 @@ class PrescribedPressure {
 
     // d moments per facet, not one. `q.begin + slot` is the lowest-order
     // indexing -- one flux per facet -- and on the de Rham space it addresses
-    // an unrelated unknown. The datum is uniform over the facet, so it lands
-    // entirely on the constant moment and the higher ones take nothing.
+    // an unrelated unknown.
+    //
+    // EVERY MOMENT TAKES ITS OWN COEFFICIENT. The row is int_f p_D (tau.n),
+    // and with the equilibrated chart the facet Gram is |f| I, so dof b wants
+    // (1/|f|) int_f p_D phi_b. A CONSTANT datum puts everything on the
+    // constant moment -- the other basis functions are centred, so their
+    // means vanish -- which is why one number per facet is the whole datum at
+    // lowest order. An AFFINE one does not: dropping its higher coefficients
+    // is a consistent O(h) perturbation, and it is what made the BDM products
+    // converge at first order on a linear patch they reproduce exactly.
     const auto& q = st.field(kQ);
     const std::size_t slot = st.support_slot[0];
     const std::size_t i = q.begin + slot * static_cast<std::size_t>(moments_);
     if (i >= q.end) return;
+    if (moments_data_ != nullptr && moments_data_->applies(st.support)) {
+      for (int b = 0; b < moments_; ++b) {
+        const std::size_t j = i + static_cast<std::size_t>(b);
+        if (j < q.end) {
+          r[j] += st.incidence[0] * moments_data_->at(st.support, static_cast<std::size_t>(b));
+        }
+      }
+      return;
+    }
     // the same shape the interior -div^T p has, with the datum in place of
     // the missing neighbour, and the facet's own incidence for the sign.
     //
@@ -72,6 +90,7 @@ class PrescribedPressure {
 
  private:
   const BoundaryData* data_{nullptr};
+  const BoundaryMoments* moments_data_{nullptr};
   int moments_{1};
 };
 

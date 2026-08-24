@@ -264,7 +264,13 @@ class NormalFluxBC final : public BoundaryCondition {
 // this condition touch" deserves the same answer whichever kind it is.
 class PressureBC final : public BoundaryCondition {
  public:
-  PressureBC(std::vector<Index> facets, double value) : value_(value) {
+  // p_D(x) = value + gradient . (x - x_f), x_f the facet centroid. The
+  // gradient is what a facet carrying several flux moments needs and a
+  // lowest-order facet ignores: with one moment the datum is its own facet
+  // average, which for an affine field is the centroid value.
+  PressureBC(std::vector<Index> facets, double value,
+             const std::array<double, 3>& gradient = {0.0, 0.0, 0.0})
+      : value_(value), gradient_(gradient) {
     facets_ = std::move(facets);
   }
   std::string name() const override { return "pressure"; }
@@ -285,6 +291,55 @@ class PressureBC final : public BoundaryCondition {
     for (const Index f : facets_) data.set({f}, value_);
   }
 
+  // THE COEFFICIENTS THE FLUX ROW WANTS: c_b = (1/|f|) int_f p_D phi_b against
+  // the facet basis {1, a11 xi1, a21 xi1 + a22 xi2}, xi measured from the facet
+  // centroid along the CANONICAL tangent frame -- the one the discrete moments
+  // use. c_0 is the centroid value, so a constant datum reproduces `fill`
+  // exactly and only an affine one reaches the higher moments.
+  void fill_moments(BoundaryMoments& data, const exokal::Mesh& mesh, int cell_dim) const {
+    const std::size_t stride = data.stride();
+    const bool sloped =
+        gradient_[0] != 0.0 || gradient_[1] != 0.0 || gradient_[2] != 0.0;
+    for (const Index f : facets_) {
+      std::array<double, 3> c{value_, 0.0, 0.0};
+      if (stride > 1 && sloped) {
+        const Index cell = cofacet_of(mesh, cell_dim, f);
+        const FacetFrame fr = FacetFrame::of(mesh, cell_dim, cell, f);
+        const std::array<Point, 2> t =
+            cell_dim == 3 ? fr.tangent
+                          : std::array<Point, 2>{Point{-fr.normal[1], fr.normal[0], 0.0},
+                                                 Point{0.0, 0.0, 0.0}};
+        const Point xf = exokal::centroid(mesh, cell_dim - 1, f);
+        const exokal::QuadratureRule qr = exokal::facet_quadrature(mesh, cell_dim, f, 4);
+        double area = 0.0, m11 = 0.0, m12 = 0.0, m22 = 0.0;
+        for (std::size_t q = 0; q < qr.weights.size(); ++q) {
+          const double w = qr.weights[q];
+          double x1 = 0.0, x2 = 0.0;
+          for (std::size_t k = 0; k < 3; ++k) {
+            x1 += t[0][k] * (qr.points[q][k] - xf[k]);
+            x2 += t[1][k] * (qr.points[q][k] - xf[k]);
+          }
+          area += w;
+          m11 += w * x1 * x1;
+          m12 += w * x1 * x2;
+          m22 += w * x2 * x2;
+        }
+        const exokal::hodge::FacetChart ch =
+            exokal::hodge::facet_chart(area, m11, m12, m22, cell_dim);
+        double g1 = 0.0, g2 = 0.0;
+        for (std::size_t k = 0; k < 3; ++k) {
+          g1 += gradient_[k] * t[0][k];
+          g2 += gradient_[k] * t[1][k];
+        }
+        const double s1 = (g1 * m11 + g2 * m12) / area;
+        const double s2 = (g1 * m12 + g2 * m22) / area;
+        c[1] = ch.a11 * s1;
+        if (stride > 2) c[2] = ch.a21 * s1 + ch.a22 * s2;
+      }
+      data.set(f, c);
+    }
+  }
+
   void resolve(const exokal::Mesh& mesh, int cell_dim, const exokal::spaces::ProductSpace& space,
                Index offset) override {
     forms_.clear();
@@ -298,6 +353,7 @@ class PressureBC final : public BoundaryCondition {
 
  private:
   double value_;
+  std::array<double, 3> gradient_{0.0, 0.0, 0.0};
   std::string field_{"q_0"};
 };
 
@@ -376,6 +432,17 @@ class BoundarySet {
       }
     }
     return any;
+  }
+
+  // the same data as facet-basis coefficients, which is what a facet carrying
+  // several flux moments needs
+  void fill_pressure_moments(BoundaryMoments& data, const exokal::Mesh& mesh,
+                             int cell_dim) const {
+    for (const auto& bc : conditions_) {
+      if (const auto* p = dynamic_cast<const PressureBC*>(bc.get())) {
+        p->fill_moments(data, mesh, cell_dim);
+      }
+    }
   }
 
  private:

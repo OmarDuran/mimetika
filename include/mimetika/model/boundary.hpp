@@ -412,6 +412,51 @@ class BoundaryData {
   std::vector<char> set_;
 };
 
+// THE NATURAL PRESSURE DATUM AS FACET-BASIS COEFFICIENTS, one per flux moment.
+//
+// The flux row of a boundary facet carries int_f p_D (tau.n). Writing
+// tau.n = sum_b beta_b phi_b on the facet basis, its degrees of freedom are the
+// MOMENTS dof_b = int_f (tau.n) phi_b = (G beta)_b with G the facet Gram, so
+//
+//     int_f p_D (tau.n) = beta^T w = dof^T G^-1 w ,    w_b = int_f p_D phi_b ,
+//
+// and the coefficient the row wants on dof_b is (G^-1 w)_b. The chart is
+// EQUILIBRATED -- exokal scales the in-facet coordinates so that int phi_b
+// phi_c = |f| delta_bc -- so G = |f| I and the coefficient is simply w_b/|f|.
+//
+// For a CONSTANT datum that is (p_D, 0, ..., 0): the higher basis functions are
+// centred on the facet, so their means vanish. That is why one number per facet
+// suffices at lowest order and why writing the same number into every moment is
+// wrong -- it was measured, and it destroys the Cartesian patch a correct datum
+// reproduces to round-off. For an AFFINE datum the higher coefficients are
+// real, and dropping them is a consistent O(h) perturbation: the linear patch
+// then converges at first order instead of being exact, which is exactly what
+// the BDM products did before this existed.
+class BoundaryMoments {
+ public:
+  BoundaryMoments() = default;
+  BoundaryMoments(std::size_t n_facets, std::size_t stride)
+      : stride_(stride), value_(n_facets * stride, 0.0), set_(n_facets, 0) {}
+
+  std::size_t stride() const { return stride_; }
+  void set(Index f, const std::array<double, 3>& c) {
+    const auto i = static_cast<std::size_t>(f);
+    for (std::size_t b = 0; b < stride_ && b < 3; ++b) value_[i * stride_ + b] = c[b];
+    set_[i] = 1;
+  }
+  bool applies(Index f) const {
+    return !set_.empty() && set_[static_cast<std::size_t>(f)] != 0;
+  }
+  double at(Index f, std::size_t b) const {
+    return value_[static_cast<std::size_t>(f) * stride_ + b];
+  }
+
+ private:
+  std::size_t stride_{1};
+  std::vector<double> value_;
+  std::vector<char> set_;
+};
+
 // A vector datum, affine per facet: u(x) = a + B (x - x_E).
 //
 // Affine rather than constant because that is what a patch test needs: a mixed

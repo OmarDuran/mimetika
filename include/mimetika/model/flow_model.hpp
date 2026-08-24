@@ -367,9 +367,16 @@ class FlowModel {
         eta.empty() ? nullptr : &eta);
     pressure_data_ = BoundaryData(static_cast<std::size_t>(c.count(dim_ - 1)));
     const bool any_pressure = flow_.fill_pressure(pressure_data_, *mesh_, dim_);
+    // and the same datum as facet-basis coefficients: one per flux moment, so
+    // an affine pressure reaches every moment the facet carries rather than
+    // the constant one alone
+    pressure_moments_ = BoundaryMoments(static_cast<std::size_t>(c.count(dim_ - 1)),
+                                        static_cast<std::size_t>(moments_per_facet()));
+    flow_.fill_pressure_moments(pressure_moments_, *mesh_, dim_);
 
     ctx_.provide("flux_operators", flux_);
     ctx_.provide("boundary_pressure", pressure_data_);
+    ctx_.provide("boundary_pressure_moments", pressure_moments_);
 
     physics::ModelOptions o;
     o.flux_moments = moments_per_facet();
@@ -627,6 +634,7 @@ class FlowModel {
   exokal::hodge::DeRhamGeometryCache geometry_;
   exokal::hodge::FluxOperators flux_;
   BoundaryData pressure_data_{0};
+  BoundaryMoments pressure_moments_;
   exokal::forms::TermContext ctx_;
   std::unique_ptr<Simulation> sim_;
   solver::SparseSystem system_;

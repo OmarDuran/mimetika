@@ -19,12 +19,11 @@ mesh grows, and anything else means the scaling was measured on a wrong answer.
 
 Two cases do not reproduce it, and there the error column is not that check.
 diagonal_afw's linear moment slots are inconsistent on every mesh, so it is
-never exact. And in FLOW, derham_bdm's datum is one scalar per facet, which
-loads the constant moment alone and leaves the higher ones zero: exact on a
-Cartesian box, first order on simplices. Mechanics has neither problem with
-derham_bdm -- its displacement datum is affine, so both moments are supplied.
-Both cases time the right operator on an inexact answer, which is what a
-scaling study wants.
+never exact, so its error column is not that check. Every flux product here
+is, on every mesh: the flow datum is affine -- value and gradient -- which is
+what a facet carrying d moments needs, the same shape the mechanics
+displacement datum has always had. It times the right operator on an inexact
+answer only in the one case above, which is what a scaling study wants.
 
 Defaults are deliberately small: a scaling curve is read from its shape, which
 is visible long before a mesh becomes inconvenient. Raise --n when the times
@@ -49,6 +48,13 @@ FAMILIES = {"cartesian": mk.Family.cartesian, "simplex": mk.Family.simplex,
 # product as much as to a mesh.
 FLUX_PRODUCTS = {
     "derham_bdm": mk.FluxRealization.derham_bdm,
+    # The BDM order's other half: the same [P_1]^d space and the same d
+    # moments per facet as derham_bdm, reached by PENALIZING the surplus
+    # rather than by enriching to unisolvence. On a simplex the kernel is
+    # empty, the stabilization vanishes and the two coincide with BDM_1; on a
+    # polytope they are different operators. It is the flux the stabilized_bdm
+    # stress is d copies of.
+    "stabilized_bdm": mk.FluxRealization.stabilized_bdm,
     "derham_rt": mk.FluxRealization.derham_rt,
     "stabilized_rt": mk.FluxRealization.stabilized_rt,
     "diagonal_tpfa": mk.FluxRealization.diagonal_tpfa,
@@ -84,9 +90,13 @@ def solver_options(name, rtol, block_its, block_rtol):
 def flow(mesh, dim, lo, direction, length, product):
     """p = ((x - x_min).n)/L on every boundary facet."""
     model = mk.FlowModel(mesh, dim, 1.0, FLUX_PRODUCTS[product])
+    # value AND gradient: a facet carrying d flux moments tests the datum
+    # against d basis functions, and the centred ones see only the variation
+    gradient = [float(direction[k]) / length if k < dim else 0.0 for k in range(3)]
     for f in mk.boundary_facets(mesh, dim):
         x = mk.centroid(mesh, dim - 1, f)
-        model.add_pressure([f], float(np.dot(np.asarray(x)[:dim] - lo[:dim], direction) / length))
+        model.add_pressure([f], float(np.dot(np.asarray(x)[:dim] - lo[:dim], direction) / length),
+                           gradient)
     return model
 
 

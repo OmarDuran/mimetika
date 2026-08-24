@@ -45,6 +45,7 @@ import _realizations as rz
 
 FLUX = {
     "derham_bdm": mk.FluxRealization.derham_bdm,
+    "stabilized_bdm": mk.FluxRealization.stabilized_bdm,
     "derham_rt": mk.FluxRealization.derham_rt,
     "stabilized_rt": mk.FluxRealization.stabilized_rt,
     "diagonal_tpfa": mk.FluxRealization.diagonal_tpfa,

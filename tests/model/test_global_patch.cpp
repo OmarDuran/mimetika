@@ -66,7 +66,8 @@ exokal::Mesh patch_mesh(int dim, Family family) {
 
 // ---- the flow half ----------------------------------------------------------
 
-double flow_patch(int dim, Family family, FlowModel::Realization how) {
+double flow_patch(int dim, Family family, FlowModel::Realization how,
+                  bool affine_datum = true) {
   const exokal::Mesh m = patch_mesh(dim, family);
   CHECK(m.topology().count(dim) < 10);
 
@@ -77,9 +78,14 @@ double flow_patch(int dim, Family family, FlowModel::Realization how) {
   };
   // the exact pressure on every boundary facet, at its own centroid: pure
   // Dirichlet, naturally imposed, no facet strongly constrained
+  // THE DATUM IS THE FIELD, not a number: value at the facet centroid AND the
+  // gradient, which is what a facet carrying d flux moments tests against its
+  // centred basis functions. `affine_datum = false` is the old one-number form,
+  // kept because the difference between them is a test of its own.
+  const std::array<double, 3> slope = affine_datum ? a : std::array<double, 3>{0.0, 0.0, 0.0};
   for (const Index f : mimetika::boundary_facets(m.topology(), dim)) {
-    prob.flow().emplace<mimetika::PressureBC>(std::vector<Index>{f},
-                                              p(exokal::centroid(m, dim - 1, f)));
+    prob.flow().emplace<mimetika::PressureBC>(
+        std::vector<Index>{f}, p(exokal::centroid(m, dim - 1, f)), slope);
   }
   prob.build();
 
@@ -120,17 +126,32 @@ MIMETIKA_TEST(the_flow_patch_is_exact_where_the_datum_is_complete) {
   CHECK(flow_patch(2, Family::prism, R::derham_rt) < 1e-10);
 }
 
-MIMETIKA_TEST(the_bdm_flow_datum_drops_the_linear_moments_and_says_so) {
-  // Not a boundary-condition bug, and pinned so it cannot become one silently.
-  // The BDM facet carries d moments; the natural pressure datum is one number
-  // per facet and lands entirely on the constant, so the linear part of p
-  // across each facet receives zero -- first order, documented in the flow
-  // example. The mechanics does not share it because its displacement datum is
-  // affine and supplies every moment. If an affine pressure datum is ever
-  // added, this check flips.
+// THE CHECK HAS FLIPPED, and the two halves are why the gradient exists.
+//
+// A BDM facet carries d flux moments and the row is int_f p_D (tau.n), so the
+// datum is tested against d basis functions. The chart is equilibrated -- the
+// facet Gram is |f| I -- so moment b takes (1/|f|) int_f p_D phi_b. The higher
+// basis functions are CENTRED: blind to a constant, and seeing exactly the
+// variation of p across the facet. So one number per facet is the whole datum
+// at lowest order and is missing a term at BDM order, and the missing term is
+// not small -- the patch it should reproduce exactly comes out at 1e-2 on a
+// Kuhn box and 1e0 on a simplicial annulus, with the flux worse than the
+// pressure. Given the gradient, every product is exact on every family.
+//
+// Writing the same NUMBER into every moment instead is not the fix and was
+// measured: it destroys the Cartesian patch too (2e-15 -> 1e-1), the centred
+// basis functions having no business seeing a constant.
+MIMETIKA_TEST(the_bdm_flow_datum_needs_the_gradient_and_is_exact_with_it) {
   using R = FlowModel::Realization;
   for (const int dim : {2, 3}) {
-    CHECK(flow_patch(dim, Family::cartesian, R::derham_bdm) > 1e-3);
+    for (const R how : {R::derham_bdm, R::stabilized_bdm}) {
+      const double affine = flow_patch(dim, Family::cartesian, how, true);
+      const double number = flow_patch(dim, Family::cartesian, how, false);
+      std::printf("  %dD %-16s affine datum %.2e   value alone %.2e\n", dim,
+                  exokal::hodge::FluxOperators::name(how), affine, number);
+      CHECK(affine < 1e-12);
+      CHECK(number > 1e-3);
+    }
   }
 }
 

@@ -397,3 +397,76 @@ def test_the_consistency_only_product_refuses_past_the_facet_limit(n, accepted):
     assert builds(n, STABILIZED) is True  # no limit: it never had to enrich
     print(f"  {n + 2:2d} facets   derham_rt {'accepts' if accepted else 'refuses'}, "
           f"stabilized_rt accepts")
+
+
+# ---- the natural pressure datum is a FIELD, not a number --------------------
+#
+# The flux row of a boundary facet carries int_f p_D (tau.n), so a facet holding
+# d flux moments tests the datum against d basis functions. The chart is
+# equilibrated -- the facet Gram is |f| I -- so moment b takes
+# (1/|f|) int_f p_D phi_b. The higher basis functions are CENTRED: blind to a
+# constant, and seeing exactly the variation of p across the facet.
+#
+# So at lowest order one number per facet is the whole datum, and at BDM order
+# it is missing a term. The missing term is not small, and it is not a
+# discretization error: given the gradient the same operator reproduces the
+# linear patch to round-off on every family, curved and polytopal included.
+STABILIZED_BDM = mk.FluxRealization.stabilized_bdm
+LINEAR = (1.0, 2.0, -1.0)
+
+
+def _linear_patch(mesh, how, gradient):
+    prob = mk.FlowModel(mesh, 3, 1.0, how)
+    exact = lambda x: sum(LINEAR[k] * x[k] for k in range(3))
+    for f in mk.boundary_facets(mesh, 3):
+        prob.add_pressure([f], exact(mk.centroid(mesh, 2, f)), list(LINEAR) if gradient else None)
+    prob.solve()
+    return max(abs(prob.cell_pressure(e) - exact(mk.centroid(mesh, 3, e)))
+               for e in range(prob.n_cells))
+
+
+def _families():
+    from _meshes import honeycomb
+    return [
+        ("box cartesian", mk.box([3, 3, 3], 3, mk.Family.cartesian)),
+        ("box simplex", mk.box([3, 3, 3], 3, mk.Family.simplex)),
+        ("box prism", mk.box([3, 3, 3], 3, mk.Family.prism)),
+        ("annulus simplex", mk.annulus(6, 3, 3, mk.Family.simplex, 1.0, 10.0, 1.0)),
+        ("annulus prism", mk.annulus(6, 3, 3, mk.Family.prism, 1.0, 10.0, 1.0)),
+        ("honeycomb", honeycomb(3, 3, 3, 1 / 3, 1 / 3)),
+    ]
+
+
+@pytest.mark.parametrize("how", [BDM, STABILIZED_BDM, STABILIZED, RT],
+                         ids=["derham_bdm", "stabilized_bdm", "stabilized_rt", "derham_rt"])
+def test_the_affine_datum_makes_the_linear_patch_exact(how):
+    for label, mesh in _families():
+        err = _linear_patch(mesh, how, gradient=True)
+        print(f"  {mk.flux_realization_name(how):15s} {label:18s} {err:.2e}")
+        # derham_rt is not consistent on prisms in the plane -- pinned elsewhere
+        if how is RT and "prism" in label:
+            continue
+        assert err < 1e-10, label
+
+
+# and the other half: without the gradient the BDM products lose it, which is
+# the whole reason `add_pressure` takes one. A one-moment facet cannot tell the
+# difference -- its basis is the constant, and the facet average of a linear
+# field IS the centroid value -- so the RT products are exact either way.
+@pytest.mark.parametrize("how", [BDM, STABILIZED_BDM], ids=["derham_bdm", "stabilized_bdm"])
+def test_without_the_gradient_the_bdm_datum_is_incomplete(how):
+    mesh = mk.box([3, 3, 3], 3, mk.Family.simplex)
+    number = _linear_patch(mesh, how, gradient=False)
+    affine = _linear_patch(mesh, how, gradient=True)
+    print(f"  {mk.flux_realization_name(how):15s} value alone {number:.2e}   affine {affine:.2e}")
+    assert number > 1e-3
+    assert affine < 1e-10
+
+
+def test_the_lowest_order_datum_does_not_notice_the_gradient():
+    mesh = mk.box([3, 3, 3], 3, mk.Family.simplex)
+    for how in (STABILIZED, RT, TPFA):
+        a = _linear_patch(mesh, how, gradient=False)
+        b = _linear_patch(mesh, how, gradient=True)
+        print(f"  {mk.flux_realization_name(how):15s} {a:.2e} vs {b:.2e}")
+        assert abs(a - b) < 1e-12
