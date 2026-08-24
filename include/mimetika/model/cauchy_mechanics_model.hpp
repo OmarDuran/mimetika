@@ -108,7 +108,9 @@ class CauchyMechanicsModel {
           "CauchyMechanicsModel: derham_rt is unisolvent but its weak-symmetry inf-sup "
           "degenerates; use derham_bdm, stabilized_bdm, or diagonal_afw");
     }
-    if (how == Realization::diagonal_afw && form != Formulation::weak_symmetry_total) {
+    // the blend inherits the demand of its diagonal member
+    if ((how == Realization::diagonal_afw || how == Realization::adaptive_afw) &&
+        form != Formulation::weak_symmetry_total) {
       throw std::invalid_argument(
           "CauchyMechanicsModel: diagonal_afw needs the total-pressure formulation -- the "
           "three-field compliance couples traction components through the trace");
@@ -254,6 +256,95 @@ class CauchyMechanicsModel {
   Realization realization() const { return how_; }
   const char* realization_name() const { return exokal::hodge::StressOperators::name(how_); }
   const ElasticMaterial& material() const { return material_; }
+
+  // The rank-one term that makes the THREE-FIELD stress norm lambda-free.
+  //
+  //     (C^-1 sigma, sigma) = (1/2mu) |sigma|^2 - (a/2mu) (tr sigma)^2 ,
+  //     a = lambda / (2 mu + d lambda) ,
+  //
+  // so the compliance stays BOUNDED as lambda grows -- a -> 1/d -- and becomes
+  // singular on the trace. A norm built from it loses the volumetric direction
+  // the operator still has, and the map then stops relating to the residual it
+  // is preconditioning: measured, GMRES reports CONVERGED_RTOL at lambda = 1e8
+  // while the answer is 8e-2 away from the factorization.
+  //
+  // Adding (a/2mu)(tr sigma)^2 back leaves (1/2mu)|sigma|^2, the plain L^2 mass,
+  // which does not see lambda at all. T is the cell's trace functional, so the
+  // correction is rank one per cell, weight a / (2 mu |E|).
+  //
+  // Empty for the total forms: there p carries the trace and the norm already
+  // has c_p^-1 ||(2 mu)^-1 tr sigma||^2 through the pressure row.
+  struct NormTraceTerm {
+    std::vector<Index> dofs;
+    std::vector<double> row;
+    double weight{0.0};
+  };
+  std::vector<NormTraceTerm> norm_trace_terms() const {
+    std::vector<NormTraceTerm> out;
+    if (form_ == Formulation::weak_symmetry_total ||
+        form_ == Formulation::strong_symmetry_total) {
+      return out;
+    }
+    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& ms = sp.map(sp.index_of("s_0"));
+    const auto s_base = static_cast<Index>(sp.offset(sp.index_of("s_0")));
+    const int nb = stress_.moments_per_facet();
+    const int nc = wrench_layout() ? 1 : dim_;
+    const double mu = material_.shear;
+    const auto d = static_cast<double>(dim_);
+    out.reserve(static_cast<std::size_t>(mesh_->topology().count(dim_)));
+    for (Index e = 0; e < mesh_->topology().count(dim_); ++e) {
+      const auto& c = stress_.compact(e);
+      if (c.T.rows() == 0 || c.faces.empty() || !(c.volume > 0.0)) continue;
+      const double lam = lame_per_cell_.empty()
+                             ? material_.lame
+                             : lame_per_cell_[static_cast<std::size_t>(e)];
+      const double a = lam / (2.0 * mu + d * lam);
+      if (!(a > 0.0)) continue;  // lambda = 0: the compliance already IS the mass
+      NormTraceTerm t;
+      t.weight = a / (2.0 * mu * c.volume);
+      for (std::size_t slot = 0; slot < c.faces.size(); ++slot) {
+        for (int b = 0; b < nb; ++b) {
+          for (int k = 0; k < nc; ++k) {
+            const auto local = slot * static_cast<std::size_t>(nb * nc) +
+                               static_cast<std::size_t>(b * nc + k);
+            if (local >= c.T.cols()) continue;
+            const double v = c.T(0, local);
+            if (v == 0.0) continue;
+            t.dofs.push_back(s_base + ms.global(dim_ - 1, c.faces[slot], b, k));
+            t.row.push_back(v);
+          }
+        }
+      }
+      if (!t.dofs.empty()) out.push_back(std::move(t));
+    }
+    return out;
+  }
+
+  // Piecewise-constant Lame parameters, in place of the uniform pair.
+  //
+  // The material enters star_C and nothing else: d is incidence and does not
+  // see it, so a jump in mu or lambda is a jump in the metric of the stress
+  // (d-1)-cochains alone.
+  //
+  // LAMBDA ONLY, for now. The four-field term carries the trace coupling as a
+  // single (2 mu)^-1 read from the composition, so a per-cell MU would be
+  // applied by the star and not by that row, and the two would disagree. The
+  // volumetric contrast a per-cell lambda gives is the one the total-pressure
+  // form exists to absorb, and it is the one this admits.
+  void set_lame_per_cell(std::vector<double> lam) {
+    if (!lam.empty() && lam.size() != static_cast<std::size_t>(mesh_->topology().count(dim_))) {
+      throw std::invalid_argument("CauchyMechanicsModel::set_lame_per_cell: one value per cell");
+    }
+    for (const double v : lam) {
+      if (!(v > 0.0)) {
+        throw std::invalid_argument(
+            "CauchyMechanicsModel::set_lame_per_cell: lambda must be positive");
+      }
+    }
+    lame_per_cell_ = std::move(lam);
+  }
+  const std::vector<double>& lame_per_cell() const { return lame_per_cell_; }
   // Non-const, for the one caller that configures the simulation rather than
   // reading it: the partition, which tells it which sites to assemble.
   Simulation& simulation() { return *sim_; }
@@ -288,31 +379,34 @@ class CauchyMechanicsModel {
     // the K-independent mode selection, which only the de Rham product has
     const bool derham = how_ == Realization::derham_bdm;
     if (derham) geometry_ = exokal::hodge::DeRhamGeometryCache::build(*mesh_, dim_);
-    // The adaptive_vem selection, derived rather than given: ones, with 0 on
-    // the cells the scan flags at the caller's threshold. exokal forces its
-    // own default-threshold zeros on top either way, so a caller can only
-    // widen the set.
-    if ((degeneracy_percent_ >= 0.0 || cond_threshold_ >= 0.0) &&
-        how_ != Realization::adaptive_vem) {
+    // The blend's selection, derived rather than given: ones, with 0 on the
+    // cells the scan flags at the caller's threshold. exokal forces its own
+    // default-threshold zeros on top either way, so a caller can only widen
+    // the set. Both blends carry one -- adaptive_vem on the strong axis,
+    // adaptive_afw on the weak -- which is the predicate exokal uses too.
+    const bool adaptive =
+        how_ == Realization::adaptive_vem || how_ == Realization::adaptive_afw;
+    if ((degeneracy_percent_ >= 0.0 || cond_threshold_ >= 0.0) && !adaptive) {
       throw std::invalid_argument(
-          "CauchyMechanicsModel: the degeneracy and conditioning thresholds are "
-          "adaptive_vem's cell selection");
+          "CauchyMechanicsModel: the degeneracy and conditioning thresholds are the "
+          "cell selection of adaptive_vem and adaptive_afw");
     }
     std::vector<double> eta;
-    if (how_ == Realization::adaptive_vem && degeneracy_percent_ >= 0.0) {
+    if (adaptive && degeneracy_percent_ >= 0.0) {
       eta.assign(static_cast<std::size_t>(c.count(dim_)), 1.0);
       for (const Index e : exokal::degenerate_cell_ids(*mesh_, dim_, degeneracy_percent_)) {
         eta[static_cast<std::size_t>(e)] = 0.0;
       }
     }
     n_ill_conditioned_ = 0;
-    if (how_ == Realization::adaptive_vem && cond_threshold_ >= 0.0) {
+    if (adaptive && cond_threshold_ >= 0.0) {
       // the probe: the stabilized vem member on every cell; a cell exokal
       // already put on the diagonal star is compact and is not judged again
       if (eta.empty()) eta.assign(static_cast<std::size_t>(c.count(dim_)), 1.0);
       const std::vector<double> ones(eta.size(), 1.0);
       const exokal::hodge::StressOperators probe = exokal::hodge::StressOperators::build(
-          *mesh_, dim_, material_.shear, material_.lame, how_, form_, nullptr, only, &ones);
+          *mesh_, dim_, exokal::hodge::Coefficient::uniform(material_.shear), lame_coefficient(),
+          how_, form_, nullptr, only, &ones);
       static const exokal::numerics::Dense empty;
       for (std::size_t e = 0; e < eta.size(); ++e) {
         if (!probe.eta().empty() && probe.eta()[e] == 0.0) eta[e] = 0.0;
@@ -325,7 +419,8 @@ class CauchyMechanicsModel {
           });
     }
     stress_ = exokal::hodge::StressOperators::build(
-        *mesh_, dim_, material_.shear, material_.lame, how_, form_,
+        *mesh_, dim_, exokal::hodge::Coefficient::uniform(material_.shear), lame_coefficient(),
+        how_, form_,
         derham ? &geometry_ : nullptr, only, eta.empty() ? nullptr : &eta, rotation_jump_);
     ctx_.provide("stress_operators", stress_);
 
@@ -455,8 +550,14 @@ class CauchyMechanicsModel {
     //
     // The mask is exokal's, not a second copy of the rule: afw_boundary_pins
     // indexes f*d*d + b*d + k, the layout ms.global reads.
-    if (how_ == Realization::diagonal_afw) {
+    // The blend carries the contract on the cells it selected, and only those:
+    // a boundary facet whose cofacet kept the stabilized product needs no pin
+    // and is harmed by one, its linear slots being where that product carries
+    // the datum. eta as BUILT is the selection, exokal's forced zeros included.
+    if (how_ == Realization::diagonal_afw || how_ == Realization::adaptive_afw) {
       const std::vector<char> mask = exokal::hodge::afw_boundary_pins(*mesh_, dim_);
+      const std::vector<double>& selection = stress_.eta();  // empty: every cell
+      const graphos::CoboundaryOperator up = graphos::coboundary(c, dim_ - 1);
       const auto& ms = sp.map(sp.index_of("s_0"));
       const auto s_base = static_cast<std::size_t>(sp.offset(sp.index_of("s_0")));
       const auto dd = static_cast<std::size_t>(dim_);
@@ -465,6 +566,11 @@ class CauchyMechanicsModel {
         for (std::size_t b = 0; b < dd; ++b) {
           for (std::size_t k = 0; k < dd; ++k) {
             if (mask[static_cast<std::size_t>(f) * dd * dd + b * dd + k] == 0) continue;
+            if (!selection.empty()) {
+              const auto at = static_cast<std::size_t>(up.offsets[static_cast<std::size_t>(f)]);
+              const Index cell = up.indices[at];  // a pinned facet has one cofacet
+              if (selection[static_cast<std::size_t>(cell)] != 0.0) continue;
+            }
             const auto d = static_cast<Index>(
                 s_base + static_cast<std::size_t>(
                              ms.global(dim_ - 1, f, static_cast<int>(b), static_cast<int>(k))));
@@ -1347,6 +1453,13 @@ class CauchyMechanicsModel {
   ElasticMaterial material_;
   Realization how_;
   Formulation form_{Formulation::weak_symmetry};
+  std::vector<double> lame_per_cell_;  // per cell; empty is the uniform material
+
+  exokal::hodge::Coefficient lame_coefficient() const {
+    return lame_per_cell_.empty() ? exokal::hodge::Coefficient::uniform(material_.lame)
+                                  : exokal::hodge::Coefficient::per_cell(lame_per_cell_);
+  }
+
   double degeneracy_percent_{-1.0};  // adaptive_vem's scan threshold; negative is unset
   double cond_threshold_{-1.0};      // adaptive_vem's conditioning threshold; negative is unset
   double rotation_jump_{0.0};        // diagonal_afw's rotation-jump constant; 0 is off

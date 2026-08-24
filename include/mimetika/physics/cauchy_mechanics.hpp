@@ -162,7 +162,9 @@ class MixedElasticityTotalCell {
     const std::size_t ng = c.As.rows();
     // the cell's own measure is on the operators, so no geometry is consulted
     const double half = half_;
-    const double mass = ops_->hydrostatic_mass() * c.volume;
+    // c_p per cell: it is d/(2 mu) + 1/lambda, so a piecewise-constant material
+    // makes it piecewise constant too
+    const double mass = ops_->hydrostatic_mass(st.support) * c.volume;
 
     for (std::size_t i = 0; i < D; ++i) {
       const std::size_t ri = S.begin + i;
@@ -293,7 +295,9 @@ class StrongElasticityTotalCell {
     }
     const std::size_t nu = c.Dv.rows();
     const double half = half_;
-    const double mass = ops_->hydrostatic_mass() * c.volume;
+    // c_p per cell: it is d/(2 mu) + 1/lambda, so a piecewise-constant material
+    // makes it piecewise constant too
+    const double mass = ops_->hydrostatic_mass(st.support) * c.volume;
     for (std::size_t i = 0; i < D; ++i) {
       const std::size_t ri = S.begin + i;
       if (diagonal) {

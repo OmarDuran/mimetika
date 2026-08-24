@@ -163,6 +163,13 @@ struct SpaceNorm {
   std::vector<int> pinned;
   std::vector<double> pinned_diagonal;
 
+  // Rank-one additions to the first block: each contributes w (t . x)^2, with t
+  // supported on `rank_one_dofs`. What the three-field stress norm needs to stay
+  // lambda-free; see CauchyMechanicsModel::norm_trace_terms.
+  std::vector<std::vector<int>> rank_one_dofs;
+  std::vector<std::vector<double>> rank_one_row;
+  std::vector<double> rank_one_weight;
+
   // The de Rham maps an auxiliary-space solver needs.
   //
   // ADS preconditions an H(div) operator by splitting it along the complex --
@@ -883,6 +890,17 @@ class PetscSolver final : public LinearSolver {
     for (std::size_t i = 0; i < static_cast<std::size_t>(n_); ++i) {
       if (factor_of[i] >= 1 && !is_pinned[i]) {
         emit(static_cast<Index>(i), static_cast<Index>(i), weight[i]);
+      }
+    }
+    // the rank-one corrections, as outer products over the dofs each touches
+    for (std::size_t t = 0; t < norm_.rank_one_weight.size(); ++t) {
+      const std::vector<int>& idx = norm_.rank_one_dofs[t];
+      const std::vector<double>& row = norm_.rank_one_row[t];
+      const double w = norm_.rank_one_weight[t];
+      for (std::size_t i = 0; i < idx.size(); ++i) {
+        for (std::size_t j = 0; j < idx.size(); ++j) {
+          emit(idx[i], idx[j], w * row[i] * row[j]);
+        }
       }
     }
     for (std::size_t k = 0; k < norm_.pinned.size(); ++k) {

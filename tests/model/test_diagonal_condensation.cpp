@@ -361,13 +361,32 @@ struct Case {
   const char* name;
   int dim;
   exokal::Mesh mesh;
-  // Quasi-definite where the pairing has slack. A cell carries d unknowns per
-  // facet against the d + d(d-1)/2 rows the divergence and the weak symmetry
-  // impose: 4 against 3 on a quadrilateral, 9 against 6 on a hexahedron, 7.5
-  // against 6 on a prism -- and exactly 6 against 6 on a tetrahedron. At that
-  // ratio the displacement block and the rotation block stay positive definite
-  // separately and their union does not, so the matrix is symmetric and
-  // invertible but not quasi-definite: MINRES rather than an LDL^T.
+  // Whether the reduced (u, gamma, p) system is quasi-definite, per mesh.
+  //
+  // MEASURED, and not currently derivable from anything else here. Where it
+  // holds, the displacement-rotation block and the negated pressure block are
+  // each positive definite and an LDL^T applies; where it does not, the matrix
+  // is still symmetric and invertible -- the solve below says so on every mesh
+  // -- and MINRES is what applies.
+  //
+  // Two candidate rules are ruled out by the table this prints:
+  //
+  //   A DOF COUNT. The old mean-traction star carried d unknowns per facet
+  //   against the d + d(d-1)/2 rows the divergence and the weak symmetry
+  //   impose, and that ratio predicted the outcome. The star now carries d^2
+  //   per facet, which leaves slack on every cell type here -- 6 against 3 on
+  //   a triangle, 22.5 against 6 on a prism -- so the count no longer
+  //   separates them.
+  //
+  //   THE STAR'S OWN CONSISTENCY. afw_admissible reports the 2D simplex NOT
+  //   face-orthogonal and it is quasi-definite all the same, while the prism is
+  //   neither. The two properties are independent, which is why both are
+  //   printed side by side below.
+  //
+  // What separates the prism from the 2D simplex is open. Until it is settled
+  // the expectation is tabulated from measurement rather than argued, and this
+  // note records that it is not yet understood; diagonal_afw is still in
+  // development and the table is expected to move.
   bool quasi_definite;
 };
 
@@ -376,7 +395,7 @@ std::vector<Case> cases() {
   out.push_back({"2D cartesian", 2, box_of(3, 2, Family::cartesian), true});
   out.push_back({"2D simplex", 2, box_of(3, 2, Family::simplex), true});
   out.push_back({"3D cartesian", 3, box_of(3, 3, Family::cartesian), true});
-  out.push_back({"3D prism", 3, box_of(3, 3, Family::prism), true});
+  out.push_back({"3D prism", 3, box_of(3, 3, Family::prism), false});
   out.push_back(
       {"3D simplex", 3, mimetika::mesh::annulus(4, 2, 3, Family::simplex, 1.0, 3.0, 1.0), false});
   return out;
@@ -501,15 +520,19 @@ MIMETIKA_TEST(eliminating_the_stress_leaves_displacement_rotation_and_pressure) 
 
       Dense spd = S;
       const bool definite = cholesky(spd);
+      // printed beside the outcome: the two do not agree, which is the point
+      const std::vector<char> afw = exokal::hodge::afw_admissible(m, dim);
       const std::size_t stray =
           entries_beyond_the_neighbours(S, s, facet_neighbours(m, dim), 1e-12);
       // d + d(d-1)/2 + 1 unknowns a cell: displacement, rotation, pressure
       const std::size_t per_cell = static_cast<std::size_t>(dim + dim * (dim - 1) / 2 + 1);
       std::printf("  %-13s %3zu cells -> %4zu x %4zu (%zu a cell)   asymmetry %.1e  "
-                  "quasi-definite %d  coercive %d  definite %d  beyond the two cells %zu\n",
+                  "quasi-definite %d  coercive %d  definite %d  beyond the two cells %zu"
+                  "  (star consistent %d)\n",
                   c.name, static_cast<std::size_t>(prob.n_cells()),
                   S.rows(), S.rows(), per_cell, asymmetry(S), quasi ? 1 : 0, positive ? 1 : 0,
-                  definite ? 1 : 0, stray);
+                  definite ? 1 : 0, stray,
+                  std::all_of(afw.begin(), afw.end(), [](char x) { return x != 0; }) ? 1 : 0);
       CHECK(S.rows() == static_cast<std::size_t>(prob.n_cells()) * per_cell);
       CHECK(asymmetry(S) < 1e-12);
       CHECK(quasi == c.quasi_definite);

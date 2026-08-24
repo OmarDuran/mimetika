@@ -458,6 +458,16 @@ inline std::vector<double> cell_coefficient(const mimetika::CauchyMechanicsModel
 }
 inline double norm_scale(const mimetika::CauchyMechanicsModel& m) { return m.material().shear; }
 
+// Only the mechanics model has one; the flux star carries no trace to correct.
+inline std::vector<mimetika::CauchyMechanicsModel::NormTraceTerm> trace_terms(
+    const mimetika::CauchyMechanicsModel& m) {
+  return m.norm_trace_terms();
+}
+inline std::vector<mimetika::CauchyMechanicsModel::NormTraceTerm> trace_terms(
+    const mimetika::FlowModel&) {
+  return {};
+}
+
 template <class Model>
 void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exokal::Mesh& mesh,
                  int dim, bool divergence_is_an_integral, bool merge_multipliers = true) {
@@ -677,6 +687,15 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
       }
       norm.lowest_order_components = copies;
     }
+  }
+
+  // the three-field stress norm's lambda-free correction, where the model has
+  // one: empty for flow, and for the total forms, where p carries the trace
+  for (const auto& t : trace_terms(m)) {
+    if (t.dofs.empty()) continue;
+    norm.rank_one_dofs.emplace_back(t.dofs.begin(), t.dofs.end());
+    norm.rank_one_row.push_back(t.row);
+    norm.rank_one_weight.push_back(t.weight);
   }
 
   // the constrained unknowns, with the diagonal A gave them
@@ -1469,6 +1488,9 @@ PYBIND11_MODULE(_core, m) {
       // solvable everywhere: half the unknowns of the BDM products and an
       // eighth of the matrix entries.
       .value("diagonal_afw", StressOperators::Realization::diagonal_afw)
+      // the per-cell selection between stabilized_bdm and diagonal_afw, as
+      // adaptive_vem is on the strong axis and adaptive_rt for the flux
+      .value("adaptive_afw", StressOperators::Realization::adaptive_afw)
       // The strongly-symmetric family (Dassi-Lovadina-Visinoni): six traction
       // moments per facet carried whole, reconstruction onto constant
       // symmetric tensors, no rotation multiplier. stabilized_vem builds
@@ -1669,6 +1691,16 @@ PYBIND11_MODULE(_core, m) {
       .def_property_readonly("n_ill_conditioned",
                              &mimetika::CauchyMechanicsModel::n_ill_conditioned,
                              "cells the conditioning selector switched, as built")
+      .def(
+          "set_lame_per_cell",
+          [](mimetika::CauchyMechanicsModel& s, std::vector<double> lam) {
+            s.set_lame_per_cell(std::move(lam));
+          },
+          py::arg("lam"),
+          "lambda per cell, in place of the uniform value: one positive number per "
+          "cell. It enters the discrete Hodge star on the stress (d-1)-cochains and "
+          "nothing else, the exterior derivative being incidence. mu stays uniform -- "
+          "the four-field term carries its trace coupling as one (2 mu)^-1")
       .def("set_rotation_jump", &mimetika::CauchyMechanicsModel::set_rotation_jump,
            py::arg("c"),
            "diagonal_afw's facet-jump stabilization of the rotation multiplier: the "
