@@ -169,7 +169,7 @@ def cell_fields(model, mesh, dim, lo, direction, length):
 
 
 def report_error(volume, p_h, p, q_h, q, dim, moments):
-    """||e||_{L2(D)}, relative, and the extreme cell norms, for u = p and u = q."""
+    """The table for u = p and u = q; returns the per-cell ||e||_{L2(E)} of each."""
     print()
     print("  error.  e = Pi_0(u - u_h), with Pi_0 v|_E = |E|^-1 int_E v the L2")
     print("  projection onto cell-wise constants; D is the domain and E a cell.")
@@ -455,15 +455,39 @@ def main():
         volume, p_h, p_exact, q_h = cell_fields(model, mesh, dim, lo, direction, length)
         q_h = mk.gather_cells(model, q_h)
         q_exact = exact_flux(direction, length)[:dim]
-    report_error(volume, p_h, p_exact, q_h, q_exact, dim, model.moments_per_facet)
+    cell_error = report_error(volume, p_h, p_exact, q_h, q_exact, dim,
+                              model.moments_per_facet)
 
     if args.vtu and root:
         with stage(f"writing {args.vtu}"):
+            # ONE TRIPLE PER UNKNOWN: the discrete field, the exact field it
+            # is measured against, and the error -- so the .vtu carries the
+            # error table rather than the material for recomputing it.
+            #
+            # THE ERROR FIELDS ARE THE TABLE'S ROWS, cell by cell:
+            # ||e||_{L2(E)} = |E|^{1/2} |e_E|, whose extremes over the cells
+            # are its min_E and max_E columns and whose l2 norm over the cells
+            # is its ||e||_D. So thresholding on pressure_error in ParaView
+            # lands exactly on the cells the table's maximum came from.
+            #
+            # They carry |E|^{1/2} because a norm over a cell does, which is
+            # why a small cell can sit low in that column whatever its error;
+            # `volume` is written so the pointwise error can be recovered by
+            # dividing it out.
+            #
+            # The exact flux is one constant vector, broadcast: written per
+            # cell so that flux and flux_exact are the same kind of field in
+            # ParaView and can be differenced or glyphed against each other.
+            exact_rows = np.zeros((len(p_h), 3))
+            exact_rows[:, :dim] = q_exact
             fields = {
                 "pressure": p_h,
                 "pressure_exact": p_exact,
-                "error": p_h - p_exact,
+                "pressure_error": cell_error["p"],
                 "flux": q_h,
+                "flux_exact": exact_rows,
+                "flux_error": cell_error["q"],
+                "volume": volume,
             }
             if args.product == "adaptive_rt":
                 fields["eta"] = model.eta

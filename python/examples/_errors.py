@@ -40,7 +40,12 @@ def l2_norms(volume, e):
 
 
 def error_table(volume, rows, width=10):
-    """One line per (name, e, scale); returns the relative errors in that order.
+    """One line per (name, e, scale); returns {name: the per-cell ||e||_{L2(E)}}.
+
+    THE RETURN IS THE LAST TWO COLUMNS, cell by cell. min_E and max_E are
+    extremes of that array, so a caller writing it to a .vtu next to the
+    solution puts the two ends of the table on the mesh -- which is the only
+    way to see WHERE the error is, a norm over the domain being one number.
 
     S is printed, not only divided by. It is the norm of the field the row is
     measured against -- ||Pi_0 v||_{L2(D)}, or the fixed scale a vanishing
@@ -54,12 +59,12 @@ def error_table(volume, rows, width=10):
     """
     print(f"    {'':{width}}{'||e||_D':>13}{'S':>13}{'||e||_D / S':>13}"
           f"{'min_E ||e||_E':>15}{'max_E ||e||_E':>15}")
-    relative = []
+    per_cell = {}
     for name, e, scale in rows:
         norm, local = l2_norms(volume, e)
-        relative.append(norm / scale)
-        print(f"    {name:{width}}{norm:>13.3e}{scale:>13.3e}{relative[-1]:>13.3e}"
+        per_cell[name] = local
+        print(f"    {name:{width}}{norm:>13.3e}{scale:>13.3e}{norm / scale:>13.3e}"
               f"{local.min():>15.3e}{local.max():>15.3e}")
     print()
-    return relative
+    return per_cell
 
