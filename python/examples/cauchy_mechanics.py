@@ -33,6 +33,8 @@ import math
 import mimetika_cxx as mk
 import numpy as np
 
+import _realizations as rz
+
 # geometry and data
 A_IN, B_OUT, HZ = 1.0, 4.0, 1.0
 P_INNER, P_OUTER = 1.0, 0.25
@@ -98,47 +100,10 @@ def require_three_dimensions(solver, dim):
 
 
 
-PRODUCTS = {
-    "derham_bdm": mk.StressRealization.derham_bdm,
-    "stabilized_bdm": mk.StressRealization.stabilized_bdm,
-    # No reconstruction, on the same d^2 moments per facet as the products
-    # above: M is the scalar two-point star delta_{E,f}/(2 mu Gram_f(b,b)) on
-    # every moment slot. The first moments are carried rather than the facet
-    # mean alone, which is what keeps the rotation multiplier uniformly stable.
-    # Its constant slots are consistent on face-orthogonal cells and its linear
-    # slots nowhere, so it is never exact; the Lame annulus is not
-    # face-orthogonal either. Run it to see what the diagonal M costs.
-    #
-    # It exists in four fields only, which formulation_for enforces.
-    "diagonal_afw": mk.StressRealization.diagonal_afw,
-}
-
-FORMULATIONS = {
-    "weak_symmetry": mk.StressFormulation.weak_symmetry,
-    "weak_symmetry_total": mk.StressFormulation.weak_symmetry_total,
-}
-
-
-def formulation_for(product, asked):
-    """Three fields, or four with the total pressure p = lambda div u.
-
-    diagonal_afw is diagonal only when the compliance is (2 mu)^-1, which is
-    what the total-pressure form gives; in three fields the trace couples the
-    traction components and the product does not exist.
-    """
-    # Omitted is not the same as asked for. `asked` is None when the caller
-    # said nothing, and then the product decides: three fields for the BDM
-    # ones, four for diagonal_afw, which has no other form. Only an explicit
-    # --formulation weak_symmetry with diagonal_afw is a contradiction, and it
-    # is the only case refused.
-    if product == "diagonal_afw":
-        if asked == "weak_symmetry":
-            raise SystemExit(
-                "--product diagonal_afw exists only in the four-field form: drop "
-                "--formulation weak_symmetry, or pass weak_symmetry_total"
-            )
-        return mk.StressFormulation.weak_symmetry_total
-    return FORMULATIONS[asked or "weak_symmetry"]
+# The realizations, product and formulation together: a `_total` name is the
+# four-field form. The strong (vem) members are a 3D construction, so on the
+# 2D annulus the model refuses them; see _realizations.py.
+PRODUCTS = rz.STRESS
 
 
 class Lame:
@@ -224,10 +189,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--dim", type=int, default=2, choices=(2, 3))
     ap.add_argument("--family", default="simplex", choices=sorted(FAMILIES))
-    ap.add_argument("--product", default="stabilized_bdm", choices=sorted(PRODUCTS))
-    ap.add_argument("--formulation", default=None, choices=sorted(FORMULATIONS),
-                    help="three fields, or four with the total pressure p = lambda div u; "
-                         "the default follows the product")
+    ap.add_argument("--product", default="stabilized_bdm", choices=rz.names(),
+                    help="the realization: a product together with the formulation it "
+                         "is solved in. A _total name is the four-field form")
+    ap.add_argument("--formulation", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--nr", type=int, default=6, help="radial divisions of the coarse mesh")
     ap.add_argument("--nu", type=float, default=None, help="Poisson ratio (default lam = mu = 1)")
     ap.add_argument("--vtu", help="write the coarse solution to this .vtu")
@@ -235,15 +200,16 @@ def main():
     ap.add_argument("--rtol", type=float, default=DEFAULT_RTOL,
                     help="residual tolerance of the iterative solver")
     args = ap.parse_args()
+    rz.reject_formulation_flag(args.formulation)
 
     if args.nu is None:
         mat = mk.ElasticMaterial(MU, LAM)
     else:
         mat = mk.ElasticMaterial(MU, 2.0 * MU * args.nu / (1.0 - 2.0 * args.nu))
 
-    family, how = FAMILIES[args.family], PRODUCTS[args.product]
+    family = FAMILIES[args.family]
+    how, form = rz.resolve(args.product)
     require_three_dimensions(args.solver, args.dim)
-    form = formulation_for(args.product, args.formulation)
     print(f"Lame tube, {args.dim}D {args.family}, {mk.stress_realization_name(how)}, "
           f"{mk.stress_formulation_name(form)}")
     print(f"  a = {A_IN}, b = {B_OUT},  p(a) = {P_INNER}, p(b) = {P_OUTER}")

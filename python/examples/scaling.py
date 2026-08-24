@@ -38,6 +38,8 @@ import sys
 import mimetika_cxx as mk
 import numpy as np
 
+import _realizations as rz
+
 FAMILIES = {"cartesian": mk.Family.cartesian, "simplex": mk.Family.simplex,
             "prism": mk.Family.prism}
 
@@ -51,16 +53,11 @@ FLUX_PRODUCTS = {
     "stabilized_rt": mk.FluxRealization.stabilized_rt,
     "diagonal_tpfa": mk.FluxRealization.diagonal_tpfa,
 }
-STRESS_PRODUCTS = {
-    "derham_bdm": mk.StressRealization.derham_bdm,
-    "stabilized_bdm": mk.StressRealization.stabilized_bdm,
-    "diagonal_afw": mk.StressRealization.diagonal_afw,
-}
-# diagonal_afw is diagonal only in the total-pressure form, and exists in no
-# other; the de Rham ones are asked for in three fields, as elsewhere.
-FORMULATIONS = {
-    "diagonal_afw": mk.StressFormulation.weak_symmetry_total,
-}
+# The realizations, product and formulation together: a `_total` name is the
+# four-field form. Timing the two separately is the point here -- four fields
+# adds a scalar per cell and a row to the pairing, so it is a different cost
+# curve and not a variant of the same one.
+STRESS_PRODUCTS = rz.STRESS
 SOLVERS = ("direct", "riesz", "ads")
 MU, LAM = 1.0, 1.0
 
@@ -93,12 +90,10 @@ def flow(mesh, dim, lo, direction, length, product):
     return model
 
 
-def elasticity(mesh, dim, lo, direction, length, product, formulation=None):
+def elasticity(mesh, dim, lo, direction, length, product):
     """u = (x - x_min)/L on every boundary facet, as an affine datum."""
-    model = mk.CauchyMechanicsModel(
-        mesh, dim, mk.ElasticMaterial(MU, LAM), STRESS_PRODUCTS[product],
-        getattr(mk.StressFormulation, formulation) if formulation
-        else FORMULATIONS.get(product, mk.StressFormulation.weak_symmetry))
+    how, form = rz.resolve(product)
+    model = mk.CauchyMechanicsModel(mesh, dim, mk.ElasticMaterial(MU, LAM), how, form)
     gradient = [0.0] * 9
     for k in range(dim):
         gradient[k * 3 + k] = 1.0 / length
@@ -130,11 +125,10 @@ def main():
     ap.add_argument("--family", default="cartesian", choices=sorted(FAMILIES))
     ap.add_argument("--physics", default="flow", choices=("flow", "elasticity"))
     ap.add_argument("--product", default=None,
-                    help="flux or stress realization; the default is the "
-                         "lowest-order stabilized one of the physics chosen")
-    ap.add_argument("--formulation", default=None,
-                    choices=("weak_symmetry", "weak_symmetry_total"),
-                    help="three fields or four; the default is what the product allows")
+                    help="flux or stress realization; the default is the lowest-order "
+                         "stabilized one of the physics chosen. A stress name ending "
+                         "_total is the four-field form")
+    ap.add_argument("--formulation", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--solver", default="riesz", choices=sorted(SOLVERS))
     ap.add_argument("--rtol", type=float, default=1e-9)
     ap.add_argument("--block-its", type=int, default=0,
@@ -143,6 +137,7 @@ def main():
                     help="tolerance of that inner CG")
     ap.add_argument("--vtu", help="write the partition and the solution here")
     args = ap.parse_args()
+    rz.reject_formulation_flag(args.formulation)
 
     root = mk.mpi_rank() == 0
     if not root:
@@ -162,7 +157,7 @@ def main():
     if args.physics == "flow":
         model = flow(mesh, args.dim, lo, direction, length, product)
     else:
-        model = elasticity(mesh, args.dim, lo, direction, length, product, args.formulation)
+        model = elasticity(mesh, args.dim, lo, direction, length, product)
     report = model.solve(
         options=solver_options(args.solver, args.rtol, args.block_its, args.block_rtol))
     error = error_of(args.physics, model, mesh, args.dim, lo, direction, length)

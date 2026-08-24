@@ -49,6 +49,7 @@ import numpy as np
 
 from _diagnostics import write_report
 from _errors import error_table, l2_norms
+import _realizations as rz
 from _stages import stage
 
 MU, LAM = 1.0, 1.0
@@ -104,102 +105,10 @@ SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg")
 DEFAULT_RTOL = 1e-9
 
 
-PRODUCTS = {
-    "derham_bdm": mk.StressRealization.derham_bdm,
-    "derham_rt": mk.StressRealization.derham_rt,
-    "stabilized_bdm": mk.StressRealization.stabilized_bdm,
-    # No reconstruction, on the same d^2 moments per facet as the two products
-    # above: M is the scalar two-point star at K = 2 mu I on every moment slot,
-    #
-    #     M_(f,k,b) = delta_{E,f} / (2 mu Gram_f(b,b)) ,
-    #     delta_{E,f} = (x_f - x_E) . n_{E,f} .
-    #
-    # It carries the first moments rather than the facet mean alone because the
-    # mean-traction layout is blind to them: the rotation multiplier then
-    # reaches the tractions only through facet means, a cellwise-alternating
-    # rotation is invisible to it, and the inf-sup constant decays as
-    # 2 sin(pi/2n) on an n-cell-per-side grid. On the P_1 facet moments the
-    # asymmetry pairing is unisolvent on rigid-motion traces and the multiplier
-    # is uniformly stable.
-    #
-    # So it is not the cheap member it reads as: the stress layout is the BDM
-    # one, and the four-field form adds a scalar per cell, which is 8316 dofs
-    # against stabilized_bdm's 8100 on the 216-cell box below. What it buys is
-    # a diagonal M, eliminated by division rather than factorization.
-    #
-    # Its constant slots are consistent on face-orthogonal cells; its LINEAR
-    # slots nowhere. It therefore does not reproduce the linear field of this
-    # example on any mesh -- 2.5e-01 relative in u on a Cartesian box -- and
-    # that is the product's claim, not a defect of the mesh.
-    #
-    # It exists in four fields only, so --formulation is set for it rather than
-    # asked of the caller. --rotation-jump adds the facet-jump stabilization of
-    # its rotation multiplier.
-    "diagonal_afw": mk.StressRealization.diagonal_afw,
-    # The strongly-symmetric family (Dassi-Lovadina-Visinoni): six traction
-    # moments per facet carried whole, the displacement as the cell's six
-    # rigid-motion coefficients, no rotation multiplier. stabilized_vem builds
-    # either strong formulation; diagonal_vem is its two-point member and
-    # adaptive_vem the per-cell selection between them, both under
-    # strong_symmetry_total only -- where M can be diagonal at all.
-    "stabilized_vem": mk.StressRealization.stabilized_vem,
-    "diagonal_vem": mk.StressRealization.diagonal_vem,
-    "adaptive_vem": mk.StressRealization.adaptive_vem,
-}
-
-STRONG_PRODUCTS = {"stabilized_vem", "diagonal_vem", "adaptive_vem"}
-
-FORMULATIONS = {
-    "weak_symmetry": mk.StressFormulation.weak_symmetry,
-    "weak_symmetry_total": mk.StressFormulation.weak_symmetry_total,
-    "strong_symmetry": mk.StressFormulation.strong_symmetry,
-    "strong_symmetry_total": mk.StressFormulation.strong_symmetry_total,
-}
-
-
-def formulation_for(product, asked):
-    """Three fields or four, with the one product that has no choice honoured.
-
-    diagonal_afw is diagonal only when the compliance is (2 mu)^-1, which is
-    what the total-pressure form gives; in three fields the trace couples the
-    traction components and the product does not exist. Asking for the pair
-    that cannot be built is refused here rather than deeper down.
-    """
-    # Omitted is not the same as asked for. `asked` is None when the caller
-    # said nothing, and then the product decides: three fields for the BDM
-    # ones, four for diagonal_afw, which has no other form. Only an explicit
-    # --formulation weak_symmetry with diagonal_afw is a contradiction, and it
-    # is the only case refused.
-    if product == "diagonal_afw":
-        if asked not in (None, "weak_symmetry_total"):
-            raise SystemExit(
-                "--product diagonal_afw exists only in the four-field form: drop "
-                "--formulation, or pass weak_symmetry_total"
-            )
-        return mk.StressFormulation.weak_symmetry_total
-    # the strong family: the symmetry axis is the product's, and the diagonal
-    # members demand the total pressure
-    if product in ("diagonal_vem", "adaptive_vem"):
-        if asked not in (None, "strong_symmetry_total"):
-            raise SystemExit(
-                f"--product {product} exists only under strong_symmetry_total: drop "
-                "--formulation, or pass strong_symmetry_total"
-            )
-        return mk.StressFormulation.strong_symmetry_total
-    if product == "stabilized_vem":
-        if asked in ("weak_symmetry", "weak_symmetry_total"):
-            raise SystemExit(
-                "--product stabilized_vem carries its symmetry in the space: use "
-                "strong_symmetry or strong_symmetry_total"
-            )
-        return FORMULATIONS[asked or "strong_symmetry"]
-    if asked in ("strong_symmetry", "strong_symmetry_total"):
-        raise SystemExit(
-            f"--product {product} imposes symmetry weakly: use weak_symmetry or "
-            "weak_symmetry_total, or a vem product"
-        )
-    return FORMULATIONS[asked or "weak_symmetry"]
-
+# The realizations, product and formulation together: a `_total` name is the
+# four-field form. See _realizations.py for what separates the two and how they
+# differ near incompressibility.
+PRODUCTS = rz.STRESS
 
 
 def fmt(v):
@@ -343,10 +252,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--mesh", help="the .vtu to solve on")
     ap.add_argument("--make-mesh", help="write a sample .vtu to this path and stop")
-    ap.add_argument("--product", default="stabilized_bdm", choices=sorted(PRODUCTS))
-    ap.add_argument("--formulation", default=None, choices=sorted(FORMULATIONS),
-                    help="three fields, or four with the total pressure p = lambda div u; "
-                         "the default follows the product")
+    ap.add_argument("--product", default="stabilized_bdm", choices=rz.names(),
+                    help="the realization: a product together with the formulation it "
+                         "is solved in. A _total name is the four-field form, carrying "
+                         "the total pressure p = lambda div u as a field of its own")
+    ap.add_argument("--formulation", default=None, help=argparse.SUPPRESS)
     ap.add_argument(
         "--nu", type=float, default=None, help="Poisson ratio (default lam = mu = 1)"
     )
@@ -404,6 +314,7 @@ def main():
     ap.add_argument("--spin", type=float, default=0.5,
                     help="magnitude of the skew part of grad u (0 leaves the rotation zero)")
     args = ap.parse_args()
+    rz.reject_formulation_flag(args.formulation)
 
     if args.make_mesh:
         make_mesh(args.make_mesh)
@@ -438,7 +349,7 @@ def main():
         lo, hi, length = bounding_box(mesh)
     lam = LAM if args.nu is None else 2.0 * MU * args.nu / (1.0 - 2.0 * args.nu)
     mat = mk.ElasticMaterial(MU, lam)
-    how = PRODUCTS[args.product]
+    how, form = rz.resolve(args.product)
 
     print(f"{args.mesh}: {dim}D, {mesh.count(dim)} cells, {mesh.count(0)} vertices")
     report_complex(mesh)
@@ -448,7 +359,6 @@ def main():
     )
     print(f"  characteristic length L = {length:.6g}")
     print(f"  mu = {mat.shear}, lam = {mat.lame}  (nu = {mat.poisson():.4f})")
-    form = formulation_for(args.product, args.formulation)
     # What actually runs, not what was asked for. --hybrid does not take the
     # solver named on the command line: the elimination removes the H(div)
     # block a Riesz map or ADS would split along, so the interface system gets
@@ -469,9 +379,9 @@ def main():
         model = mk.CauchyMechanicsModel(mesh, dim, mat, how, form)
         # the threshold reaches the model only where it is the model's: for
         # any other product it stays what it always was, the diagnostics dial
-        if args.product == "adaptive_vem" and args.degeneracy_percent is not None:
+        if args.product in rz.ADAPTIVE and args.degeneracy_percent is not None:
             model.set_degeneracy_percent(args.degeneracy_percent)
-        if args.product == "adaptive_vem" and args.cond_threshold is not None:
+        if args.product in rz.ADAPTIVE and args.cond_threshold is not None:
             model.set_cond_threshold(args.cond_threshold)
         if args.rotation_jump is not None:
             model.set_rotation_jump(args.rotation_jump)
@@ -549,7 +459,7 @@ def main():
     # divides by it -- the answer then collapses toward zero while the
     # residual still CONVERGES. That is worse than a wrong answer, so it is
     # shouted rather than footnoted.
-    if args.product in ("diagonal_vem", "adaptive_vem"):
+    if args.product in rz.TWO_POINT + rz.ADAPTIVE:
         bad = model.n_invalid_star
         if bad:
             print(f"\n  *** {bad} cell(s) carry a NON-POSITIVE star weight: the diagonal")
@@ -558,7 +468,7 @@ def main():
             print("  *** stabilized product everywhere the scan does not flag).")
     print(f"\n  u = (I + W)(x - x_min)/L on all {n_facets} boundary facets, pure Dirichlet")
     print(f"  {model.n_cells} cells, {model.n_dofs} dofs, {model.n_stabilized} stabilized")
-    if args.product == "adaptive_vem":
+    if args.product in rz.ADAPTIVE:
         n_star = int((model.eta == 0.0).sum())
         pct = args.degeneracy_percent
         print(f"  adaptive_vem: {n_star} cell(s) on the diagonal star, "
@@ -680,7 +590,7 @@ def main():
                     "stress_deviatoric_exact": np.tile(np.array(d_hat), (n, 1)),
                     "stress_deviatoric_error": dev9 - np.array(d_hat),
             }
-            if args.product == "adaptive_vem":
+            if args.product in rz.ADAPTIVE:
                 fields["eta"] = model.eta
             fields.update(partition_field(mesh, dim, args.partition))
             mk.write_vtu(mesh, args.vtu, fields)

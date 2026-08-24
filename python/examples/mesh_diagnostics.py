@@ -41,6 +41,7 @@ import numpy as np
 
 from _diagnostics import write_report
 from _stages import stage
+import _realizations as rz
 
 FLUX = {
     "derham_bdm": mk.FluxRealization.derham_bdm,
@@ -49,11 +50,10 @@ FLUX = {
     "diagonal_tpfa": mk.FluxRealization.diagonal_tpfa,
     "adaptive_rt": mk.FluxRealization.adaptive_rt,
 }
-STRESS = {name: getattr(mk.StressRealization, name)
-          for name in mk.StressRealization.__members__}
-FORMULATIONS = {name: getattr(mk.StressFormulation, name)
-                for name in mk.StressFormulation.__members__}
-TWO_POINT = {"diagonal_tpfa", "adaptive_rt", "diagonal_vem", "adaptive_vem", "diagonal_afw"}
+# the stress side names product and formulation together, as the examples do:
+# a `_total` name is the four-field form
+STRESS = rz.STRESS
+TWO_POINT = {"diagonal_tpfa", "adaptive_rt"} | set(rz.TWO_POINT)
 
 
 def percentile_row(name, values, fmt="{:.3e}"):
@@ -82,8 +82,7 @@ def main():
                     help="the inner product evaluated cell by cell: a flux realization "
                          f"({', '.join(FLUX)}) or, with --physics elasticity, a stress one "
                          f"({', '.join(STRESS)})")
-    ap.add_argument("--formulation", default=None, choices=sorted(FORMULATIONS),
-                    help="for a stress product: the formulation its block is built under")
+    ap.add_argument("--formulation", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--mu", type=float, default=1.0)
     ap.add_argument("--lam", type=float, default=1.0)
     ap.add_argument("--vtk-id", type=int, nargs="+", default=[],
@@ -96,6 +95,7 @@ def main():
     ap.add_argument("--output", help="folder for diagnostics.txt and degenerate_cells.csv")
     ap.add_argument("--quiet", action="store_true", help="counts only, no full report")
     args = ap.parse_args()
+    rz.reject_formulation_flag(args.formulation)
 
     pct = args.degeneracy_percent
     if pct is None:
@@ -144,15 +144,9 @@ def main():
     else:
         if args.product not in STRESS:
             raise SystemExit(f"--product {args.product} is not a stress realization")
-        form = args.formulation
-        if form is None:
-            strong = args.product in ("stabilized_vem", "diagonal_vem", "adaptive_vem")
-            total = args.product in ("diagonal_vem", "adaptive_vem", "diagonal_afw")
-            form = ("strong_symmetry_total" if strong and total else
-                    "strong_symmetry" if strong else
-                    "weak_symmetry_total" if total else "weak_symmetry")
-        with stage(f"evaluating {args.product} ({form}) on every cell"):
-            sp = mk.stress_cell_spectra(mesh, dim, STRESS[args.product], FORMULATIONS[form],
+        how, form = rz.resolve(args.product)
+        with stage(f"evaluating {rz.describe(args.product)} on every cell"):
+            sp = mk.stress_cell_spectra(mesh, dim, how, form,
                                         args.mu, args.lam, args.degeneracy_percent,
                                         args.cond_threshold)
         label = f"{args.product} ({form})"

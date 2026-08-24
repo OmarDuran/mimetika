@@ -60,3 +60,48 @@ def cube(n: int, simplex: bool) -> mk.Mesh:
     return (
         mk.Mesh.from_simplices(3, pts, cells) if simplex else mk.Mesh.from_polyhedra(pts, cells)
     )
+
+
+# THE POLYTOPE THAT IS NOT A DEGENERATE HEXAHEDRON.
+#
+# A honeycomb of hexagonal prisms: eight facets a cell -- two hexagons and six
+# quadrilaterals -- so the lowest-order flux space carries eight unknowns on a
+# cell where RT_0 spans four modes. That surplus is what a mimetic product has
+# to close, and what makes this the mesh the polytopal claim is actually about;
+# a cartesian hexahedron has six facets and a tetrahedron four.
+#
+# Corners are deduplicated by rounded coordinate, which is what makes the
+# neighbouring cells share them: a hexagonal lattice's corners coincide exactly
+# in the formulas below, so the tolerance never has to decide anything.
+def honeycomb(nq: int, nr: int, nz: int, s: float = 1.0, h: float = 1.0) -> mk.Mesh:
+    """nq x nr hexagonal prisms in the plane, nz layers deep, circumradius s."""
+    import math
+
+    pts, index = [], {}
+
+    def vid(x, y, z):
+        key = (round(x, 9), round(y, 9), round(z, 9))
+        if key not in index:
+            index[key] = len(pts)
+            pts.append([key[0], key[1], key[2]])
+        return index[key]
+
+    cells = []
+    for q in range(nq):
+        for r in range(nr):
+            cx = math.sqrt(3.0) * (q + 0.5 * r) * s
+            cy = 1.5 * r * s
+            corners = [
+                (cx + s * math.cos(math.radians(60 * k + 30)),
+                 cy + s * math.sin(math.radians(60 * k + 30)))
+                for k in range(6)
+            ]
+            for k in range(nz):
+                lo = [vid(x, y, k * h) for x, y in corners]
+                hi = [vid(x, y, (k + 1) * h) for x, y in corners]
+                faces = [lo[::-1], hi]
+                for a in range(6):
+                    b = (a + 1) % 6
+                    faces.append([lo[a], lo[b], hi[b], hi[a]])
+                cells.append(faces)
+    return mk.Mesh.from_polyhedra(pts, cells)

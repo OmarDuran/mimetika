@@ -451,7 +451,9 @@ inline double norm_scale(const mimetika::FlowModel& m) { return m.mobility(); }
 // the map is built from is no longer the pairing the operator has, and the
 // inf-sup constant of the mismatch is what the iteration count then pays.
 inline std::vector<double> cell_coefficient(const mimetika::FlowModel& m) {
-  return m.permeability();
+  // the tensor read as the star reads it: the area-weighted normal
+  // permeability of the cell's facets, which is K itself when K is isotropic
+  return m.norm_permeability();
 }
 inline std::vector<double> cell_coefficient(const mimetika::CauchyMechanicsModel&) {
   return {};  // the shear modulus is uniform, and already in `scale`
@@ -1875,11 +1877,34 @@ PYBIND11_MODULE(_core, m) {
           py::arg("facets"), py::arg("value"))
       .def(
           "set_permeability",
-          [](mimetika::FlowModel& s, std::vector<double> k) { s.set_permeability(std::move(k)); },
+          [](mimetika::FlowModel& s, const py::object& k) {
+            // (n,) isotropic, (n,3) diagonal, (n,6) symmetric -- the shape
+            // names the components, so a tensor needs no second argument. A
+            // plain list is a (n,) array: forcecast converts any sequence, so
+            // the scalar-per-cell call every caller already writes still works.
+            const auto a = py::array_t<double, py::array::c_style | py::array::forcecast>::ensure(k);
+            if (!a || a.ndim() < 1 || a.ndim() > 2) {
+              throw std::invalid_argument("set_permeability: expected (n,), (n,3) or (n,6)");
+            }
+            const int components = a.ndim() == 1 ? 1 : static_cast<int>(a.shape(1));
+            s.set_permeability(std::vector<double>(a.data(), a.data() + a.size()), components);
+          },
           py::arg("k"),
-          "K per cell, in place of the uniform mobility: one positive value per cell. K "
-          "enters the discrete Hodge star on the flux (d-1)-cochains and nothing else, the "
-          "exterior derivative being incidence")
+          "K per cell, in place of the uniform mobility: (n,) isotropic, (n,3) diagonal or "
+          "(n,6) symmetric (xx, yy, zz, xy, xz, yz), each cell positive definite. K enters "
+          "the discrete Hodge star on the flux (d-1)-cochains and nothing else, the exterior "
+          "derivative being incidence -- and it enters the Riesz map with it, through the "
+          "star's own normal permeability")
+      .def("set_norm_permeability",
+           [](mimetika::FlowModel& s, std::vector<double> k) {
+             s.set_norm_permeability(std::move(k));
+           },
+           py::arg("k"),
+           "override the per-cell scalar the Riesz norm carries for K; empty restores the "
+           "star's own area-weighted normal average")
+      .def_property_readonly(
+          "norm_permeability", &mimetika::FlowModel::norm_permeability,
+          "the per-cell scalar the Riesz norm carries: sum_f |f| (n.K n) / sum_f |f|")
       .def("set_degeneracy_percent", &mimetika::FlowModel::set_degeneracy_percent,
            py::arg("percent"),
            "adaptive_rt's scan threshold: cells whose measure falls below this "
