@@ -126,6 +126,8 @@ def solve(model, mesh, dim, opts):
     # to stderr unbuffered and in the same shape, so one run reads as one run.
     t0 = time.perf_counter()
     _stage("assembling")
+    # the partition is numbered inside build(), so it has to be asked for first
+    mk.distribute(model)
     model.build()
     handoff = mk.ads_handoff(model, mesh, dim)
     assembly = time.perf_counter() - t0

@@ -398,8 +398,6 @@ def main():
         raise SystemExit(
             f"{args.mesh}: top cells are {dim}-dimensional, expected 2 or 3"
         )
-    if args.solver == _hypre.NAME:
-        _hypre.require_serial()
     if args.solver == _hypre.NAME and not _hypre.available():
         raise SystemExit(_hypre.why_unavailable())
     if (args.solver.startswith("ads") or args.solver == _hypre.NAME) and dim != 3:

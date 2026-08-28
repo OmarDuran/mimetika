@@ -95,8 +95,6 @@ def require_three_dimensions(solver, dim):
             f"gradient and curl of a 3-complex); this problem is {dim}D. "
             "Use --solver riesz, or run in 3D."
         )
-    if solver == _hypre.NAME:
-        _hypre.require_serial()
     if solver == _hypre.NAME and not _hypre.available():
         raise SystemExit(_hypre.why_unavailable())
 

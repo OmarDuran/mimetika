@@ -1135,11 +1135,39 @@ PYBIND11_MODULE(_core, m) {
             py::arg("coordinates") = reals(norm.vertex_coordinates),
             py::arg("space_dim") = norm.space_dim,
             py::arg("pinned") = ints(norm.pinned),
+            // who owns what, for a distributed run. Empty on one rank.
+            py::arg("owner_of_dof") = ints(model.distribution().owner_of_dof),
+            py::arg("vertex_owner") =
+                ints(norm.entity_owner.size() > 0 ? norm.entity_owner[0] : std::vector<int>{}),
+            py::arg("edge_owner") =
+                ints(norm.entity_owner.size() > 1 ? norm.entity_owner[1] : std::vector<int>{}),
+            py::arg("face_owner") =
+                ints(norm.entity_owner.size() > 2 ? norm.entity_owner[2] : std::vector<int>{}),
             py::arg("pinned_diagonal") = reals(norm.pinned_diagonal),
             py::arg("moments_per_facet") = norm.lowest_order.empty() ? 1 : 0);
       },
       py::arg("model"), py::arg("mesh"), py::arg("cell_dim"),
       "The assembled system and its Riesz norm, for a solver in another module.");
+
+  // Share a model out before it is built, for a solver that is not PETSc's.
+  //
+  // The PETSc entry points call request_partition themselves; the hypre path
+  // assembles through ads_handoff instead, so it has to ask. Nothing happens
+  // on one process, and the partition must be requested BEFORE build() -- the
+  // dof ownership is numbered there, on the space build() creates.
+  m.def(
+      "distribute",
+      [](mimetika::FlowModel& model) {
+        PetscMPIInt size = 1, rank = 0;
+        mimetika::solver::PetscSession::instance();
+        MPI_Comm_size(PETSC_COMM_WORLD, &size);
+        MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
+        if (size < 2) return false;
+        model.distribute_over(static_cast<int>(size), static_cast<int>(rank), {});
+        return true;
+      },
+      py::arg("model"),
+      "Share the model over the run's processes. Call before build(); a no-op on one.");
 
   m.def(
       "accept",

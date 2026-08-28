@@ -217,6 +217,8 @@ PYBIND11_MODULE(_hypre, m) {
          py::array_t<double> l2_weight, const py::dict& gradient, const py::dict& curl,
          py::array_t<double> coordinates, int space_dim, int moments_per_facet,
          py::array_t<int> pinned, py::array_t<double> pinned_diagonal,
+         py::array_t<int> owner_of_dof, py::array_t<int> vertex_owner,
+         py::array_t<int> edge_owner, py::array_t<int> face_owner,
          const HypreSolver::Options& opts) {
         if (moments_per_facet != 1) {
           throw std::runtime_error(
@@ -255,8 +257,14 @@ PYBIND11_MODULE(_hypre, m) {
         norm.space_dim = space_dim;
         norm.pinned = ints(pinned);
         norm.pinned_diagonal = reals(pinned_diagonal);
+        if (vertex_owner.size() > 0) {
+          norm.entity_owner.push_back(ints(vertex_owner));
+          norm.entity_owner.push_back(ints(edge_owner));
+          norm.entity_owner.push_back(ints(face_owner));
+        }
 
         HypreSolver hypre;
+        hypre.set_owners(ints(owner_of_dof));
         std::vector<double> x;
         const auto r = hypre.solve(A, reals(rhs), x, norm, opts);
         py::array_t<double> out(static_cast<py::ssize_t>(x.size()));
@@ -267,6 +275,8 @@ PYBIND11_MODULE(_hypre, m) {
       py::arg("flux"), py::arg("rest"), py::arg("l2_weight"), py::arg("gradient"),
       py::arg("curl"), py::arg("coordinates"), py::arg("space_dim"),
       py::arg("moments_per_facet"), py::arg("pinned"), py::arg("pinned_diagonal"),
+      py::arg("owner_of_dof"), py::arg("vertex_owner"), py::arg("edge_owner"),
+      py::arg("face_owner"),
       py::arg("options") = HypreSolver::Options{},
       "Solve an assembled system with the Riesz map, its first block inverted by ADS.");
 

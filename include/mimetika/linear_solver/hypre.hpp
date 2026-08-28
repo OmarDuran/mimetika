@@ -145,33 +145,86 @@ class HypreSolver {
   using Options = HypreOptions;
   using Report = HypreReport;
 
+  // Who owns each unknown. Empty, or one rank, means serial.
+  void set_owners(std::vector<int> owner_of_dof) { owners_ = std::move(owner_of_dof); }
+
+  // A space laid out on the partition.
+  //
+  // hypre's IJ interface gives each rank a CONTIGUOUS run of global indices,
+  // and the complex's own numbering is not contiguous per rank -- so every
+  // space is renumbered by (owner, original index), which is a stable sort and
+  // therefore the same permutation on every process. `new_of` takes the
+  // complex's index to hypre's; `old_of` inverts it.
+  struct Layout {
+    std::vector<int> new_of, old_of, first;
+    int begin{0}, end{0}, local{0}, total{0};
+    bool owns(int i) const { return i >= begin && i < end; }
+  };
+
+  static Layout layout_of(const std::vector<int>& owner, int ranks, int rank) {
+    Layout out;
+    out.total = static_cast<int>(owner.size());
+    std::vector<int> count(static_cast<std::size_t>(ranks) + 1, 0);
+    for (const int r : owner) {
+      if (r < 0 || r >= ranks) throw std::invalid_argument("HypreSolver: an entity has no owner");
+      ++count[static_cast<std::size_t>(r) + 1];
+    }
+    for (int r = 0; r < ranks; ++r) count[static_cast<std::size_t>(r) + 1] += count[static_cast<std::size_t>(r)];
+    out.first = count;
+    out.new_of.assign(owner.size(), -1);
+    out.old_of.assign(owner.size(), -1);
+    std::vector<int> at = count;
+    for (std::size_t i = 0; i < owner.size(); ++i) {
+      const int slot = at[static_cast<std::size_t>(owner[i])]++;
+      out.new_of[i] = slot;
+      out.old_of[static_cast<std::size_t>(slot)] = static_cast<int>(i);
+    }
+    out.begin = count[static_cast<std::size_t>(rank)];
+    out.end = count[static_cast<std::size_t>(rank) + 1];
+    out.local = out.end - out.begin;
+    return out;
+  }
+
+  // the identity layout, for one rank
+  static Layout serial_layout(int n) {
+    Layout out;
+    out.total = n;
+    out.local = n;
+    out.end = n;
+    out.first = {0, n};
+    out.new_of.resize(static_cast<std::size_t>(n));
+    out.old_of.resize(static_cast<std::size_t>(n));
+    for (int i = 0; i < n; ++i) out.new_of[static_cast<std::size_t>(i)] = i;
+    out.old_of = out.new_of;
+    return out;
+  }
+
   // Solve A x = b with the Riesz map above. `norm` supplies the factors, the
   // L2 weights and the complex's two boundary operators.
   Report solve(const SparseSystem& A, const std::vector<double>& b, std::vector<double>& x,
                const SpaceNorm& norm, const Options& opts = Options{}) {
     HypreSession::ensure();
-    // SERIAL ONLY, AND IT SAYS SO RATHER THAN HANGING.
+    int ranks = 1, rank = 0;
+    MPI_Comm_size(MPI_COMM_WORLD, &ranks);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    // EVERY SPACE IS RENUMBERED ONTO THE PARTITION.
     //
-    // Every IJMatrix here is created over the whole index range, [0, n) on the
-    // communicator, so on more than one rank each process claims every row and
-    // the assembly deadlocks -- which is what an 8-way run looked like. The
-    // block preconditioner is serial for the same reason: apply() indexes the
-    // local vector data directly, which is the whole vector only on one rank.
-    //
-    // Making this distributed means partitioning the three spaces the way
-    // PetscSolver's layout_of does, renumbering the injection into it, and
-    // gathering the flux block across ranks in apply(). Until then the PETSc
-    // path is the parallel one.
-    {
-      int size = 1;
-      MPI_Comm_size(MPI_COMM_WORLD, &size);
-      if (size > 1) {
-        throw std::invalid_argument(
-            "HypreSolver: the direct hypre path is serial; this run has " +
-            std::to_string(size) +
-            " ranks. Use --solver ads or ads-cg for a distributed run, or run this one "
-            "on a single process.");
-      }
+    // hypre's IJ interface gives each rank a contiguous run of global indices,
+    // and neither the unknowns nor the complex's entities are contiguous per
+    // rank in their own numbering. So the four spaces this needs -- the whole
+    // system, the faces the flux sits on, the edges and the vertices -- are
+    // each sorted by (owner, index) and every matrix is stated in the new
+    // numbering. A rank then inserts only its own rows, which is what the
+    // interface asks and what a run over more than one process was deadlocking
+    // on before.
+    if (ranks > 1 && owners_.size() != A.n) {
+      throw std::invalid_argument(
+          "HypreSolver: a distributed run needs the owner of every unknown; "
+          "call set_owners()");
+    }
+    if (ranks > 1 && norm.entity_owner.size() < 3) {
+      throw std::invalid_argument(
+          "HypreSolver: a distributed run needs the owner of every vertex, edge and face");
     }
     if (norm.empty()) throw std::invalid_argument("HypreSolver: the norm has no factors");
     if (norm.discrete_gradient.empty() || norm.discrete_curl.empty()) {
@@ -191,10 +244,25 @@ class HypreSolver {
 
     const auto t0 = std::chrono::steady_clock::now();
 
-    // where each global unknown sits in the flux block, or -1
+    // the four spaces, on the partition
+    const Layout dofs = ranks > 1 ? layout_of(owners_, ranks, rank)
+                                  : serial_layout(static_cast<int>(A.n));
+    const Layout verts = ranks > 1 ? layout_of(norm.entity_owner[0], ranks, rank)
+                                   : serial_layout(norm.discrete_gradient.cols);
+    const Layout edges = ranks > 1 ? layout_of(norm.entity_owner[1], ranks, rank)
+                                   : serial_layout(norm.discrete_gradient.rows);
+    const Layout faces = ranks > 1 ? layout_of(norm.entity_owner[2], ranks, rank)
+                                   : serial_layout(norm.discrete_curl.rows);
+
+    // Where each global unknown sits in the flux block, in HYPRE's numbering.
+    //
+    // The flux block IS the face space -- one moment per facet, checked above --
+    // so a flux unknown's row in A0 is its face's row after renumbering, and
+    // that is the same row the discrete curl has. Position in factors[0] is
+    // the face index; the layout takes it to hypre's.
     std::vector<int> in_flux(A.n, -1);
     for (std::size_t i = 0; i < flux.size(); ++i) {
-      in_flux[static_cast<std::size_t>(flux[i])] = static_cast<int>(i);
+      in_flux[static_cast<std::size_t>(flux[i])] = faces.new_of[i];
     }
     // which factor each unknown belongs to, and whether it carries the graph
     // term. A linear scan per entry would be quadratic, so this is a table.
@@ -267,10 +335,10 @@ class HypreSolver {
             k < norm.pinned_diagonal.size() ? norm.pinned_diagonal[k] : 1.0);
     }
 
-    Mat a_full = to_mat(A, n);
-    Mat a0 = to_mat(m, nf);
-    Mat grad = to_mat(norm.discrete_gradient);
-    Mat curl = to_mat(norm.discrete_curl);
+    Mat a_full = to_mat(A, dofs);
+    Mat a0 = to_mat(m, faces);
+    Mat grad = to_mat(norm.discrete_gradient, edges, verts);
+    Mat curl = to_mat(norm.discrete_curl, faces, edges);
 
     // the metric, and the only metric ADS is told
     const auto nv = static_cast<HYPRE_BigInt>(norm.discrete_gradient.cols);
@@ -309,13 +377,31 @@ class HypreSolver {
               origin[static_cast<std::size_t>(d)];
         }
       }
-      xyz.push_back(to_vec(c));
+      xyz.push_back(to_vec(c, verts));
     }
 
+    // The preconditioner works on LOCAL data: hypre hands apply() this rank's
+    // rows of the outer vectors, and the block's vectors hold this rank's
+    // faces. A dof and the face it sits on are owned by the same rank -- both
+    // partitions come from the same exokal call -- so the gather is a local
+    // permutation and needs no communication.
     Block block;
     block.n_flux = static_cast<int>(nf);
-    block.flux = &flux;
-    block.inv_w = &inv_w;
+    block.inv_w_local.assign(static_cast<std::size_t>(dofs.local), 0.0);
+    block.flux_at.assign(static_cast<std::size_t>(dofs.local), -1);
+    for (std::size_t i = 0; i < A.n; ++i) {
+      const int at = dofs.new_of[i];
+      if (!dofs.owns(at)) continue;
+      const std::size_t local = static_cast<std::size_t>(at - dofs.begin);
+      block.inv_w_local[local] = inv_w[i];
+      if (in_flux[i] >= 0) {
+        if (!faces.owns(in_flux[i])) {
+          throw std::invalid_argument(
+              "HypreSolver: a flux unknown and its face are on different ranks");
+        }
+        block.flux_at[local] = in_flux[i] - faces.begin;
+      }
+    }
     HYPRE_ADSCreate(&block.ads);
     HYPRE_ADSSetDiscreteGradient(block.ads, mat_of(grad));
     HYPRE_ADSSetDiscreteCurl(block.ads, mat_of(curl));
@@ -333,8 +419,8 @@ class HypreSolver {
                            opts.amg_pmax);
 
     block.a0 = mat_of(a0);
-    block.rhs = to_vec(std::vector<double>(static_cast<std::size_t>(nf), 0.0));
-    block.sol = to_vec(std::vector<double>(static_cast<std::size_t>(nf), 0.0));
+    block.rhs = zero_vec(faces);
+    block.sol = zero_vec(faces);
     HYPRE_ADSSetup(block.ads, block.a0, vec_of(block.rhs), vec_of(block.sol));
 
     // the inner CG on the block, with that cycle as its preconditioner
@@ -361,8 +447,8 @@ class HypreSolver {
     HYPRE_FlexGMRESSetPrintLevel(ksp, opts.print_level);
     HYPRE_FlexGMRESSetPrecond(ksp, apply, setup, reinterpret_cast<HYPRE_Solver>(&block));
 
-    Vec rhs = to_vec(b);
-    Vec sol = to_vec(std::vector<double>(A.n, 0.0));
+    Vec rhs = to_vec(b, dofs);
+    Vec sol = to_vec(std::vector<double>(A.n, 0.0), dofs);
     HYPRE_ParCSRFlexGMRESSetup(ksp, mat_of(a_full), vec_of(rhs), vec_of(sol));
     const auto t1 = std::chrono::steady_clock::now();
     HYPRE_ParCSRFlexGMRESSolve(ksp, mat_of(a_full), vec_of(rhs), vec_of(sol));
@@ -379,7 +465,7 @@ class HypreSolver {
     r.solve_seconds = std::chrono::duration<double>(t2 - t1).count();
 
     x.assign(A.n, 0.0);
-    read_back(sol, x);
+    read_back(sol, dofs, x);
 
     HYPRE_ParCSRFlexGMRESDestroy(ksp);
     if (block.inner != nullptr) HYPRE_ParCSRPCGDestroy(block.inner);
@@ -443,10 +529,15 @@ class HypreSolver {
   // is what made a 93k-cell industrial mesh -- 3.3 million entries -- appear to
   // hang. The triplets are summed by (row, col) here and handed over as whole
   // rows, which is the shape SetValues takes.
+  // rows/cols are ALREADY in hypre's numbering; `mine` is this rank's row run.
   static Mat build_mat(std::vector<int> row, std::vector<int> col, std::vector<double> val,
-                       HYPRE_BigInt rows, HYPRE_BigInt cols) {
-    std::vector<std::size_t> order(val.size());
-    for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+                       HYPRE_BigInt rows, HYPRE_BigInt cols, int row_begin, int row_end,
+                       int col_begin, int col_end) {
+    std::vector<std::size_t> order;
+    order.reserve(val.size());
+    for (std::size_t i = 0; i < val.size(); ++i) {
+      if (row[i] >= row_begin && row[i] < row_end) order.push_back(i);  // this rank's rows
+    }
     std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
       return row[a] != row[b] ? row[a] < row[b] : col[a] < col[b];
     });
@@ -472,8 +563,11 @@ class HypreSolver {
       }
       n_of.push_back(count);
     }
+    (void)rows;
+    (void)cols;
     Mat out;
-    HYPRE_IJMatrixCreate(MPI_COMM_WORLD, 0, rows - 1, 0, cols - 1, &out.ij);
+    HYPRE_IJMatrixCreate(MPI_COMM_WORLD, row_begin, row_end - 1, col_begin, col_end - 1,
+                         &out.ij);
     HYPRE_IJMatrixSetObjectType(out.ij, HYPRE_PARCSR);
     HYPRE_IJMatrixInitialize(out.ij);
     if (!r_of.empty()) {
@@ -484,42 +578,91 @@ class HypreSolver {
     return out;
   }
 
-  static Mat to_mat(const Triplets& t, HYPRE_BigInt n) {
-    return build_mat(t.row, t.col, t.value, n, n);
+  static Mat to_mat(const Triplets& t, const Layout& l) {
+    return build_mat(t.row, t.col, t.value, l.total, l.total, l.begin, l.end, l.begin, l.end);
   }
 
-  static Mat to_mat(const SparseSystem& a, HYPRE_BigInt n) {
+  static Mat to_mat(const SparseSystem& a, const Layout& l) {
     std::vector<int> r(a.nnz()), c(a.nnz());
     std::vector<double> v(a.nnz());
     for (std::size_t k = 0; k < a.nnz(); ++k) {
-      r[k] = static_cast<int>(a.row[k]);
-      c[k] = static_cast<int>(a.col[k]);
+      r[k] = l.new_of[static_cast<std::size_t>(a.row[k])];
+      c[k] = l.new_of[static_cast<std::size_t>(a.col[k])];
       v[k] = a.value[k];
     }
-    return build_mat(std::move(r), std::move(c), std::move(v), n, n);
+    return build_mat(std::move(r), std::move(c), std::move(v), l.total, l.total, l.begin, l.end,
+                     l.begin, l.end);
   }
 
-  static Mat to_mat(const SpaceNorm::Incidence& inc) {
-    return build_mat(inc.row, inc.col, inc.value, inc.rows, inc.cols);
+  static Mat to_mat(const SpaceNorm::Incidence& inc, const Layout& r, const Layout& c) {
+    std::vector<int> row(inc.row.size()), col(inc.col.size());
+    for (std::size_t k = 0; k < inc.row.size(); ++k) {
+      row[k] = r.new_of[static_cast<std::size_t>(inc.row[k])];
+      col[k] = c.new_of[static_cast<std::size_t>(inc.col[k])];
+    }
+    // The column range is the COLUMN space's own local run: hypre pairs a
+    // rectangular matrix's columns with the vector it multiplies, so the
+    // gradient's columns are partitioned like the vertices and the curl's like
+    // the edges. Giving every rank all the columns is what a 2-rank run was
+    // dying on.
+    return build_mat(std::move(row), std::move(col), inc.value, r.total, c.total, r.begin, r.end,
+                     c.begin, c.end);
   }
 
-  static Vec to_vec(const std::vector<double>& v) {
+  // `v` is indexed the caller's way; `l` says where each entry goes and which
+  // of them this rank owns.
+  static Vec to_vec(const std::vector<double>& v, const Layout& l) {
     Vec out;
-    const auto n = static_cast<HYPRE_BigInt>(v.size());
-    HYPRE_IJVectorCreate(MPI_COMM_WORLD, 0, n - 1, &out.ij);
+    HYPRE_IJVectorCreate(MPI_COMM_WORLD, l.begin, l.end - 1, &out.ij);
     HYPRE_IJVectorSetObjectType(out.ij, HYPRE_PARCSR);
     HYPRE_IJVectorInitialize(out.ij);
-    std::vector<HYPRE_BigInt> idx(v.size());
-    for (std::size_t i = 0; i < v.size(); ++i) idx[i] = static_cast<HYPRE_BigInt>(i);
-    HYPRE_IJVectorSetValues(out.ij, static_cast<HYPRE_Int>(v.size()), idx.data(), v.data());
+    std::vector<HYPRE_BigInt> idx;
+    std::vector<double> val;
+    idx.reserve(static_cast<std::size_t>(l.local));
+    val.reserve(static_cast<std::size_t>(l.local));
+    for (std::size_t i = 0; i < v.size(); ++i) {
+      const int at = l.new_of[i];
+      if (!l.owns(at)) continue;
+      idx.push_back(at);
+      val.push_back(v[i]);
+    }
+    if (!idx.empty()) {
+      HYPRE_IJVectorSetValues(out.ij, static_cast<HYPRE_Int>(idx.size()), idx.data(), val.data());
+    }
     HYPRE_IJVectorAssemble(out.ij);
     return out;
   }
 
-  static void read_back(const Vec& v, std::vector<double>& out) {
-    std::vector<HYPRE_BigInt> idx(out.size());
-    for (std::size_t i = 0; i < out.size(); ++i) idx[i] = static_cast<HYPRE_BigInt>(i);
-    HYPRE_IJVectorGetValues(v.ij, static_cast<HYPRE_Int>(out.size()), idx.data(), out.data());
+  // a zero vector over a layout, for the block's working space
+  static Vec zero_vec(const Layout& l) {
+    return to_vec(std::vector<double>(static_cast<std::size_t>(l.total), 0.0), l);
+  }
+
+  // This rank's entries, put back where the caller expects them. Every rank
+  // ends up with its own rows only; the caller gathers if it wants the whole
+  // answer, exactly as the PETSc path leaves it.
+  static void read_back(const Vec& v, const Layout& l, std::vector<double>& out) {
+    std::vector<HYPRE_BigInt> idx;
+    std::vector<int> where;
+    idx.reserve(static_cast<std::size_t>(l.local));
+    where.reserve(static_cast<std::size_t>(l.local));
+    for (std::size_t i = 0; i < out.size(); ++i) {
+      const int at = l.new_of[i];
+      if (!l.owns(at)) continue;
+      idx.push_back(at);
+      where.push_back(static_cast<int>(i));
+    }
+    std::vector<double> got(idx.size(), 0.0);
+    if (!idx.empty()) {
+      HYPRE_IJVectorGetValues(v.ij, static_cast<HYPRE_Int>(idx.size()), idx.data(), got.data());
+    }
+    for (std::size_t k = 0; k < where.size(); ++k) {
+      out[static_cast<std::size_t>(where[k])] = got[k];
+    }
+    if (l.total != l.local) {
+      MPI_Allreduce(MPI_IN_PLACE, out.data(), static_cast<int>(out.size()), MPI_DOUBLE, MPI_SUM,
+                    MPI_COMM_WORLD);
+    }
   }
 
   // ---- the block preconditioner -------------------------------------------
@@ -528,14 +671,17 @@ class HypreSolver {
   // rest. The vectors are the full system's, so the flux entries are gathered
   // into the block's own vector and scattered back; serially that is a copy
   // over an index set and no communication.
+  std::vector<int> owners_;
+
   struct Block {
     HYPRE_Solver ads{nullptr};
     HYPRE_Solver inner{nullptr};
     HYPRE_ParCSRMatrix a0{nullptr};
     Vec rhs, sol;
     int n_flux{0};
-    const std::vector<int>* flux{nullptr};
-    const std::vector<double>* inv_w{nullptr};
+    // per LOCAL row of the outer vector: 1/W, and where it sits in the block
+    std::vector<double> inv_w_local;
+    std::vector<int> flux_at;
   };
 
   static double* data_of(HYPRE_ParVector v) {
@@ -551,10 +697,11 @@ class HypreSolver {
     double* fr = data_of(vec_of(b.rhs));
     double* fx = data_of(vec_of(b.sol));
 
-    const auto& flux = *b.flux;
-    for (std::size_t i = 0; i < flux.size(); ++i) {
-      fr[i] = r[static_cast<std::size_t>(flux[i])];
-      fx[i] = 0.0;
+    for (std::size_t i = 0; i < b.flux_at.size(); ++i) {
+      if (b.flux_at[i] >= 0) {
+        fr[static_cast<std::size_t>(b.flux_at[i])] = r[i];
+        fx[static_cast<std::size_t>(b.flux_at[i])] = 0.0;
+      }
     }
     if (b.inner != nullptr) {
       HYPRE_ParCSRPCGSolve(b.inner, b.a0, vec_of(b.rhs), vec_of(b.sol));
@@ -562,10 +709,9 @@ class HypreSolver {
       HYPRE_ADSSolve(b.ads, b.a0, vec_of(b.rhs), vec_of(b.sol));
     }
 
-    const auto& iw = *b.inv_w;
-    for (std::size_t i = 0; i < iw.size(); ++i) x[i] = r[i] * iw[i];
-    for (std::size_t i = 0; i < flux.size(); ++i) {
-      x[static_cast<std::size_t>(flux[i])] = fx[i];
+    for (std::size_t i = 0; i < b.inv_w_local.size(); ++i) {
+      x[i] = b.flux_at[i] >= 0 ? fx[static_cast<std::size_t>(b.flux_at[i])]
+                               : r[i] * b.inv_w_local[i];
     }
     return 0;
   }
