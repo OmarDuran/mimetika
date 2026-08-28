@@ -354,6 +354,10 @@ class CauchyMechanicsModel {
   std::size_t n_cells() const { return n_cells_; }
   // how many cells needed a stabilization: zero on a simplex mesh for either
   // realization, by construction
+  // A BODY FORCE PER CELL, d components cell-major: div sigma + b = 0.
+  void set_body_force(std::vector<double> b) { body_force_ = std::move(b); }
+  const std::vector<double>& body_force() const { return body_force_; }
+
   std::size_t n_stabilized() const { return stress_.n_stabilized(); }
   const exokal::hodge::StressOperators& stress_operators() const { return stress_; }
 
@@ -468,6 +472,22 @@ class CauchyMechanicsModel {
     reservoir_data_ = CellData(static_cast<std::size_t>(c.count(dim_)));
     for (const auto& r : reservoir_) reservoir_data_.set(r.cells, r.pressure);
     ctx_.provide("reservoir_pressure", reservoir_data_);
+    // THE BODY FORCE AS THE ROW WANTS IT. The momentum row is Dv sigma, the
+    // divergence divided by the measure, so the MEAN force over the cell is the
+    // load -- no measure appears here, unlike the flux balance, which is an
+    // integral and takes f|E|.
+    body_force_data_ = CellVectorData(static_cast<std::size_t>(c.count(dim_)),
+                                      static_cast<std::size_t>(dim_));
+    bool any_force = false;
+    const auto dd = static_cast<std::size_t>(dim_);
+    for (std::size_t e = 0; (e + 1) * dd <= body_force_.size(); ++e) {
+      for (std::size_t k = 0; k < dd; ++k) {
+        const double b = body_force_[e * dd + k];
+        if (b != 0.0) any_force = true;
+        body_force_data_.set(static_cast<Index>(e), k, b);
+      }
+    }
+    ctx_.provide("body_force", body_force_data_);
 
     // The space follows the star: d^2 traction moments per facet for both of
     // these, read off the operators rather than restated, so the layout and the
@@ -507,6 +527,7 @@ class CauchyMechanicsModel {
       rp.set("volumetric_compliance", volumetric_compliance_);
       sim_->model().add("reservoir_pressurization", exokal::forms::On::all(), rp);
     }
+    if (any_force) sim_->model().add("body_force", exokal::forms::On::all(), {});
 
     // the conditions resolve against the space, which is what gives each of
     // them its dofs, and the strong ones then hand their forms to the
@@ -942,12 +963,21 @@ class CauchyMechanicsModel {
   };
 
   HybridReport hybridized(solver::LinearSolver& linear) {
-    // THE COMPONENTWISE DATUM IS WIRED BUT THE ROUTE STILL CRASHES PAST IT.
-    // The pinned multiplier for that chart is computed below -- Gram^-1
-    // int_f u_D chi_b per moment and component, the same coefficient the weak
-    // boundary term places -- and it is not enough: something downstream still
-    // reads out of range for this family. A segfault is a worse thing to ship
-    // than a refusal, so the refusal stands until that is found.
+    // A NATURAL TRACTION HAS NOWHERE TO GO. The interface load is built from
+    // the cell rows and the pinned multipliers alone -- exokal's
+    // hybrid_interface_load takes fu, fp and lambda_data, and no sigma-row
+    // term -- so a prescribed traction is silently dropped and the answer
+    // comes back zero where it should not be. Refused rather than shipped:
+    // measured, a traction-driven column returns 0 with the interface solve
+    // reporting 0 iterations.
+    for (std::size_t i = 0; i < mechanics_.size(); ++i) {
+      if (dynamic_cast<const TractionBC*>(&mechanics_.at(i)) != nullptr) {
+        throw std::invalid_argument(
+            "CauchyMechanicsModel::hybridized: a prescribed traction is a sigma-row "
+            "datum and the hybridized interface load carries no sigma-row term -- it "
+            "would be dropped; solve this one monolithically");
+      }
+    }
     if (state_.empty()) state_.assign(sim_->n_dofs(), 0.0);
     const exokal::hodge::HybridStressOperators hops =
         exokal::hodge::HybridStressOperators::build(*mesh_, dim_, stress_, material_.shear);
@@ -962,6 +992,38 @@ class CauchyMechanicsModel {
     for (const auto& d : displacement_facets_) {
       for (const Index f : d.facets) {
         free[static_cast<std::size_t>(f)] = 0;
+        if (!wrench_layout()) {
+          // THE COMPONENTWISE DATUM: d moments on each of d components, so the
+          // multiplier is a full vector P_1 field on the facet -- 9 entries in
+          // space against the wrench's 6, because the multiplier spans the
+          // NORMAL TRACE space and a componentwise traction's trace is a linear
+          // vector field, not a rigid motion. Its entry is the datum's
+          // expansion on {chi_b e_k}, Gram^-1 int_f u_D chi_b, which is exactly
+          // what the monolithic term places in the stress row and in the same
+          // order, component fastest.
+          const Index cell = cofacet_of(*mesh_, dim_, f);
+          const auto& cc = stress_.compact(cell);
+          std::size_t slot = cc.faces.size();
+          for (std::size_t j = 0; j < cc.faces.size(); ++j) {
+            if (cc.faces[j] == f) { slot = j; break; }
+          }
+          if (slot == cc.faces.size() || slot >= cc.moment.size()) continue;
+          const exokal::numerics::Dense& mom = cc.moment[slot];
+          const exokal::numerics::Dense& gram = cc.facet_gram[slot];
+          const std::size_t nb = mom.rows();
+          const std::size_t nc = mom.cols() - 1;
+          for (std::size_t b = 0; b < nb; ++b) {
+            for (std::size_t k = 0; k < nc; ++k) {
+              double moment = displacement_data_.constant_at(f, k) * mom(b, 0);
+              for (std::size_t q = 0; q < nc; ++q) {
+                moment += displacement_data_.gradient_at(f, k, q) * cc.scale * mom(b, q + 1);
+              }
+              pinned[static_cast<std::size_t>(f) * hops.facet_dofs() + b * nc + k] =
+                  -moment / gram(b, b);
+            }
+          }
+          continue;
+        }
         for (std::size_t b = 0; b < hops.facet_dofs() && b < 6; ++b) {
           // The sign is the model's, not exokal's. exokal's saddle puts a
           // pinned datum on the sigma-row as -s times the moment vector, and
@@ -1033,26 +1095,39 @@ class CauchyMechanicsModel {
     out.jump = st.jump;
     // back into the model's own state, so every accessor and every write of a
     // .vtu reads the hybrid answer exactly as it reads the monolithic one
-    // Sigma is not yet right, and this is where it goes wrong. The recovered
-    // sigma is self-consistent -- the two cofacet recoveries of every shared
-    // facet agree to 1e-13, which is `jump` -- and it is written into the
-    // slots the space numbers, verified by taking the map explicitly and
-    // getting the identical result. What it is not is the monolithic sigma:
-    // 6.25 apart where the field itself is 5.0, and not by a uniform factor,
-    // so it is neither an ordering nor a single sign. The remaining candidate
-    // is the chart -- whether these are moments or coefficients, and against
-    // which basis.
-    //
-    // The displacement is exact to 1e-13, so the interface solve and the
-    // multiplier are right; only this write-back is wrong.
+    // Sigma comes back as itself: the recovered stress agrees with the
+    // monolithic one to 1.7e-11 on both axes, and the two cofacet recoveries
+    // of every shared facet agree to 1e-13, which is `jump`. It reads
+    // straight into the slots the space numbers -- the local saddle holds the
+    // facet stress in that order already, unlike the kinematic fields below.
     for (std::size_t i = 0; i < st.sigma.size() && s_offset_ + i < state_.size(); ++i) {
       state_[s_offset_ + i] = st.sigma[i];
     }
     // No sign here. The local saddle couples the way the mixed assembly does
     // -- sigma row -Dv^T, field row +Dv -- so the two routes solve the same
     // system and every field comes back as itself.
-    for (std::size_t i = 0; i < st.u.size() && u_offset_ + i < state_.size(); ++i) {
-      state_[u_offset_ + i] = st.u[i];
+    // DE-INTERLEAVED, the way the load was built. The local saddle carries the
+    // kinematic unknowns as ONE vector of width nk per cell -- the divergence
+    // rows then the asymmetry rows -- while the model keeps them as SEPARATE
+    // fields, u_0 of width n_u and g_0 of width n_g laid out cell-major. A
+    // straight copy is right only where n_g = 0, which is the wrench layout;
+    // on the componentwise families it wrote the rotation into the
+    // displacement's slots and the answer came back as though the datum had
+    // never been applied. The load assembly above interleaves them; this
+    // undoes it.
+    for (std::size_t e = 0; e < cells; ++e) {
+      for (std::size_t r = 0; r < n_u; ++r) {
+        const std::size_t at = e * nk + r;
+        if (at < st.u.size() && u_offset_ + e * n_u + r < state_.size()) {
+          state_[u_offset_ + e * n_u + r] = st.u[at];
+        }
+      }
+      for (std::size_t r = 0; r < n_g; ++r) {
+        const std::size_t at = e * nk + n_u + r;
+        if (at < st.u.size() && g_offset + e * n_g + r < state_.size()) {
+          state_[g_offset + e * n_g + r] = st.u[at];
+        }
+      }
     }
     for (std::size_t i = 0; i < st.p.size() && p_offset + i < state_.size(); ++i) {
       state_[p_offset + i] = st.p[i];
@@ -1467,6 +1542,8 @@ class CauchyMechanicsModel {
   MechanicsBoundary mechanics_;
 
   exokal::hodge::DeRhamGeometryCache geometry_;
+  std::vector<double> body_force_;  // per cell, d components, cell-major
+  CellVectorData body_force_data_;
   exokal::hodge::StressOperators stress_;
   StrongDisplacementCoefficients strong_displacement_;
   exokal::forms::TermContext ctx_;

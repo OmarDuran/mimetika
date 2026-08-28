@@ -268,4 +268,78 @@ class ReservoirPressurization {
 inline const exokal::forms::RegisterTerm<ReservoirPressurization> register_reservoir_pressurization{
     "reservoir_pressurization", exokal::forms::Coupling::closure, {"s"}};
 
+// A SOURCE ON THE BALANCE ROW.
+//
+// The mixed balance is int_E div q = int_E f, and the flux row already carries
+// the datum, so the source is the only thing the pressure row takes besides
+// the divergence: the residual is int_E div q - int_E f. The data holds the
+// LOAD int_E f and not the density f, so this term multiplies by nothing and
+// the model, which knows the measure, is where the two meet.
+//
+// With f constant and p quadratic this is the first case in these examples
+// whose exact flux is not constant: q = -lambda K grad p is linear, which
+// RT_0 spans (constants and the radial mode) and P_0 pressure cannot follow,
+// so the pressure error is the projection error and the method converges
+// rather than reproducing.
+class CellSource {
+ public:
+  CellSource() = default;
+  CellSource(const Params&, const TermContext& ctx)
+      : data_(&ctx.require<CellData>("cell_source")) {}
+
+  static constexpr std::size_t kP = 0;
+
+  std::vector<std::string> fields() const { return {"p"}; }
+
+  template <class T>
+  void operator()(const Stencil& st, const std::vector<T>& a, std::vector<T>& r) const {
+    (void)a;
+    const double load = data_->at(st.support);
+    if (load == 0.0) return;
+    r[st.field(kP).begin] -= load;
+  }
+
+ private:
+  const CellData* data_{nullptr};
+};
+
+inline const exokal::forms::RegisterTerm<CellSource> register_cell_source{
+    "cell_source", exokal::forms::Coupling::closure, {"p"}};
+
+// A BODY FORCE ON THE MOMENTUM ROW.
+//
+// Equilibrium is div sigma + b = 0 and the row is r_u = Dv sigma, so the term
+// adds the load and the residual reads Dv sigma + b. Dv is the divergence
+// DIVIDED BY THE MEASURE -- exokal builds it that way -- so what belongs here
+// is the mean body force over the cell, which is what the model stores.
+//
+// It touches the displacement alone. The rotation rows pair the asymmetry
+// against a multiplier and a body force has no asymmetry to contribute.
+class BodyForce {
+ public:
+  BodyForce() = default;
+  BodyForce(const Params&, const TermContext& ctx)
+      : data_(&ctx.require<CellVectorData>("body_force")) {}
+
+  static constexpr std::size_t kU = 0;
+
+  std::vector<std::string> fields() const { return {"u"}; }
+
+  template <class T>
+  void operator()(const Stencil& st, const std::vector<T>& a, std::vector<T>& r) const {
+    (void)a;
+    const auto& U = st.field(kU);
+    const std::size_t n = std::min<std::size_t>(data_->components(), U.end - U.begin);
+    for (std::size_t k = 0; k < n; ++k) {
+      r[U.begin + k] += data_->at(st.support, k);
+    }
+  }
+
+ private:
+  const CellVectorData* data_{nullptr};
+};
+
+inline const exokal::forms::RegisterTerm<BodyForce> register_body_force{
+    "body_force", exokal::forms::Coupling::closure, {"u"}};
+
 }  // namespace mimetika::physics::terms

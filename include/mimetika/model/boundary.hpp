@@ -481,6 +481,33 @@ class CellData {
   std::vector<double> value_;
 };
 
+// A VECTOR PER CELL: a body force, one component per axis.
+//
+// Stored as the LOAD the momentum row wants rather than the density, because
+// the row's own scaling differs between the physics -- the flux balance is
+// int_E div q, an integral, and the stress balance is Dv sigma, the same sum
+// divided by the measure -- and a term that had to know which would be a term
+// that knows the discretization.
+class CellVectorData {
+ public:
+  CellVectorData() = default;
+  CellVectorData(std::size_t n_cells, std::size_t components)
+      : components_(components), value_(n_cells * components, 0.0) {}
+
+  std::size_t components() const { return components_; }
+  void set(Index e, std::size_t k, double v) {
+    value_[static_cast<std::size_t>(e) * components_ + k] = v;
+  }
+  double at(Index e, std::size_t k) const {
+    return value_[static_cast<std::size_t>(e) * components_ + k];
+  }
+  bool empty() const { return value_.empty(); }
+
+ private:
+  std::size_t components_{0};
+  std::vector<double> value_;
+};
+
 class BoundaryVectorData {
  public:
   explicit BoundaryVectorData(std::size_t n_facets)

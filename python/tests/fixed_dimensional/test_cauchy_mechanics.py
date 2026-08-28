@@ -8,6 +8,8 @@ tolerances.
 
 import math
 
+import numpy as np
+
 import pytest
 
 import mimetika_cxx as mk
@@ -390,3 +392,72 @@ def test_the_threshold_is_refused_off_the_adaptive_vem_product():
     with pytest.raises(Exception):
         o = column_case(3, 3, mk.Family.cartesian, VEM, STRONG, degeneracy=1.0)
     assert o is None
+
+
+# ---- a body force, and the field that needs one ------------------------------
+#
+# The patch tests above are all affine: sigma is constant and div sigma = 0.
+# The smallest field whose body force is constant and nonzero is
+#
+#     u_i = A x_i^2 / 2 ,   eps = diag(A x) ,   sigma = 2 mu eps + lam tr(eps) I ,
+#     (div sigma)_i = A(2 mu + lam)   ->   b_i = -A(2 mu + lam) ,
+#
+# and grad u is diagonal, so the rotation is identically zero and this asks the
+# stress rows a question the affine field cannot. sigma is linear and the cell
+# fields are constant, so it is converged to rather than reproduced -- second
+# order, which is the check: a force scaled wrongly converges to another field,
+# and a force dropped does not converge.
+FORCE_A = 0.7
+
+
+def _quadratic_case(n, how, form):
+    mesh = mk.box([n, n, n], 3, mk.Family.cartesian, [1.0, 1.0, 1.0])
+    model = mk.CauchyMechanicsModel(mesh, 3, _material(), how, form)
+    # The count comes from the MESH: n_cells is filled by the build.
+    model.set_body_force([-FORCE_A * (2.0 * MU + LAM)] * 3 * mesh.count(3))
+    facets = mk.boundary_facets(mesh, 3)
+    for f, cell in zip(facets, mk.cofacets_of(mesh, 3, facets)):
+        x = mk.centroid(mesh, 3, int(cell))
+        g = [0.0] * 9
+        for k in range(3):
+            g[k * 3 + k] = FORCE_A * x[k]
+        model.prescribe_displacement([f], [0.5 * FORCE_A * x[k] ** 2 for k in range(3)], g)
+    model.solve()
+    volume = np.array([mk.measure(mesh, 3, e) for e in range(model.n_cells)])
+    e = np.array([[model.displacement(c, k)
+                   - 0.5 * FORCE_A * mk.centroid(mesh, 3, c)[k] ** 2 for k in range(3)]
+                  for c in range(model.n_cells)])
+    return float(np.sqrt((volume[:, None] * e * e).sum()))
+
+
+@pytest.mark.parametrize("how,form", [(STABILIZED, WEAK), (DERHAM, WEAK), (VEM, STRONG)],
+                         ids=["stabilized_bdm", "derham_bdm", "stabilized_vem"])
+def test_a_constant_body_force_converges_at_second_order(how, form):
+    coarse, fine = _quadratic_case(2, how, form), _quadratic_case(4, how, form)
+    rate = math.log(coarse / fine) / math.log(2.0)
+    print(f"  {mk.stress_realization_name(how):16s} {coarse:.3e} -> {fine:.3e}"
+          f"   rate {rate:+.2f}")
+    assert rate > 1.5
+
+
+def test_the_body_force_is_not_silently_dropped():
+    mesh = mk.box([2, 2, 2], 3, mk.Family.cartesian, [1.0, 1.0, 1.0])
+
+    def solved(with_force):
+        m = mk.CauchyMechanicsModel(mesh, 3, _material(), STABILIZED, WEAK)
+        if with_force:
+            m.set_body_force([-FORCE_A * (2.0 * MU + LAM)] * 3 * mesh.count(3))
+        facets = mk.boundary_facets(mesh, 3)
+        for f, cell in zip(facets, mk.cofacets_of(mesh, 3, facets)):
+            x = mk.centroid(mesh, 3, int(cell))
+            g = [0.0] * 9
+            for k in range(3):
+                g[k * 3 + k] = FORCE_A * x[k]
+            m.prescribe_displacement([f], [0.5 * FORCE_A * x[k] ** 2 for k in range(3)], g)
+        m.solve()
+        return np.array([[m.displacement(c, k) for k in range(3)] for c in range(m.n_cells)])
+
+    apart = float(np.abs(solved(True) - solved(False)).max())
+    print(f"  |u(with force) - u(without)| = {apart:.3e}")
+    assert apart > 1e-3
+

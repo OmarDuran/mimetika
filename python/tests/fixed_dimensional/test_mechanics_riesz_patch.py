@@ -189,7 +189,7 @@ def direct(mesh, dim, product, degeneracy=None, lam=LAM, contrast=1.0):
     return got, float(np.abs(got - exact).max() / scale)
 
 
-def iterative(mesh, dim, product, degeneracy=None, lam=LAM, contrast=1.0):
+def iterative(mesh, dim, product, degeneracy=None, lam=LAM, contrast=1.0, options=None):
     """(iterations, relative departure from the direct answer), or (None, None)."""
     reference, _, _ = linear_patch(mesh, dim, product, degeneracy, lam, contrast)
     reference.solve(options=DIRECT)
@@ -197,7 +197,7 @@ def iterative(mesh, dim, product, degeneracy=None, lam=LAM, contrast=1.0):
 
     model, _, _ = linear_patch(mesh, dim, product, degeneracy, lam, contrast)
     try:
-        report = model.solve(options=RIESZ)
+        report = model.solve(options=RIESZ if options is None else options)
     except (RuntimeError, ValueError):
         return None, None  # recorded by the caller; see RIESZ_FRAGILE
     got = displacements(model, dim)
@@ -559,3 +559,127 @@ def test_four_fields_are_not_yet_robust_to_incompressibility(realization, family
             assert departure < 1e-7, (realization, family, nu, departure)
     print(f"  {realization:<21}{family:<14}nu {list(POISSON)} -> {counts} its")
     assert counts[0] is not None, (realization, family, counts)
+
+
+# ---- the auxiliary-space route ----------------------------------------------
+#
+# The Riesz map above inverts the stress block by a factorization. ADS replaces
+# that with a cycle, which is what a mesh too large to factor needs, and the
+# question is whether the map's three properties survive the replacement.
+#
+# THE BLOCK IS SOLVED, NOT SAMPLED. A stress facet carries d^2 unknowns and ADS
+# is written for one per facet, so the block reaches it through the
+# facet-constant subspace as a two-level cycle -- and a cycle whose coarse
+# space is a subspace corrects only part of the block, so it is wrapped in a
+# CG. That CG's tolerance is what these counts measure: at 1e-2 they read the
+# tolerance instead of the preconditioner (29 against 23 on the ladder below,
+# 205 against 132 at nu = 0.4999), and on a mesh written in metres rather than
+# unit lengths it does not converge at all. Solved to 1e-6 the count is the
+# map's, and that is the claim worth pinning.
+ADS_CG = mk.SolverOptions(
+    method="gmres", preconditioner="riesz", rtol=1e-10, max_iterations=3000,
+    riesz_block_pc="ads", riesz_block_its=500, riesz_block_rtol=1e-6,
+)
+# ADS is a 3D construction -- it needs the discrete gradient and curl of a
+# 3-complex -- so the 2D ladders are out. The Kuhn simplex box is out for a
+# different reason: hypre's own ADS setup refuses it at the finer level
+# (PCSetUp(coarse ads)), as it refuses box(n, simplex) for some n in the flow
+# tests. A failed hypre setup leaves the library unusable for the rest of the
+# process, so this file keeps to the Cartesian ladder rather than risk one.
+ADS_FAMILY = "cartesian_3d"
+ADS_REALIZATIONS = ("derham_bdm", "stabilized_bdm", "stabilized_vem")
+
+
+def _needs_ads():
+    dim, meshes = LADDERS[ADS_FAMILY]
+    try:
+        its, _ = iterative(meshes[0], dim, "stabilized_bdm", options=ADS_CG)
+    except RuntimeError as e:  # a PETSc built without hypre has no ADS to run
+        pytest.skip(f"hypre/ADS unavailable: {e}")
+    if its is None:
+        pytest.skip("hypre/ADS unavailable")
+
+
+def _ads(mesh, dim, realization, lam=LAM, contrast=1.0):
+    its, departure = iterative(mesh, dim, realization, lam=lam, contrast=contrast,
+                               options=ADS_CG)
+    assert its is not None, (realization, "did not converge")
+    assert departure < 1e-7, (realization, departure)
+    return its
+
+
+# ---- 1. the answer ----------------------------------------------------------
+#
+# CONVERGED IS NOT CORRECT. An auxiliary space is a preconditioner, so it may
+# not move the answer: a cycle built on the wrong complex, or on a permutation
+# of the block's rows, still converges -- to something else. `_ads` asserts the
+# departure from the factorization on every call below; this states it once on
+# its own, so a failure here reads as "wrong answer" rather than "slow".
+@pytest.mark.parametrize("realization", ADS_REALIZATIONS)
+def test_the_auxiliary_space_answer_is_the_direct_answer(realization):
+    _needs_ads()
+    dim, meshes = LADDERS[ADS_FAMILY]
+    _, departure = iterative(meshes[0], dim, realization, options=ADS_CG)
+    print(f"  {realization:<21}departure from the factorization {departure:.1e}")
+    assert departure < 1e-7
+
+
+# ---- 2. h-robustness --------------------------------------------------------
+#
+# Measured, against the exact-block map in parentheses:
+#
+#     derham_bdm      21  21     (21  22)
+#     stabilized_bdm  23  23     (23  23)
+#     stabilized_vem  33  36     (33  36)
+#
+# The cycle reproduces the map iteration for iteration, which is the strongest
+# statement available: the auxiliary space costs nothing in count, only in work
+# per iteration.
+@pytest.mark.parametrize("realization", ADS_REALIZATIONS)
+def test_the_ads_count_does_not_grow_under_refinement(realization):
+    _needs_ads()
+    dim, meshes = LADDERS[ADS_FAMILY]
+    counts = [_ads(mesh, dim, realization) for mesh in meshes]
+    print(f"  {realization:<21}{[m.count(dim) for m in meshes]} cells -> {counts} its")
+    assert counts[-1] <= counts[0] + 5
+
+
+# ---- 3. contrast-robustness -------------------------------------------------
+#
+# lambda jumping by six orders of magnitude, cell to cell. Measured:
+#
+#     derham_bdm      21  56  59  59
+#     stabilized_bdm  23  57  59  58
+#     stabilized_vem  33  54  54  54
+#
+# One step of about two at the first jump and flat after it -- the same shape
+# the exact-block map has, and bounded, which is the claim.
+@pytest.mark.parametrize("realization", ADS_REALIZATIONS)
+def test_the_ads_count_is_bounded_under_material_contrast(realization):
+    _needs_ads()
+    dim, meshes = LADDERS[ADS_FAMILY]
+    counts = [_ads(meshes[0], dim, realization, contrast=c) for c in CONTRASTS]
+    print(f"  {realization:<21}contrast {list(CONTRASTS)} -> {counts} its")
+    assert max(counts) <= min(counts) + 45
+
+
+# ---- 4. incompressibility ---------------------------------------------------
+#
+# nu -> 1/2, where the compliance goes singular on the trace. Measured:
+#
+#     derham_bdm      24  60  67  118
+#     stabilized_bdm  25  66  87  139
+#     stabilized_vem  36  63  87   98
+#
+# Against 23/60/83/103, 24/56/106/132 and 36/63/90/145 for the exact block: the
+# cycle tracks the map over four orders in 1/(1-2nu). It is also the axis the
+# coarse split's composition decides -- the trace is what couples the d copies,
+# and an additive composition drops it; see attach_two_level.
+@pytest.mark.parametrize("realization", ADS_REALIZATIONS)
+def test_ads_three_fields_are_robust_to_incompressibility(realization):
+    _needs_ads()
+    dim, meshes = LADDERS[ADS_FAMILY]
+    counts = [_ads(meshes[0], dim, realization, lam=lame_at(nu)) for nu in POISSON]
+    print(f"  {realization:<21}nu {list(POISSON)} -> {counts} its")
+    assert max(counts) <= 400
+

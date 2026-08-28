@@ -93,9 +93,15 @@ def solvers(rtol):
         ),
         # the same cycle with the inner CG stated explicitly rather than left
         # to the default the two-level path chooses (50 iterations to 1e-2)
+        # the same cycle with the inner CG stated explicitly. The budget is
+        # what MEASURES the map rather than the budget: at 50 steps to 1e-2 the
+        # outer count reads the cap instead of the preconditioner -- 29 against
+        # 23 on the h-ladder, 205 against 132 at nu = 0.4999 -- and on a mesh
+        # written in metres rather than in unit lengths it does not converge at
+        # all. Solved to 1e-6 the count is the Riesz map's.
         "ads-cg": mk.SolverOptions(
             method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000,
-            riesz_block_pc="ads", riesz_block_its=50, riesz_block_rtol=1e-2,
+            riesz_block_pc="ads", riesz_block_its=500, riesz_block_rtol=1e-6,
         ),
         "direct": mk.SolverOptions(),
     }
@@ -145,7 +151,8 @@ def gradient_of(dim, length, spin):
     return g
 
 
-def prescribe_linear_displacement(model, mesh, dim, lo, gradient):
+def prescribe_displacement(model, mesh, dim, lo, gradient, length=1.0,
+                           quadratic=False):
     """u = grad u . (x - lo) on every boundary facet, as an affine datum.
 
     The datum is written about the cell centroid -- u = a + B (x - x_E) -- so
@@ -160,9 +167,43 @@ def prescribe_linear_displacement(model, mesh, dim, lo, gradient):
     cells = mk.cofacets_of(mesh, dim, facets)
     for f, cell in zip(facets, cells):
         x_e = mk.centroid(mesh, dim, int(cell))
-        constant = exact_displacement(x_e, lo, gradient, dim) + [0.0] * (3 - dim)
-        model.prescribe_displacement([f], constant, gradient)
+        if quadratic:
+            # u = a + B (x - x_E) is affine, and this field is not: the datum
+            # is its linearization about the cell centroid, exact to O(h^2) --
+            # the order the method converges at, so it does not set the rate.
+            g = quadratic_gradient(x_e, lo, length, dim)
+            constant = quadratic_displacement(x_e, lo, length, dim) + [0.0] * (3 - dim)
+        else:
+            g = gradient
+            constant = exact_displacement(x_e, lo, gradient, dim) + [0.0] * (3 - dim)
+        model.prescribe_displacement([f], constant, g)
     return len(facets)
+
+
+# THE QUADRATIC FIELD, in the non-dimensional s = (x - x_min)/L:
+#
+#     u_i = L s_i^2 / 2      grad u = diag(s)      eps = diag(s),  skw = 0
+#     sigma = 2 mu diag(s) + lam (sum s) I
+#     (div sigma)_i = (2 mu + lam)/L   ->   b_i = -(2 mu + lam)/L, constant
+#
+# grad u is diagonal, so the rotation is identically zero here whatever --spin
+# says: this field asks the stress rows a question the linear one cannot, and
+# asks the rotation nothing.
+def quadratic_displacement(x, lo, length, dim):
+    return [0.5 * length * ((x[k] - lo[k]) / length) ** 2 for k in range(dim)]
+
+
+def quadratic_gradient(x, lo, length, dim):
+    """grad u = diag(s): the field's own gradient, which MOVES with x."""
+    g = [0.0] * 9
+    for k in range(dim):
+        g[k * 3 + k] = (x[k] - lo[k]) / length
+    return g
+
+
+def quadratic_body_force(mat, length, dim):
+    """b = -div sigma, constant and nonzero -- the point of this field."""
+    return [-(2.0 * mat.shear + mat.lame) / length] * dim
 
 
 def exact_displacement(x, lo, gradient, dim):
@@ -305,6 +346,15 @@ def main():
              "test below is unchanged by it. Off by default; not available with --hybrid",
     )
     ap.add_argument(
+        "--field",
+        default="linear",
+        choices=("linear", "quadratic"),
+        help="linear: u affine, sigma constant, no body force -- the patch test the "
+             "method reproduces exactly. quadratic: u_i = (x_i - min_i)^2 / 2L, so sigma "
+             "is linear and the body force -(2mu + lam)/L is constant and NONZERO, which "
+             "the cell-wise fields can only converge to",
+    )
+    ap.add_argument(
         "--assemble-only",
         action="store_true",
         help="build the Jacobian and the preconditioner, and stop before the iteration",
@@ -385,8 +435,14 @@ def main():
             model.set_cond_threshold(args.cond_threshold)
         if args.rotation_jump is not None:
             model.set_rotation_jump(args.rotation_jump)
+    quadratic = args.field == "quadratic"
     with stage("prescribing u on the boundary"):
-        n_facets = prescribe_linear_displacement(model, mesh, dim, lo, gradient)
+        n_facets = prescribe_displacement(model, mesh, dim, lo, gradient, length, quadratic)
+        # div sigma + b = 0, the same constant vector in every cell. The count
+        # comes from the MESH: n_cells is filled by the build, which has not
+        # run yet, so asking the model would set no force at all.
+        if quadratic:
+            model.set_body_force(quadratic_body_force(mat, length, dim) * mesh.count(dim))
     if args.assemble_only:
         # The two builds alone. They are what scales with the mesh, and a caller
         # measuring them should not have to wait for a Krylov method to
@@ -396,7 +452,8 @@ def main():
             f"\n  assembled: matrix {report.matrix_seconds:.2f} s, "
             f"preconditioner {report.preconditioner_seconds:.2f} s"
         )
-        print(f"  {model.n_cells} cells, {model.n_dofs} dofs, {model.n_stabilized} stabilized")
+        print(f"  {model.n_cells} cells, {model.n_dofs} dofs, "
+              f"{model.n_stabilized}/{model.n_cells} cells carry a stabilization")
         if report.condensed:
             print(f"  sigma eliminated exactly: {model.n_dofs} -> {report.condensed_dofs} "
                   f"unknowns; the preconditioner built is the reduced system's "
@@ -428,8 +485,9 @@ def main():
     if report.condensed and report.condensed_dofs:
         solved = report.condensed_dofs
         of_what = "facet multipliers" if args.hybrid else "cell unknowns"
+        how = "eliminated cell by cell" if args.hybrid else "eliminated first"
         print(f"  the linear system solved: {solved} {of_what}"
-              f"  ({model.n_dofs} in the mixed space, eliminated first)")
+              f"  ({model.n_dofs} in the mixed space, {how})")
     else:
         print(f"  the linear system solved: {model.n_dofs} unknowns, the mixed space")
 
@@ -446,12 +504,26 @@ def main():
     # total pressure per cell, a two-point system that is symmetric
     # quasi-definite (u positive, p negative -- the pressure mass c_p|E| rules
     # out SPD), which is why it takes GMRES + BoomerAMG rather than CG.
-    if report.condensed:
+    if args.hybrid and report.condensed:
+        # HYBRIDIZED, THE REDUCED SYSTEM LIVES ON FACETS. sigma AND the cell
+        # unknowns leave cell by cell, and what is left is one multiplier
+        # vector per FREE facet -- a facet whose displacement is prescribed
+        # carries the datum instead and is not an unknown. So the count is
+        # free facets times the multipliers a facet carries, and the system is
+        # SPD rather than the quasi-definite cell system condensation leaves.
+        free = mesh.count(dim - 1) - n_facets
+        per_facet = report.condensed_dofs // max(free, 1)
+        print(
+            f"  sigma and the cell unknowns eliminated exactly: {model.n_dofs} -> "
+            f"{report.condensed_dofs} facet multipliers ({per_facet} per free facet, "
+            f"{free} free of {mesh.count(dim - 1)}), SPD interface"
+        )
+    elif report.condensed:
         per_cell = report.condensed_dofs // model.n_cells
         print(
             f"  sigma eliminated exactly: {model.n_dofs} -> {report.condensed_dofs} unknowns "
-            f"({per_cell} per cell), symmetric quasi-definite, "
-            f"gmres + {report.block_solver}"
+            f"({per_cell} per cell), symmetric quasi-definite, gmres"
+            + (f" + {report.block_solver}" if report.block_solver else "")
         )
     # THE VALIDITY GATE OF THE DIAGONAL STAR, which exokal leaves to the
     # consumer: a facet the cell centroid does not see squarely carries a
@@ -467,7 +539,8 @@ def main():
             print("  *** Use stabilized_vem or adaptive_vem (whose default keeps the")
             print("  *** stabilized product everywhere the scan does not flag).")
     print(f"\n  u = (I + W)(x - x_min)/L on all {n_facets} boundary facets, pure Dirichlet")
-    print(f"  {model.n_cells} cells, {model.n_dofs} dofs, {model.n_stabilized} stabilized")
+    print(f"  {model.n_cells} cells, {model.n_dofs} dofs, "
+              f"{model.n_stabilized}/{model.n_cells} cells carry a stabilization")
     if args.product in rz.ADAPTIVE:
         n_star = int((model.eta == 0.0).sum())
         pct = args.degeneracy_percent
@@ -485,14 +558,16 @@ def main():
     # left is round-off, or the residual tolerance of an iterative solve.
     u_hat = exact_rotation(gradient, dim)
     s_hat = exact_stress(gradient, mat, dim)
+    # THE EXACT FIELDS ARE PER CELL, because one of the two moves. For the
+    # affine field they are the same in every cell and the arrays below are a
+    # broadcast; for the quadratic one sigma is linear in x and the rotation
+    # vanishes identically, and only an array can say either.
     # The split the material sees: the volumetric stress is the mean of the
     # diagonal, tr(sigma)/d, and the deviator is what is left. The split is a
     # linear read of the same reconstruction, so each part inherits exactly
     # the accuracy of the full tensor -- reported separately because a defect
     # that lives in one part alone (a missing trace, a spurious deviator) is
     # invisible in a single max-error number.
-    sm_hat = sum(s_hat[k * 3 + k] for k in range(dim)) / dim
-    d_hat = [s_hat[k] - (sm_hat if k in (0, 4, 8) and k // 3 < dim else 0.0) for k in range(9)]
     n_rot = model.n_rotations
 
     with stage("reconstructing u, gamma and sigma"):
@@ -510,47 +585,61 @@ def main():
         rot = np.array([[model.rotation(e, k) for k in range(n_rot)] for e in range(n)])
         # The exact side needs no projection. u is affine, so Pi_0 u is u at the
         # centroid; gamma and sigma are constant, so Pi_0 leaves them alone.
-        grad = np.array(gradient).reshape(3, 3)[:dim, :dim]
-        u_exact = (x[:, :dim] - lo[:dim]) @ grad.T
+        if quadratic:
+            u_exact = np.array([quadratic_displacement(xe, lo, length, dim) for xe in x])
+            s_cell = np.array([exact_stress(quadratic_gradient(xe, lo, length, dim), mat, dim)
+                               for xe in x])
+            rot_exact = np.zeros((n, n_rot))          # grad u is diagonal
+        else:
+            grad = np.array(gradient).reshape(3, 3)[:dim, :dim]
+            u_exact = (x[:, :dim] - lo[:dim]) @ grad.T
+            s_cell = np.tile(np.array(s_hat), (n, 1))
+            rot_exact = np.tile(np.array(u_hat), (n, 1))
         # the meshed block of the 3x3 layout, and the split the material sees:
         # volumetric = tr(sigma)/d, deviatoric = what is left of the block
         block = [i * 3 + j for i in range(dim) for j in range(dim)]
         on_diagonal = [k * dim + k for k in range(dim)]
-        sigma, sigma_hat = stress[:, block], np.array(s_hat)[block]
+        sigma, sigma_hat = stress[:, block], s_cell[:, block]
         vol = sigma[:, on_diagonal].mean(axis=1)
         dev = sigma.copy()
         dev[:, on_diagonal] -= vol[:, None]
+        vol_hat = sigma_hat[:, on_diagonal].mean(axis=1)
         dev_hat = sigma_hat.copy()
-        dev_hat[on_diagonal] -= sm_hat
+        dev_hat[:, on_diagonal] -= vol_hat[:, None]
 
     print()
-    print("  the exact fields, which the method reproduces:")
+    print("  the exact fields" + (", at the last cell:" if quadratic
+                                   else ", which the method reproduces:"))
     print()
     print(f"    u at the last cell   {fmt(u_exact[-1])}")
-    print(f"    gamma = skw(grad u)  {fmt(u_hat)}")
-    print(f"    sigma diagonal       {fmt([s_hat[k * 3 + k] for k in range(dim)])}")
-    print(f"    sigma volumetric     {fmt([sm_hat])}")
-    print(f"    sigma deviatoric     {fmt(dev_hat[on_diagonal])}")
+    print(f"    gamma = skw(grad u)  {fmt(rot_exact[-1])}")
+    print(f"    sigma diagonal       {fmt(sigma_hat[-1][on_diagonal])}")
+    print(f"    sigma volumetric     {fmt([vol_hat[-1]])}")
+    print(f"    sigma deviatoric     {fmt(dev_hat[-1][on_diagonal])}")
 
     print()
-    print("  error.  e = Pi_0(v - v_h), with Pi_0 w|_E = |E|^-1 int_E w the L2")
-    print("  projection onto cell-wise constants; D is the domain and E a cell.")
-    print("  u and gamma are cell moments over |E| and sigma is the cell average")
-    print("  of the facet tractions, so each row is a whole discretization error.")
-    print("  S is the norm the row is measured against: ||Pi_0 u||_D for u,")
-    print("  |grad u|_F |D|^(1/2) for gamma, and ||sigma||_D for all three stress")
-    print("  rows, which keeps those three comparable. It is named per row rather")
-    print("  than read off the row because sigma_dev vanishes for this field, as")
-    print("  does gamma at --spin 0.")
+    # S is named per row, not read off it: sigma_dev vanishes for this field,
+    # and so does gamma at --spin 0, so a row cannot be its own scale.
+    print("  e = Pi_0(v - v_h),   Pi_0 w|_E = |E|^-1 int_E w")
+    print("  S:  u -> ||Pi_0 u||_D    gamma -> |grad u|_F |D|^(1/2)"
+          "    sigma_* -> ||sigma||_D")
     print()
-    root_area = np.sqrt(float(volume.sum()))
     scale_u, _ = l2_norms(volume, u_exact)
+    scale_s, _ = l2_norms(volume, sigma_hat)
+    # |grad u|_F over the domain, which is the rotation's scale: gamma is a
+    # part of grad u and vanishes for both of these fields, so it has no scale
+    # of its own. Constant for the affine field, per cell for the quadratic.
+    if quadratic:
+        grad_f = np.array([np.linalg.norm(quadratic_gradient(xe, lo, length, dim)) for xe in x])
+    else:
+        grad_f = np.full(len(volume), float(np.linalg.norm(np.array(gradient))))
+    scale_g, _ = l2_norms(volume, grad_f)
     error_table(volume, [
         ("u", u - u_exact, scale_u),
-        ("gamma", rot - np.array(u_hat), root_area * np.linalg.norm(np.array(gradient))),
-        ("sigma", sigma - sigma_hat, root_area * np.linalg.norm(sigma_hat)),
-        ("sigma vol", vol - sm_hat, root_area * np.linalg.norm(sigma_hat)),
-        ("sigma dev", dev - dev_hat, root_area * np.linalg.norm(sigma_hat)),
+        ("gamma", rot - rot_exact, scale_g),
+        ("sigma", sigma - sigma_hat, scale_s),
+        ("sigma vol", vol - vol_hat, scale_s),
+        ("sigma dev", dev - dev_hat, scale_s),
     ])
 
     if args.vtu and root:
@@ -573,22 +662,30 @@ def main():
             dev9 = stress.copy()
             for k in range(dim):
                 dev9[:, k * 3 + k] -= vol
+            # and the exact split, the same way and PER CELL. s_cell is the
+            # exact stress cell by cell -- constant for the affine field, and
+            # linear in x for the quadratic one -- so the split has to be taken
+            # from it rather than from a single tensor, or these three columns
+            # would be the affine field's answer written next to the other one.
+            dev9_hat = s_cell.copy()
+            for k in range(dim):
+                dev9_hat[:, k * 3 + k] -= vol_hat
             fields = {
                     "displacement": u3,
                     "displacement_exact": padded(u_exact, dim),
                     "displacement_error": u3 - padded(u_exact, dim),
                     "rotation": rot3,
-                    "rotation_exact": padded(np.tile(u_hat, (n, 1)), n_rot),
-                    "rotation_error": rot3 - padded(np.tile(u_hat, (n, 1)), n_rot),
+                    "rotation_exact": padded(rot_exact, n_rot),
+                    "rotation_error": rot3 - padded(rot_exact, n_rot),
                     "stress": stress,
-                    "stress_exact": np.tile(np.array(s_hat), (n, 1)),
-                    "stress_error": stress - np.array(s_hat),
+                    "stress_exact": s_cell,
+                    "stress_error": stress - s_cell,
                     "stress_volumetric": vol,
-                    "stress_volumetric_exact": np.full(n, sm_hat),
-                    "stress_volumetric_error": vol - sm_hat,
+                    "stress_volumetric_exact": vol_hat,
+                    "stress_volumetric_error": vol - vol_hat,
                     "stress_deviatoric": dev9,
-                    "stress_deviatoric_exact": np.tile(np.array(d_hat), (n, 1)),
-                    "stress_deviatoric_error": dev9 - np.array(d_hat),
+                    "stress_deviatoric_exact": dev9_hat,
+                    "stress_deviatoric_error": dev9 - dev9_hat,
             }
             if args.product in rz.ADAPTIVE:
                 fields["eta"] = model.eta

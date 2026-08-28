@@ -8,6 +8,8 @@ one does NOT claim, which is asserted as a refusal rather than skipped.
 
 import math
 
+import numpy as np
+
 import pytest
 
 import mimetika_cxx as mk
@@ -470,3 +472,69 @@ def test_the_lowest_order_datum_does_not_notice_the_gradient():
         b = _linear_patch(mesh, how, gradient=True)
         print(f"  {mk.flux_realization_name(how):15s} {a:.2e} vs {b:.2e}")
         assert abs(a - b) < 1e-12
+
+
+# ---- a source, and the field that needs one ---------------------------------
+#
+# Every case above is a patch test: the exact field is affine, the exact flux
+# constant, and div q = 0. The source is what makes a DIFFERENT problem
+# possible, and the smallest one whose source is constant and nonzero is
+#
+#     p = A|x|^2 / 2 ,   q = -lambda A x ,   f = div q = -lambda A d ,
+#
+# whose flux is linear -- which RT_0 spans, being constants plus the radial
+# mode -- while the cell pressure is constant and cannot follow a quadratic.
+# So this is not reproduced but CONVERGED to, at second order, and that rate
+# is the check: a source scaled wrongly still converges, to the wrong field,
+# and a source dropped entirely does not converge at all.
+SOURCE_A = 0.7
+
+
+def _quadratic_case(n, how, mobility=1.0):
+    mesh = mk.box([n, n, n], 3, mk.Family.cartesian, [1.0, 1.0, 1.0])
+    model = mk.FlowModel(mesh, 3, mobility, how)
+    # div q = f, one density per cell. The count comes from the MESH: n_cells
+    # is filled by the build, which has not run, so the model would report 0
+    # here and the source would silently be empty.
+    model.set_source([-mobility * SOURCE_A * 3] * mesh.count(3))
+    for f in mk.boundary_facets(mesh, 3):
+        x = mk.centroid(mesh, 2, f)
+        model.add_pressure([f], 0.5 * SOURCE_A * sum(x[k] ** 2 for k in range(3)),
+                           [SOURCE_A * x[k] for k in range(3)])
+    model.solve()
+    volume = np.array([mk.measure(mesh, 3, e) for e in range(model.n_cells)])
+    e = np.array([model.cell_pressure(e)
+                  - 0.5 * SOURCE_A * sum(mk.centroid(mesh, 3, e)[k] ** 2 for k in range(3))
+                  for e in range(model.n_cells)])
+    return float(np.sqrt((volume * e * e).sum()))
+
+
+@pytest.mark.parametrize("how", [STABILIZED, RT, BDM],
+                         ids=["stabilized_rt", "derham_rt", "derham_bdm"])
+def test_a_constant_source_converges_at_second_order(how):
+    coarse, fine = _quadratic_case(3, how), _quadratic_case(6, how)
+    rate = math.log(coarse / fine) / math.log(2.0)
+    print(f"  {mk.flux_realization_name(how):15s} {coarse:.3e} -> {fine:.3e}   rate {rate:+.2f}")
+    assert rate > 1.7
+
+
+def test_the_source_is_not_silently_dropped():
+    """The failure this guards is quiet: no source, still converged, wrong field."""
+    mesh = mk.box([3, 3, 3], 3, mk.Family.cartesian, [1.0, 1.0, 1.0])
+
+    def solved(with_source):
+        m = mk.FlowModel(mesh, 3, 1.0, STABILIZED)
+        if with_source:
+            m.set_source([-SOURCE_A * 3] * mesh.count(3))
+        for f in mk.boundary_facets(mesh, 3):
+            x = mk.centroid(mesh, 2, f)
+            m.add_pressure([f], 0.5 * SOURCE_A * sum(x[k] ** 2 for k in range(3)),
+                           [SOURCE_A * x[k] for k in range(3)])
+        m.solve()
+        return np.array([m.cell_pressure(e) for e in range(m.n_cells)])
+
+    with_it, without = solved(True), solved(False)
+    apart = float(np.abs(with_it - without).max())
+    print(f"  |p(with source) - p(without)| = {apart:.3e}")
+    assert apart > 1e-3
+

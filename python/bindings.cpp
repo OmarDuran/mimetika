@@ -796,6 +796,12 @@ mimetika::solver::SolveReport assemble_only(Model& m, bool progress,
 mimetika::solver::SolveReport solve_cauchy_mechanics_hybrid(mimetika::CauchyMechanicsModel& m,
                                                       bool progress,
                                                       const mimetika::solver::SolverOptions& opts) {
+  // PETSc BEFORE MPI. The size query below reaches MPI through
+  // PETSC_COMM_WORLD, so asking it first aborts the process when this is
+  // the first solver call it has seen -- MPI_Comm_size before MPI_Init,
+  // no message, no stack. The session initializes on demand and is what
+  // every other route touches first through its PetscSolver.
+  mimetika::solver::PetscSession::instance();
   PetscMPIInt size = 1;
   MPI_Comm_size(PETSC_COMM_WORLD, &size);
   if (size > 1) {
@@ -885,6 +891,12 @@ mimetika::solver::SolveReport solve_cauchy_mechanics(mimetika::CauchyMechanicsMo
 mimetika::solver::SolveReport solve_flow_hybrid(mimetika::FlowModel& m,
                                                         bool progress,
                                                         const mimetika::solver::SolverOptions& opts) {
+  // PETSc BEFORE MPI. The size query below reaches MPI through
+  // PETSC_COMM_WORLD, so asking it first aborts the process when this is
+  // the first solver call it has seen -- MPI_Comm_size before MPI_Init,
+  // no message, no stack. The session initializes on demand and is what
+  // every other route touches first through its PetscSolver.
+  mimetika::solver::PetscSession::instance();
   PetscMPIInt size = 1;
   MPI_Comm_size(PETSC_COMM_WORLD, &size);
   if (size > 1) {
@@ -1703,6 +1715,13 @@ PYBIND11_MODULE(_core, m) {
           "cell. It enters the discrete Hodge star on the stress (d-1)-cochains and "
           "nothing else, the exterior derivative being incidence. mu stays uniform -- "
           "the four-field term carries its trace coupling as one (2 mu)^-1")
+      .def("set_body_force",
+           [](mimetika::CauchyMechanicsModel& s, const std::vector<double>& b) {
+             s.set_body_force(b);
+           },
+           py::arg("body_force"),
+           "div sigma + b = 0, d components per cell laid out cell-major. With b "
+           "constant and u quadratic the exact stress is linear")
       .def("set_rotation_jump", &mimetika::CauchyMechanicsModel::set_rotation_jump,
            py::arg("c"),
            "diagonal_afw's facet-jump stabilization of the rotation multiplier: the "
@@ -1918,6 +1937,11 @@ PYBIND11_MODULE(_core, m) {
       .def_property_readonly(
           "norm_permeability", &mimetika::FlowModel::norm_permeability,
           "the per-cell scalar the Riesz norm carries: sum_f |f| (n.K n) / sum_f |f|")
+      .def("set_source",
+           [](mimetika::FlowModel& s, const std::vector<double>& f) { s.set_source(f); },
+           py::arg("source"),
+           "div q = f, one density per cell: the build turns it into the balance row's "
+           "load. With f constant and p quadratic the exact flux is linear")
       .def("set_degeneracy_percent", &mimetika::FlowModel::set_degeneracy_percent,
            py::arg("percent"),
            "adaptive_rt's scan threshold: cells whose measure falls below this "

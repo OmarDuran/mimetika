@@ -105,9 +105,15 @@ def solvers(rtol):
         # solved to a tolerance instead of approximated once, and the outer
         # count stops drifting up with the mesh (60 -> 21 at 96k unknowns).
         # Each iteration costs more, so which of the two wins is a measurement.
+        # the same cycle with the inner CG stated explicitly. The budget is
+        # what MEASURES the map rather than the budget: at 50 steps to 1e-2 the
+        # outer count reads the cap instead of the preconditioner -- 29 against
+        # 23 on the h-ladder, 205 against 132 at nu = 0.4999 -- and on a mesh
+        # written in metres rather than in unit lengths it does not converge at
+        # all. Solved to 1e-6 the count is the Riesz map's.
         "ads-cg": mk.SolverOptions(
             method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000,
-            riesz_block_pc="ads", riesz_block_its=50, riesz_block_rtol=1e-2,
+            riesz_block_pc="ads", riesz_block_its=500, riesz_block_rtol=1e-6,
         ),
         "direct": mk.SolverOptions(),
     }
@@ -154,67 +160,79 @@ def bounding_box(mesh):
     return lo, hi, diag / length, length
 
 
-def exact(x, lo, direction, length, dim):
-    return float(np.dot(np.asarray(x)[:dim] - lo[:dim], direction) / length)
+# THE TWO FIELDS, in the non-dimensional s = (x - x_min)/L.
+#
+#   linear      p = s.n          grad p = n/L        q = -lambda n/L      f = 0
+#   quadratic   p = |s|^2 L/2    grad p = s          q = -lambda s        f = -lambda d/L
+#
+# The linear one is a PATCH TEST: q is constant, the lowest-order space holds
+# it exactly, and the method reproduces p to round-off. The quadratic one is
+# not: q is linear, which RT_0 spans, but the cell pressure is constant and
+# cannot follow a quadratic, so what is measured is convergence rather than
+# reproduction -- and the source is what makes it a different problem at all,
+# div q = f with f constant and nonzero.
+def exact(x, lo, direction, length, dim, quadratic=False):
+    s = (np.asarray(x)[:dim] - lo[:dim]) / length
+    if quadratic:
+        return float(0.5 * length * np.dot(s, s))
+    return float(np.dot(s, direction))
 
 
-def exact_flux(direction, length):
-    """q = -lambda K grad p, a constant: p is affine and the coefficient uniform.
-
-    K is the identity here and lambda the mobility, so grad p = n/L carries the
-    whole field. The sign is the discretization's, checked against cell_flux on
-    a Cartesian box where both one-moment products reproduce q to round-off.
-    """
+def exact_flux_at(x, lo, direction, length, dim, quadratic=False):
+    """q = -lambda K grad p at a point, K = I. Constant if p is affine."""
+    if quadratic:
+        return -MOBILITY * (np.asarray(x)[:dim] - lo[:dim]) / length
     return -MOBILITY * np.asarray(direction) / length
 
 
-def cell_fields(model, mesh, dim, lo, direction, length):
-    """|E|, p_h, Pi_0 p and Pi_0 q_h, one row per cell.
+def source_density(length, dim, quadratic):
+    """f = div q. Zero for the affine field, -lambda d / L for the quadratic."""
+    return -MOBILITY * dim / length if quadratic else 0.0
+
+
+def cell_fields(model, mesh, dim, lo, direction, length, quadratic=False):
+    """|E|, p_h, Pi_0 p, Pi_0 q_h and the exact q, one row per cell.
 
     Everything downstream is a norm, so the loop only gathers: three calls into
     the model per cell and no arithmetic, which numpy then does at once.
+
+    Pi_0 of an affine field is its centroid value, so the linear case needs no
+    quadrature. The quadratic one is read at the centroid too -- that is Pi_0
+    up to O(h^2), the order the method itself converges at, so it measures the
+    same thing on every mesh in the ladder rather than a mesh-dependent mix.
     """
     n = model.n_cells
     x = np.array([mk.centroid(mesh, dim, e) for e in range(n)])
     volume = np.fromiter((mk.measure(mesh, dim, e) for e in range(n)), float, n)
     p_h = np.fromiter((model.cell_pressure(e) for e in range(n)), float, n)
     q_h = np.array([model.cell_flux(e) for e in range(n)])
-    p = (x[:, :dim] - lo[:dim]) @ np.asarray(direction) / length
-    return volume, p_h, p, q_h
+    p = np.array([exact(xe, lo, direction, length, dim, quadratic) for xe in x])
+    q = np.array([exact_flux_at(xe, lo, direction, length, dim, quadratic) for xe in x])
+    return volume, p_h, p, q_h, q
 
 
 def report_error(volume, p_h, p, q_h, q, dim, moments):
     """The table for u = p and u = q; returns the per-cell ||e||_{L2(E)} of each."""
     print()
-    print("  error.  e = Pi_0(u - u_h), with Pi_0 v|_E = |E|^-1 int_E v the L2")
-    print("  projection onto cell-wise constants; D is the domain and E a cell.")
-    if moments == 1:
-        # q.n is then constant on each facet, so pairing the moment against the
-        # lever arm integrates it exactly and cell_flux is Pi_0 q_h; Pi_0 being
-        # an orthogonal projection, the flux row bounds ||q - q_h|| below.
-        print("  p_h is cell-wise constant and cell_flux returns Pi_0 q_h exactly, so")
-        print("  e_p is the whole error in the pressure and ||e_q||_D <= ||q - q_h||_D.")
-    else:
-        # with d moments the linear part of q.n across a facet is real and the
-        # lever-arm formula drops it, so the flux row is not a bound either way
-        print("  p_h is cell-wise constant, so e_p is the whole error in the pressure;")
-        print(f"  the facet carries {moments} flux moments and cell_flux pairs only the")
-        print("  constant one, so the flux row carries a reconstruction error too.")
-        print("  The datum is affine here -- value and gradient -- which is what those")
-        print("  moments need; given only the value the pressure loses the patch.")
-    print("  S, the norm each row is measured against, is ||Pi_0 p||_D for the")
-    print("  pressure and ||q||_D for the flux.")
+    # With one moment per facet cell_flux IS Pi_0 q_h, so the flux row bounds
+    # ||q - q_h||_D below; with d moments it pairs only the constant one and
+    # carries a reconstruction error of its own.
+    print("  e = Pi_0(u - u_h),   Pi_0 v|_E = |E|^-1 int_E v")
+    print("  S:  p -> ||Pi_0 p||_D    q -> ||q||_D"
+          + ("    (e_q <= ||q - q_h||_D)" if moments == 1
+             else f"    ({moments} moments/facet: e_q also reconstructs)"))
     print()
-    # |D|^{1/2} |q| is ||q||_{L2(D)} exactly, q being constant
-    area = float(volume.sum())
+    # Both scales are read off the exact field the same way, which is what lets
+    # the two fields be compared on one table.
     scale_p, _ = l2_norms(volume, p)
+    scale_q, _ = l2_norms(volume, q[:, :dim])
     return error_table(volume, [
         ("p", p_h - p, scale_p),
-        ("q", q_h[:, :dim] - q, np.sqrt(area) * float(np.linalg.norm(q))),
+        ("q", q_h[:, :dim] - q[:, :dim], scale_q),
     ])
 
 
-def prescribe_linear_pressure(model, mesh, dim, lo, direction, length):
+def prescribe_pressure(model, mesh, dim, lo, direction, length, quadratic=False):
     """p on every boundary facet: the centroid value AND the gradient.
 
     THE GRADIENT IS NOT DECORATION. The flux row of a boundary facet carries
@@ -228,10 +246,16 @@ def prescribe_linear_pressure(model, mesh, dim, lo, direction, length):
     exactly: 2.9e-02 on the Kuhn box against 8.4e-15 with it.
     """
     facets = mk.boundary_facets(mesh, dim)
-    gradient = [float(direction[k]) / length if k < dim else 0.0 for k in range(3)]
     for f in facets:
         x_f = mk.centroid(mesh, dim - 1, f)
-        model.add_pressure([f], exact(x_f, lo, direction, length, dim), gradient)
+        if quadratic:
+            # grad p = s, which MOVES: the datum is the field's linearization
+            # about each facet, exact to O(h^2) -- the order the method
+            # converges at, so it does not set the rate.
+            g = [(float(x_f[k]) - lo[k]) / length if k < dim else 0.0 for k in range(3)]
+        else:
+            g = [float(direction[k]) / length if k < dim else 0.0 for k in range(3)]
+        model.add_pressure([f], exact(x_f, lo, direction, length, dim, quadratic), g)
     return len(facets)
 
 
@@ -335,6 +359,15 @@ def main():
              "this takes the diagonal star as well (composes with --degeneracy-percent)",
     )
     ap.add_argument(
+        "--field",
+        default="linear",
+        choices=("linear", "quadratic"),
+        help="linear: p affine, q constant, no source -- the patch test the method "
+             "reproduces exactly. quadratic: p = |x - x_min|^2 / 2L, so q is linear and "
+             "the source div q = -lambda d / L is constant and NONZERO, which the "
+             "constant cell pressure can only converge to",
+    )
+    ap.add_argument(
         "--assemble-only",
         action="store_true",
         help="build the Jacobian and the preconditioner, and stop before the iteration",
@@ -403,8 +436,17 @@ def main():
             model.set_degeneracy_percent(args.degeneracy_percent)
         if args.product == "adaptive_rt" and args.cond_threshold is not None:
             model.set_cond_threshold(args.cond_threshold)
+    quadratic = args.field == "quadratic"
     with stage("prescribing p on the boundary"):
-        n_facets = prescribe_linear_pressure(model, mesh, dim, lo, direction, length)
+        n_facets = prescribe_pressure(model, mesh, dim, lo, direction, length, quadratic)
+        # div q = f, the same constant in every cell. The count comes from the
+        # MESH and not from the model: n_cells is filled by the build, which
+        # has not run yet, so asking the model here silently sets no source at
+        # all -- and the run then solves a different problem whose error does
+        # not converge.
+        f = source_density(length, dim, quadratic)
+        if f != 0.0:
+            model.set_source([f] * mesh.count(dim))
     if args.assemble_only:
         report = model.assemble(progress=True, options=solvers(args.rtol)[args.solver])
         print(
@@ -477,9 +519,9 @@ def main():
     # deadlocks the run -- rank 0 waits in the reduction for ranks that already
     # went on to exit.
     with stage("reconstructing p and q"):
-        volume, p_h, p_exact, q_h = cell_fields(model, mesh, dim, lo, direction, length)
+        volume, p_h, p_exact, q_h, q_exact = cell_fields(model, mesh, dim, lo, direction,
+                                                         length, quadratic)
         q_h = mk.gather_cells(model, q_h)
-        q_exact = exact_flux(direction, length)[:dim]
     cell_error = report_error(volume, p_h, p_exact, q_h, q_exact, dim,
                               model.moments_per_facet)
 

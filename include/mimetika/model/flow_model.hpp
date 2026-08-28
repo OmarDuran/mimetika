@@ -236,6 +236,10 @@ class FlowModel {
   // eta is derived -- ones with the flagged cells zeroed -- so what is set here
   // is the one number the scan needs. Unset, exokal scans at its own
   // default_degeneracy_percent.
+  // A SOURCE PER CELL, as a density: div q = f. Cleared by an empty vector.
+  void set_source(std::vector<double> f) { source_density_ = std::move(f); }
+  const std::vector<double>& source() const { return source_density_; }
+
   void set_degeneracy_percent(double percent) { degeneracy_percent_ = percent; }
 
   // The second selector, by conditioning: a cell whose stabilized block has
@@ -377,6 +381,19 @@ class FlowModel {
     ctx_.provide("flux_operators", flux_);
     ctx_.provide("boundary_pressure", pressure_data_);
     ctx_.provide("boundary_pressure_moments", pressure_moments_);
+    // THE SOURCE AS A LOAD. The balance row is int_E div q, so what the term
+    // subtracts is int_E f -- the density times the measure, taken here where
+    // the measure is known.
+    source_load_ = CellData(static_cast<std::size_t>(c.count(dim_)));
+    bool any_source = false;
+    for (std::size_t e = 0; e < source_density_.size(); ++e) {
+      const double f = source_density_[e];
+      if (f == 0.0) continue;
+      any_source = true;
+      source_load_.set({static_cast<Index>(e)},
+                       f * exokal::measure(*mesh_, dim_, static_cast<Index>(e)));
+    }
+    ctx_.provide("cell_source", source_load_);
 
     physics::ModelOptions o;
     o.flux_moments = moments_per_facet();
@@ -384,6 +401,7 @@ class FlowModel {
         physics::Catalogue::instance().build("flow", o),
         std::vector<StratumSpec>{StratumSpec{"ambient", &c, dim_, 0}}, ctx_);
     if (any_pressure) sim_->model().add("prescribed_pressure", exokal::forms::On::all(), {});
+    if (any_source) sim_->model().add("cell_source", exokal::forms::On::all(), {});
 
     const auto& sp = sim_->epoch().stratum(0).space();
     flow_.resolve(*mesh_, dim_, sp);
@@ -471,9 +489,17 @@ class FlowModel {
     const auto n_facets = static_cast<std::size_t>(topo.count(dim_ - 1));
 
     // The free mask is the boundary condition. Every facet is free unless a
-    // pressure is prescribed on it; the datum is the multiplier's value. The
-    // chart has chi_0 = 1 and zero-mean higher functions, so a uniform datum
-    // is its constant coefficient alone.
+    // pressure is prescribed on it, and the datum is the multiplier's own
+    // expansion on the facet basis -- the SAME coefficients the natural form
+    // places in the flux row, c_b = (1/|f|) int_f p_D phi_b, which the build
+    // has already computed.
+    //
+    // The constant slot alone is right only for a datum that is CONSTANT on
+    // the facet: the chart's higher functions are centred, so a uniform datum
+    // has no coefficient on them. An affine one does, and dropping it here
+    // costs the hybrid route the patch the monolithic route reproduces --
+    // measured on a simplicial box, 7.1e-03 against 4.6e-16, for both BDM
+    // products, while the one-moment products cannot tell the difference.
     std::vector<char> free(n_facets, 1);
     std::vector<double> pinned(n_facets * nf, 0.0);
     std::vector<double> flux_datum(n_facets, 0.0);  // canonical q.n times |f|
@@ -483,7 +509,12 @@ class FlowModel {
       if (const auto* p = dynamic_cast<const PressureBC*>(&bc)) {
         for (const Index f : p->facets()) {
           free[static_cast<std::size_t>(f)] = 0;
-          pinned[static_cast<std::size_t>(f) * nf] = p->value();
+          for (std::size_t b = 0; b < nf; ++b) {
+            pinned[static_cast<std::size_t>(f) * nf + b] =
+                b < pressure_moments_.stride() && pressure_moments_.applies(f)
+                    ? pressure_moments_.at(f, b)
+                    : (b == 0 ? p->value() : 0.0);
+          }
         }
       } else if (const auto* q = dynamic_cast<const NormalFluxBC*>(&bc)) {
         for (const Index f : q->facets()) {
@@ -633,6 +664,9 @@ class FlowModel {
 
   exokal::hodge::DeRhamGeometryCache geometry_;
   exokal::hodge::FluxOperators flux_;
+  // f per cell, as a DENSITY: the build turns it into the row's load
+  std::vector<double> source_density_;
+  CellData source_load_;
   BoundaryData pressure_data_{0};
   BoundaryMoments pressure_moments_;
   exokal::forms::TermContext ctx_;

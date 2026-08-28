@@ -1446,13 +1446,28 @@ class PetscSolver final : public LinearSolver {
     // solves the vector Poisson problems more thoroughly -- takes 18 and 2.6.
     // It is not the default because it breaks GMRES down on eight processes
     // here.
+    //
+    // The cycle also carries the coefficient jump. On the 3D cartesian patch
+    // with K a checkerboard in {1, 1/c} and n = 16, the count over
+    // c = 1, 1e2, 1e4, 1e6 is 16, 14, 26, 29 by default and 12, 12, 12, 16 at
+    // cycle 7: flat in h either way, and the growth in c halved. Cycles 3 and
+    // 13 measure the same. Serial only -- the parallel breakdown noted above
+    // is why none of them is the default.
+    //
+    // What is NOT reachable is the auxiliary hierarchy's own strength
+    // threshold. PETSc registers -pc_hypre_ads_amg_theta,
+    // -pc_hypre_ads_ams_theta and -pc_hypre_ads_ams_cycle_type but never
+    // queries them: each is accepted, reported by -options_left as unused, and
+    // changes no count. They are left out of the list below so that setting
+    // one does not pay for PCSetFromOptions and buy nothing. K reaches the
+    // auxiliary problems regardless -- ADS forms them as Galerkin products
+    // Pi^T A Pi and C^T A C, and A carries K -- but theta stays at hypre's
+    // default, which is the one parameter a jumping K would ask to change.
     {
       static const char* const knobs[] = {
           "-pc_hypre_ads_cycle_type",   "-pc_hypre_ads_relax_type",
           "-pc_hypre_ads_relax_times",  "-pc_hypre_ads_relax_weight",
-          "-pc_hypre_ads_omega",        "-pc_hypre_ams_cycle_type",
-          "-pc_hypre_ads_amg_alpha_theta", "-pc_hypre_ads_amg_beta_theta",
-          "-pc_hypre_ads_print_level"};
+          "-pc_hypre_ads_omega",        "-pc_hypre_ads_print_level"};
       const char* own = nullptr;
       check(PCGetOptionsPrefix(pc, &own), "PCGetOptionsPrefix(ads)");
       const std::string mine = own != nullptr ? own : "";
@@ -1691,15 +1706,29 @@ class PetscSolver final : public LinearSolver {
     check(PCMGSetInterpolation(pc, 1, interpolation), "PCMGSetInterpolation");
     riesz_.push_back(interpolation);
 
-    // The smoother is facet-local, and exactly so.
+    // THE SMOOTHER CARRIES THE DIV-FREE PART, so it is a sweep and not a
+    // facet-local inverse.
     //
-    // What the coarse space does not carry is the non-constant moments, and
-    // those live on one facet: the divergence sees only the constants, so the
-    // rest of a facet's block is coupled to the mesh through the material mass
-    // alone. Inverting each facet's block exactly is therefore the right
-    // smoother -- it is d^2 x d^2, one dense solve per facet -- and point
-    // Jacobi, which splits those moments from each other, makes the cycle look
-    // weak.
+    // What the coarse space does not carry is the non-constant moments -- and
+    // those are exactly the DIVERGENCE-FREE directions, only the constant
+    // moment reaching div. That is the near-nullspace Kolev and Vassilevski
+    // (SISC 34-6, A3079) say must be addressed explicitly and "cannot be
+    // handled by simple relaxation on the fine grid", and for which they use a
+    // convergent Gauss-Seidel smoother rather than a point method.
+    //
+    // Inverting each facet's block exactly looks right -- the non-constant
+    // moments do live on one facet -- and is not: it splits facet from facet,
+    // and a div-free field is global. Measured on the AFW block, mean inner CG
+    // steps per cycle application at 3^3, 6^3, 8^3 cells, and the solve time
+    // at 8^3:
+    //
+    //     Chebyshev + point-block Jacobi   16.8  18.1  18.5   3.67 s
+    //     Richardson + symmetric SOR       12.9  14.1  15.4   3.11 s
+    //     Chebyshev + symmetric SOR        11.0  12.5  13.7   2.94 s
+    //
+    // The sweep couples neighbouring facets, which is what a div-free field
+    // needs; Chebyshev on top of it is free. The one-copy flow block does not
+    // move (3.1) -- there the coarse space already does the work.
     KSP smoother = nullptr;
     check(PCMGGetSmoother(pc, 1, &smoother), "PCMGGetSmoother");
     check(KSPSetType(smoother, KSPCHEBYSHEV), "smoother KSPSetType");
@@ -1707,7 +1736,8 @@ class PetscSolver final : public LinearSolver {
           "smoother KSPSetTolerances");
     PC smooth_pc = nullptr;
     check(KSPGetPC(smoother, &smooth_pc), "smoother KSPGetPC");
-    check(PCSetType(smooth_pc, PCPBJACOBI), "smoother PCSetType");
+    check(PCSetType(smooth_pc, PCSOR), "smoother PCSetType");
+    check(PCSORSetSymmetric(smooth_pc, SOR_LOCAL_SYMMETRIC_SWEEP), "smoother PCSORSetSymmetric");
 
     // The coarse solve is a split by component, and each component is only
     // reachable after the coarse operator exists -- which is what setting the
@@ -1758,7 +1788,31 @@ class PetscSolver final : public LinearSolver {
       PetscOptionsSetValue(nullptr, ("-" + key + "ksp_type").c_str(), "preonly");
       PetscOptionsSetValue(nullptr, ("-" + key + "pc_type").c_str(), "none");
     }
-    check(PCFieldSplitSetType(coarse_pc, PC_COMPOSITE_ADDITIVE), "coarse PCFieldSplitSetType");
+    // SYMMETRIC-MULTIPLICATIVE, and the symmetry is not decoration: this cycle
+    // is applied inside a CG, so the composition has to stay SPD. Plain
+    // multiplicative is faster per sweep and wrecks it -- 70, 100, 148 inner
+    // steps over three refinements against 17, 18, 18, growing with h, which
+    // is CG being handed a non-symmetric preconditioner.
+    //
+    // What the split composes is the d copies of the coarse H(div) problem,
+    // and what an ADDITIVE composition drops is the coupling between them --
+    // which is the TRACE, since the compliance couples the copies through it.
+    // That coupling is negligible on a unit box, which is why additive looked
+    // adequate, and it is not on a mesh written in metres: with lambda > 0 the
+    // hydrostatic direction is where the compliance goes singular, and the
+    // graph term's D^2 makes it dominate as the domain grows. Measured on 5^3
+    // hexahedra of a box of side L, ads-cg outer iterations:
+    //
+    //     L            1     10    100    300
+    //     additive    34     28     51     80
+    //     symmetric   34     26     36     41
+    //
+    // At lambda -> 0 there is no trace coupling and both are flat, which is
+    // what says the trace is the mechanism. A 6^3 box of 1000 x 1000 x 500 m
+    // went from not converging at all to 29 iterations, against 22 for the
+    // exact-block map.
+    check(PCFieldSplitSetType(coarse_pc, PC_COMPOSITE_SYMMETRIC_MULTIPLICATIVE),
+          "coarse PCFieldSplitSetType");
     check(PCSetUp(pc), "PCSetUp(mg)");
     check(PCSetUp(coarse_pc), "PCSetUp(coarse fieldsplit)");
     PetscInt n_part = 0;

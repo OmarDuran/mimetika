@@ -65,9 +65,15 @@ def solvers(rtol):
         ),
         # the block solved to a tolerance rather than approximated by one
         # cycle: more work per iteration, and a count that stops drifting
+        # the same cycle with the inner CG stated explicitly. The budget is
+        # what MEASURES the map rather than the budget: at 50 steps to 1e-2 the
+        # outer count reads the cap instead of the preconditioner -- 29 against
+        # 23 on the h-ladder, 205 against 132 at nu = 0.4999 -- and on a mesh
+        # written in metres rather than in unit lengths it does not converge at
+        # all. Solved to 1e-6 the count is the Riesz map's.
         "ads-cg": mk.SolverOptions(
             method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000,
-            riesz_block_pc="ads", riesz_block_its=50, riesz_block_rtol=1e-2,
+            riesz_block_pc="ads", riesz_block_its=500, riesz_block_rtol=1e-6,
         ),
         "direct": mk.SolverOptions(),
     }
