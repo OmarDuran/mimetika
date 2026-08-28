@@ -50,6 +50,8 @@ import os
 import sys
 
 import mimetika_cxx as mk
+
+import _hypre
 import numpy as np
 
 from _diagnostics import write_report
@@ -119,7 +121,7 @@ def solvers(rtol):
     }
 
 
-SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg")
+SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg", _hypre.NAME)
 DEFAULT_RTOL = 1e-9
 
 
@@ -332,6 +334,13 @@ def main():
     )
     ap.add_argument("--vtu", help="write the solution to this .vtu")
     ap.add_argument("--solver", default="riesz", choices=sorted(SOLVER_NAMES))
+    # hypre-ads only. The default applies ONE ADS cycle per application, which
+    # is cheapest where K is smooth; a jumping coefficient needs the block
+    # solved instead -- one cycle stops converging past a contrast of ~1e4 --
+    # and this is how many CG steps to allow under the cycle.
+    ap.add_argument("--ads-block-its", type=int, default=None, metavar="N",
+                    help="hypre-ads: CG steps on the flux block (default: one ADS "
+                         "cycle). Use ~20 for a jumping coefficient")
     ap.add_argument(
         "--hybrid",
         action="store_true",
@@ -389,7 +398,11 @@ def main():
         raise SystemExit(
             f"{args.mesh}: top cells are {dim}-dimensional, expected 2 or 3"
         )
-    if args.solver.startswith("ads") and dim != 3:
+    if args.solver == _hypre.NAME:
+        _hypre.require_serial()
+    if args.solver == _hypre.NAME and not _hypre.available():
+        raise SystemExit(_hypre.why_unavailable())
+    if (args.solver.startswith("ads") or args.solver == _hypre.NAME) and dim != 3:
         raise SystemExit(
             f"--solver {args.solver} is a 3D construction (it needs the discrete "
             f"gradient and curl of a 3-complex); {args.mesh} is {dim}D. "
@@ -469,6 +482,8 @@ def main():
                 method="cg", preconditioner="hypre", rtol=args.rtol, max_iterations=2000
             ),
         )
+    elif args.solver == _hypre.NAME:
+        report = _hypre.solve(model, mesh, dim, _hypre.options(args.rtol, block_iterations=args.ads_block_its))
     else:
         report = model.solve(progress=True, options=solvers(args.rtol)[args.solver])
     # The two assemblies, always. They are what scales with the mesh, and they

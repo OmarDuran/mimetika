@@ -471,8 +471,9 @@ inline std::vector<mimetika::CauchyMechanicsModel::NormTraceTerm> trace_terms(
 }
 
 template <class Model>
-void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exokal::Mesh& mesh,
-                 int dim, bool divergence_is_an_integral, bool merge_multipliers = true) {
+mimetika::solver::SpaceNorm build_norm(const Model& m, const exokal::Mesh& mesh, int dim,
+                                       bool divergence_is_an_integral,
+                                       bool merge_multipliers = true) {
   const auto blocks = mimetika::solver::field_blocks(m.simulation().epoch());
   if (blocks.size() < 2) {
     throw std::runtime_error("riesz: the space has fewer than two factors");
@@ -707,7 +708,16 @@ void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exo
     norm.pinned.push_back(static_cast<int>(i));
     norm.pinned_diagonal.push_back(c.scale_at(i));
   }
-  petsc.set_norm(std::move(norm));
+  return norm;
+}
+
+// The same norm, handed to a solver. Both paths -- PETSc here and hypre in
+// mimetika_hypre -- read what build_norm returns, so neither can drift from
+// the other in what it means by the Riesz map.
+template <class Model>
+void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exokal::Mesh& mesh,
+                 int dim, bool divergence_is_an_integral, bool merge_multipliers = true) {
+  petsc.set_norm(build_norm(m, mesh, dim, divergence_is_an_integral, merge_multipliers));
 }
 
 // Assemble only: the Jacobian and the preconditioner, and no iteration.
@@ -1079,6 +1089,64 @@ PYBIND11_MODULE(_core, m) {
   // The assembled operator as triplets. For diagnosis on small problems: a
   // preconditioner is a claim about the spectrum of P^{-1}A, and that claim is
   // checkable directly rather than inferred from an iteration count.
+  // Everything the DIRECT hypre path needs, as arrays.
+  //
+  // mimetika_hypre links its own hypre and cannot link PETSc -- two copies
+  // export the same names -- so it cannot share this module's mesh or model
+  // types either: a pybind11 type registered twice is two types. What crosses
+  // between them is therefore plain data, and it is the SAME norm build_norm
+  // gives PETSc rather than a second statement of it.
+  m.def(
+      "ads_handoff",
+      [](const mimetika::FlowModel& model, const exokal::Mesh& mesh, int dim) {
+        const auto norm = build_norm(model, mesh, dim, /*divergence_is_an_integral=*/true);
+        const auto& A = model.system();
+        const auto ints = [](const std::vector<int>& v) {
+          py::array_t<int> a(static_cast<py::ssize_t>(v.size()));
+          std::copy(v.begin(), v.end(), a.mutable_data());
+          return a;
+        };
+        const auto reals = [](const std::vector<double>& v) {
+          py::array_t<double> a(static_cast<py::ssize_t>(v.size()));
+          std::copy(v.begin(), v.end(), a.mutable_data());
+          return a;
+        };
+        const auto inc = [&](const mimetika::solver::SpaceNorm::Incidence& i) {
+          return py::dict(py::arg("rows") = i.rows, py::arg("cols") = i.cols,
+                          py::arg("row") = ints(i.row), py::arg("col") = ints(i.col),
+                          py::arg("value") = reals(i.value));
+        };
+        py::array_t<int> ar(static_cast<py::ssize_t>(A.nnz()));
+        py::array_t<int> ac(static_cast<py::ssize_t>(A.nnz()));
+        py::array_t<double> av(static_cast<py::ssize_t>(A.nnz()));
+        for (std::size_t k = 0; k < A.nnz(); ++k) {
+          ar.mutable_data()[k] = static_cast<int>(A.row[k]);
+          ac.mutable_data()[k] = static_cast<int>(A.col[k]);
+          av.mutable_data()[k] = A.value[k];
+        }
+        if (norm.factors.size() < 2) throw std::runtime_error("ads_handoff: fewer than two factors");
+        return py::dict(
+            py::arg("n") = A.n, py::arg("row") = ar, py::arg("col") = ac, py::arg("value") = av,
+            py::arg("rhs") = reals(model.rhs()), py::arg("flux") = ints(norm.factors[0]),
+            py::arg("rest") = ints(norm.factors[1]),
+            py::arg("l2_weight") = reals(norm.l2_weight[0]),
+            py::arg("gradient") = inc(norm.discrete_gradient),
+            py::arg("curl") = inc(norm.discrete_curl),
+            py::arg("coordinates") = reals(norm.vertex_coordinates),
+            py::arg("space_dim") = norm.space_dim,
+            py::arg("pinned") = ints(norm.pinned),
+            py::arg("pinned_diagonal") = reals(norm.pinned_diagonal),
+            py::arg("moments_per_facet") = norm.lowest_order.empty() ? 1 : 0);
+      },
+      py::arg("model"), py::arg("mesh"), py::arg("cell_dim"),
+      "The assembled system and its Riesz norm, for a solver in another module.");
+
+  m.def(
+      "accept",
+      [](mimetika::FlowModel& model, const std::vector<double>& x) { model.accept(x); },
+      py::arg("model"), py::arg("solution"),
+      "Write a solution computed elsewhere back into the model's fields.");
+
   m.def(
       "system_triplets",
       [](const mimetika::CauchyMechanicsModel& s) {

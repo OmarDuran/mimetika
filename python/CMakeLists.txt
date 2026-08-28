@@ -24,6 +24,33 @@ if(DEFINED SKBUILD)
   install(TARGETS _core DESTINATION mimetika_cxx)
 endif()
 
+# The direct hypre path, as its own module.
+#
+# It CANNOT be part of _core: that links PETSc, PETSc links its own libHYPRE,
+# and two copies with the same symbol names resolve by load order. The two are
+# kept apart by linkage AND by visibility -- the HYPRE_* and hypre_* names this
+# module pulls out of libHYPRE.a are marked unexported, so importing both
+# mimetika_cxx and mimetika_hypre in one interpreter cannot interpose one
+# library's ADS on the other's call.
+if(MIMETIKA_USE_HYPRE)
+  pybind11_add_module(_hypre hypre_bindings.cpp)
+  target_link_libraries(_hypre PRIVATE mimetika::mimetika mimetika_hypre)
+  set_target_properties(_hypre PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/mimetika_hypre)
+  if(APPLE)
+    target_link_options(_hypre PRIVATE
+      "LINKER:-unexported_symbol,_HYPRE_*"
+      "LINKER:-unexported_symbol,_hypre_*"
+      "LINKER:-unexported_symbol,__hypre_*"
+      "LINKER:-unexported_symbol,_Euclid_*")
+  else()
+    target_link_options(_hypre PRIVATE "LINKER:--exclude-libs,ALL")
+  endif()
+  if(DEFINED SKBUILD)
+    install(TARGETS _hypre DESTINATION mimetika_hypre)
+  endif()
+endif()
+
 # The pytest suite is the Python-side mirror of tests/model: the same problems,
 # the same closed forms, the same tolerances, driven through the bindings.
 if(BUILD_TESTING)

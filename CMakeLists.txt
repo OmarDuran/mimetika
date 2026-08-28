@@ -75,6 +75,56 @@ if(MIMETIKA_USE_PETSC)
   endif()
 endif()
 
+# HYPRE, reached DIRECTLY rather than through PETSc.
+#
+# PETSc offers hypre only through PCHYPRE, and that surface is narrower than
+# hypre's own: -pc_hypre_ads_amg_theta, -pc_hypre_ads_ams_theta and
+# -pc_hypre_ads_ams_cycle_type are registered by PETSc and never queried, so
+# the strength threshold of the auxiliary hierarchies -- the one parameter a
+# jumping coefficient asks to change -- cannot be set at all. Calling hypre
+# directly restores HYPRE_ADSSetAMGOptions and HYPRE_ADSSetAMSOptions.
+#
+# THE TWO PATHS MUST NOT MEET IN ONE BINARY. PETSc links its own libHYPRE (3.1
+# in the environment this was written against) and a second copy with the same
+# symbol names resolves by load order, not by intent. So a target linking this
+# one must not link mimetika_petsc, and nothing here is added to the mimetika
+# interface itself.
+option(MIMETIKA_USE_HYPRE "Solve with hypre directly, without PETSc" OFF)
+if(MIMETIKA_USE_HYPRE)
+  set(MIMETIKA_HYPRE_ROOT "" CACHE PATH "Prefix of a hypre install (lib/ and include/)")
+  find_library(MIMETIKA_HYPRE_LIB NAMES HYPRE
+               HINTS ${MIMETIKA_HYPRE_ROOT}/lib NO_DEFAULT_PATH)
+  find_path(MIMETIKA_HYPRE_INCLUDE NAMES HYPRE_parcsr_ls.h
+            HINTS ${MIMETIKA_HYPRE_ROOT}/include NO_DEFAULT_PATH)
+  if(MIMETIKA_HYPRE_LIB AND MIMETIKA_HYPRE_INCLUDE)
+    file(STRINGS ${MIMETIKA_HYPRE_INCLUDE}/HYPRE_config.h MIMETIKA_HYPRE_VER
+         REGEX "HYPRE_RELEASE_VERSION")
+    message(STATUS "mimetika: hypre ${MIMETIKA_HYPRE_LIB} (${MIMETIKA_HYPRE_VER})")
+    add_library(mimetika_hypre INTERFACE)
+    target_link_libraries(mimetika_hypre INTERFACE ${MIMETIKA_HYPRE_LIB})
+    target_include_directories(mimetika_hypre INTERFACE ${MIMETIKA_HYPRE_INCLUDE})
+    target_compile_definitions(mimetika_hypre INTERFACE MIMETIKA_HAVE_HYPRE=1)
+    # the SAME MPI PETSc was built against, or the two disagree on MPI_Comm
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+      pkg_check_modules(OMPI_H IMPORTED_TARGET ompi-c)
+    endif()
+    if(OMPI_H_FOUND)
+      target_link_libraries(mimetika_hypre INTERFACE PkgConfig::OMPI_H)
+    else()
+      find_package(MPI QUIET COMPONENTS C)
+      if(MPI_C_FOUND)
+        target_link_libraries(mimetika_hypre INTERFACE MPI::MPI_C)
+      else()
+        message(FATAL_ERROR "mimetika: hypre needs MPI and none was found")
+      endif()
+    endif()
+  else()
+    message(STATUS "mimetika: hypre not found under '${MIMETIKA_HYPRE_ROOT}'; set MIMETIKA_HYPRE_ROOT")
+    set(MIMETIKA_USE_HYPRE OFF)
+  endif()
+endif()
+
 option(MIMETIKA_BUILD_TESTS "Build mimetika tests" ON)
 if(MIMETIKA_BUILD_TESTS)
   enable_testing()

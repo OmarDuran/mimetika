@@ -23,6 +23,8 @@ import sys
 import math
 
 import mimetika_cxx as mk
+
+import _hypre
 import numpy as np
 
 # geometry and data
@@ -79,7 +81,7 @@ def solvers(rtol):
     }
 
 
-SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg")
+SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg", _hypre.NAME)
 DEFAULT_RTOL = 1e-9
 
 # ADS is a three-dimensional construction: its auxiliary spaces are built from
@@ -87,12 +89,16 @@ DEFAULT_RTOL = 1e-9
 # H(div) unknowns sit on edges rather than faces -- the maps do not address
 # them, and hypre has no ADS for that case.
 def require_three_dimensions(solver, dim):
-    if solver.startswith("ads") and dim != 3:
+    if (solver.startswith("ads") or solver == _hypre.NAME) and dim != 3:
         raise SystemExit(
             f"--solver {solver} is a 3D construction (it needs the discrete "
             f"gradient and curl of a 3-complex); this problem is {dim}D. "
             "Use --solver riesz, or run in 3D."
         )
+    if solver == _hypre.NAME:
+        _hypre.require_serial()
+    if solver == _hypre.NAME and not _hypre.available():
+        raise SystemExit(_hypre.why_unavailable())
 
 
 
@@ -158,7 +164,10 @@ def solve(nr, nt, dim, family, how, solver="riesz", rtol=DEFAULT_RTOL, degenerac
     model.add_pressure(outer, P_OUTER)
     if degeneracy is not None:
         model.set_degeneracy_percent(degeneracy)
-    model.solve(options=solvers(rtol)[solver])
+    if solver == _hypre.NAME:
+        _hypre.solve(model, mesh, dim, _hypre.options(rtol))
+    else:
+        model.solve(options=solvers(rtol)[solver])
 
     worst = rms = 0.0
     for e in range(model.n_cells):
