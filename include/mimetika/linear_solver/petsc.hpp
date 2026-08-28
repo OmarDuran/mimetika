@@ -1214,7 +1214,7 @@ class PetscSolver final : public LinearSolver {
       // The first is ADS as hypre offers it; the second is the auxiliary-space
       // argument applied one level up, and is what the AFW stress space needs.
       if (norm_.lowest_order.empty()) {
-        attach_ads(sub_pc);
+        attach_ads(sub_pc, -1, /*one_per_facet=*/true);
       } else {
         build_lowest_order_cycle(sub_pc);
       }
@@ -1355,7 +1355,7 @@ class PetscSolver final : public LinearSolver {
   // worth of faces when it acts on a component of a coarse space. It is
   // checked rather than assumed, because hypre cannot be told the numbering
   // and a mismatch would silently precondition a permuted operator.
-  void attach_ads(PC pc, PetscInt local_rows = -1) {
+  void attach_ads(PC pc, PetscInt local_rows = -1, bool one_per_facet = false) {
     check(PCSetType(pc, PCHYPRE), "PCSetType(hypre)");
     check(PCHYPRESetType(pc, "ads"), "PCHYPRESetType(ads)");
     if (norm_.discrete_gradient.empty() || norm_.discrete_curl.empty()) {
@@ -1471,6 +1471,29 @@ class PetscSolver final : public LinearSolver {
       const char* own = nullptr;
       check(PCGetOptionsPrefix(pc, &own), "PCGetOptionsPrefix(ads)");
       const std::string mine = own != nullptr ? own : "";
+      // The scalar-Pi cycle, where the block IS the space ADS is written for.
+      //
+      // Cycles 11-14 apply three scalar AMG solves in place of one monolithic
+      // vector solve. On the 1M-cell hybrid mesh, 2.15M faces, stabilized_rt
+      // under a single V-cycle:
+      //
+      //     cycle    its   iteration
+      //     default   75     47.0 s
+      //     3         46     40.5 s
+      //     7         44     41.1 s
+      //     13        44     25.1 s
+      //
+      // 7 and 13 agree on the count, so the gain is per application and not
+      // convergence: 0.93 s against 0.57 s. Serial. The parallel breakdown
+      // recorded above is cycle 11, of this same family, so a caller that
+      // states its own cycle keeps it -- this only fills in a default.
+      if (one_per_facet) {
+        PetscBool stated = PETSC_FALSE;
+        PetscOptionsHasName(nullptr, mine.c_str(), "-pc_hypre_ads_cycle_type", &stated);
+        if (stated == PETSC_FALSE) {
+          PetscOptionsSetValue(nullptr, ("-" + mine + "pc_hypre_ads_cycle_type").c_str(), "13");
+        }
+      }
       bool asked = false;
       for (const char* knob : knobs) {
         PetscBool has = PETSC_FALSE;
@@ -1762,8 +1785,14 @@ class PetscSolver final : public LinearSolver {
     // from differently, and that segfaults inside BoomerAMG rather than
     // failing. The split exists for the d copies of a stress.
     if (nc == 1) {
-      check(PCSetUp(pc), "PCSetUp(mg)");
+      // ADS is attached BEFORE the cycle is set up. PCMG's default coarse
+      // solver is a factorization and PCSetUp is what runs it, so attaching
+      // afterwards pays a direct solve of the coarse space and discards it --
+      // 118 s of the 122 s at 271k facets, and growing like a factorization.
+      // Blanking the coarse PC instead is not the fix: it also loses the
+      // Galerkin operator, and the cycle then costs 309 s in iteration.
       attach_ads(coarse_pc);
+      check(PCSetUp(pc), "PCSetUp(mg)");
       check(PCSetUp(coarse_pc), "PCSetUp(coarse ads)");
       return;
     }
