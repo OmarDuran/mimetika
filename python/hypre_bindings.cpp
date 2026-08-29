@@ -219,12 +219,8 @@ PYBIND11_MODULE(_hypre, m) {
          py::array_t<int> pinned, py::array_t<double> pinned_diagonal,
          py::array_t<int> owner_of_dof, py::array_t<int> vertex_owner,
          py::array_t<int> edge_owner, py::array_t<int> face_owner,
+         const py::dict& lowest_order, int lowest_order_components,
          const HypreSolver::Options& opts) {
-        if (moments_per_facet != 1) {
-          throw std::runtime_error(
-              "solve_system: this facet carries more than one moment; ADS reaches it only "
-              "through the facet-constant subspace, which the direct path does not build");
-        }
         const auto ints = [](const py::array_t<int>& a) {
           return std::vector<int>(a.data(), a.data() + a.size());
         };
@@ -262,6 +258,8 @@ PYBIND11_MODULE(_hypre, m) {
           norm.entity_owner.push_back(ints(edge_owner));
           norm.entity_owner.push_back(ints(face_owner));
         }
+        norm.lowest_order = inc(lowest_order);
+        norm.lowest_order_components = lowest_order_components;
 
         HypreSolver hypre;
         hypre.set_owners(ints(owner_of_dof));
@@ -276,7 +274,7 @@ PYBIND11_MODULE(_hypre, m) {
       py::arg("curl"), py::arg("coordinates"), py::arg("space_dim"),
       py::arg("moments_per_facet"), py::arg("pinned"), py::arg("pinned_diagonal"),
       py::arg("owner_of_dof"), py::arg("vertex_owner"), py::arg("edge_owner"),
-      py::arg("face_owner"),
+      py::arg("face_owner"), py::arg("lowest_order"), py::arg("lowest_order_components"),
       py::arg("options") = HypreSolver::Options{},
       "Solve an assembled system with the Riesz map, its first block inverted by ADS.");
 

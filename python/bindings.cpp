@@ -1144,6 +1144,11 @@ PYBIND11_MODULE(_core, m) {
             py::arg("face_owner") =
                 ints(norm.entity_owner.size() > 2 ? norm.entity_owner[2] : std::vector<int>{}),
             py::arg("pinned_diagonal") = reals(norm.pinned_diagonal),
+            // the facet-constant subspace, where the facet carries more than
+            // one moment: rows are the block's unknowns, columns the coarse
+            // space, and the entries are ones.
+            py::arg("lowest_order") = inc(norm.lowest_order),
+            py::arg("lowest_order_components") = norm.lowest_order_components,
             py::arg("moments_per_facet") = norm.lowest_order.empty() ? 1 : 0);
       },
       py::arg("model"), py::arg("mesh"), py::arg("cell_dim"),

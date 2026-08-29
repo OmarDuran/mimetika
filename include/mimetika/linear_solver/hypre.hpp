@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -15,6 +16,7 @@
 #include "HYPRE_IJ_mv.h"
 #include "HYPRE_krylov.h"
 #include "HYPRE_parcsr_ls.h"
+#include "_hypre_parcsr_ls.h"
 #include "_hypre_parcsr_mv.h"
 #include "mimetika/linear_solver/linear.hpp"
 #include "mimetika/linear_solver/space_norm.hpp"
@@ -45,9 +47,13 @@
 // makes P a varying operator, which plain GMRES may not use.
 //
 // ADS is written for ONE unknown per facet in 3D -- derham_rt, stabilized_rt,
-// and the eta = 1 cells of adaptive_rt. A facet carrying d moments needs the
-// facet-constant subspace of the PETSc path, which is not built here: solve()
-// refuses it rather than handing hypre a curl whose rows are not the block's.
+// and the eta = 1 cells of adaptive_rt -- and takes those directly. A facet
+// carrying d moments reaches it through the facet-constant subspace, and the
+// block is then a two-level cycle: the Galerkin operator P^T A0 P on the facet
+// constants, where ADS runs, under a symmetric SOR sweep.
+//
+// What it does not take is d COPIES of an H(div) space -- a weak-symmetry
+// stress -- which needs the per-component split the PETSc path builds.
 
 namespace mimetika::solver {
 
@@ -230,16 +236,29 @@ class HypreSolver {
     if (norm.discrete_gradient.empty() || norm.discrete_curl.empty()) {
       throw std::invalid_argument("HypreSolver: ADS needs the discrete gradient and curl");
     }
-    if (!norm.lowest_order.empty()) {
-      throw std::invalid_argument(
-          "HypreSolver: this facet carries more than one moment; ADS reaches it only "
-          "through the facet-constant subspace, which the direct path does not build");
-    }
     const auto n = static_cast<HYPRE_BigInt>(A.n);
     const std::vector<int>& flux = norm.factors[0];
     const auto nf = static_cast<HYPRE_BigInt>(flux.size());
-    if (static_cast<HYPRE_BigInt>(norm.discrete_curl.rows) != nf) {
+    // ONE MOMENT PER FACET, OR THE SUBSPACE THAT IS.
+    //
+    // ADS takes a scalar H(div) problem: one unknown per face, which is what
+    // the curl's rows address. A facet carrying d moments -- derham_bdm,
+    // stabilized_bdm -- reaches it through the facet-constant subspace, and
+    // the block is then a two-level cycle whose coarse operator is where ADS
+    // runs. `lowest_order` is that injection, and it is a matrix of ones
+    // because the constant moment IS one of the unknowns.
+    const bool two_level = !norm.lowest_order.empty();
+    if (!two_level && static_cast<HYPRE_BigInt>(norm.discrete_curl.rows) != nf) {
       throw std::invalid_argument("HypreSolver: the curl's rows are not the first factor");
+    }
+    if (two_level && norm.lowest_order.cols != norm.discrete_curl.rows * norm.lowest_order_components) {
+      throw std::invalid_argument(
+          "HypreSolver: the coarse space is not the faces of the complex");
+    }
+    if (two_level && norm.lowest_order_components != 1) {
+      throw std::invalid_argument(
+          "HypreSolver: the direct path takes one copy of the H(div) space; d copies -- a "
+          "weak-symmetry stress -- need the component split the PETSc path builds");
     }
 
     const auto t0 = std::chrono::steady_clock::now();
@@ -253,6 +272,17 @@ class HypreSolver {
                                    : serial_layout(norm.discrete_gradient.rows);
     const Layout faces = ranks > 1 ? layout_of(norm.entity_owner[2], ranks, rank)
                                    : serial_layout(norm.discrete_curl.rows);
+    // The block's own numbering. With one moment a facet it IS the faces --
+    // the same owners in the same order, so the same permutation -- and with d
+    // moments it is d times larger and the faces are its coarse space.
+    std::vector<int> flux_owner(flux.size(), 0);
+    if (ranks > 1) {
+      for (std::size_t i = 0; i < flux.size(); ++i) {
+        flux_owner[i] = owners_[static_cast<std::size_t>(flux[i])];
+      }
+    }
+    const Layout block_l = ranks > 1 ? layout_of(flux_owner, ranks, rank)
+                                     : serial_layout(static_cast<int>(flux.size()));
 
     // Where each global unknown sits in the flux block, in HYPRE's numbering.
     //
@@ -262,7 +292,7 @@ class HypreSolver {
     // the face index; the layout takes it to hypre's.
     std::vector<int> in_flux(A.n, -1);
     for (std::size_t i = 0; i < flux.size(); ++i) {
-      in_flux[static_cast<std::size_t>(flux[i])] = faces.new_of[i];
+      in_flux[static_cast<std::size_t>(flux[i])] = block_l.new_of[i];
     }
     // which factor each unknown belongs to, and whether it carries the graph
     // term. A linear scan per entry would be quadratic, so this is a table.
@@ -336,7 +366,7 @@ class HypreSolver {
     }
 
     Mat a_full = to_mat(A, dofs);
-    Mat a0 = to_mat(m, faces);
+    Mat a0 = to_mat(m, block_l);
     Mat grad = to_mat(norm.discrete_gradient, edges, verts);
     Mat curl = to_mat(norm.discrete_curl, faces, edges);
 
@@ -385,7 +415,34 @@ class HypreSolver {
     // faces. A dof and the face it sits on are owned by the same rank -- both
     // partitions come from the same exokal call -- so the gather is a local
     // permutation and needs no communication.
+    // THE COARSE SPACE, WHERE ONE IS NEEDED.
+    //
+    // The injection's rows are global unknowns and its columns the faces; both
+    // are renumbered onto the partition, and the coarse operator is the
+    // Galerkin product P^T A0 P -- so nothing about the physics is restated at
+    // the coarse level, it is the same operator seen on the subspace. ADS then
+    // runs there, on one unknown per face, which is what it is written for.
+    Mat inject;
+    if (two_level) {
+      std::vector<int> ir, ic;
+      std::vector<double> iv;
+      ir.reserve(norm.lowest_order.value.size());
+      ic.reserve(norm.lowest_order.value.size());
+      iv.reserve(norm.lowest_order.value.size());
+      for (std::size_t k = 0; k < norm.lowest_order.value.size(); ++k) {
+        const int g = norm.lowest_order.row[k];           // a global unknown
+        const int r = in_flux[static_cast<std::size_t>(g)];
+        if (r < 0) continue;                              // not in the flux block
+        ir.push_back(r);
+        ic.push_back(faces.new_of[static_cast<std::size_t>(norm.lowest_order.col[k])]);
+        iv.push_back(norm.lowest_order.value[k]);
+      }
+      inject = build_mat(std::move(ir), std::move(ic), std::move(iv), block_l.total, faces.total,
+                         block_l.begin, block_l.end, faces.begin, faces.end);
+    }
+
     Block block;
+    block.two_level = two_level;
     block.n_flux = static_cast<int>(nf);
     block.inv_w_local.assign(static_cast<std::size_t>(dofs.local), 0.0);
     block.flux_at.assign(static_cast<std::size_t>(dofs.local), -1);
@@ -395,11 +452,11 @@ class HypreSolver {
       const std::size_t local = static_cast<std::size_t>(at - dofs.begin);
       block.inv_w_local[local] = inv_w[i];
       if (in_flux[i] >= 0) {
-        if (!faces.owns(in_flux[i])) {
+        if (!block_l.owns(in_flux[i])) {
           throw std::invalid_argument(
               "HypreSolver: a flux unknown and its face are on different ranks");
         }
-        block.flux_at[local] = in_flux[i] - faces.begin;
+        block.flux_at[local] = in_flux[i] - block_l.begin;
       }
     }
     HYPRE_ADSCreate(&block.ads);
@@ -419,9 +476,30 @@ class HypreSolver {
                            opts.amg_pmax);
 
     block.a0 = mat_of(a0);
-    block.rhs = zero_vec(faces);
-    block.sol = zero_vec(faces);
-    HYPRE_ADSSetup(block.ads, block.a0, vec_of(block.rhs), vec_of(block.sol));
+    block.rhs = zero_vec(block_l);
+    block.sol = zero_vec(block_l);
+    if (two_level) {
+      block.p = mat_of(inject);
+      // hypre builds a matrix's communication package lazily, and its internal
+      // parallel routines -- the Galerkin product among them -- assume it is
+      // already there. Absent, RAP walks a null offd map and segfaults, which
+      // is what a 2-rank run did.
+      if (hypre_ParCSRMatrixCommPkg(block.p) == nullptr) hypre_MatvecCommPkgCreate(block.p);
+      if (hypre_ParCSRMatrixCommPkg(block.a0) == nullptr) hypre_MatvecCommPkgCreate(block.a0);
+      block.a_coarse = hypre_ParCSRMatrixRAP(block.p, block.a0, block.p);
+      if (hypre_ParCSRMatrixCommPkg(block.a_coarse) == nullptr) {
+        hypre_MatvecCommPkgCreate(block.a_coarse);
+      }
+      block.c_rhs = zero_vec(faces);
+      block.c_sol = zero_vec(faces);
+      block.resid = zero_vec(block_l);
+      block.vtemp = zero_vec(block_l);
+      block.ztemp = zero_vec(block_l);
+      block.diag = block_diagonal(m, block_l);
+      HYPRE_ADSSetup(block.ads, block.a_coarse, vec_of(block.c_rhs), vec_of(block.c_sol));
+    } else {
+      HYPRE_ADSSetup(block.ads, block.a0, vec_of(block.rhs), vec_of(block.sol));
+    }
 
     // the inner CG on the block, with that cycle as its preconditioner
     if (opts.block_iterations > 0) {
@@ -433,9 +511,14 @@ class HypreSolver {
       // the cast hypre's own examples use: the generic pointer type is stated
       // over HYPRE_Matrix/HYPRE_Vector, the ADS entry points over the ParCSR
       // ones, and the library dispatches on the object it is handed
-      HYPRE_PCGSetPrecond(block.inner,
-                          reinterpret_cast<HYPRE_PtrToSolverFcn>(HYPRE_ADSSolve),
-                          reinterpret_cast<HYPRE_PtrToSolverFcn>(HYPRE_ADSSetup), block.ads);
+      if (two_level) {
+        HYPRE_PCGSetPrecond(block.inner, cycle, cycle_setup,
+                            reinterpret_cast<HYPRE_Solver>(&block));
+      } else {
+        HYPRE_PCGSetPrecond(block.inner,
+                            reinterpret_cast<HYPRE_PtrToSolverFcn>(HYPRE_ADSSolve),
+                            reinterpret_cast<HYPRE_PtrToSolverFcn>(HYPRE_ADSSetup), block.ads);
+      }
       HYPRE_ParCSRPCGSetup(block.inner, block.a0, vec_of(block.rhs), vec_of(block.sol));
     }
 
@@ -469,6 +552,7 @@ class HypreSolver {
 
     HYPRE_ParCSRFlexGMRESDestroy(ksp);
     if (block.inner != nullptr) HYPRE_ParCSRPCGDestroy(block.inner);
+    if (block.a_coarse != nullptr) hypre_ParCSRMatrixDestroy(block.a_coarse);
     HYPRE_ADSDestroy(block.ads);
     return r;
   }
@@ -676,6 +760,16 @@ class HypreSolver {
   struct Block {
     HYPRE_Solver ads{nullptr};
     HYPRE_Solver inner{nullptr};
+    bool two_level{false};
+    HYPRE_ParCSRMatrix p{nullptr};        // the injection
+    HYPRE_ParCSRMatrix a_coarse{nullptr};  // P^T A0 P
+    Vec c_rhs, c_sol, resid;
+    // the relaxation's own scratch. hypre uses Vtemp and Ztemp to stage the
+    // off-rank part of a sweep, so they must not be the vector the cycle is
+    // holding its residual in -- sharing them is invisible on one process and
+    // corrupts on several.
+    Vec vtemp, ztemp;
+    std::vector<double> diag;              // of A0, for the smoother
     HYPRE_ParCSRMatrix a0{nullptr};
     Vec rhs, sol;
     int n_flux{0};
@@ -688,7 +782,78 @@ class HypreSolver {
     return hypre_VectorData(hypre_ParVectorLocalVector(reinterpret_cast<hypre_ParVector*>(v)));
   }
 
+  // the diagonal of the block, this rank's rows, for the smoother
+  static std::vector<double> block_diagonal(const Triplets& t, const Layout& l) {
+    std::vector<double> d(static_cast<std::size_t>(l.local), 0.0);
+    for (std::size_t k = 0; k < t.value.size(); ++k) {
+      if (t.row[k] != t.col[k]) continue;
+      if (!l.owns(t.row[k])) continue;
+      d[static_cast<std::size_t>(t.row[k] - l.begin)] += t.value[k];
+    }
+    for (double& v : d) v = v != 0.0 ? 1.0 / v : 1.0;
+    return d;
+  }
+
   static HYPRE_Int setup(HYPRE_Solver, HYPRE_Matrix, HYPRE_Vector, HYPRE_Vector) { return 0; }
+
+  static HYPRE_Int cycle_setup(HYPRE_Solver, HYPRE_Matrix, HYPRE_Vector, HYPRE_Vector) {
+    return 0;
+  }
+
+  // relax_type 6 is hypre's symmetric hybrid Gauss-Seidel: a forward sweep and
+  // a backward one, which is what keeps the composition symmetric so a CG may
+  // use it. It relaxes u toward solving A0 u = f rather than replacing u.
+  static void smooth(Block& b, HYPRE_ParVector f, HYPRE_ParVector u) {
+    hypre_BoomerAMGRelax(b.a0, f, nullptr, 6, 0, 1.0, 1.0, nullptr, u, vec_of(b.vtemp),
+                         vec_of(b.ztemp));
+  }
+
+  // A TWO-LEVEL CYCLE, SYMMETRIC SO A CG MAY USE IT.
+  //
+  //   smoother  A SYMMETRIC SOR SWEEP, not a point method. What the coarse
+  //             space does not carry is the non-constant moments, and those
+  //             are the divergence-free directions -- only the constant moment
+  //             reaches div. Kolev and Vassilevski say that near-nullspace
+  //             "cannot be handled by simple relaxation on the fine grid", and
+  //             the measurement agrees: with damped Jacobi here the outer count
+  //             ran 18, 24, 30 over three refinements and failed at a contrast
+  //             of 1e4, where a sweep is flat. A point smoother splits facet
+  //             from facet and a div-free field is global.
+  //   coarse    the facet constants, one H(div) problem, and that is ADS.
+  //
+  // Pre-smooth, restrict the residual, correct, prolong, post-smooth: the
+  // composition is symmetric, which the inner CG requires of its
+  // preconditioner.
+  static HYPRE_Int cycle(HYPRE_Solver s, HYPRE_Matrix, HYPRE_Vector rv, HYPRE_Vector xv) {
+    Block& b = *reinterpret_cast<Block*>(s);
+    auto* r = reinterpret_cast<HYPRE_ParVector>(rv);
+    auto* x = reinterpret_cast<HYPRE_ParVector>(xv);
+    double* xd = data_of(x);
+    const double* rd = data_of(r);
+    const std::size_t n = b.diag.size();
+
+    for (std::size_t i = 0; i < n; ++i) xd[i] = 0.0;
+    smooth(b, r, x);  // pre-smooth
+
+    // residual, restricted to the coarse space
+    double* res = data_of(vec_of(b.resid));
+    for (std::size_t i = 0; i < n; ++i) res[i] = rd[i];
+    hypre_ParCSRMatrixMatvec(-1.0, b.a0, x, 1.0, vec_of(b.resid));
+    hypre_ParCSRMatrixMatvecT(1.0, b.p, vec_of(b.resid), 0.0, vec_of(b.c_rhs));
+
+    double* cs = data_of(vec_of(b.c_sol));
+    const std::size_t nc = static_cast<std::size_t>(
+        hypre_VectorSize(hypre_ParVectorLocalVector(vec_of(b.c_sol))));
+    for (std::size_t i = 0; i < nc; ++i) cs[i] = 0.0;
+    HYPRE_ADSSolve(b.ads, b.a_coarse, vec_of(b.c_rhs), vec_of(b.c_sol));
+
+    hypre_ParCSRMatrixMatvec(1.0, b.p, vec_of(b.c_sol), 1.0, x);  // prolong and add
+
+    smooth(b, r, x);  // post-smooth; with symm SOR the composition stays SPD
+    (void)rd;
+    (void)n;
+    return 0;
+  }
 
   static HYPRE_Int apply(HYPRE_Solver s, HYPRE_Matrix, HYPRE_Vector rv, HYPRE_Vector xv) {
     Block& b = *reinterpret_cast<Block*>(s);
@@ -705,6 +870,10 @@ class HypreSolver {
     }
     if (b.inner != nullptr) {
       HYPRE_ParCSRPCGSolve(b.inner, b.a0, vec_of(b.rhs), vec_of(b.sol));
+    } else if (b.two_level) {
+      cycle(reinterpret_cast<HYPRE_Solver>(&b), nullptr,
+            reinterpret_cast<HYPRE_Vector>(vec_of(b.rhs)),
+            reinterpret_cast<HYPRE_Vector>(vec_of(b.sol)));
     } else {
       HYPRE_ADSSolve(b.ads, b.a0, vec_of(b.rhs), vec_of(b.sol));
     }

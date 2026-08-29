@@ -17,10 +17,16 @@ The norm is not restated on the way: `ads_handoff` returns what build_norm
 gives PETSc, so both paths are preconditioned by the same map and a difference
 between them is the library rather than the method.
 
-ADS is written for ONE unknown per facet in 3D, so this solver takes derham_rt,
-stabilized_rt and adaptive_rt.  A facet carrying d moments reaches ADS only
-through the facet-constant subspace, which the PETSc path builds and this one
-does not; `ads_handoff` reports that and the solve refuses it.
+ADS is written for ONE unknown per facet in 3D -- derham_rt, stabilized_rt and
+the eta = 1 cells of adaptive_rt -- and it takes those directly.  A facet
+carrying d moments, derham_bdm and stabilized_bdm, reaches it through the
+facet-constant subspace: the block is then a two-level cycle whose coarse
+operator P^T A0 P is where ADS runs, with a symmetric SOR sweep as the smoother
+because what the coarse space omits is the divergence-free part and that is not
+facet-local.  All five run on one process and on several.
+
+What is NOT here is a weak-symmetry stress: d COPIES of an H(div) space need
+the per-component split the PETSc path builds, and the solve refuses it.
 """
 
 import sys
