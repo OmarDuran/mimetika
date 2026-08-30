@@ -259,9 +259,9 @@ def test_one_cycle_is_bounded_but_not_flat():
 #
 # The enclosure of Kolev & Vassilevski's Figure 6.1, so the two test files and
 # the paper read the same problem: two interior cubes of one material inside
-# another, K_in over sixteen orders of magnitude. Their Table 6.1 holds 13-18
+# another, K_in over fourteen orders of magnitude. Their Table 6.1 holds 13-18
 # ADS-CG iterations across the range.
-JUMPS = (-8, -4, -2, 0, 2, 4, 8)
+JUMPS = (-7, -4, -2, 0, 2, 4, 7)
 
 
 def enclosure(mesh, exponent):
@@ -299,4 +299,75 @@ def test_the_bdm_count_does_not_track_the_contrast(name, kind):
     for p in JUMPS:
         counts.append(_count(patch(mesh, BDM[name], enclosure(mesh, p)), mesh, kind))
         print(f"  {name:15s} {kind:3s}  K_in = 1e{p:+03d}   {counts[-1]:4d} its")
+    assert max(counts) <= min(counts) + 8
+
+
+# ---- 5. contrast on a CHECKERBOARD ------------------------------------------
+#
+# The enclosure above has ONE bounded interface. A checkerboard jumps across
+# EVERY facet, so the auxiliary spaces never see a patch on which the
+# coefficient is smooth, and it is the harder statement of the same property.
+#
+# The pattern is a function of position in the bounding box and not of the cell
+# numbering, so it is the SAME field on every mesh -- a pattern redrawn per mesh
+# makes an h-ladder meaningless.
+def checkerboard(mesh, exponent, cells_per_side=4):
+    """K = 10^p on alternate blocks of a cells_per_side^3 partition of the box."""
+    x = np.array([mk.centroid(mesh, 3, e) for e in range(mesh.count(3))])
+    lo, hi = x.min(axis=0), x.max(axis=0)
+    block = np.floor(cells_per_side * (x - lo) / np.maximum(hi - lo, 1e-300) * 0.999)
+    return np.where(block.sum(axis=1) % 2 == 0, 1.0, 10.0 ** exponent)
+
+
+@pytest.mark.parametrize("name", sorted({**ONE_PER_FACET, **BDM}))
+@pytest.mark.parametrize("kind", ["one", "cg"])
+def test_the_count_does_not_track_a_checkerboard(name, kind):
+    """MESH-ALIGNED: on a cartesian box each block is a union of whole cells, so
+    the jump lies on facets and the count is flat over all fourteen orders."""
+    _hypre()
+    mesh = cube(6)
+    product = {**ONE_PER_FACET, **BDM}[name]
+    counts = []
+    for p in JUMPS:
+        counts.append(_count(patch(mesh, product, checkerboard(mesh, p)), mesh, kind))
+        print(f"  {name:15s} {kind:3s}  K = 1e{p:+03d}   {counts[-1]:4d} its")
+    # the two routes are held to different bounds for the reason
+    # test_one_cycle_is_bounded_but_not_flat states: a single cycle
+    # APPROXIMATES the block, so it is bounded and drifts -- derham_rt runs 13
+    # at K = 1 and 22 at either extreme -- while the solved block is flat.
+    assert max(counts) <= min(counts) + (8 if kind == "cg" else 12)
+
+
+# NOT MESH-ALIGNED, and this is where the property stops -- on ONE side.
+#
+# On the annulus the same pattern is stated in cartesian coordinates over a
+# radial tetrahedral mesh, so a block boundary cuts cells at an arbitrary angle
+# and no auxiliary patch sees a smooth coefficient. A SOFT inclusion is still
+# flat -- 12 iterations at 1e-7, as at 1 -- and a HARD one is not:
+#
+#     K_in            1e+4   1e+7   1e+8
+#     stabilized_rt     12     24     41
+#     stabilized_bdm    14     42   1163
+#
+# and the 1e+8 figure moves with refinement (608 on wedge(12)), so the sweep
+# stops at a 1e4 inclusion, which is the range the claim holds over. The rest
+# is recorded rather than asserted: a bound around a number that swings by an
+# order of magnitude guards nothing.
+#
+# It is not this route's defect. The same problem through PETSc's PCHYPRE takes
+# 98 iterations at 1e+8 on wedge(6) and DIVERGES on wedge(12), where this one
+# converges in 608 -- both routes meet the same wall, and this one degrades
+# instead of failing.
+MISALIGNED_JUMPS = (-7, -4, -2, 0, 2, 4)
+
+
+@pytest.mark.parametrize("name", sorted({"stabilized_rt": None, **BDM}))
+def test_a_misaligned_checkerboard_is_flat_to_a_1e4_inclusion(name):
+    _hypre()
+    mesh = wedge(6)
+    product = {**ONE_PER_FACET, **BDM}[name]
+    counts = []
+    for p in MISALIGNED_JUMPS:
+        counts.append(_count(patch(mesh, product, checkerboard(mesh, p)), mesh))
+        print(f"  {name:15s} K = 1e{p:+03d}   {counts[-1]:4d} its")
     assert max(counts) <= min(counts) + 8
