@@ -1,6 +1,8 @@
 #pragma once
 
 #include <array>
+#include <chrono>
+#include <cstdint>
 #include <cmath>
 #include <algorithm>
 #include <map>
@@ -92,13 +94,21 @@ using P = exokal::Mesh::Point;
 // unknowns -- and most of it was the map's per-entry allocation and pointer
 // chasing, which also made it superlinear.
 struct Accum {
-  std::vector<int> r, c;
+  // ONE PACKED KEY, NOT A PERMUTATION. Sorting an index array with a
+  // comparator that dereferences two parallel vectors costs a cache miss per
+  // comparison; (row << 32) | col is a scalar, so the sort is contiguous and
+  // the compare is one instruction. Once exokal hoisted its adjacencies out of
+  // the per-cell curl this was the largest single term in assembly.
+  std::vector<std::uint64_t> key;
   std::vector<double> x;
   std::vector<int> hits;
   explicit Accum(int rows) : hits((std::size_t)rows, 0) {}
+  void reserve(std::size_t n) {
+    key.reserve(n);
+    x.reserve(n);
+  }
   void add(int rr, int cc, double v) {
-    r.push_back(rr);
-    c.push_back(cc);
+    key.push_back((std::uint64_t)(std::uint32_t)rr << 32 | (std::uint32_t)cc);
     x.push_back(v);
   }
   void touched(int rr) { ++hits[(std::size_t)rr]; }
@@ -112,34 +122,36 @@ struct Accum {
   // with it the density of C^T A C, which is where ADS actually spends: the
   // per-iteration cost fell 12-fold when it went.
   Sparse finish(int rows, int cols, double rel = 1e-9) const {
-    std::vector<std::size_t> ord(x.size());
-    for (std::size_t i = 0; i < ord.size(); ++i) ord[i] = i;
-    std::sort(ord.begin(), ord.end(), [&](std::size_t a, std::size_t b) {
-      return r[a] != r[b] ? r[a] < r[b] : c[a] < c[b];
-    });
-    std::vector<int> rr, cc;
-    std::vector<double> vv;
-    std::vector<double> peak((std::size_t)rows, 0.0);
-    for (std::size_t i = 0; i < ord.size();) {
-      std::size_t j = i;
-      double acc = 0.0;
-      while (j < ord.size() && r[ord[j]] == r[ord[i]] && c[ord[j]] == c[ord[i]]) {
-        acc += x[ord[j]];
-        ++j;
-      }
-      rr.push_back(r[ord[i]]);
-      cc.push_back(c[ord[i]]);
-      vv.push_back(acc);
-      peak[(std::size_t)r[ord[i]]] = std::max(peak[(std::size_t)r[ord[i]]], std::fabs(acc));
-      i = j;
-    }
+    std::vector<std::pair<std::uint64_t, double>> e(key.size());
+    for (std::size_t i = 0; i < key.size(); ++i) e[i] = {key[i], x[i]};
+    std::sort(e.begin(), e.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+
     Sparse s;
     s.rows = rows;
     s.cols = cols;
-    for (std::size_t k = 0; k < vv.size(); ++k) {
-      if (std::fabs(vv[k]) <= rel * peak[(std::size_t)rr[k]]) continue;
-      const int n = hits[(std::size_t)rr[k]] == 0 ? 1 : hits[(std::size_t)rr[k]];
-      s.push(rr[k], cc[k], vv[k] / double(n));
+    // sum duplicates in place, then drop against each row's own peak -- two
+    // passes over one contiguous array rather than a map walk
+    std::size_t m = 0;
+    std::vector<double> peak((std::size_t)rows, 0.0);
+    for (std::size_t i = 0; i < e.size();) {
+      std::size_t j = i;
+      double acc = 0.0;
+      while (j < e.size() && e[j].first == e[i].first) acc += e[j++].second;
+      e[m] = {e[i].first, acc};
+      const auto r = (std::size_t)(e[i].first >> 32);
+      peak[r] = std::max(peak[r], std::fabs(acc));
+      ++m;
+      i = j;
+    }
+    s.row.reserve(m);
+    s.col.reserve(m);
+    s.value.reserve(m);
+    for (std::size_t k = 0; k < m; ++k) {
+      const auto r = (int)(e[k].first >> 32);
+      if (std::fabs(e[k].second) <= rel * peak[(std::size_t)r]) continue;
+      const int n = hits[(std::size_t)r] == 0 ? 1 : hits[(std::size_t)r];
+      s.push(r, (int)(std::uint32_t)e[k].first, e[k].second / double(n));
     }
     return s;
   }
@@ -261,13 +273,31 @@ inline BdmOwners bdm_complex_owners(const exokal::Mesh& mesh,
   return o;
 }
 
+// Where assembly goes, when someone asks. Filled only if a pointer is passed,
+// so the ordinary path pays nothing.
+struct BdmComplexCost {
+  double curl{0.0};      // exokal's degree-2 curl, per cell
+  double flux{0.0};      // exokal's BDM flux product, per cell -- the Pi_rt basis
+  double fit{0.0};       // T_f and the vertex-hat coefficients
+  double scatter{0.0};   // writing the per-cell blocks into the accumulators
+  double reduce{0.0};    // sort, sum duplicates, drop
+  double grad{0.0};      // G, which is closed-form and touches no cell
+  double total{0.0};
+};
+
 // The complex of a tetrahedral mesh. Throws if a cell is not a tetrahedron --
 // on a general polytope the degree-2 reconstruction is a least-squares fit
 // (D_edge > m) and a facet's curl rows stop being facet-local, so no global C
 // exists without a choice.
-inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim) {
+inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
+                              BdmComplexCost* cost = nullptr) {
   using namespace bdm_detail;
   using exokal::MimeticCurlKind;
+  using Clock = std::chrono::steady_clock;
+  const auto t_all = Clock::now();
+  const auto tick = [](const auto& t0) {
+    return std::chrono::duration<double>(Clock::now() - t0).count();
+  };
   if (cell_dim != 3) throw std::invalid_argument("bdm_complex: 3D only");
   const graphos::Complex& top = mesh.topology();
   const int nV = int(top.count(0)), nE = int(top.count(1)), nF = int(top.count(2));
@@ -290,6 +320,7 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim) {
   const auto nodal_face = [&](Index f) { return nV + 2 * nE + int(f); };
 
   // ---------------- G : topological on the edges, Stokes on the facets ------
+  const auto t_g = Clock::now();
   {
     Sparse& G = out.grad;
     G.rows = out.n_circ;
@@ -340,16 +371,28 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim) {
     }
   }
 
+  if (cost) cost->grad = tick(t_g);
+
   // ---------------- C, Pi_rt, Pi_nd : per cell, averaged over the cells -----
   Accum C(out.n_flux), Prt(out.n_flux), Pnd(out.n_circ);
+  double t_curl = 0.0, t_flux = 0.0, t_fit = 0.0, t_scatter = 0.0;
+  // THE MESH-WIDE ADJACENCIES, ONCE. graphos::incidence builds a fresh CSR over
+  // the whole complex and does not cache, so taking the mesh-only overload per
+  // cell is O(cells x mesh); the cache makes the loop O(mesh).
+  const exokal::MimeticCurlCache curl_cache(mesh, cell_dim);
   for (Index c = 0; c < mesh.count(cell_dim); ++c) {
     const auto vb = (std::size_t)c2v.offsets[(std::size_t)c];
     const auto ve = (std::size_t)c2v.offsets[(std::size_t)c + 1];
     if (ve - vb != 4) throw std::invalid_argument("bdm_complex: cell is not a tetrahedron");
 
-    const auto g = exokal::mimetic_curl(mesh, c, MimeticCurlKind::full);
+    const auto t0 = Clock::now();
+    const auto g = exokal::mimetic_curl(mesh, curl_cache, c, MimeticCurlKind::full);
+    const auto t1 = Clock::now();
     const auto fx = exokal::hodge::stabilized_bdm_flux_inner_product(
         mesh, cell_dim, c, exokal::hodge::SymTensor<>::isotropic(1.0));
+    const auto t2 = Clock::now();
+    t_curl += std::chrono::duration<double>(t1 - t0).count();
+    t_flux += std::chrono::duration<double>(t2 - t1).count();
     const int cE = int(g.edges.size()), cF = int(g.faces.size());
     const double hE = std::cbrt(exokal::measure(mesh, cell_dim, c));
     const P xE = exokal::centroid(mesh, cell_dim, c);
@@ -382,6 +425,8 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim) {
     }
     // V (4x4) * Lambda = I  =>  lambda_w = sum_s Lambda[s][w] mode_s
     if (!solve_dense(V, L, 4, 4)) throw std::runtime_error("bdm_complex: degenerate tetrahedron");
+    const auto t3 = Clock::now();
+    t_fit += std::chrono::duration<double>(t3 - t2).count();
 
     for (int f = 0; f < cF; ++f) {
       const Index fid = g.faces[(std::size_t)f];
@@ -441,9 +486,22 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim) {
     }
   }
 
+  if (cost) {
+    cost->curl = t_curl;
+    cost->flux = t_flux;
+    cost->fit = t_fit;
+    cost->scatter = t_scatter;
+  }
+  const auto t_red = Clock::now();
   out.curl = C.finish(out.n_flux, out.n_circ);
   out.pi_rt = Prt.finish(out.n_flux, out.n_vnodal);
   out.pi_nd = Pnd.finish(out.n_circ, out.n_vnodal);
+  if (cost) {
+    cost->reduce = tick(t_red);
+    cost->total = tick(t_all);
+    cost->scatter = cost->total - cost->curl - cost->flux - cost->fit -
+                    cost->reduce - cost->grad;
+  }
   return out;
 }
 

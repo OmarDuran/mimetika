@@ -105,6 +105,48 @@ def options(rtol, cycle_type=13, amg_theta=0.25, ams_theta=0.25, max_iterations=
     return o
 
 
+def assemble(model, mesh, dim):
+    """Assemble and stop, for --assemble-only.
+
+    Two costs, reported apart because they are different objects: A and b, the
+    saddle-point system; and the complex the Riesz map's first block is
+    preconditioned through -- the discrete gradient and curl, and for a facet
+    carrying d moments the degree-2 rung P3 -> N2E2 -> BDM1 with its
+    interpolations Pi_rt, Pi_nd.
+    """
+    import mimetika_hypre as mh
+
+    mk.mpi_size()
+    mh.init()
+
+    t0 = time.perf_counter()
+    _stage("assembling A, b")
+    mk.distribute(model)
+    model.build()
+    matrix = time.perf_counter() - t0
+    _stage_done(matrix)
+
+    _stage("assembling the discrete complex")
+    t1 = time.perf_counter()
+    handoff = mk.ads_handoff(model, mesh, dim)
+    precond = time.perf_counter() - t1
+    _stage_done(precond)
+    return _Assembly(matrix, precond, handoff)
+
+
+class _Assembly:
+    """The fields the examples read from a SolveReport after --assemble-only."""
+
+    def __init__(self, matrix_seconds, preconditioner_seconds, handoff):
+        self.matrix_seconds = matrix_seconds
+        self.preconditioner_seconds = preconditioner_seconds
+        self.assembly_seconds = matrix_seconds + preconditioner_seconds
+        self.condensed = False
+        self.condensed_dofs = 0
+        self.degree2 = bool(handoff.get("degree2", False))
+        self.block_solver = ("ads, degree-2 complex" if self.degree2 else "ads")
+
+
 def solve(model, mesh, dim, opts):
     """Assemble in mimetika_cxx, solve in mimetika_hypre, accept back.
 

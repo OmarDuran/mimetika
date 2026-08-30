@@ -459,14 +459,21 @@ def main():
         if f != 0.0:
             model.set_source([f] * mesh.count(dim))
     if args.assemble_only:
-        report = model.assemble(progress=True, options=solvers(args.rtol)[args.solver])
+        # the direct hypre path is not one of the PETSc option sets, so it
+        # assembles through its own bridge rather than through model.assemble
+        if args.solver == _hypre.NAME:
+            report = _hypre.assemble(model, mesh, dim)
+        else:
+            report = model.assemble(progress=True, options=solvers(args.rtol)[args.solver])
+        complex_note = " (degree 2, with Pi)" if getattr(report, "degree2", False) else ""
         print(
-            f"\n  assembled: matrix {report.matrix_seconds:.2f} s, "
-            f"preconditioner {report.preconditioner_seconds:.2f} s"
+            f"\n  assembled: A, b {report.matrix_seconds:.2f} s;  "
+            f"complex {report.preconditioner_seconds:.2f} s{complex_note}"
         )
         print(
             f"  {model.n_cells} cells, {model.n_dofs} dofs, "
-            f"{model.moments_per_facet} moment(s) per facet"
+            f"{model.moments_per_facet} moment"
+            f"{'' if model.moments_per_facet == 1 else 's'} per facet"
         )
         if report.condensed:
             print(f"  flux eliminated exactly: {model.n_dofs} -> {report.condensed_dofs} "
@@ -506,7 +513,7 @@ def main():
     )
     print(
         f"  {model.n_cells} cells, {model.n_dofs} dofs, "
-        f"{model.moments_per_facet} moment(s) per facet\n"
+        f"{model.moments_per_facet} moment{'' if model.moments_per_facet == 1 else 's'} per facet\n"
     )
     if args.product == "adaptive_rt":
         # the selection as built: how many cells the scan handed to the
