@@ -220,7 +220,10 @@ PYBIND11_MODULE(_hypre, m) {
          py::array_t<int> owner_of_dof, py::array_t<int> vertex_owner,
          py::array_t<int> edge_owner, py::array_t<int> face_owner,
          const py::dict& lowest_order, int lowest_order_components,
+         const py::dict& rt_interpolation, const py::dict& nd_interpolation,
+         py::array_t<int> interpolation_owner, bool degree2,
          const HypreSolver::Options& opts) {
+        (void)degree2;
         const auto ints = [](const py::array_t<int>& a) {
           return std::vector<int>(a.data(), a.data() + a.size());
         };
@@ -249,6 +252,11 @@ PYBIND11_MODULE(_hypre, m) {
         norm.l2_weight.push_back(reals(l2_weight));
         norm.discrete_gradient = inc(gradient);
         norm.discrete_curl = inc(curl);
+        // the degree-2 complex's interpolations, when ADS is taking the BDM
+        // block directly rather than through the facet-constant subspace
+        norm.rt_interpolation = inc(rt_interpolation);
+        norm.nd_interpolation = inc(nd_interpolation);
+        norm.interpolation_owner = ints(interpolation_owner);
         norm.vertex_coordinates = reals(coordinates);
         norm.space_dim = space_dim;
         norm.pinned = ints(pinned);
@@ -275,6 +283,8 @@ PYBIND11_MODULE(_hypre, m) {
       py::arg("moments_per_facet"), py::arg("pinned"), py::arg("pinned_diagonal"),
       py::arg("owner_of_dof"), py::arg("vertex_owner"), py::arg("edge_owner"),
       py::arg("face_owner"), py::arg("lowest_order"), py::arg("lowest_order_components"),
+      py::arg("rt_interpolation"), py::arg("nd_interpolation"), py::arg("interpolation_owner"),
+      py::arg("degree2") = false,
       py::arg("options") = HypreSolver::Options{},
       "Solve an assembled system with the Riesz map, its first block inverted by ADS.");
 

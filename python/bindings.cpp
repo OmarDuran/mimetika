@@ -38,6 +38,7 @@
 #include "exokal/preprocess/diagnostics.hpp"
 #include "exokal/preprocess/curate_vtu.hpp"
 #include "mimetika/model/partition.hpp"
+#include "mimetika/linear_solver/bdm_complex.hpp"
 #include "mimetika/linear_solver/fields.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
 #include "mimetika/mesh/structured.hpp"
@@ -470,7 +471,59 @@ inline std::vector<mimetika::CauchyMechanicsModel::NormTraceTerm> trace_terms(
   return {};
 }
 
+// THE DEGREE-2 COMPLEX, WHERE ADS CAN TAKE IT DIRECTLY.
+//
+// build_norm hands a BDM flux block to ADS through the facet-constant
+// subspace, because ADS's own construction assumes one unknown a facet. On a
+// TETRAHEDRAL mesh there is a better answer: give ADS the degree-2 complex
+//
+//     P3 nodal --G--> N2E2 circulation --C--> BDM flux
+//
+// and the two interpolations, and it preconditions the block itself -- no
+// coarse space, no smoother carrying the divergence-free part. Measured
+// h-independent and contrast-independent where the subspace cycle diverges.
+//
+// Only on simplices: on a polytope the degree-2 reconstruction is a
+// least-squares fit and a facet's curl rows stop being facet-local, so there
+// is no global C to hand over. Returns false and changes nothing otherwise.
+bool upgrade_to_degree2(mimetika::solver::SpaceNorm& norm, const exokal::Mesh& mesh, int dim) {
+  if (dim != 3 || norm.factors.empty()) return false;
+  // the BDM case is the one build_norm gave a single-component subspace to,
+  // with three moments a facet
+  if (norm.lowest_order.empty() || norm.lowest_order_components != 1) return false;
+  const auto n_faces = static_cast<std::size_t>(mesh.count(dim - 1));
+  if (norm.factors[0].size() != 3 * n_faces) return false;
+  if (!mimetika::solver::all_tetrahedra(mesh, dim)) return false;
+
+  const auto cx = mimetika::solver::bdm_complex(mesh, dim);
+  const auto to_inc = [](const mimetika::solver::Sparse& t) {
+    mimetika::solver::SpaceNorm::Incidence i;
+    i.rows = t.rows;
+    i.cols = t.cols;
+    i.row = t.row;
+    i.col = t.col;
+    i.value = t.value;
+    return i;
+  };
+  norm.discrete_gradient = to_inc(cx.grad);
+  norm.discrete_curl = to_inc(cx.curl);
+  norm.rt_interpolation = to_inc(cx.pi_rt);
+  norm.nd_interpolation = to_inc(cx.pi_nd);
+  norm.vertex_coordinates = mimetika::solver::bdm_nodal_coordinates(mesh);
+  norm.space_dim = 3;
+  if (!norm.entity_owner.empty()) {
+    const auto own = mimetika::solver::bdm_complex_owners(mesh, norm.entity_owner);
+    norm.entity_owner = {own.nodal, own.circulation, own.flux};
+    norm.interpolation_owner = own.vnodal;
+  }
+  // the subspace is what it replaces
+  norm.lowest_order = {};
+  norm.lowest_order_components = 1;
+  return true;
+}
+
 template <class Model>
+
 mimetika::solver::SpaceNorm build_norm(const Model& m, const exokal::Mesh& mesh, int dim,
                                        bool divergence_is_an_integral,
                                        bool merge_multipliers = true) {
@@ -1098,8 +1151,9 @@ PYBIND11_MODULE(_core, m) {
   // gives PETSc rather than a second statement of it.
   m.def(
       "ads_handoff",
-      [](const mimetika::FlowModel& model, const exokal::Mesh& mesh, int dim) {
-        const auto norm = build_norm(model, mesh, dim, /*divergence_is_an_integral=*/true);
+      [](const mimetika::FlowModel& model, const exokal::Mesh& mesh, int dim, bool use_degree2) {
+        auto norm = build_norm(model, mesh, dim, /*divergence_is_an_integral=*/true);
+        const bool degree2 = use_degree2 && upgrade_to_degree2(norm, mesh, dim);
         const auto& A = model.system();
         const auto ints = [](const std::vector<int>& v) {
           py::array_t<int> a(static_cast<py::ssize_t>(v.size()));
@@ -1149,9 +1203,14 @@ PYBIND11_MODULE(_core, m) {
             // space, and the entries are ones.
             py::arg("lowest_order") = inc(norm.lowest_order),
             py::arg("lowest_order_components") = norm.lowest_order_components,
-            py::arg("moments_per_facet") = norm.lowest_order.empty() ? 1 : 0);
+            py::arg("moments_per_facet") = norm.lowest_order.empty() ? 1 : 0,
+            // the degree-2 complex's interpolations, empty unless it was used
+            py::arg("rt_interpolation") = inc(norm.rt_interpolation),
+            py::arg("nd_interpolation") = inc(norm.nd_interpolation),
+            py::arg("interpolation_owner") = ints(norm.interpolation_owner),
+            py::arg("degree2") = degree2);
       },
-      py::arg("model"), py::arg("mesh"), py::arg("cell_dim"),
+      py::arg("model"), py::arg("mesh"), py::arg("cell_dim"), py::arg("degree2") = true,
       "The assembled system and its Riesz norm, for a solver in another module.");
 
   // Share a model out before it is built, for a solver that is not PETSc's.

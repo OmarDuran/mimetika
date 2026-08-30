@@ -370,6 +370,40 @@ class HypreSolver {
     Mat grad = to_mat(norm.discrete_gradient, edges, verts);
     Mat curl = to_mat(norm.discrete_curl, faces, edges);
 
+    // THE INTERPOLATIONS, WHEN THE SPACE IS NOT LOWEST ORDER.
+    //
+    // With a BDM facet ADS cannot build Pi from the coordinates -- that
+    // construction assumes one unknown a facet -- so the caller supplies both.
+    // Their columns are the vector nodal space, 3 to a vertex, which is a
+    // fourth partition; serial for now, since a distributed run would need its
+    // owners as well.
+    const bool supplied_pi = !norm.rt_interpolation.empty() && !norm.nd_interpolation.empty();
+    if (supplied_pi) {
+      if (norm.rt_interpolation.rows != norm.discrete_curl.rows ||
+          norm.nd_interpolation.rows != norm.discrete_curl.cols ||
+          norm.rt_interpolation.cols != norm.nd_interpolation.cols) {
+        throw std::invalid_argument(
+            "HypreSolver: the interpolations do not match the complex they interpolate into");
+      }
+      if (ranks > 1 &&
+          static_cast<int>(norm.interpolation_owner.size()) != norm.rt_interpolation.cols) {
+        throw std::invalid_argument(
+            "HypreSolver: the interpolations are distributed but their columns have no owners");
+      }
+    }
+    // The vector nodal space is a FOURTH partition. It is renumbered by the
+    // same (owner, index) sort as the other three, so every rank agrees on it
+    // without communicating, and its local run is what the rectangular Pi
+    // matrices take as their column range.
+    const Layout vnodes =
+        (supplied_pi && ranks > 1) ? layout_of(norm.interpolation_owner, ranks, rank)
+                                   : serial_layout(supplied_pi ? norm.rt_interpolation.cols : 1);
+    Mat pi_rt, pi_nd;
+    if (supplied_pi) {
+      pi_rt = to_mat(norm.rt_interpolation, faces, vnodes);
+      pi_nd = to_mat(norm.nd_interpolation, edges, vnodes);
+    }
+
     // the metric, and the only metric ADS is told
     const auto nv = static_cast<HYPRE_BigInt>(norm.discrete_gradient.cols);
     if (norm.vertex_coordinates.size() !=
@@ -463,7 +497,18 @@ class HypreSolver {
     HYPRE_ADSSetDiscreteGradient(block.ads, mat_of(grad));
     HYPRE_ADSSetDiscreteCurl(block.ads, mat_of(curl));
     HYPRE_ADSSetCoordinateVectors(block.ads, vec_of(xyz[0]), vec_of(xyz[1]), vec_of(xyz[2]));
-    HYPRE_ADSSetCycleType(block.ads, opts.ads_cycle_type);
+    // Set AFTER the coordinates: ADS builds Pi from them only when none is
+    // given, and both being present is allowed -- the supplied one wins.
+    if (supplied_pi) {
+      HYPRE_ADSSetInterpolations(block.ads, mat_of(pi_rt), nullptr, nullptr, nullptr,
+                                 mat_of(pi_nd), nullptr, nullptr, nullptr);
+    }
+    // A MONOLITHIC Pi FORCES A CYCLE BELOW 10. hypre splits the cycle types at
+    // 10: above, it wants the scalar triple Pix/Piy/Piz and errors out on a
+    // monolithic one. 13 is the default because it is the best of the scalar
+    // cycles for RT; with interpolations supplied the choice is not available.
+    const int ads_cycle = supplied_pi && opts.ads_cycle_type > 10 ? 1 : opts.ads_cycle_type;
+    HYPRE_ADSSetCycleType(block.ads, ads_cycle);
     HYPRE_ADSSetPrintLevel(block.ads, opts.print_level);
     HYPRE_ADSSetMaxIter(block.ads, opts.ads_iterations);  // a preconditioner, not a solver
     HYPRE_ADSSetTol(block.ads, 0.0);
@@ -471,7 +516,7 @@ class HypreSolver {
     HYPRE_ADSSetAMGOptions(block.ads, opts.amg_coarsen_type, opts.amg_agg_levels,
                            opts.amg_relax_type, opts.amg_theta, opts.amg_interp_type,
                            opts.amg_pmax);
-    HYPRE_ADSSetAMSOptions(block.ads, 11, opts.amg_coarsen_type, opts.amg_agg_levels,
+    HYPRE_ADSSetAMSOptions(block.ads, supplied_pi ? 1 : 11, opts.amg_coarsen_type, opts.amg_agg_levels,
                            opts.amg_relax_type, opts.ams_theta, opts.amg_interp_type,
                            opts.amg_pmax);
 

@@ -4,15 +4,17 @@ FetchContent_Declare(pybind11
   GIT_TAG stable)
 FetchContent_MakeAvailable(pybind11)
 
-pybind11_add_module(_core bindings.cpp)
-target_link_libraries(_core PRIVATE mimetika::mimetika)
+# _core IS THE PETSc MODULE. bindings.cpp includes linear_solver/petsc.hpp, so
+# it does not build without PETSc -- a tree configured for the hypre path alone
+# (MIMETIKA_USE_PETSC=OFF) must not try, which it did until this guard.
 if(MIMETIKA_USE_PETSC)
-  target_link_libraries(_core PRIVATE mimetika_petsc)
+  pybind11_add_module(_core bindings.cpp)
+  target_link_libraries(_core PRIVATE mimetika::mimetika mimetika_petsc)
+  set_target_properties(_core PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/mimetika_cxx)
 endif()
-set_target_properties(_core PROPERTIES
-  LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/mimetika_cxx)
 
-if(DEFINED SKBUILD)
+if(DEFINED SKBUILD AND MIMETIKA_USE_PETSC)
   set(_core_rpath "")
   if(EXOKAL_BASIX_ROOT)
     list(APPEND _core_rpath "${EXOKAL_BASIX_ROOT}/lib")

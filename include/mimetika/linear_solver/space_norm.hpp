@@ -156,6 +156,27 @@ struct SpaceNorm {
   Incidence lowest_order;
   int lowest_order_components{1};
 
+  // THE INTERPOLATIONS, FOR A SPACE ADS CANNOT BUILD THEM FOR.
+  //
+  // ADS forms Pi -- the map from a vector nodal field into H(div) -- from the
+  // vertex coordinates, and that construction is the LOWEST-ORDER one: it
+  // assumes a facet carries a single unknown. Given a BDM facet, whose three
+  // moments the coordinates say nothing about, the two are supplied here
+  // instead and reach HYPRE_ADSSetInterpolations, the documented hook.
+  //
+  //   rt_interpolation  n_flux x 3 n_vertices, the BDM dofs of a vertex hat
+  //   nd_interpolation  n_circ x 3 n_vertices, its circulation dofs
+  //
+  // Both empty is the lowest-order case and ADS builds its own. Supplying them
+  // also constrains the cycle types to the monolithic ones, below 10.
+  Incidence rt_interpolation;
+  Incidence nd_interpolation;
+
+  // Who owns each vector nodal unknown -- the interpolations' columns, three
+  // to a vertex. A fourth partition, alongside entity_owner's three: the other
+  // spaces are the complex's and this one is what interpolates into it.
+  std::vector<int> interpolation_owner;
+
   bool empty() const { return factors.empty(); }
 };
 
