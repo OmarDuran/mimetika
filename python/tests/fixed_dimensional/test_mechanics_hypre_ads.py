@@ -100,6 +100,37 @@ def wedge(nr):
     return mk.annulus(nr, max(2, nr // 2), 3, mk.Family.simplex, 1.0, 10.0, 1.0)
 
 
+# THE TWO ROUTES, AND WHY BOTH ARE SWEPT.
+#
+# A TETRAHEDRAL stress is split by ROW and each row handed to ADS on the
+# degree-2 complex. A POLYTOPAL one cannot be: there D_edge > m, the degree-2
+# reconstruction is a least-squares fit and a facet's curl rows stop being
+# facet-local, so no global C exists. It reaches ADS through the facet-constant
+# subspace instead, as a two-level cycle.
+#
+# Those are different preconditioners, so each property has to be measured on
+# both. `degree2` in the handoff says which one ran, and
+# test_the_route_is_the_cell_type's is what pins it.
+CELLS = {
+    "tetrahedra": (wedge, (3, 4, 6, 8), 4),
+    "hexahedra": (lambda n: mk.box([n, n, n], 3, mk.Family.cartesian), (3, 4, 6), 4),
+    "prisms": (lambda n: mk.box([n, n, n], 3, mk.Family.prism), (3, 4, 6), 4),
+}
+
+
+def mesh_of(cells, n):
+    return CELLS[cells][0](n)
+
+
+def ladder(cells):
+    return CELLS[cells][1]
+
+
+def fixed(cells):
+    """The one mesh the contrast and incompressibility sweeps run on."""
+    return mesh_of(cells, CELLS[cells][2])
+
+
 def patch(mesh, product=S.stabilized_bdm, lame=1.0, lame_field=None):
     """A linear displacement on the whole boundary, with its gradient.
 
@@ -182,12 +213,13 @@ def test_the_hypre_answer_is_the_direct_answer(name):
 # The two routes converge at similar counts, so nothing else in this file would
 # notice the wrong one being taken.
 @pytest.mark.parametrize("name", sorted(BDM))
-def test_the_degree_two_complex_is_used_on_tetrahedra(name):
+@pytest.mark.parametrize("cells", sorted(CELLS))
+def test_the_route_is_the_cell_types(name, cells):
     _hypre()
-    mesh = wedge(3)
+    mesh = mesh_of(cells, 3)
     _, used = solve(patch(mesh, BDM[name]), mesh)
-    print(f"  {name:15s} degree2 = {used}")
-    assert used, "a tetrahedral stress should be split by row on the degree-2 complex"
+    print(f"  {name:15s} {cells:11s} degree2 = {used}")
+    assert used == (cells == "tetrahedra")
 
 
 # ---- 3. h-robustness -------------------------------------------------------
@@ -198,14 +230,15 @@ def test_the_degree_two_complex_is_used_on_tetrahedra(name):
 # 48000 cells.
 @pytest.mark.parametrize("name", sorted(BDM))
 @pytest.mark.parametrize("kind", ["one", "cg"])
-def test_the_stress_is_h_robust(name, kind):
+@pytest.mark.parametrize("cells", sorted(CELLS))
+def test_the_stress_is_h_robust(name, kind, cells):
     _hypre()
     counts = []
-    for nr in (3, 4, 6, 8):
-        mesh = wedge(nr)
+    for n in ladder(cells):
+        mesh = mesh_of(cells, n)
         model = patch(mesh, BDM[name])
         counts.append(_count(model, mesh, kind))
-        print(f"  {name:15s} {kind:3s} {model.n_cells:6d} cells "
+        print(f"  {name:15s} {cells:11s} {kind:3s} {model.n_cells:6d} cells "
               f"{model.n_dofs:8d} dofs   {counts[-1]:4d} its")
     assert counts[-1] <= counts[0] + 8
 
@@ -231,14 +264,15 @@ JUMPS = (0, 2, 4, 6, 8)
 
 
 @pytest.mark.parametrize("kind", ["one", "cg"])
-def test_the_count_does_not_track_the_contrast(kind):
+@pytest.mark.parametrize("cells", sorted(CELLS))
+def test_the_count_does_not_track_the_contrast(kind, cells):
     _hypre()
-    mesh = wedge(4)
+    mesh = fixed(cells)
     counts = []
     for p in JUMPS:
         field = lame_checkerboard(mesh, 1.0, p)
         counts.append(_count(patch(mesh, lame_field=field), mesh, kind))
-        print(f"  {kind:3s}  lambda_in = 1e{p:+03d}   {counts[-1]:4d} its")
+        print(f"  {cells:11s} {kind:3s}  lambda_in = 1e{p:+03d}   {counts[-1]:4d} its")
     uniform, jumped = counts[0], counts[1:]
     # flat ACROSS the contrast, which is the property
     assert max(jumped) <= min(jumped) + 4
@@ -260,25 +294,29 @@ def test_the_count_does_not_track_the_contrast(kind):
 POISSON = (0.25, 0.4, 0.49, 0.499, 0.4999)
 
 
-def test_the_count_does_not_track_the_incompressibility():
+@pytest.mark.parametrize("cells", sorted(CELLS))
+def test_the_count_does_not_track_the_incompressibility(cells):
     _hypre()
-    mesh = wedge(4)
+    mesh = fixed(cells)
     counts = []
     for nu in POISSON:
         lam = 2.0 * MU * nu / (1.0 - 2.0 * nu)
         counts.append(_count(patch(mesh, lame=lam), mesh, "cg"))
-        print(f"  nu = {nu:<7}  lambda = {lam:10.1f}   {counts[-1]:4d} its")
+        print(f"  {cells:11s} nu = {nu:<7}  lambda = {lam:10.1f}   {counts[-1]:4d} its")
     assert max(counts) <= min(counts) + 8
 
 
-def test_one_cycle_drifts_where_the_solved_block_does_not():
+@pytest.mark.parametrize("cells", sorted(CELLS))
+def test_one_cycle_drifts_where_the_solved_block_does_not(cells):
     """The two routes are a different statement, and this is what separates
     them: at nu = 0.499 one cycle takes several times what the solved block
-    does, on the same problem and the same tolerance."""
+    does, on the same problem and the same tolerance. It holds on BOTH
+    preconditioners -- the tetrahedral row split and the polytopal subspace
+    cycle -- which is why nu is the one property only `cg` is asserted for."""
     _hypre()
-    mesh = wedge(4)
+    mesh = fixed(cells)
     lam = 2.0 * MU * 0.499 / (1.0 - 2.0 * 0.499)
     solved = _count(patch(mesh, lame=lam), mesh, "cg")
     once = _count(patch(mesh, lame=lam), mesh, "one")
-    print(f"  nu = 0.499:  one cycle {once} its, block solved {solved} its")
+    print(f"  {cells:11s} nu = 0.499:  one cycle {once} its, block solved {solved} its")
     assert solved <= once
