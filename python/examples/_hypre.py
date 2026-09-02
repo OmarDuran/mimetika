@@ -188,6 +188,18 @@ def solve(model, mesh, dim, opts):
     _line("preconditioner", report.setup_seconds)
     _line("iteration", report.solve_seconds)
 
+    # A PRECONDITIONER THAT DID NOT CONVERGE STILL RETURNS A VECTOR.
+    #
+    # The examples read the answer and print an error table; without this a
+    # capped solve reads as a discretization that stopped converging -- 3.8e-02
+    # then 3.9e-01 on a mesh ladder, which is not a rate, it is a failure.
+    if not report.converged:
+        if _root():
+            sys.stdout.flush()
+            sys.stderr.write(
+                f"\n  {NAME}: DID NOT CONVERGE -- {report.iterations} iterations, "
+                f"{report.reason}. The answer below is whatever the last iterate was.\n")
+            sys.stderr.flush()
     mk.accept(model, list(x))
     return _Report(report, assembly)
 

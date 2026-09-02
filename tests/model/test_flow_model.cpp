@@ -150,11 +150,18 @@ const Family kFamilies[] = {Family::cartesian, Family::simplex, Family::prism};
 const Realization kProducts[] = {Realization::derham_bdm, Realization::derham_rt,
                                  Realization::stabilized_rt};
 
+// EVERY MEMBER, NOT ONLY THE ONES kProducts EXERCISES. The switch has no
+// default on purpose: -Wswitch is then what reports the next realization added
+// to the enum, and a default would silence it and let the new member print
+// someone else's name. The unreachable return is for a value outside the enum.
 const char* product_name(Realization r) {
   switch (r) {
     case Realization::derham_bdm: return "derham_bdm";
     case Realization::derham_rt: return "derham_rt";
+    case Realization::stabilized_bdm: return "stabilized_bdm";
     case Realization::stabilized_rt: return "stabilized_rt";
+    case Realization::diagonal_tpfa: return "diagonal_tpfa";
+    case Realization::adaptive_rt: return "adaptive_rt";
   }
   return "?";
 }

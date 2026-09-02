@@ -442,7 +442,7 @@ inline double bounding_diagonal(const exokal::Mesh& mesh) {
   return std::sqrt(d2);
 }
 
-inline double norm_scale(const mimetika::FlowModel& m) { return m.mobility(); }
+inline double norm_scale(const mimetika::FlowModel& m, int) { return m.mobility(); }
 
 // K per cell, where the model carries one.
 //
@@ -451,15 +451,32 @@ inline double norm_scale(const mimetika::FlowModel& m) { return m.mobility(); }
 // of a HOMOGENEOUS coefficient only: with K jumping across facets the pairing
 // the map is built from is no longer the pairing the operator has, and the
 // inf-sup constant of the mismatch is what the iteration count then pays.
-inline std::vector<double> cell_coefficient(const mimetika::FlowModel& m) {
+inline std::vector<double> cell_coefficient(const mimetika::FlowModel& m, int) {
   // the tensor read as the star reads it: the area-weighted normal
   // permeability of the cell's facets, which is K itself when K is isotropic
   return m.norm_permeability();
 }
-inline std::vector<double> cell_coefficient(const mimetika::CauchyMechanicsModel&) {
-  return {};  // the shear modulus is uniform, and already in `scale`
+// THE MATERIAL DOES NOT GO IN W, AND THIS IS MEASURED, NOT ASSUMED.
+//
+// For flow W = scale * K * |E|: the constraint's Schur complement is
+// B star_K^-1 B^T and star_K^-1 scales with K, so W must carry it. The elastic
+// analogue looks like it should be B A^-1 B^T with A the compliance, hence the
+// stiffness 2mu + d lambda -- and it is not. W appears TWICE in the Riesz map,
+// P = diag(M + B^T W^-1 B, W), so inflating it by 2mu + d lambda shrinks
+// W^-1 and discards the divergence control precisely where incompressibility
+// needs it. Measured on a tetrahedral annulus, moving from mu to 2mu + d lambda:
+//
+//   nu -> 1/2         60 .. 90   becomes   17, 21, 49, 164, 749
+//   lambda contrast   17 flat    becomes   23, 99, then no convergence at 1e4
+//
+// mu alone is what keeps both flat. The stress block carries lambda where it
+// belongs -- in the compliance, and so in every Galerkin product ADS forms.
+inline std::vector<double> cell_coefficient(const mimetika::CauchyMechanicsModel&, int) {
+  return {};
 }
-inline double norm_scale(const mimetika::CauchyMechanicsModel& m) { return m.material().shear; }
+inline double norm_scale(const mimetika::CauchyMechanicsModel& m, int) {
+  return m.material().shear;
+}
 
 // Only the mechanics model has one; the flux star carries no trace to correct.
 inline std::vector<mimetika::CauchyMechanicsModel::NormTraceTerm> trace_terms(
@@ -486,13 +503,16 @@ inline std::vector<mimetika::CauchyMechanicsModel::NormTraceTerm> trace_terms(
 // Only on simplices: on a polytope the degree-2 reconstruction is a
 // least-squares fit and a facet's curl rows stop being facet-local, so there
 // is no global C to hand over. Returns false and changes nothing otherwise.
-bool upgrade_to_degree2(mimetika::solver::SpaceNorm& norm, const exokal::Mesh& mesh, int dim) {
-  if (dim != 3 || norm.factors.empty()) return false;
-  // the BDM case is the one build_norm gave a single-component subspace to,
-  // with three moments a facet
-  if (norm.lowest_order.empty() || norm.lowest_order_components != 1) return false;
+template <class Model>
+bool upgrade_to_degree2(const Model& m, mimetika::solver::SpaceNorm& norm,
+                        const exokal::Mesh& mesh, int dim) {
+  if (dim != 3 || norm.factors.empty() || norm.lowest_order.empty()) return false;
+  // three moments a facet, and either ONE copy of that space -- a flux -- or
+  // d of them, the rows of a stress
+  const int copies = norm.lowest_order_components;
   const auto n_faces = static_cast<std::size_t>(mesh.count(dim - 1));
-  if (norm.factors[0].size() != 3 * n_faces) return false;
+  if (copies < 1) return false;
+  if (norm.factors[0].size() != 3 * n_faces * static_cast<std::size_t>(copies)) return false;
   if (!mimetika::solver::all_tetrahedra(mesh, dim)) return false;
 
   const auto cx = mimetika::solver::bdm_complex(mesh, dim);
@@ -517,8 +537,70 @@ bool upgrade_to_degree2(mimetika::solver::SpaceNorm& norm, const exokal::Mesh& m
     norm.interpolation_owner = own.vnodal;
   }
   // the subspace is what it replaces
-  norm.lowest_order = {};
-  norm.lowest_order_components = 1;
+  if (copies == 1) {
+    norm.lowest_order = {};
+    norm.lowest_order_components = 1;
+    return true;
+  }
+
+  // A STRESS IS d COPIES OF THE FLUX, SPLIT BY ROW.
+  //
+  // (1.1) of Kolev & Vassilevski is a_div(u,v) = (alpha div u, div v) +
+  // (beta u, v); section 1 notes alpha and beta may be symmetric positive
+  // definite MATRICES, which is what a stress row needs.
+  //
+  // For isotropic elasticity A sigma = (1/2mu)(sigma - lambda/(2mu + d lambda)
+  // tr(sigma) I). Writing sigma by rows, |sigma|_F^2 = sum_i |sigma_i|^2 and
+  // tr sigma = sum_i (sigma_i)_i, so
+  //
+  //   (A sigma, sigma) = sum_i (1/2mu)[ |sigma_i|^2 - c |(sigma_i)_i|^2 ]
+  //                    - (c/2mu) sum_{i != j} ((sigma_i)_i, (sigma_j)_j),
+  //                                                 c = lambda/(2mu + d lambda)
+  //
+  // The first sum is row-diagonal: row i is a_div with
+  //
+  //   beta_i = (1/2mu) ( I - c e_i (x) e_i ),
+  //
+  // whose spectrum is 1/(2mu) in the d-1 directions across e_i and
+  // (1/2mu)(1 - c) = 1/(2mu + d lambda) along it. That ratio, 1 + d lambda/2mu,
+  // IS the incompressibility: DROPPING THE TRACE would put 1/(2mu) in the
+  // normal direction and lose it as nu -> 1/2. It is not dropped -- the row
+  // sub-block of the assembled A0 carries beta_i exactly.
+  //
+  // What IS dropped is the i != j coupling alone, which the solver's
+  // multiplicative sweep over the rows recovers.
+  //
+  // So each block is one row's whole BDM H(div) operator -- the same object,
+  // on the same complex with the same interpolations, that the flow path is
+  // h-independent on. The facet-constant subspace throws the two higher
+  // moments of every facet away, and that is what made the count grow.
+  //
+  // Rows: a facet's unknowns are ordered (moment, copy) with the copy fastest,
+  // so row c's moment b sits at b*copies + c. Columns: the complex's flux dof
+  // 3f + b, offset by c blocks, so P_c^T A0 P_c is row c's operator.
+  const auto& space = m.simulation().epoch().stratum(0).space();
+  const auto& facet_map = space.map(0);
+  const auto base = static_cast<Index>(m.simulation().epoch().offset(0)) +
+                    static_cast<Index>(space.offset(0));
+  const int nf = static_cast<int>(n_faces);
+  mimetika::solver::SpaceNorm::Incidence sel;
+  sel.rows = static_cast<int>(m.simulation().n_dofs());
+  sel.cols = 3 * nf * copies;
+  const auto n_entry = static_cast<std::size_t>(3 * nf * copies);
+  sel.row.reserve(n_entry);
+  sel.col.reserve(n_entry);
+  sel.value.assign(n_entry, 1.0);
+  for (int c = 0; c < copies; ++c) {
+    for (int f = 0; f < nf; ++f) {
+      const auto g = static_cast<int>(base + facet_map.global(dim - 1, static_cast<Index>(f), 0, 0));
+      for (int b = 0; b < 3; ++b) {
+        sel.row.push_back(g + b * copies + c);
+        sel.col.push_back(c * 3 * nf + 3 * f + b);
+      }
+    }
+  }
+  norm.lowest_order = std::move(sel);
+  norm.lowest_order_components = copies;
   return true;
 }
 
@@ -526,7 +608,8 @@ template <class Model>
 
 mimetika::solver::SpaceNorm build_norm(const Model& m, const exokal::Mesh& mesh, int dim,
                                        bool divergence_is_an_integral,
-                                       bool merge_multipliers = true) {
+                                       bool merge_multipliers = true,
+                                       bool rotation_own_scale = false) {
   const auto blocks = mimetika::solver::field_blocks(m.simulation().epoch());
   if (blocks.size() < 2) {
     throw std::runtime_error("riesz: the space has fewer than two factors");
@@ -537,8 +620,8 @@ mimetika::solver::SpaceNorm build_norm(const Model& m, const exokal::Mesh& mesh,
     measure[e] = exokal::measure(mesh, dim, static_cast<Index>(e));
   }
   const double L = bounding_diagonal(mesh);
-  const double scale = norm_scale(m) / (L * L);
-  const std::vector<double> k_cell = cell_coefficient(m);
+  const double scale = norm_scale(m, dim) / (L * L);
+  const std::vector<double> k_cell = cell_coefficient(m, dim);
   if (!k_cell.empty() && k_cell.size() != n_cells) {
     throw std::runtime_error("riesz: the coefficient does not cover the cells");
   }
@@ -558,6 +641,25 @@ mimetika::solver::SpaceNorm build_norm(const Model& m, const exokal::Mesh& mesh,
                                "' is not a cell field; its L2 norm is not the cell measure");
     }
     const std::size_t components = size / n_cells;
+    // THE ROTATION'S OWN SCALE, WHICH ONLY ONE OF THE TWO SOLVERS WANTS.
+    //
+    // Each multiplier's W is the Schur scale of what it pairs with: u with
+    // div sigma, a stress over a length, and gamma with skw sigma, a stress.
+    // They differ by L^2, so dimensionally W_gamma = L^2 W_u.
+    //
+    // Whether that helps depends on what the stress block is. PETSc keeps sigma
+    // WHOLE and leans on C^T W_gamma^-1 C being present -- 41 iterations
+    // against 85 without it, below -- so raising W_gamma weakens what it
+    // relies on: test_riesz goes to 54 against a bound of 50 and
+    // test_mechanics_riesz_patch stops converging. The direct hypre path splits
+    // sigma BY ROW and excludes that term entirely (it asks for the multipliers
+    // unmerged), so there W_gamma scales only the rotation's own block and the
+    // dimensional value is simply the right one: nu -> 1/2 runs 40, 40, 41, 44,
+    // 43 with it against 92, 90, 109, 121, 126 without.
+    //
+    // So it is asked for, not assumed.
+    const double pairing =
+        (rotation_own_scale && blocks[f].name.rfind("g", 0) == 0) ? L * L : 1.0;
     std::size_t k = 0;
     for (const Index g : blocks[f].indices()) {
       rest.push_back(static_cast<int>(g));
@@ -567,7 +669,7 @@ mimetika::solver::SpaceNorm build_norm(const Model& m, const exokal::Mesh& mesh,
       // W is the Schur scale of this constraint, not the variational L2 mass:
       // an unscaled row (flow's incidence) gives |E|, a row already divided by
       // the measure (elasticity's Dv, As) gives 1/|E|.
-      l2.push_back(scale * k_e * (divergence_is_an_integral ? me : 1.0 / me));
+      l2.push_back(pairing * scale * k_e * (divergence_is_an_integral ? me : 1.0 / me));
       ++k;
     }
   }
@@ -770,6 +872,30 @@ mimetika::solver::SpaceNorm build_norm(const Model& m, const exokal::Mesh& mesh,
 template <class Model>
 void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exokal::Mesh& mesh,
                  int dim, bool divergence_is_an_integral, bool merge_multipliers = true) {
+  // THE DIRECT PATH'S CONSTRUCTION IS NOT USED HERE, AND THAT WAS MEASURED.
+  //
+  // PETSc's 'ads' is a wrapper over hypre's and hides nothing the degree-2
+  // complex needs -- PCHYPRESetInterpolations is HYPRE_ADSSetInterpolations --
+  // so the same norm was tried here: rotation unmerged out of the stress norm,
+  // gamma on its own L^2 scale, lowest_order a split by ROW of sigma, and Pi
+  // supplied. build_lowest_order_cycle already routes a permutation-shaped
+  // injection to one ADS per block, so it needed no new branch.
+  //
+  // It made this path WORSE, on a tetrahedral stress:
+  //
+  //     h        40 40 46 37 44   became   59 65 57 59
+  //     nu->1/2  46 74 352 1303   became   65 94 350 1538
+  //
+  // and three tests with it. The reason looks structural: the direct cycle
+  // keeps a smoother either side of its row corrections -- removing it there
+  // stops that path converging too -- while split_by_component hands each
+  // component straight to ADS with KSPPREONLY and no relaxation at all. Two
+  // things that did NOT explain it and were ruled out: the monolithic Pi
+  // (supplying the scalar triple as well fixed a segfault and changed no
+  // count), and the sweep's symmetry (SYMMETRIC_MULTIPLICATIVE moved nothing).
+  //
+  // So the port needs split_by_component to gain a smoother first, which is a
+  // change to the solver rather than to the norm.
   petsc.set_norm(build_norm(m, mesh, dim, divergence_is_an_integral, merge_multipliers));
 }
 
@@ -1050,6 +1176,107 @@ exokal::CellField cell_field(const std::string& name, const py::array& a) {
 
 }  // namespace
 
+// WHICH CONVENTION THE DIVERGENCE ROW IS WRITTEN IN.
+//
+// alpha in ||sigma||_Sigma = (A sigma, sigma) + alpha ||div sigma||^2 is the
+// inverse of the displacement's weight, and W is read off the constraint ROW as
+// assembled. Flow's row is the unscaled incidence -- an integral -- so it gives
+// |E|; elasticity's Dv and As are already divided by the measure and give
+// 1/|E|. Getting it backwards is a factor |E|^2, which is h^6 a cell and grows
+// with refinement.
+inline bool divergence_is_an_integral(const mimetika::FlowModel&) { return true; }
+inline bool divergence_is_an_integral(const mimetika::CauchyMechanicsModel&) { return false; }
+
+// The handoff, for any model build_norm accepts.
+//
+// A flux is ONE H(div) field; a stress is d of them side by side, the rows of
+// the tensor. The two differ in what build_norm returns --
+// `lowest_order_components` -- and in nothing else the other module reads, so
+// this is stated once and instantiated for both. The direct solver splits the
+// coarse space on that number and runs one ADS per copy, on the same complex.
+template <class Model>
+py::dict ads_handoff_impl(const Model& model, const exokal::Mesh& mesh, int dim,
+                          bool use_degree2) {
+        // THE ROTATION IS NOT MERGED INTO THE DISPLACEMENT HERE.
+  //
+  // ||sigma||_Sigma = (A sigma, sigma) + alpha ||div sigma||^2 and NOTHING
+  // else: skw is bounded L^2 -> L^2, so the symmetry constraint contributes to
+  // Q's norm and not to Sigma's (space_norm.hpp says so, and AFW prove the
+  // inf-sup with it). carries_graph_term already stops at the first
+  // differential factor -- but merging the multipliers puts the rotation INTO
+  // that factor, and C^T W_gamma^-1 C lands in the stress block after all.
+  //
+  // For a solver that works row by row that term is fatal rather than merely
+  // unnecessary: the compliance and div^T div are both row-diagonal, so the
+  // rotation is the ONLY thing coupling one row of sigma to another. Unmerged,
+  // the rows separate and each is one a_div problem.
+  auto norm = build_norm(model, mesh, dim, divergence_is_an_integral(model),
+                         /*merge_multipliers=*/false, /*rotation_own_scale=*/true);
+        const bool degree2 = use_degree2 && upgrade_to_degree2(model, norm, mesh, dim);
+        const auto& A = model.system();
+        const auto ints = [](const std::vector<int>& v) {
+          py::array_t<int> a(static_cast<py::ssize_t>(v.size()));
+          std::copy(v.begin(), v.end(), a.mutable_data());
+          return a;
+        };
+        const auto reals = [](const std::vector<double>& v) {
+          py::array_t<double> a(static_cast<py::ssize_t>(v.size()));
+          std::copy(v.begin(), v.end(), a.mutable_data());
+          return a;
+        };
+        const auto inc = [&](const mimetika::solver::SpaceNorm::Incidence& i) {
+          return py::dict(py::arg("rows") = i.rows, py::arg("cols") = i.cols,
+                          py::arg("row") = ints(i.row), py::arg("col") = ints(i.col),
+                          py::arg("value") = reals(i.value));
+        };
+        py::array_t<int> ar(static_cast<py::ssize_t>(A.nnz()));
+        py::array_t<int> ac(static_cast<py::ssize_t>(A.nnz()));
+        py::array_t<double> av(static_cast<py::ssize_t>(A.nnz()));
+        for (std::size_t k = 0; k < A.nnz(); ++k) {
+          ar.mutable_data()[k] = static_cast<int>(A.row[k]);
+          ac.mutable_data()[k] = static_cast<int>(A.col[k]);
+          av.mutable_data()[k] = A.value[k];
+        }
+        if (norm.factors.size() < 2) throw std::runtime_error("ads_handoff: fewer than two factors");
+        // EVERY FACTOR, NOT TWO. Merged, the multipliers are one block and two
+        // arrays carry them. Unmerged -- which is what a row-split stress needs,
+        // so that carries_graph_term can stop before the rotation -- there are
+        // three, and which factor a dof belongs to is what the solver reads.
+        py::list factors, l2_weights;
+        for (const auto& f : norm.factors) factors.append(ints(f));
+        for (const auto& w : norm.l2_weight) l2_weights.append(reals(w));
+        return py::dict(
+            py::arg("n") = A.n, py::arg("row") = ar, py::arg("col") = ac, py::arg("value") = av,
+            py::arg("rhs") = reals(model.rhs()), py::arg("factors") = factors,
+            py::arg("l2_weights") = l2_weights,
+            py::arg("differential_factors") = static_cast<int>(norm.differential_factors),
+            py::arg("gradient") = inc(norm.discrete_gradient),
+            py::arg("curl") = inc(norm.discrete_curl),
+            py::arg("coordinates") = reals(norm.vertex_coordinates),
+            py::arg("space_dim") = norm.space_dim,
+            py::arg("pinned") = ints(norm.pinned),
+            // who owns what, for a distributed run. Empty on one rank.
+            py::arg("owner_of_dof") = ints(model.distribution().owner_of_dof),
+            py::arg("vertex_owner") =
+                ints(norm.entity_owner.size() > 0 ? norm.entity_owner[0] : std::vector<int>{}),
+            py::arg("edge_owner") =
+                ints(norm.entity_owner.size() > 1 ? norm.entity_owner[1] : std::vector<int>{}),
+            py::arg("face_owner") =
+                ints(norm.entity_owner.size() > 2 ? norm.entity_owner[2] : std::vector<int>{}),
+            py::arg("pinned_diagonal") = reals(norm.pinned_diagonal),
+            // the facet-constant subspace, where the facet carries more than
+            // one moment: rows are the block's unknowns, columns the coarse
+            // space, and the entries are ones.
+            py::arg("lowest_order") = inc(norm.lowest_order),
+            py::arg("lowest_order_components") = norm.lowest_order_components,
+            py::arg("moments_per_facet") = norm.lowest_order.empty() ? 1 : 0,
+            // the degree-2 complex's interpolations, empty unless it was used
+            py::arg("rt_interpolation") = inc(norm.rt_interpolation),
+            py::arg("nd_interpolation") = inc(norm.nd_interpolation),
+            py::arg("interpolation_owner") = ints(norm.interpolation_owner),
+            py::arg("degree2") = degree2);
+}
+
 PYBIND11_MODULE(_core, m) {
   m.doc() = "Python interface to the mimetika C++ application";
 
@@ -1149,69 +1376,13 @@ PYBIND11_MODULE(_core, m) {
   // types either: a pybind11 type registered twice is two types. What crosses
   // between them is therefore plain data, and it is the SAME norm build_norm
   // gives PETSc rather than a second statement of it.
-  m.def(
-      "ads_handoff",
-      [](const mimetika::FlowModel& model, const exokal::Mesh& mesh, int dim, bool use_degree2) {
-        auto norm = build_norm(model, mesh, dim, /*divergence_is_an_integral=*/true);
-        const bool degree2 = use_degree2 && upgrade_to_degree2(norm, mesh, dim);
-        const auto& A = model.system();
-        const auto ints = [](const std::vector<int>& v) {
-          py::array_t<int> a(static_cast<py::ssize_t>(v.size()));
-          std::copy(v.begin(), v.end(), a.mutable_data());
-          return a;
-        };
-        const auto reals = [](const std::vector<double>& v) {
-          py::array_t<double> a(static_cast<py::ssize_t>(v.size()));
-          std::copy(v.begin(), v.end(), a.mutable_data());
-          return a;
-        };
-        const auto inc = [&](const mimetika::solver::SpaceNorm::Incidence& i) {
-          return py::dict(py::arg("rows") = i.rows, py::arg("cols") = i.cols,
-                          py::arg("row") = ints(i.row), py::arg("col") = ints(i.col),
-                          py::arg("value") = reals(i.value));
-        };
-        py::array_t<int> ar(static_cast<py::ssize_t>(A.nnz()));
-        py::array_t<int> ac(static_cast<py::ssize_t>(A.nnz()));
-        py::array_t<double> av(static_cast<py::ssize_t>(A.nnz()));
-        for (std::size_t k = 0; k < A.nnz(); ++k) {
-          ar.mutable_data()[k] = static_cast<int>(A.row[k]);
-          ac.mutable_data()[k] = static_cast<int>(A.col[k]);
-          av.mutable_data()[k] = A.value[k];
-        }
-        if (norm.factors.size() < 2) throw std::runtime_error("ads_handoff: fewer than two factors");
-        return py::dict(
-            py::arg("n") = A.n, py::arg("row") = ar, py::arg("col") = ac, py::arg("value") = av,
-            py::arg("rhs") = reals(model.rhs()), py::arg("flux") = ints(norm.factors[0]),
-            py::arg("rest") = ints(norm.factors[1]),
-            py::arg("l2_weight") = reals(norm.l2_weight[0]),
-            py::arg("gradient") = inc(norm.discrete_gradient),
-            py::arg("curl") = inc(norm.discrete_curl),
-            py::arg("coordinates") = reals(norm.vertex_coordinates),
-            py::arg("space_dim") = norm.space_dim,
-            py::arg("pinned") = ints(norm.pinned),
-            // who owns what, for a distributed run. Empty on one rank.
-            py::arg("owner_of_dof") = ints(model.distribution().owner_of_dof),
-            py::arg("vertex_owner") =
-                ints(norm.entity_owner.size() > 0 ? norm.entity_owner[0] : std::vector<int>{}),
-            py::arg("edge_owner") =
-                ints(norm.entity_owner.size() > 1 ? norm.entity_owner[1] : std::vector<int>{}),
-            py::arg("face_owner") =
-                ints(norm.entity_owner.size() > 2 ? norm.entity_owner[2] : std::vector<int>{}),
-            py::arg("pinned_diagonal") = reals(norm.pinned_diagonal),
-            // the facet-constant subspace, where the facet carries more than
-            // one moment: rows are the block's unknowns, columns the coarse
-            // space, and the entries are ones.
-            py::arg("lowest_order") = inc(norm.lowest_order),
-            py::arg("lowest_order_components") = norm.lowest_order_components,
-            py::arg("moments_per_facet") = norm.lowest_order.empty() ? 1 : 0,
-            // the degree-2 complex's interpolations, empty unless it was used
-            py::arg("rt_interpolation") = inc(norm.rt_interpolation),
-            py::arg("nd_interpolation") = inc(norm.nd_interpolation),
-            py::arg("interpolation_owner") = ints(norm.interpolation_owner),
-            py::arg("degree2") = degree2);
-      },
-      py::arg("model"), py::arg("mesh"), py::arg("cell_dim"), py::arg("degree2") = true,
-      "The assembled system and its Riesz norm, for a solver in another module.");
+  m.def("ads_handoff", &ads_handoff_impl<mimetika::FlowModel>, py::arg("model"),
+        py::arg("mesh"), py::arg("cell_dim"), py::arg("degree2") = true,
+        "The assembled system and its Riesz norm, for a solver in another module.");
+  m.def("ads_handoff", &ads_handoff_impl<mimetika::CauchyMechanicsModel>, py::arg("model"),
+        py::arg("mesh"), py::arg("cell_dim"), py::arg("degree2") = true,
+        "The assembled stress system and its norm: d copies of the H(div) space, each "
+        "preconditioned on the same complex.");
 
   // Share a model out before it is built, for a solver that is not PETSc's.
   //
@@ -1219,25 +1390,32 @@ PYBIND11_MODULE(_core, m) {
   // assembles through ads_handoff instead, so it has to ask. Nothing happens
   // on one process, and the partition must be requested BEFORE build() -- the
   // dof ownership is numbered there, on the space build() creates.
-  m.def(
-      "distribute",
-      [](mimetika::FlowModel& model) {
+  const auto share = [](auto& model) {
         PetscMPIInt size = 1, rank = 0;
         mimetika::solver::PetscSession::instance();
         MPI_Comm_size(PETSC_COMM_WORLD, &size);
         MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
         if (size < 2) return false;
-        model.distribute_over(static_cast<int>(size), static_cast<int>(rank), {});
-        return true;
-      },
-      py::arg("model"),
-      "Share the model over the run's processes. Call before build(); a no-op on one.");
+    model.distribute_over(static_cast<int>(size), static_cast<int>(rank), {});
+    return true;
+  };
+  m.def("distribute", [share](mimetika::FlowModel& model) { return share(model); },
+        py::arg("model"),
+        "Share the model over the run's processes. Call before build(); a no-op on one.");
+  m.def("distribute", [share](mimetika::CauchyMechanicsModel& model) { return share(model); },
+        py::arg("model"),
+        "Share the model over the run's processes. Call before build(); a no-op on one.");
 
-  m.def(
-      "accept",
-      [](mimetika::FlowModel& model, const std::vector<double>& x) { model.accept(x); },
-      py::arg("model"), py::arg("solution"),
-      "Write a solution computed elsewhere back into the model's fields.");
+  m.def("accept",
+        [](mimetika::FlowModel& model, const std::vector<double>& x) { model.accept(x); },
+        py::arg("model"), py::arg("solution"),
+        "Write a solution computed elsewhere back into the model's fields.");
+  m.def("accept",
+        [](mimetika::CauchyMechanicsModel& model, const std::vector<double>& x) {
+          model.accept(x);
+        },
+        py::arg("model"), py::arg("solution"),
+        "Write a solution computed elsewhere back into the model's fields.");
 
   m.def(
       "system_triplets",

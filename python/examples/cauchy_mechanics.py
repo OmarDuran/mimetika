@@ -33,6 +33,7 @@ import math
 import mimetika_cxx as mk
 import numpy as np
 
+import _hypre
 import _realizations as rz
 
 # geometry and data
@@ -83,7 +84,7 @@ def solvers(rtol):
     }
 
 
-SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg")
+SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg", _hypre.NAME)
 DEFAULT_RTOL = 1e-9
 
 # ADS is a three-dimensional construction: its auxiliary spaces are built from
@@ -132,7 +133,24 @@ def isotropic(value):
     return s
 
 
-def solve(nr, nt, dim, family, how, mat, form=None, solver="riesz", rtol=DEFAULT_RTOL):
+
+def lame_checkerboard(mesh, dim, lame, ratio, blocks=4):
+    """lambda alternating between lame and lame * ratio on a blocks^dim
+    partition of the bounding box.
+
+    A function of POSITION, not of the cell numbering, so it is the same field
+    on every refinement -- a pattern redrawn per mesh makes a ladder
+    meaningless. mu stays uniform: the model carries lambda per cell and the
+    shear as one number.
+    """
+    x = np.array([mk.centroid(mesh, dim, e) for e in range(mesh.count(dim))])
+    lo, hi = x.min(axis=0), x.max(axis=0)
+    cell = np.floor(blocks * (x - lo) / np.maximum(hi - lo, 1e-300) * 0.999)
+    return np.where(cell.sum(axis=1) % 2 == 0, lame, lame * ratio)
+
+
+def solve(nr, nt, dim, family, how, mat, form=None, solver="riesz", rtol=DEFAULT_RTOL,
+          lame_contrast=1.0):
     """Build the annulus, impose the three conditions, solve, measure."""
     form = mk.StressFormulation.weak_symmetry if form is None else form
     mesh = mk.annulus(nr, nt, dim, family, A_IN, B_OUT, HZ)
@@ -154,10 +172,19 @@ def solve(nr, nt, dim, family, how, mat, form=None, solver="riesz", rtol=DEFAULT
             outer.append(f)
 
     model = mk.CauchyMechanicsModel(mesh, dim, mat, how, form)
+    if lame_contrast != 1.0:
+        model.set_lame_per_cell(
+            list(lame_checkerboard(mesh, dim, mat.lame, lame_contrast)))
     model.add_traction(inner, isotropic(-P_INNER))
     model.add_traction(outer, isotropic(-P_OUTER))
     model.add_free_slip(symmetry)  # rollers: no normal displacement, no shear
-    model.solve(options=solvers(rtol)[solver])
+    # The direct hypre route is not one of the PETSc option sets: it assembles
+    # here and solves in the other module. A stress is d copies of the flux
+    # space, so ADS is given the same complex d times, one per row of sigma.
+    if solver == _hypre.NAME:
+        _hypre.solve(model, mesh, dim, _hypre.options(rtol, block_iterations=50, block_rtol=1e-2))
+    else:
+        model.solve(options=solvers(rtol)[solver])
 
     ex = Lame(mat)
     worst = rms = 0.0
@@ -195,6 +222,11 @@ def main():
     ap.add_argument("--formulation", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--nr", type=int, default=6, help="radial divisions of the coarse mesh")
     ap.add_argument("--nu", type=float, default=None, help="Poisson ratio (default lam = mu = 1)")
+    ap.add_argument(
+        "--lame-contrast", type=float, default=1.0, metavar="R",
+        help="lambda alternating between lam and lam*R on a checkerboard, mu uniform. "
+             "The closed form below assumes ONE material, so the error columns stop "
+             "meaning anything once R != 1 -- it is there to measure the SOLVER.")
     ap.add_argument("--vtu", help="write the coarse solution to this .vtu")
     ap.add_argument("--solver", default="riesz", choices=sorted(SOLVER_NAMES))
     ap.add_argument("--rtol", type=float, default=DEFAULT_RTOL,
@@ -213,10 +245,15 @@ def main():
     print(f"Lame tube, {args.dim}D {args.family}, {mk.stress_realization_name(how)}, "
           f"{mk.stress_formulation_name(form)}")
     print(f"  a = {A_IN}, b = {B_OUT},  p(a) = {P_INNER}, p(b) = {P_OUTER}")
-    print(f"  mu = {mat.shear}, lam = {mat.lame}  (nu = {mat.poisson():.4f})\n")
+    print(f"  mu = {mat.shear}, lam = {mat.lame}  (nu = {mat.poisson():.4f})")
+    if args.lame_contrast != 1.0:
+        print(f"  lambda checkerboard, ratio {args.lame_contrast:g}: the closed form assumes"
+              f" one material, so the errors below are NOT a convergence measurement")
+    print()
 
     # ---- the profile on one mesh ------------------------------------------
-    model, mesh, ex, worst, rms = solve(args.nr, args.nr // 2, args.dim, family, how, mat, form, args.solver, args.rtol)
+    model, mesh, ex, worst, rms = solve(args.nr, args.nr // 2, args.dim, family, how, mat, form,
+                                        args.solver, args.rtol, args.lame_contrast)
     print(f"  {model.n_cells} cells, {model.n_dofs} dofs, {model.n_stabilized} stabilized\n")
     print(f"  {'r':>8}  {'u_r (computed)':>16}  {'u_r (Lame)':>12}  {'error':>10}"
           f"  {'sigma_rr (Lame)':>16}")
@@ -258,7 +295,8 @@ def main():
     print(f"\n  {'cells':>8}  {'max error':>11}  {'rms error':>11}  {'rate':>6}")
     previous = None
     for nr in (args.nr, 2 * args.nr, 4 * args.nr):
-        m, _, _, worst, rms = solve(nr, nr // 2, args.dim, family, how, mat, form, args.solver, args.rtol)
+        m, _, _, worst, rms = solve(nr, nr // 2, args.dim, family, how, mat, form, args.solver,
+                                    args.rtol, args.lame_contrast)
         rate = "" if previous is None else f"{math.log2(previous / rms):6.2f}"
         print(f"  {m.n_cells:8d}  {worst:11.3e}  {rms:11.3e}  {rate:>6}")
         previous = rms

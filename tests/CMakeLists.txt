@@ -74,10 +74,13 @@ if(MIMETIKA_USE_HYPRE AND MIMETIKA_BUILD_BENCHMARKS)
   add_executable(benchmarks.test_bdm_ads_direct benchmarks/test_bdm_ads_direct.cpp)
   target_link_libraries(benchmarks.test_bdm_ads_direct PRIVATE mimetika::mimetika mimetika_hypre)
   add_test(NAME benchmarks.test_bdm_ads_direct COMMAND benchmarks.test_bdm_ads_direct)
-  set_tests_properties(benchmarks.test_bdm_ads_direct PROPERTIES LABELS benchmark)
+  set_tests_properties(benchmarks.test_bdm_ads_direct PROPERTIES LABELS benchmark RUN_SERIAL TRUE)
 
   add_executable(benchmarks.test_bdm_assembly benchmarks/test_bdm_assembly.cpp)
   target_link_libraries(benchmarks.test_bdm_assembly PRIVATE mimetika::mimetika)
   add_test(NAME benchmarks.test_bdm_assembly COMMAND benchmarks.test_bdm_assembly)
-  set_tests_properties(benchmarks.test_bdm_assembly PROPERTIES LABELS benchmark)
+  # RUN_SERIAL: it asserts a per-cell WALL-CLOCK cost is flat, so it cannot
+  # share cores. Standalone it passes; under ctest -j8 the same binary reads
+  # 41.8 us/cell against 26.8 and trips its own flatness guard.
+  set_tests_properties(benchmarks.test_bdm_assembly PROPERTIES LABELS benchmark RUN_SERIAL TRUE)
 endif()

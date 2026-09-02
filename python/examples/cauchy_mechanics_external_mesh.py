@@ -45,6 +45,8 @@ import os
 import sys
 
 import mimetika_cxx as mk
+
+import _hypre
 import numpy as np
 
 from _diagnostics import write_report
@@ -107,7 +109,7 @@ def solvers(rtol):
     }
 
 
-SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg")
+SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg", _hypre.NAME)
 DEFAULT_RTOL = 1e-9
 
 
@@ -302,6 +304,11 @@ def main():
         "--nu", type=float, default=None, help="Poisson ratio (default lam = mu = 1)"
     )
     ap.add_argument(
+        "--lame-contrast", type=float, default=1.0, metavar="R",
+        help="lambda alternating between lam and lam*R on a checkerboard, mu uniform. "
+             "The patch test assumes ONE material, so its error stops meaning anything "
+             "once R != 1 -- it is there to measure the SOLVER.")
+    ap.add_argument(
         "--partition",
         type=int,
         default=0,
@@ -379,7 +386,7 @@ def main():
         raise SystemExit(
             f"{args.mesh}: top cells are {dim}-dimensional, expected 2 or 3"
         )
-    if args.solver.startswith("ads") and dim != 3:
+    if (args.solver.startswith("ads") or args.solver == _hypre.NAME) and dim != 3:
         raise SystemExit(
             f"--solver {args.solver} is a 3D construction (it needs the discrete "
             f"gradient and curl of a 3-complex); {args.mesh} is {dim}D. "
@@ -409,6 +416,9 @@ def main():
     )
     print(f"  characteristic length L = {length:.6g}")
     print(f"  mu = {mat.shear}, lam = {mat.lame}  (nu = {mat.poisson():.4f})")
+    if args.lame_contrast != 1.0:
+        print(f"  lambda checkerboard, ratio {args.lame_contrast:g}: one material is assumed"
+              f" by the exact field, so the error is NOT a convergence measurement")
     # What actually runs, not what was asked for. --hybrid does not take the
     # solver named on the command line: the elimination removes the H(div)
     # block a Riesz map or ADS would split along, so the interface system gets
@@ -427,6 +437,15 @@ def main():
     gradient = gradient_of(dim, length, args.spin)
     with stage("creating the model"):
         model = mk.CauchyMechanicsModel(mesh, dim, mat, how, form)
+        if args.lame_contrast != 1.0:
+            # lambda alternating on a blocks^d partition of the bounding box: a
+            # function of POSITION, so the same field on every refinement. mu stays
+            # uniform -- the model carries lambda per cell and the shear as one number.
+            x = np.array([mk.centroid(mesh, dim, e) for e in range(mesh.count(dim))])
+            lo, hi = x.min(axis=0), x.max(axis=0)
+            blk = np.floor(4 * (x - lo) / np.maximum(hi - lo, 1e-300) * 0.999)
+            model.set_lame_per_cell(
+                list(np.where(blk.sum(axis=1) % 2 == 0, mat.lame, mat.lame * args.lame_contrast)))
         # the threshold reaches the model only where it is the model's: for
         # any other product it stays what it always was, the diagnostics dial
         if args.product in rz.ADAPTIVE and args.degeneracy_percent is not None:
@@ -447,7 +466,10 @@ def main():
         # The two builds alone. They are what scales with the mesh, and a caller
         # measuring them should not have to wait for a Krylov method to
         # converge -- nor be told a time without being told they finished.
-        report = model.assemble(progress=True, options=solvers(args.rtol)[args.solver])
+        if args.solver == _hypre.NAME:
+            report = _hypre.assemble(model, mesh, dim)
+        else:
+            report = model.assemble(progress=True, options=solvers(args.rtol)[args.solver])
         print(
             f"\n  assembled: matrix {report.matrix_seconds:.2f} s, "
             f"preconditioner {report.preconditioner_seconds:.2f} s"
@@ -469,7 +491,10 @@ def main():
             ),
         )
     else:
-        report = model.solve(progress=True, options=solvers(args.rtol)[args.solver])
+        if args.solver == _hypre.NAME:
+            report = _hypre.solve(model, mesh, dim, _hypre.options(args.rtol, block_iterations=50, block_rtol=1e-2))
+        else:
+            report = model.solve(progress=True, options=solvers(args.rtol)[args.solver])
     # The two assemblies, always. They are what scales with the mesh, and they
     # are separate costs: the Jacobian is the physics, the preconditioner is the
     # price of being able to solve it iteratively.

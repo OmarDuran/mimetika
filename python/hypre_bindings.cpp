@@ -213,8 +213,8 @@ PYBIND11_MODULE(_hypre, m) {
   m.def(
       "solve_system",
       [](int n, py::array_t<int> row, py::array_t<int> col, py::array_t<double> value,
-         py::array_t<double> rhs, py::array_t<int> flux, py::array_t<int> rest,
-         py::array_t<double> l2_weight, const py::dict& gradient, const py::dict& curl,
+         py::array_t<double> rhs, const py::list& factors, const py::list& l2_weights,
+         int differential_factors, const py::dict& gradient, const py::dict& curl,
          py::array_t<double> coordinates, int space_dim, int moments_per_facet,
          py::array_t<int> pinned, py::array_t<double> pinned_diagonal,
          py::array_t<int> owner_of_dof, py::array_t<int> vertex_owner,
@@ -247,9 +247,15 @@ PYBIND11_MODULE(_hypre, m) {
           A.value.push_back(value.data()[k]);
         }
         SpaceNorm norm;
-        norm.factors.push_back(ints(flux));
-        norm.factors.push_back(ints(rest));
-        norm.l2_weight.push_back(reals(l2_weight));
+        for (const auto& f : factors) norm.factors.push_back(ints(f.cast<py::array_t<int>>()));
+        for (const auto& w : l2_weights) {
+          norm.l2_weight.push_back(reals(w.cast<py::array_t<double>>()));
+        }
+        // how many multiplier factors add a graph term to the first block. The
+        // differential ones do; an algebraic constraint -- the weak-symmetry
+        // rotation -- does not, and including it is what couples the rows of a
+        // stress to each other.
+        norm.differential_factors = static_cast<std::size_t>(differential_factors);
         norm.discrete_gradient = inc(gradient);
         norm.discrete_curl = inc(curl);
         // the degree-2 complex's interpolations, when ADS is taking the BDM
@@ -278,7 +284,8 @@ PYBIND11_MODULE(_hypre, m) {
         return py::make_tuple(out, r);
       },
       py::arg("n"), py::arg("row"), py::arg("col"), py::arg("value"), py::arg("rhs"),
-      py::arg("flux"), py::arg("rest"), py::arg("l2_weight"), py::arg("gradient"),
+      py::arg("factors"), py::arg("l2_weights"), py::arg("differential_factors"),
+      py::arg("gradient"),
       py::arg("curl"), py::arg("coordinates"), py::arg("space_dim"),
       py::arg("moments_per_facet"), py::arg("pinned"), py::arg("pinned_diagonal"),
       py::arg("owner_of_dof"), py::arg("vertex_owner"), py::arg("edge_owner"),
