@@ -57,6 +57,23 @@ import mimetika_cxx as mk
 S = mk.StressRealization
 F = mk.StressFormulation
 
+# STRONG SYMMETRY IS THE SAME SOLVER ON A DIFFERENT SPACE, and it is worth the
+# same three questions. Its facet carries SIX moments -- one traction vector
+# against the facet's own frame -- rather than d copies of a scalar layout, so
+# build_norm reaches ADS through a FRAME-WEIGHTED injection instead of a matrix
+# of ones: the three mean slots {t1, t2, n} rotated into global components are
+# three scalar H(div) cochains, int_f (tau n).e_k. That is d copies of the
+# ONE-moment space -- of stabilized_rt, not of stabilized_bdm -- and there is no
+# rotation multiplier at all, symmetry being imposed strongly.
+#
+# Only stabilized_vem takes strong_symmetry; diagonal_vem and adaptive_vem
+# require strong_symmetry_total, which adds a pressure field and is NOT robust
+# on this preconditioner -- measured at n = 4 and 6, stabilized_vem runs 300
+# then 2000 (no convergence) on tetrahedra and 100 then 172 on hexahedra, and
+# diagonal_vem does not converge on tetrahedra at all. So it is left out rather
+# than asserted loosely, and named here so the omission is a decision.
+STRONG = {"stabilized_vem": S.stabilized_vem}
+
 # The weak-symmetry members whose stress is d copies of a BDM flux. On a
 # tetrahedron the stabilization vanishes and the two coincide, so both take the
 # same degree-2 complex; the file runs both because they part on a polytope.
@@ -131,7 +148,8 @@ def fixed(cells):
     return mesh_of(cells, CELLS[cells][2])
 
 
-def patch(mesh, product=S.stabilized_bdm, lame=1.0, lame_field=None):
+def patch(mesh, product=S.stabilized_bdm, lame=1.0, lame_field=None,
+          formulation=F.weak_symmetry):
     """A linear displacement on the whole boundary, with its gradient.
 
     The gradient is not decoration: a facet holding d traction moments tests the
@@ -140,7 +158,7 @@ def patch(mesh, product=S.stabilized_bdm, lame=1.0, lame_field=None):
     count measured on a wrong answer is not a measurement.
     """
     model = mk.CauchyMechanicsModel(
-        mesh, 3, mk.ElasticMaterial(MU, lame), product, F.weak_symmetry
+        mesh, 3, mk.ElasticMaterial(MU, lame), product, formulation
     )
     if lame_field is not None:
         model.set_lame_per_cell(list(lame_field))
@@ -320,3 +338,95 @@ def test_one_cycle_drifts_where_the_solved_block_does_not(cells):
     once = _count(patch(mesh, lame=lam), mesh, "one")
     print(f"  {cells:11s} nu = 0.499:  one cycle {once} its, block solved {solved} its")
     assert solved <= once
+
+
+# ---- 6. strong symmetry ----------------------------------------------------
+#
+# The coarse end is genuinely worse here and the ladder starts past it: on
+# hexahedra the solved block runs 21, 25, 29 at n = 2, 3, 4 before settling at
+# 31 from n = 6 to n = 12. Starting at 3 would put the single-cycle bound at
+# 53 <= 53, which passes today and would be flaky tomorrow.
+STRONG_LADDER = (4, 6, 8)
+
+
+def strong(mesh, lame=1.0, lame_field=None):
+    return patch(mesh, S.stabilized_vem, lame, lame_field, F.strong_symmetry)
+
+
+@pytest.mark.parametrize("kind", ["one", "cg"])
+@pytest.mark.parametrize("cells", sorted(CELLS))
+def test_strong_symmetry_is_h_robust(kind, cells):
+    """A RELATIVE bound, because the baselines here span sixteenfold.
+
+        solved block   14 14 14   29 31 31   36 36 36
+        single cycle  230 261 260  50 53 52   67 68 70
+                      tetrahedra  hexahedra   prisms
+
+    None of those grows with refinement -- the worst ratio is 1.14 -- but a
+    fixed +8 means 57% of the solved block's 14 and 3.5% of the single cycle's
+    230, so it would be slack for one and unmeetable for the other. What is
+    being asserted is that the count does not track h, and that is a ratio.
+
+    The tetrahedral column is also the file's sharpest `one` against `cg`: 250
+    against 14, an eighteenfold gap on the same problem and tolerance.
+    """
+    _hypre()
+    counts = []
+    for n in STRONG_LADDER:
+        mesh = mesh_of(cells, n)
+        model = strong(mesh)
+        counts.append(_count(model, mesh, kind))
+        print(f"  {cells:11s} {kind:3s} {model.n_cells:6d} cells "
+              f"{model.n_dofs:8d} dofs   {counts[-1]:4d} its")
+    assert max(counts) <= 1.3 * min(counts)
+
+
+@pytest.mark.parametrize("kind", ["one", "cg"])
+@pytest.mark.parametrize("cells", sorted(CELLS))
+def test_strong_symmetry_does_not_track_the_contrast(kind, cells):
+    _hypre()
+    mesh = fixed(cells)
+    counts = []
+    for p in JUMPS:
+        field = lame_checkerboard(mesh, 1.0, p)
+        counts.append(_count(strong(mesh, lame_field=field), mesh, kind))
+        print(f"  {cells:11s} {kind:3s}  lambda_in = 1e{p:+03d}   {counts[-1]:4d} its")
+    uniform, jumped = counts[0], counts[1:]
+    assert max(jumped) <= min(jumped) + 4
+    assert max(jumped) <= 2 * uniform
+
+
+@pytest.mark.parametrize("cells", sorted(CELLS))
+def test_strong_symmetry_does_not_track_the_incompressibility(cells):
+    """A RELATIVE bound here, and the reason is the tetrahedral baseline.
+
+        tetrahedra   14 14 14 18 36
+        hexahedra    29 27 27 27 29
+        prisms       36 35 35 36 36
+
+    Hexahedra and prisms are flat outright. Tetrahedra start at 14 -- half of
+    what the others need -- and reach 36, which is still the others' baseline
+    but is +22 in absolute terms. lambda moves through four orders of magnitude
+    across this sweep and the count at most doubles, which is the property; a
+    fixed +8 would read that as a failure only because the starting point was
+    so good.
+    """
+    _hypre()
+    mesh = fixed(cells)
+    counts = []
+    for nu in POISSON:
+        lam = 2.0 * MU * nu / (1.0 - 2.0 * nu)
+        counts.append(_count(strong(mesh, lame=lam), mesh, "cg"))
+        print(f"  {cells:11s} nu = {nu:<7}  lambda = {lam:10.1f}   {counts[-1]:4d} its")
+    assert max(counts) <= 3 * min(counts)
+
+
+@pytest.mark.parametrize("cells", sorted(CELLS))
+def test_strong_symmetry_takes_the_facet_constant_route(cells):
+    """SIX moments a facet is not d copies of three, so the degree-2 complex --
+    which is built for a BDM facet -- never applies, on tetrahedra either."""
+    _hypre()
+    mesh = fixed(cells)
+    _, used = solve(strong(mesh), mesh)
+    print(f"  {cells:11s} degree2 = {used}")
+    assert not used

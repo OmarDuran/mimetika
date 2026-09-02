@@ -150,7 +150,7 @@ def lame_checkerboard(mesh, dim, lame, ratio, blocks=4):
 
 
 def solve(nr, nt, dim, family, how, mat, form=None, solver="riesz", rtol=DEFAULT_RTOL,
-          lame_contrast=1.0):
+          lame_contrast=1.0, block_its=50):
     """Build the annulus, impose the three conditions, solve, measure."""
     form = mk.StressFormulation.weak_symmetry if form is None else form
     mesh = mk.annulus(nr, nt, dim, family, A_IN, B_OUT, HZ)
@@ -182,7 +182,7 @@ def solve(nr, nt, dim, family, how, mat, form=None, solver="riesz", rtol=DEFAULT
     # here and solves in the other module. A stress is d copies of the flux
     # space, so ADS is given the same complex d times, one per row of sigma.
     if solver == _hypre.NAME:
-        _hypre.solve(model, mesh, dim, _hypre.options(rtol, block_iterations=50, block_rtol=1e-2))
+        _hypre.solve(model, mesh, dim, _hypre.options(rtol, block_iterations=block_its, block_rtol=1e-2))
     else:
         model.solve(options=solvers(rtol)[solver])
 
@@ -223,6 +223,12 @@ def main():
     ap.add_argument("--nr", type=int, default=6, help="radial divisions of the coarse mesh")
     ap.add_argument("--nu", type=float, default=None, help="Poisson ratio (default lam = mu = 1)")
     ap.add_argument(
+        "--ads-block-its", type=int, default=50, metavar="N",
+        help="ADS applications on the stress block per preconditioner application. The "
+             "default SOLVES the block under a short CG, which is what makes the count "
+             "flat as nu -> 1/2; 0 applies a single cycle, which is h- and "
+             "contrast-flat and drifts in nu (43 to 118 on hexahedra, measured).")
+    ap.add_argument(
         "--lame-contrast", type=float, default=1.0, metavar="R",
         help="lambda alternating between lam and lam*R on a checkerboard, mu uniform. "
              "The closed form below assumes ONE material, so the error columns stop "
@@ -253,7 +259,8 @@ def main():
 
     # ---- the profile on one mesh ------------------------------------------
     model, mesh, ex, worst, rms = solve(args.nr, args.nr // 2, args.dim, family, how, mat, form,
-                                        args.solver, args.rtol, args.lame_contrast)
+                                        args.solver, args.rtol, args.lame_contrast,
+                                        args.ads_block_its)
     print(f"  {model.n_cells} cells, {model.n_dofs} dofs, {model.n_stabilized} stabilized\n")
     print(f"  {'r':>8}  {'u_r (computed)':>16}  {'u_r (Lame)':>12}  {'error':>10}"
           f"  {'sigma_rr (Lame)':>16}")
@@ -296,7 +303,7 @@ def main():
     previous = None
     for nr in (args.nr, 2 * args.nr, 4 * args.nr):
         m, _, _, worst, rms = solve(nr, nr // 2, args.dim, family, how, mat, form, args.solver,
-                                    args.rtol, args.lame_contrast)
+                                    args.rtol, args.lame_contrast, args.ads_block_its)
         rate = "" if previous is None else f"{math.log2(previous / rms):6.2f}"
         print(f"  {m.n_cells:8d}  {worst:11.3e}  {rms:11.3e}  {rate:>6}")
         previous = rms

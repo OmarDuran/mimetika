@@ -303,6 +303,8 @@ def main():
     ap.add_argument(
         "--nu", type=float, default=None, help="Poisson ratio (default lam = mu = 1)"
     )
+    ap.add_argument("--ads-block-its", type=int, default=50, metavar="N",
+                    help="ADS applications on the stress block per preconditioner application. The default SOLVES it under a short CG, which is what makes the count flat as nu -> 1/2; 0 applies a single cycle, which is h- and contrast-flat and drifts in nu (43 to 118 on hexahedra, measured).")
     ap.add_argument(
         "--lame-contrast", type=float, default=1.0, metavar="R",
         help="lambda alternating between lam and lam*R on a checkerboard, mu uniform. "
@@ -492,7 +494,10 @@ def main():
         )
     else:
         if args.solver == _hypre.NAME:
-            report = _hypre.solve(model, mesh, dim, _hypre.options(args.rtol, block_iterations=50, block_rtol=1e-2))
+            report = _hypre.solve(
+                model, mesh, dim,
+                _hypre.options(args.rtol, block_iterations=args.ads_block_its,
+                               block_rtol=1e-2))
         else:
             report = model.solve(progress=True, options=solvers(args.rtol)[args.solver])
     # The two assemblies, always. They are what scales with the mesh, and they

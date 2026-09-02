@@ -187,6 +187,13 @@ def solve(model, mesh, dim, opts):
     _stage_done(time.perf_counter() - t1)
     _line("preconditioner", report.setup_seconds)
     _line("iteration", report.solve_seconds)
+    # WHICH OF THE TWO PRECONDITIONERS RAN. A facet carrying d moments is split
+    # by row onto the degree-2 complex where every cell is a tetrahedron, and
+    # reaches ADS through the facet-constant subspace where one is not. They
+    # converge at similar counts, so no other line here distinguishes them --
+    # and a mesh that is hybrid by a single cell takes the second.
+    _note("ads on the degree-2 complex" if handoff["degree2"]
+          else "ads on the facet-constant subspace")
 
     # A PRECONDITIONER THAT DID NOT CONVERGE STILL RETURNS A VECTOR.
     #
@@ -201,7 +208,7 @@ def solve(model, mesh, dim, opts):
                 f"{report.reason}. The answer below is whatever the last iterate was.\n")
             sys.stderr.flush()
     mk.accept(model, list(x))
-    return _Report(report, assembly)
+    return _Report(report, assembly, handoff)
 
 
 # RANK 0 ALONE REPORTS.
@@ -229,6 +236,14 @@ def _stage_done(seconds):
     sys.stderr.flush()
 
 
+def _note(text):
+    if not _root():
+        return
+    sys.stdout.flush()
+    sys.stderr.write(f"    {text}\n")
+    sys.stderr.flush()
+
+
 def _line(what, seconds):
     if not _root():
         return
@@ -240,7 +255,14 @@ def _line(what, seconds):
 class _Report:
     """A SolveReport-shaped view, so the examples print one table."""
 
-    def __init__(self, r, assembly_seconds=0.0):
+    def __init__(self, r, assembly_seconds=0.0, handoff=None):
+        # WHICH PRECONDITIONER RAN, because there are two and they are not
+        # interchangeable. A facet carrying d moments is split by ROW onto the
+        # degree-2 complex where every cell is a tetrahedron, and reaches ADS
+        # through the facet-constant subspace where one is not. Both converge,
+        # at similar counts, so nothing else printed here would distinguish
+        # them -- and on a mesh that is hybrid by one cell it is the second.
+        self.degree2 = bool(handoff.get("degree2", False)) if handoff else False
         self.iterations = r.iterations
         self.reason = r.reason
         self.converged = r.converged
@@ -251,5 +273,6 @@ class _Report:
         self.assembly_seconds = assembly_seconds
         self.condensed = False
         self.condensed_dofs = 0
-        self.block_solver = "ads (hypre direct)"
+        self.block_solver = ("ads on the degree-2 complex" if self.degree2
+                             else "ads on the facet-constant subspace")
         self.off_rank_fraction = 0.0
