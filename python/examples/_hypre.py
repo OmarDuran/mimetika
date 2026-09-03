@@ -187,13 +187,15 @@ def solve(model, mesh, dim, opts):
     _stage_done(time.perf_counter() - t1)
     _line("preconditioner", report.setup_seconds)
     _line("iteration", report.solve_seconds)
-    # WHICH OF THE TWO PRECONDITIONERS RAN. A facet carrying d moments is split
-    # by row onto the degree-2 complex where every cell is a tetrahedron, and
-    # reaches ADS through the facet-constant subspace where one is not. They
-    # converge at similar counts, so no other line here distinguishes them --
-    # and a mesh that is hybrid by a single cell takes the second.
+    # WHICH PRECONDITIONER RAN. A facet carrying d moments is split by ROW and
+    # each row handed to ADS on the degree-2 complex -- on ANY cell shape, and
+    # so on a hybrid mesh too, because C is built facet-wise and needs no cell
+    # reconstruction. Anything else reaches ADS through its lowest-order space:
+    # the mesh's own complex for one moment a facet, the frame-weighted coarse
+    # space for a strong-symmetry stress. Nothing else printed here would say
+    # which, since they converge at similar counts.
     _note("ads on the degree-2 complex" if handoff["degree2"]
-          else "ads on the facet-constant subspace")
+          else "ads on the lowest-order complex")
 
     # A PRECONDITIONER THAT DID NOT CONVERGE STILL RETURNS A VECTOR.
     #
@@ -256,12 +258,12 @@ class _Report:
     """A SolveReport-shaped view, so the examples print one table."""
 
     def __init__(self, r, assembly_seconds=0.0, handoff=None):
-        # WHICH PRECONDITIONER RAN, because there are two and they are not
-        # interchangeable. A facet carrying d moments is split by ROW onto the
-        # degree-2 complex where every cell is a tetrahedron, and reaches ADS
-        # through the facet-constant subspace where one is not. Both converge,
-        # at similar counts, so nothing else printed here would distinguish
-        # them -- and on a mesh that is hybrid by one cell it is the second.
+        # WHICH PRECONDITIONER RAN, because they are not interchangeable. A
+        # facet carrying d moments is split by ROW onto the degree-2 complex,
+        # whatever the cells are -- C is facet-wise, so a polytopal or hybrid
+        # mesh takes it too. Anything else reaches ADS through its lowest-order
+        # space. They converge at similar counts, so nothing else printed here
+        # would distinguish them.
         self.degree2 = bool(handoff.get("degree2", False)) if handoff else False
         self.iterations = r.iterations
         self.reason = r.reason

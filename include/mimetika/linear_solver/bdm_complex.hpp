@@ -12,6 +12,8 @@
 
 #include "exokal/dec/mimetic_curl.hpp"
 #include "exokal/geometry/embedding.hpp"
+#include "exokal/geometry/quadrature.hpp"
+#include "exokal/hodge/mimetic_operators/facet_orthonormalization.hpp"
 #include "exokal/hodge/mimetic_operators/stabilized/flux_bdm.hpp"
 #include "graphos/core/incidence.hpp"
 
@@ -213,9 +215,9 @@ inline std::vector<double> bdm_nodal_coordinates(const exokal::Mesh& mesh) {
   return xyz;
 }
 
-// Is every cell a tetrahedron? The degree-2 curl is facet-local only there --
-// on a polytope D_edge > m, the reconstruction is a least-squares fit and a
-// facet's rows reach the whole cell, so no global C exists without a choice.
+// Is every cell a tetrahedron? Reported, not required: the complex is built for
+// any cell shape. On a tetrahedron the vertex hats of Pi are interpolatory and
+// the degree-2 reconstruction is exact; beyond it both are least squares.
 inline bool all_tetrahedra(const exokal::Mesh& mesh, int cell_dim) {
   if (cell_dim != 3) return false;
   const graphos::Adjacency c2v = graphos::incidence(mesh.topology(), 3, 0);
@@ -285,19 +287,13 @@ struct BdmComplexCost {
   double total{0.0};
 };
 
-// The complex of a tetrahedral mesh. Throws if a cell is not a tetrahedron --
-// on a general polytope the degree-2 reconstruction is a least-squares fit
-// (D_edge > m) and a facet's curl rows stop being facet-local, so no global C
-// exists without a choice.
-inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
-                              BdmComplexCost* cost = nullptr) {
+// The two differentials, for ANY cell shape.
+//
+// G and C are facet- and edge-local: neither reads a cell, so neither needs the
+// degree-2 reconstruction and neither cares whether the mesh is simplicial.
+// bdm_complex adds Pi_rt and Pi_nd, which do need a tetrahedron.
+inline BdmComplex bdm_complex_differentials(const exokal::Mesh& mesh, int cell_dim) {
   using namespace bdm_detail;
-  using exokal::MimeticCurlKind;
-  using Clock = std::chrono::steady_clock;
-  const auto t_all = Clock::now();
-  const auto tick = [](const auto& t0) {
-    return std::chrono::duration<double>(Clock::now() - t0).count();
-  };
   if (cell_dim != 3) throw std::invalid_argument("bdm_complex: 3D only");
   const graphos::Complex& top = mesh.topology();
   const int nV = int(top.count(0)), nE = int(top.count(1)), nF = int(top.count(2));
@@ -310,7 +306,6 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
 
   const graphos::Adjacency e2v = graphos::incidence(top, 1, 0);
   const graphos::Adjacency f2e = graphos::incidence(top, 2, 1);
-  const graphos::Adjacency c2v = graphos::incidence(top, 3, 0);
 
   const auto edge_ends = [&](Index e) {
     const auto b = (std::size_t)e2v.offsets[(std::size_t)e];
@@ -320,7 +315,6 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
   const auto nodal_face = [&](Index f) { return nV + 2 * nE + int(f); };
 
   // ---------------- G : topological on the edges, Stokes on the facets ------
-  const auto t_g = Clock::now();
   {
     Sparse& G = out.grad;
     G.rows = out.n_circ;
@@ -371,10 +365,112 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
     }
   }
 
+
+  // ---------------- C : facet-wise, by surface Stokes -----------------------
+  // d^1 is facet-local. On f the normal curl is the 2D surface curl of u's
+  // TANGENTIAL TRACE, so against the facet chart chi_a
+  //
+  //     int_f (curl u).n chi_a = oint_df (u.tau) chi_a dl - int_f u . rot_s chi_a
+  //
+  // chi_a is affine, so the boundary term is each edge's chi_0 and chi_1
+  // circulations, and rot_s chi_a = (-c_2, c_1) is a CONSTANT in-plane vector,
+  // tested against the facet's own two tangential circulations. Every column is
+  // a dof of f itself: no cell, no reconstruction, no shape assumption past a
+  // planar facet with straight edges, and the two cells sharing f build the
+  // same row because neither appears in the formula.
+  //
+  // dec/mimetic_curl.hpp computes the same operator per CELL from a
+  // reconstruction. On a simplex D_edge = m and the fit is exact; on a polytope
+  // D_edge > m, it is least squares, it couples the whole cell and the two
+  // cells disagree. That is a property of the device, not of d^1 -- the earlier
+  // claim here that no global C exists on a polytope was wrong.
+  //
+  // chi_a is exokal's own facet chart (facet_orthonormalization.hpp), so these
+  // rows are already in the stabilized_bdm dof basis and need no change of
+  // basis afterwards.
+  {
+    Sparse& Cf = out.curl;
+    Cf.rows = out.n_flux;
+    Cf.cols = out.n_circ;
+    for (Index f = 0; f < nF; ++f) {
+      const P av = exokal::face_area_vector(mesh, f);
+      const double area = std::sqrt(av[0] * av[0] + av[1] * av[1] + av[2] * av[2]);
+      if (!(area > 0.0)) throw std::runtime_error("bdm_complex: degenerate facet");
+      const P n{av[0] / area, av[1] / area, av[2] / area};
+      const auto t = exokal::mimetic_curl_detail::tangent_frame(n);
+      const P xf = exokal::centroid(mesh, 2, f);
+      const auto dot3 = [](const P& u, const P& v) {
+        return u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+      };
+      // the chart, from the facet's own centred second moments
+      double m11 = 0.0, m12 = 0.0, m22 = 0.0;
+      const exokal::QuadratureRule q = exokal::facet_quadrature(mesh, cell_dim, f, 4);
+      for (std::size_t pq = 0; pq < q.weights.size(); ++pq) {
+        const P r{q.points[pq][0] - xf[0], q.points[pq][1] - xf[1], q.points[pq][2] - xf[2]};
+        const double x1 = dot3(r, t[0]), x2 = dot3(r, t[1]);
+        m11 += q.weights[pq] * x1 * x1;
+        m12 += q.weights[pq] * x1 * x2;
+        m22 += q.weights[pq] * x2 * x2;
+      }
+      const exokal::hodge::FacetChart ch =
+          exokal::hodge::facet_chart(area, m11, m12, m22, 3);
+      // chi_0 = 1 ; chi_a = c1[a] xi_1 + c2[a] xi_2
+      const double c1[3] = {0.0, ch.a11, ch.a21};
+      const double c2[3] = {0.0, 0.0, ch.a22};
+      const int r0 = 3 * int(f);
+      const auto chi = [&](int a, const P& x) {
+        const P r{x[0] - xf[0], x[1] - xf[1], x[2] - xf[2]};
+        return (a == 0 ? 1.0 : 0.0) + c1[a] * dot3(r, t[0]) + c2[a] * dot3(r, t[1]);
+      };
+      for (auto k = f2e.offsets[(std::size_t)f]; k < f2e.offsets[(std::size_t)f + 1]; ++k) {
+        const Index e = f2e.indices[(std::size_t)k];
+        const auto [ea, eh] = edge_ends(e);
+        const P pa = mesh.point(ea), ph = mesh.point(eh);
+        const P tau{ph[0] - pa[0], ph[1] - pa[1], ph[2] - pa[2]};
+        // counterclockwise about n has (midpoint - x_f) x tau along +n
+        const P w{0.5 * (pa[0] + ph[0]) - xf[0], 0.5 * (pa[1] + ph[1]) - xf[1],
+                  0.5 * (pa[2] + ph[2]) - xf[2]};
+        const P cr{w[1] * tau[2] - w[2] * tau[1], w[2] * tau[0] - w[0] * tau[2],
+                   w[0] * tau[1] - w[1] * tau[0]};
+        const double sgn = dot3(cr, n) >= 0.0 ? 1.0 : -1.0;
+        for (int a = 0; a < 3; ++a) {
+          // chi_a is affine along a straight edge, and int_0^1 (u.tau) s ds is
+          // (chi_0 + chi_1)/2 in the shifted-Legendre circulation moments
+          const double za = chi(a, pa), zb = chi(a, ph);
+          Cf.push(r0 + a, 3 * int(e) + 0, sgn * (za + 0.5 * (zb - za)));
+          Cf.push(r0 + a, 3 * int(e) + 1, sgn * 0.5 * (zb - za));
+        }
+      }
+      for (int a = 1; a < 3; ++a) {
+        Cf.push(r0 + a, 3 * nE + 3 * int(f) + 0, c2[a]);
+        Cf.push(r0 + a, 3 * nE + 3 * int(f) + 1, -c1[a]);
+      }
+    }
+  }
+  return out;
+}
+
+// The complex of a mesh of any cell shape. G and C are facet-local (see
+// bdm_complex_differentials); Pi_rt and Pi_nd write the vertex hats in the
+// cell's modes, exactly on a tetrahedron and in least squares beyond it.
+inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
+                              BdmComplexCost* cost = nullptr) {
+  using namespace bdm_detail;
+  using exokal::MimeticCurlKind;
+  using Clock = std::chrono::steady_clock;
+  const auto t_all = Clock::now();
+  const auto tick = [](const auto& t0) {
+    return std::chrono::duration<double>(Clock::now() - t0).count();
+  };
+  const auto t_g = Clock::now();
+  BdmComplex out = bdm_complex_differentials(mesh, cell_dim);
   if (cost) cost->grad = tick(t_g);
+  const graphos::Complex& top = mesh.topology();
+  const int nE = int(top.count(1));
+  const graphos::Adjacency c2v = graphos::incidence(top, 3, 0);
 
   // ---------------- C, Pi_rt, Pi_nd : per cell, averaged over the cells -----
-  Accum C(out.n_flux), Prt(out.n_flux), Pnd(out.n_circ);
+  Accum Prt(out.n_flux), Pnd(out.n_circ);
   double t_curl = 0.0, t_flux = 0.0, t_fit = 0.0, t_scatter = 0.0;
   // THE MESH-WIDE ADJACENCIES, ONCE. graphos::incidence builds a fresh CSR over
   // the whole complex and does not cache, so taking the mesh-only overload per
@@ -383,7 +479,8 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
   for (Index c = 0; c < mesh.count(cell_dim); ++c) {
     const auto vb = (std::size_t)c2v.offsets[(std::size_t)c];
     const auto ve = (std::size_t)c2v.offsets[(std::size_t)c + 1];
-    if (ve - vb != 4) throw std::invalid_argument("bdm_complex: cell is not a tetrahedron");
+    const int nv = int(ve - vb);
+    if (nv < 4) throw std::invalid_argument("bdm_complex: cell has fewer than four vertices");
 
     const auto t0 = Clock::now();
     const auto g = exokal::mimetic_curl(mesh, curl_cache, c, MimeticCurlKind::full);
@@ -408,66 +505,62 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
       const double hf = std::sqrt(std::sqrt(av[0] * av[0] + av[1] * av[1] + av[2] * av[2]));
       for (int b = 0; b < 3; ++b) {
         col[(std::size_t)(3 * cE + 3 * f + b)] = 3 * nE + 3 * int(fid) + b;
-        // the radial dof alone carries 1/h_E; move it to the facet's own scale
-        if (b == 2) cscale[(std::size_t)(3 * cE + 3 * f + b)] = hf / hE;
+        // THE RADIAL DOF ALONE IS SCALED. exokal states it as int_f u.(x - x_f)
+        // / h_E, the cell's length; G states the global one over the FACET's,
+        // 1 / h_f, and Pi_nd has to land in G's convention -- so the local value
+        // is carried over by h_E / h_f. Everything else agrees already.
+        if (b == 2) cscale[(std::size_t)(3 * cE + 3 * f + b)] = hE / hf;
       }
     }
 
-    // the 4 x 4 that writes each vertex hat in the cell's modes {1, xi}
-    std::vector<double> V(16), L(16, 0.0);
+    // Lambda writes each vertex hat in the cell's modes {1, xi}, so that
+    // lambda_w = sum_s Lambda[s][w] mode_s.
+    //
+    // On a tetrahedron V is 4 x 4 and Lambda = V^-1: the hats are the
+    // barycentric coordinates, interpolatory by construction. On a polytope
+    // nv > 4 and no nv interpolatory functions fit inside P1, so Lambda is the
+    // pseudoinverse (V^T V)^-1 V^T. The hats stop being interpolatory, but
+    // Lambda V = I still holds EXACTLY, so they reproduce every linear function
+    // and in particular sum to one. That is what Pi has to carry: the coarse
+    // space ADS hands BoomerAMG is the vector nodal one, and its near-nullspace
+    // is the constants.
     std::vector<Index> vs;
     for (std::size_t i = vb; i < ve; ++i) vs.push_back(c2v.indices[i]);
-    for (int w = 0; w < 4; ++w) {
+    std::vector<double> V((std::size_t)(nv * 4), 0.0);
+    for (int w = 0; w < nv; ++w) {
       const P x = mesh.point(vs[(std::size_t)w]);
       V[(std::size_t)(w * 4 + 0)] = 1.0;
-      for (int j = 0; j < 3; ++j) V[(std::size_t)(w * 4 + 1 + j)] = (x[(std::size_t)j] - xE[(std::size_t)j]) / hE;
-      L[(std::size_t)(w * 4 + w)] = 1.0;
+      for (int j = 0; j < 3; ++j)
+        V[(std::size_t)(w * 4 + 1 + j)] = (x[(std::size_t)j] - xE[(std::size_t)j]) / hE;
     }
-    // V (4x4) * Lambda = I  =>  lambda_w = sum_s Lambda[s][w] mode_s
-    if (!solve_dense(V, L, 4, 4)) throw std::runtime_error("bdm_complex: degenerate tetrahedron");
+    // the normal equations (V^T V) Lambda = V^T ; Lambda is 4 x nv row-major
+    std::vector<double> VtV(16, 0.0), L((std::size_t)(4 * nv), 0.0);
+    for (int s = 0; s < 4; ++s) {
+      for (int s2 = 0; s2 < 4; ++s2) {
+        double acc = 0.0;
+        for (int w = 0; w < nv; ++w)
+          acc += V[(std::size_t)(w * 4 + s)] * V[(std::size_t)(w * 4 + s2)];
+        VtV[(std::size_t)(s * 4 + s2)] = acc;
+      }
+      for (int w = 0; w < nv; ++w)
+        L[(std::size_t)(s * nv + w)] = V[(std::size_t)(w * 4 + s)];
+    }
+    // singular exactly when the cell's vertices are coplanar
+    if (!solve_dense(VtV, L, 4, nv)) throw std::runtime_error("bdm_complex: degenerate cell");
     const auto t3 = Clock::now();
     t_fit += std::chrono::duration<double>(t3 - t2).count();
 
     for (int f = 0; f < cF; ++f) {
       const Index fid = g.faces[(std::size_t)f];
-      // T_f : the mimetic-curl flux moments -> exokal's stabilized_bdm dofs.
-      // Both are 3 x 12 on the same modes, so T = N A^T (A A^T)^-1.
-      std::vector<double> Gm(9, 0.0), BA(9, 0.0);
-      for (int i = 0; i < 3; ++i)
-        for (int j = 0; j < 3; ++j) {
-          double gg = 0.0, ba = 0.0;
-          for (int k = 0; k < 12; ++k) {
-            const double a_i = g.pi_rt((std::size_t)(3 * f + i), (std::size_t)k);
-            const double a_j = g.pi_rt((std::size_t)(3 * f + j), (std::size_t)k);
-            const double b_i = fx.N((std::size_t)(3 * f + i), (std::size_t)k);
-            gg += a_i * a_j;
-            ba += b_i * a_j;
-          }
-          Gm[(std::size_t)(i * 3 + j)] = gg;
-          BA[(std::size_t)(i * 3 + j)] = ba;
-        }
-      // solve T Gm = BA  <=>  Gm^T T^T = BA^T ; Gm is symmetric
-      std::vector<double> Tt(9);
-      for (int i = 0; i < 3; ++i)
-        for (int j = 0; j < 3; ++j) Tt[(std::size_t)(i * 3 + j)] = BA[(std::size_t)(j * 3 + i)];
-      if (!solve_dense(Gm, Tt, 3, 3)) throw std::runtime_error("bdm_complex: singular facet basis");
-      const auto T = [&](int i, int j) { return Tt[(std::size_t)(j * 3 + i)]; };
-
       for (int b = 0; b < 3; ++b) {
         const int gr = 3 * int(fid) + b;
-        C.touched(gr);
         Prt.touched(gr);
-        for (std::size_t j = 0; j < g.C.cols(); ++j) {
-          double acc = 0.0;
-          for (int q = 0; q < 3; ++q) acc += T(b, q) * g.C((std::size_t)(3 * f + q), j);
-          if (acc != 0.0) C.add(gr, col[j], acc * cscale[j]);
-        }
         // Pi_rt in exokal's dof basis IS fx.N; only the modes -> vertex hats
-        for (int w = 0; w < 4; ++w)
+        for (int w = 0; w < nv; ++w)
           for (int cc = 0; cc < 3; ++cc) {
             double acc = 0.0;
             for (int s = 0; s < 4; ++s)
-              acc += L[(std::size_t)(s * 4 + w)] * fx.N((std::size_t)(3 * f + b), (std::size_t)(s * 3 + cc));
+              acc += L[(std::size_t)(s * nv + w)] * fx.N((std::size_t)(3 * f + b), (std::size_t)(s * 3 + cc));
             Prt.add(gr, 3 * int(vs[(std::size_t)w]) + cc, acc);
           }
       }
@@ -476,11 +569,11 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
     for (int i = 0; i < 3 * cE + 3 * cF; ++i) {
       const int gr = col[(std::size_t)i];
       Pnd.touched(gr);
-      for (int w = 0; w < 4; ++w)
+      for (int w = 0; w < nv; ++w)
         for (int cc = 0; cc < 3; ++cc) {
           double acc = 0.0;
           for (int s = 0; s < 4; ++s)
-            acc += L[(std::size_t)(s * 4 + w)] * g.pi_nd((std::size_t)i, (std::size_t)(s * 3 + cc));
+            acc += L[(std::size_t)(s * nv + w)] * g.pi_nd((std::size_t)i, (std::size_t)(s * 3 + cc));
           Pnd.add(gr, 3 * int(vs[(std::size_t)w]) + cc, acc * cscale[(std::size_t)i]);
         }
     }
@@ -493,7 +586,6 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
     cost->scatter = t_scatter;
   }
   const auto t_red = Clock::now();
-  out.curl = C.finish(out.n_flux, out.n_circ);
   out.pi_rt = Prt.finish(out.n_flux, out.n_vnodal);
   out.pi_nd = Pnd.finish(out.n_circ, out.n_vnodal);
   if (cost) {

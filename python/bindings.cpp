@@ -500,9 +500,10 @@ inline std::vector<mimetika::CauchyMechanicsModel::NormTraceTerm> trace_terms(
 // coarse space, no smoother carrying the divergence-free part. Measured
 // h-independent and contrast-independent where the subspace cycle diverges.
 //
-// Only on simplices: on a polytope the degree-2 reconstruction is a
-// least-squares fit and a facet's curl rows stop being facet-local, so there
-// is no global C to hand over. Returns false and changes nothing otherwise.
+// Any cell shape: C is surface Stokes on a facet and needs no reconstruction,
+// and Pi's vertex hats reproduce the linears exactly on a tetrahedron and in
+// least squares beyond it. Returns false and changes nothing when the layout is
+// not three moments a facet.
 template <class Model>
 bool upgrade_to_degree2(const Model& m, mimetika::solver::SpaceNorm& norm,
                         const exokal::Mesh& mesh, int dim) {
@@ -513,7 +514,6 @@ bool upgrade_to_degree2(const Model& m, mimetika::solver::SpaceNorm& norm,
   const auto n_faces = static_cast<std::size_t>(mesh.count(dim - 1));
   if (copies < 1) return false;
   if (norm.factors[0].size() != 3 * n_faces * static_cast<std::size_t>(copies)) return false;
-  if (!mimetika::solver::all_tetrahedra(mesh, dim)) return false;
 
   const auto cx = mimetika::solver::bdm_complex(mesh, dim);
   const auto to_inc = [](const mimetika::solver::Sparse& t) {
