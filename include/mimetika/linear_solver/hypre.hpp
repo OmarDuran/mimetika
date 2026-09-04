@@ -55,6 +55,8 @@
 // What it does not take is d COPIES of an H(div) space -- a weak-symmetry
 // stress -- which needs the per-component split the PETSc path builds.
 
+#include <cstdlib>
+
 namespace mimetika::solver {
 
 // One MPI and one hypre initialization for the process, torn down at exit.
@@ -88,6 +90,23 @@ class HypreSession {
   bool owns_mpi_{false};
 };
 
+// THE SWEEP OVER THE COPIES RUNS FORWARD ONLY.
+//
+// The backward pass exists solely to make the cycle symmetric so that a CG may
+// precondition with it. Dropped, the cycle costs half as much -- d applications
+// of ADS instead of 2d -- and the inner Krylov has to tolerate a non-symmetric
+// preconditioner, which FlexGMRES does; the outer method already is one for the
+// same reason. Measured on the hybrid meshes: level 1 12.45 s -> 8.25 s, level 2
+// 144 s -> 88 s, with the outer count moving 44 -> 46 and 47 -> 49 and all 87
+// robustness assertions unchanged.
+//
+// Set MIMETIKA_ADS_SYMMETRIC_SWEEP to restore the symmetric cycle and the inner
+// CG, which is what the earlier measurements in this file were taken with.
+inline bool forward_only() {
+  static const bool off = std::getenv("MIMETIKA_ADS_SYMMETRIC_SWEEP") != nullptr;
+  return !off;
+}
+
 struct HypreOptions {
   double rtol{1e-8};
   int max_iterations{500};
@@ -101,6 +120,11 @@ struct HypreOptions {
   double ams_theta{0.25};
   int amg_coarsen_type{10};
   int amg_agg_levels{1};
+  // 3, hybrid Gauss-Seidel. The l1-scaled type 8 is the parallel-convergent
+  // choice and is what the cycle's own smoother uses, but INSIDE ADS it is a
+  // loss: measured on hybrid_mesh_l_2 it left the cycle count unchanged (576
+  // against 582 calls at two ranks) and made every call dearer, 94 ms against
+  // 81, for 47 s against 44 at one rank.
   int amg_relax_type{3};
   // hypre's own ADS defaults are 10, 1, 3, 0.25, 0, 0. interp_type and Pmax
   // are the two that matter under a jumping coefficient: 6 (extended+i) with
@@ -563,6 +587,9 @@ class HypreSolver {
       block.vtemp = zero_vec(block_l);
       block.ztemp = zero_vec(block_l);
       block.diag = block_diagonal(m, block_l);
+      // the l1 norms the scaled smoother needs; without them relax type 8 is
+      // silently the unscaled hybrid sweep again
+      hypre_BoomerAMGRelaxComputeL1Norms(block.a0, 8, 0, 0, nullptr, &block.l1_norms);
       for (int c = 0; c < copies; ++c) {
         const auto k = static_cast<std::size_t>(c);
         block.p.push_back(mat_of(inject[k]));
@@ -583,7 +610,29 @@ class HypreSolver {
     }
 
     // the inner CG on the block, with that cycle as its preconditioner
-    if (opts.block_iterations > 0) {
+    if (opts.block_iterations > 0 && forward_only()) {
+      // EXPERIMENT (MIMETIKA_ADS_FORWARD_ONLY): the backward sweep exists only
+      // to make the cycle symmetric for the inner CG. Dropped, the cycle costs
+      // half as much and the inner Krylov has to tolerate a non-symmetric
+      // preconditioner -- FlexGMRES, as the outer one already does.
+      block.inner_is_flex = true;
+      HYPRE_ParCSRFlexGMRESCreate(MPI_COMM_WORLD, &block.inner);
+      HYPRE_FlexGMRESSetKDim(block.inner, opts.block_iterations);
+      HYPRE_FlexGMRESSetMaxIter(block.inner, opts.block_iterations);
+      HYPRE_FlexGMRESSetTol(block.inner, opts.block_rtol);
+      HYPRE_FlexGMRESSetPrintLevel(block.inner, 0);
+      if (two_level) {
+        HYPRE_FlexGMRESSetPrecond(block.inner, cycle, cycle_setup,
+                                  reinterpret_cast<HYPRE_Solver>(&block));
+      } else {
+        HYPRE_FlexGMRESSetPrecond(block.inner,
+                                  reinterpret_cast<HYPRE_PtrToSolverFcn>(HYPRE_ADSSolve),
+                                  reinterpret_cast<HYPRE_PtrToSolverFcn>(HYPRE_ADSSetup),
+                                  block.ads[0]);
+      }
+      HYPRE_ParCSRFlexGMRESSetup(block.inner, block.a0, vec_of(block.rhs),
+                                 vec_of(block.sol));
+    } else if (opts.block_iterations > 0) {
       HYPRE_ParCSRPCGCreate(MPI_COMM_WORLD, &block.inner);
       HYPRE_PCGSetMaxIter(block.inner, opts.block_iterations);
       HYPRE_PCGSetTol(block.inner, opts.block_rtol);
@@ -610,10 +659,9 @@ class HypreSolver {
     HYPRE_FlexGMRESSetMaxIter(ksp, opts.max_iterations);
     HYPRE_FlexGMRESSetTol(ksp, opts.rtol);
     HYPRE_FlexGMRESSetPrintLevel(ksp, opts.print_level);
-    HYPRE_FlexGMRESSetPrecond(ksp, apply, setup, reinterpret_cast<HYPRE_Solver>(&block));
-
     Vec rhs = to_vec(b, dofs);
     Vec sol = to_vec(std::vector<double>(A.n, 0.0), dofs);
+    HYPRE_FlexGMRESSetPrecond(ksp, apply, setup, reinterpret_cast<HYPRE_Solver>(&block));
     HYPRE_ParCSRFlexGMRESSetup(ksp, mat_of(a_full), vec_of(rhs), vec_of(sol));
     const auto t1 = std::chrono::steady_clock::now();
     HYPRE_ParCSRFlexGMRESSolve(ksp, mat_of(a_full), vec_of(rhs), vec_of(sol));
@@ -633,7 +681,11 @@ class HypreSolver {
     read_back(sol, dofs, x);
 
     HYPRE_ParCSRFlexGMRESDestroy(ksp);
-    if (block.inner != nullptr) HYPRE_ParCSRPCGDestroy(block.inner);
+    if (block.l1_norms != nullptr) hypre_TFree(block.l1_norms, HYPRE_MEMORY_HOST);
+    if (block.inner != nullptr) {
+      if (block.inner_is_flex) HYPRE_ParCSRFlexGMRESDestroy(block.inner);
+      else HYPRE_ParCSRPCGDestroy(block.inner);
+    }
     for (auto* c : block.a_coarse) {
       if (c != nullptr) hypre_ParCSRMatrixDestroy(c);
     }
@@ -845,6 +897,8 @@ class HypreSolver {
     // one per copy of the H(div) space: a flux has one, a stress has d
     std::vector<HYPRE_Solver> ads;
     HYPRE_Solver inner{nullptr};
+    bool inner_is_flex{false};
+    HYPRE_Real* l1_norms{nullptr};  // for the l1-scaled smoother
     bool two_level{false};
     std::vector<HYPRE_ParCSRMatrix> p;         // the injection of each copy
     std::vector<HYPRE_ParCSRMatrix> a_coarse;  // P_c^T A0 P_c
@@ -886,11 +940,20 @@ class HypreSolver {
     return 0;
   }
 
-  // relax_type 6 is hypre's symmetric hybrid Gauss-Seidel: a forward sweep and
-  // a backward one, which is what keeps the composition symmetric so a CG may
+  // relax_type 8 is hypre's l1-scaled hybrid SYMMETRIC Gauss-Seidel: a forward
+  // sweep and a backward one, so the composition stays symmetric and a CG may
   // use it. It relaxes u toward solving A0 u = f rather than replacing u.
+  //
+  // l1-SCALED, NOT PLAIN HYBRID (type 6). "Hybrid" is Gauss-Seidel inside a
+  // rank and Jacobi across ranks, so the smoother WEAKENS as ranks are added
+  // and the cycle weakens with it. Measured on hybrid_mesh_l_2, the inner CG
+  // needed 3.87 applications of the cycle at one rank, 5.5 at two and 6.1 at
+  // four -- which ate the whole parallel gain: the time per ADS call fell 78
+  // to 45 ms while the number of calls rose 348 to 660. The l1 scaling is
+  // convergent independently of the partition, which is why Kolev and
+  // Vassilevski use it (section 5.2) and why the count is now flat in ranks.
   static void smooth(Block& b, HYPRE_ParVector f, HYPRE_ParVector u) {
-    hypre_BoomerAMGRelax(b.a0, f, nullptr, 6, 0, 1.0, 1.0, nullptr, u, vec_of(b.vtemp),
+    hypre_BoomerAMGRelax(b.a0, f, nullptr, 8, 0, 1.0, 1.0, b.l1_norms, u, vec_of(b.vtemp),
                          vec_of(b.ztemp));
   }
 
@@ -954,11 +1017,11 @@ class HypreSolver {
     };
     const std::size_t copies = b.ads.size();
     for (std::size_t c = 0; c < copies; ++c) correct(c);
-    if (copies > 1) {
+    if (copies > 1 && !forward_only()) {
       for (std::size_t c = copies; c-- > 0;) correct(c);
     }
 
-    for (int q = 0; q < sweeps; ++q) smooth(b, r, x);  // post-smooth; with symm SOR the composition stays SPD
+    for (int q = 0; q < sweeps; ++q) smooth(b, r, x);  // post-smooth; the composition stays SPD
     (void)rd;
     (void)n;
     return 0;
@@ -978,7 +1041,10 @@ class HypreSolver {
       }
     }
     if (b.inner != nullptr) {
-      HYPRE_ParCSRPCGSolve(b.inner, b.a0, vec_of(b.rhs), vec_of(b.sol));
+      if (b.inner_is_flex)
+        HYPRE_ParCSRFlexGMRESSolve(b.inner, b.a0, vec_of(b.rhs), vec_of(b.sol));
+      else
+        HYPRE_ParCSRPCGSolve(b.inner, b.a0, vec_of(b.rhs), vec_of(b.sol));
     } else if (b.two_level) {
       cycle(reinterpret_cast<HYPRE_Solver>(&b), nullptr,
             reinterpret_cast<HYPRE_Vector>(vec_of(b.rhs)),
