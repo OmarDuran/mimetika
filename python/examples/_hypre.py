@@ -35,6 +35,20 @@ import time
 import mimetika_cxx as mk
 
 NAME = "hypre-ads"
+# THE OTHER PRECONDITIONER THIS MODULE OFFERS, and it is flow-only.
+#
+# ADS preconditions the flux block of the Riesz map; MGR eliminates the flux
+# instead -- F = q, C = p -- leaving the cell-centred Laplacian
+#
+#     S = -D M^-1 D^T
+#
+# for BoomerAMG. That is one unknown a cell, and is what the two-point family
+# already is. It is available for FLOW because the flux block carries no div
+# term and so none of the a_div near-nullspace ADS exists for; on the stress it
+# reconstructs the locking displacement operator and loses nu-robustness --
+# measured 75 to 429 over nu = 0.25 to 0.4999 -- so it is not offered there.
+MGR_NAME = "hypre-mgr"
+HYPRE_NAMES = (NAME, MGR_NAME)
 
 
 def available():
@@ -78,7 +92,7 @@ def require_serial():
 
 
 def options(rtol, cycle_type=13, amg_theta=0.25, ams_theta=0.25, max_iterations=2000,
-            block_iterations=None, block_rtol=None):
+            block_iterations=None, block_rtol=None, mgr=False):
     """The ADS knobs, including the two PETSc registers and never queries.
 
     `block_iterations` is the one that changes the character of the solve. The
@@ -102,6 +116,7 @@ def options(rtol, cycle_type=13, amg_theta=0.25, ams_theta=0.25, max_iterations=
         o.block_iterations = block_iterations
     if block_rtol is not None:
         o.block_rtol = block_rtol
+    o.mgr = mgr
     return o
 
 
@@ -194,8 +209,14 @@ def solve(model, mesh, dim, opts):
     # the mesh's own complex for one moment a facet, the frame-weighted coarse
     # space for a strong-symmetry stress. Nothing else printed here would say
     # which, since they converge at similar counts.
-    _note("ads on the degree-2 complex" if handoff["degree2"]
-          else "ads on the lowest-order complex")
+    if opts.mgr:
+        # two levels when a facet carries more than one moment: div reads only
+        # the constant, so the higher moments are eliminated first and level 1
+        # is the RT0 system
+        _note("mgr reduction onto the pressure")
+    else:
+        _note("ads on the degree-2 complex" if handoff["degree2"]
+              else "ads on the lowest-order complex")
 
     # A PRECONDITIONER THAT DID NOT CONVERGE STILL RETURNS A VECTOR.
     #

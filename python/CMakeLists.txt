@@ -58,7 +58,7 @@ endif()
 if(BUILD_TESTING)
   find_package(Python COMPONENTS Interpreter REQUIRED)
   foreach(t test_confined_compression test_cauchy_mechanics test_poroelasticity test_flow
-           test_riesz test_flow_ads test_flow_hypre_ads test_mechanics_hypre_ads
+           test_riesz test_flow_ads test_flow_hypre test_mechanics_hypre_ads
            test_hybrid_patch test_flow_riesz_patch
            test_mechanics_riesz_patch)
     add_test(NAME python.${t}

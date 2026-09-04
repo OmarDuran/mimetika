@@ -278,7 +278,7 @@ inline BdmOwners bdm_complex_owners(const exokal::Mesh& mesh,
 // Where assembly goes, when someone asks. Filled only if a pointer is passed,
 // so the ordinary path pays nothing.
 struct BdmComplexCost {
-  double curl{0.0};      // exokal's degree-2 curl, per cell
+  double curl{0.0};      // gathering the cell's entity lists
   double flux{0.0};      // exokal's BDM flux product, per cell -- the Pi_rt basis
   double fit{0.0};       // T_f and the vertex-hat coefficients
   double scatter{0.0};   // writing the per-cell blocks into the accumulators
@@ -456,7 +456,6 @@ inline BdmComplex bdm_complex_differentials(const exokal::Mesh& mesh, int cell_d
 inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
                               BdmComplexCost* cost = nullptr) {
   using namespace bdm_detail;
-  using exokal::MimeticCurlKind;
   using Clock = std::chrono::steady_clock;
   const auto t_all = Clock::now();
   const auto tick = [](const auto& t0) {
@@ -466,8 +465,13 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
   BdmComplex out = bdm_complex_differentials(mesh, cell_dim);
   if (cost) cost->grad = tick(t_g);
   const graphos::Complex& top = mesh.topology();
-  const int nE = int(top.count(1));
+  const int nE = int(top.count(1)), nF = int(top.count(2));
   const graphos::Adjacency c2v = graphos::incidence(top, 3, 0);
+  const graphos::Adjacency e2v = graphos::incidence(top, 1, 0);
+  const auto edge_ends = [&](Index e) {
+    const auto b = (std::size_t)e2v.offsets[(std::size_t)e];
+    return std::pair<Index, Index>{e2v.indices[b], e2v.indices[b + 1]};
+  };
 
   // ---------------- C, Pi_rt, Pi_nd : per cell, averaged over the cells -----
   Accum Prt(out.n_flux), Pnd(out.n_circ);
@@ -475,22 +479,67 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
   // THE MESH-WIDE ADJACENCIES, ONCE. graphos::incidence builds a fresh CSR over
   // the whole complex and does not cache, so taking the mesh-only overload per
   // cell is O(cells x mesh); the cache makes the loop O(mesh).
-  const exokal::MimeticCurlCache curl_cache(mesh, cell_dim);
+  // THE FACET GEOMETRY Pi_nd NEEDS, once. area, centroid, the frame the
+  // circulation dofs are stated in, and the ambient second moment
+  // S = int_f (x - x_f) (x - x_f)^T, which is what the radial dof of an affine
+  // field integrates to.
+  struct FacetGeom {
+    P xf{}, t0{}, t1{};
+    double area{0.0};
+    std::array<double, 9> S{};
+  };
+  std::vector<FacetGeom> fg((std::size_t)nF);
+  for (Index f = 0; f < nF; ++f) {
+    FacetGeom& G2 = fg[(std::size_t)f];
+    const P av = exokal::face_area_vector(mesh, f);
+    G2.area = std::sqrt(av[0] * av[0] + av[1] * av[1] + av[2] * av[2]);
+    const P n{av[0] / G2.area, av[1] / G2.area, av[2] / G2.area};
+    const auto t = exokal::mimetic_curl_detail::tangent_frame(n);
+    G2.t0 = t[0];
+    G2.t1 = t[1];
+    G2.xf = exokal::centroid(mesh, 2, f);
+    const exokal::QuadratureRule q = exokal::facet_quadrature(mesh, cell_dim, f, 2);
+    for (std::size_t p2 = 0; p2 < q.weights.size(); ++p2) {
+      const P r{q.points[p2][0] - G2.xf[0], q.points[p2][1] - G2.xf[1],
+                q.points[p2][2] - G2.xf[2]};
+      for (int i2 = 0; i2 < 3; ++i2)
+        for (int j2 = 0; j2 < 3; ++j2)
+          G2.S[(std::size_t)(i2 * 3 + j2)] +=
+              q.weights[p2] * r[(std::size_t)i2] * r[(std::size_t)j2];
+    }
+  }
+  const graphos::Adjacency c2e = graphos::incidence(top, 3, 1);
+  const graphos::Adjacency c2f = graphos::incidence(top, 3, 2);
   for (Index c = 0; c < mesh.count(cell_dim); ++c) {
     const auto vb = (std::size_t)c2v.offsets[(std::size_t)c];
     const auto ve = (std::size_t)c2v.offsets[(std::size_t)c + 1];
     const int nv = int(ve - vb);
     if (nv < 4) throw std::invalid_argument("bdm_complex: cell has fewer than four vertices");
 
+    // PI_ND IN CLOSED FORM, so the degree-2 reconstruction is not built here.
+    //
+    // dec/mimetic_curl.hpp computes C, Pi_rt and Pi_nd together, and Pi_nd is
+    // populated only for kind=full -- so asking for it used to drag in the
+    // whole least-squares fit whose C this file no longer uses (it builds C
+    // facet-wise). Measured at 125.9k cells that was 4.01 s of the complex's
+    // 8.16 s. But Pi_nd is only the circulation dofs of the AFFINE modes, and
+    // every one of those integrals is elementary -- the same argument that
+    // writes C and G directly.
     const auto t0 = Clock::now();
-    const auto g = exokal::mimetic_curl(mesh, curl_cache, c, MimeticCurlKind::full);
+    // THE FACET ORDER IS exokal's, NOT graphos'. fx.N is indexed by 3*f + b
+    // with f the LOCAL facet position the flux product used, so the local order
+    // has to be fx.faces -- taking graphos' incidence order instead misaligns
+    // every Pi_rt row, which is what the linear-field assertion caught.
+    std::vector<Index> ge;
+    for (auto k = c2e.offsets[(std::size_t)c]; k < c2e.offsets[(std::size_t)c + 1]; ++k)
+      ge.push_back(c2e.indices[(std::size_t)k]);
     const auto t1 = Clock::now();
     const auto fx = exokal::hodge::stabilized_bdm_flux_inner_product(
         mesh, cell_dim, c, exokal::hodge::SymTensor<>::isotropic(1.0));
     const auto t2 = Clock::now();
     t_curl += std::chrono::duration<double>(t1 - t0).count();
     t_flux += std::chrono::duration<double>(t2 - t1).count();
-    const int cE = int(g.edges.size()), cF = int(g.faces.size());
+    const int cE = int(ge.size()), cF = int(fx.faces.size());
     const double hE = std::cbrt(exokal::measure(mesh, cell_dim, c));
     const P xE = exokal::centroid(mesh, cell_dim, c);
 
@@ -498,9 +547,9 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
     std::vector<int> col((std::size_t)(3 * cE + 3 * cF));
     std::vector<double> cscale((std::size_t)(3 * cE + 3 * cF), 1.0);
     for (int e = 0; e < cE; ++e)
-      for (int b = 0; b < 3; ++b) col[(std::size_t)(3 * e + b)] = 3 * int(g.edges[(std::size_t)e]) + b;
+      for (int b = 0; b < 3; ++b) col[(std::size_t)(3 * e + b)] = 3 * int(ge[(std::size_t)e]) + b;
     for (int f = 0; f < cF; ++f) {
-      const Index fid = g.faces[(std::size_t)f];
+      const Index fid = fx.faces[(std::size_t)f];
       const P av = exokal::face_area_vector(mesh, fid);
       const double hf = std::sqrt(std::sqrt(av[0] * av[0] + av[1] * av[1] + av[2] * av[2]));
       for (int b = 0; b < 3; ++b) {
@@ -551,7 +600,7 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
     t_fit += std::chrono::duration<double>(t3 - t2).count();
 
     for (int f = 0; f < cF; ++f) {
-      const Index fid = g.faces[(std::size_t)f];
+      const Index fid = fx.faces[(std::size_t)f];
       for (int b = 0; b < 3; ++b) {
         const int gr = 3 * int(fid) + b;
         Prt.touched(gr);
@@ -565,15 +614,59 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
           }
       }
     }
-    // Pi_nd: the circulation dofs of the vertex hats
+    // Pi_nd: the circulation dofs of the vertex hats.
+    //
+    // pnd[s][cc] is dof i applied to the mode field mode_s * e_cc, with the
+    // modes {1, xi_1, xi_2, xi_3}, xi = (x - x_E)/h_E. Every entry is a closed
+    // form:
+    //
+    //   edge, chi_b   mode_0 gives tau_cc on chi_0 and nothing else; mode_j is
+    //                 affine along the edge, a + b t, and against the shifted
+    //                 Legendre chi_b integrates to a + b/2, b/6, 0
+    //   facet 0, 1    int_f mode_s (e_cc . t_a): |f| t_a[cc] for the constant,
+    //                 and |f| t_a[cc] (x_f - x_E)_j / h_E for mode j, since
+    //                 int_f (x - x_f) vanishes at the centroid
+    //   facet 2       the radial dof, int_f mode_s (e_cc . (x - x_f)) / h_E:
+    //                 zero for the constant, and S_{j,cc} / h_E^2 for mode j
+    //
+    // stated in exokal's own scaling (h_E on the radial dof) so cscale carries
+    // it to G's convention exactly as before.
+    double pnd[4][3];
     for (int i = 0; i < 3 * cE + 3 * cF; ++i) {
       const int gr = col[(std::size_t)i];
       Pnd.touched(gr);
+      if (i < 3 * cE) {
+        const int le = i / 3, b = i % 3;
+        const auto [ea, eh] = edge_ends(ge[(std::size_t)le]);
+        const P pa = mesh.point(ea), ph = mesh.point(eh);
+        const P tau{ph[0] - pa[0], ph[1] - pa[1], ph[2] - pa[2]};
+        for (int cc = 0; cc < 3; ++cc) {
+          pnd[0][cc] = b == 0 ? tau[(std::size_t)cc] : 0.0;
+          for (int j = 0; j < 3; ++j) {
+            const double a0 = (pa[(std::size_t)j] - xE[(std::size_t)j]) / hE;
+            const double a1 = tau[(std::size_t)j] / hE;
+            pnd[j + 1][cc] = b == 0   ? tau[(std::size_t)cc] * (a0 + 0.5 * a1)
+                             : b == 1 ? tau[(std::size_t)cc] * a1 / 6.0
+                                      : 0.0;
+          }
+        }
+      } else {
+        const int lf = (i - 3 * cE) / 3, b = (i - 3 * cE) % 3;
+        const FacetGeom& G2 = fg[(std::size_t)fx.faces[(std::size_t)lf]];
+        const P& ta = b == 0 ? G2.t0 : G2.t1;
+        for (int cc = 0; cc < 3; ++cc) {
+          pnd[0][cc] = b == 2 ? 0.0 : G2.area * ta[(std::size_t)cc];
+          for (int j = 0; j < 3; ++j)
+            pnd[j + 1][cc] =
+                b == 2 ? G2.S[(std::size_t)(j * 3 + cc)] / (hE * hE)
+                       : G2.area * ta[(std::size_t)cc] *
+                             (G2.xf[(std::size_t)j] - xE[(std::size_t)j]) / hE;
+        }
+      }
       for (int w = 0; w < nv; ++w)
         for (int cc = 0; cc < 3; ++cc) {
           double acc = 0.0;
-          for (int s = 0; s < 4; ++s)
-            acc += L[(std::size_t)(s * nv + w)] * g.pi_nd((std::size_t)i, (std::size_t)(s * 3 + cc));
+          for (int s = 0; s < 4; ++s) acc += L[(std::size_t)(s * nv + w)] * pnd[s][cc];
           Pnd.add(gr, 3 * int(vs[(std::size_t)w]) + cc, acc * cscale[(std::size_t)i]);
         }
     }

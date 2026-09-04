@@ -296,14 +296,26 @@ class PressureBC final : public BoundaryCondition {
   // centroid along the CANONICAL tangent frame -- the one the discrete moments
   // use. c_0 is the centroid value, so a constant datum reproduces `fill`
   // exactly and only an affine one reaches the higher moments.
-  void fill_moments(BoundaryMoments& data, const exokal::Mesh& mesh, int cell_dim) const {
+  void fill_moments(BoundaryMoments& data, const exokal::Mesh& mesh, int cell_dim,
+                    const graphos::CoboundaryOperator& cob) const {
     const std::size_t stride = data.stride();
     const bool sloped =
         gradient_[0] != 0.0 || gradient_[1] != 0.0 || gradient_[2] != 0.0;
+    if (!(stride > 1 && sloped)) {   // a constant datum reaches the mean alone
+      for (const Index f : facets_) data.set(f, {value_, 0.0, 0.0});
+      return;
+    }
     for (const Index f : facets_) {
       std::array<double, 3> c{value_, 0.0, 0.0};
-      if (stride > 1 && sloped) {
-        const Index cell = cofacet_of(mesh, cell_dim, f);
+      {
+        const auto cb = static_cast<std::size_t>(cob.offsets[static_cast<std::size_t>(f)]);
+        const auto ce = static_cast<std::size_t>(cob.offsets[static_cast<std::size_t>(f) + 1]);
+        if (ce - cb != 1) {
+          throw std::invalid_argument(
+              "PressureBC: facet " + std::to_string(f) +
+              " is interior; a boundary condition needs a boundary facet");
+        }
+        const Index cell = cob.indices[cb];
         const FacetFrame fr = FacetFrame::of(mesh, cell_dim, cell, f);
         const std::array<Point, 2> t =
             cell_dim == 3 ? fr.tangent
@@ -354,6 +366,13 @@ class PressureBC final : public BoundaryCondition {
  private:
   double value_;
   std::array<double, 3> gradient_{0.0, 0.0, 0.0};
+
+ public:
+  bool is_sloped() const {
+    return gradient_[0] != 0.0 || gradient_[1] != 0.0 || gradient_[2] != 0.0;
+  }
+
+ private:
   std::string field_{"q_0"};
 };
 
@@ -438,9 +457,25 @@ class BoundarySet {
   // several flux moments needs
   void fill_pressure_moments(BoundaryMoments& data, const exokal::Mesh& mesh,
                              int cell_dim) const {
+    // THE COBOUNDARY ONCE FOR EVERY RECORD, NOT ONCE PER FACET.
+    //
+    // cofacet_of builds graphos::coboundary over the WHOLE complex on each
+    // call, so asking it inside the facet loop is O(facets x mesh) -- and since
+    // a sloped datum needs a DIFFERENT gradient on each facet, callers write
+    // one record a facet, which put the build back per facet a second time.
+    // Measured at 125.9k cells with 11.2k boundary facets: the flow build ran
+    // 15.2 s against 2.2 s for the same datum without a gradient.
+    bool any_sloped = false;
+    for (const auto& bc : conditions_) {
+      const auto* p = dynamic_cast<const PressureBC*>(bc.get());
+      if (p != nullptr && p->is_sloped()) any_sloped = true;
+    }
+    const graphos::CoboundaryOperator cob =
+        any_sloped ? graphos::coboundary(mesh.topology(), cell_dim - 1)
+                   : graphos::CoboundaryOperator{};
     for (const auto& bc : conditions_) {
       if (const auto* p = dynamic_cast<const PressureBC*>(bc.get())) {
-        p->fill_moments(data, mesh, cell_dim);
+        p->fill_moments(data, mesh, cell_dim, cob);
       }
     }
   }

@@ -1,14 +1,22 @@
-"""ADS on the flow problem, called DIRECTLY rather than through PETSc's PCHYPRE.
+"""The flow problem through mimetika_hypre, called DIRECTLY rather than through
+PETSc's PCHYPRE, on BOTH preconditioners the module offers.
+
+    ADS   the Riesz map, with the flux block preconditioned by the auxiliary
+          space divergence solver -- sections 1 to 7 here
+    MGR   a multigrid reduction that ELIMINATES the flux instead, leaving the
+          cell-centred Laplacian for BoomerAMG -- section 8
 
 test_flow_ads.py states the two properties and tests them on the PETSc route.
 This file tests the same two on the other route, because they are different
 code: `mimetika_hypre` links its own hypre, is handed the assembled system and
-the norm as plain arrays through `mk.ads_handoff`, and calls HYPRE_ADS itself.
+the norm as plain arrays through `mk.ads_handoff`, and calls hypre itself.
 Nothing about the METHOD differs, so a disagreement between the two files is a
 defect in one of the bridges.
 
     h-ROBUST         the count does not grow as the mesh is refined
     CONTRAST-ROBUST  the count does not grow as the coefficient jumps
+
+Both preconditioners are held to both, on every flow realization.
 
 WHAT DIFFERS IS WHAT ADS IS TOLD FOR A BDM FACET.
 
@@ -83,14 +91,17 @@ def _hypre():
 
 
 def _options(kind):
-    """`one` applies a single ADS cycle; `cg` solves the block under it."""
+    """`one` applies a single ADS cycle; `cg` solves the block under it;
+    `mgr` replaces the Riesz map entirely with a multigrid reduction."""
     mh = _hypre()
     o = mh.AdsOptions()
     o.rtol = RTOL
     o.max_iterations = 2000
-    if kind == "cg":
+    if kind in ("cg", "mgr"):
         o.block_iterations = 50
         o.block_rtol = 1e-2
+    if kind == "mgr":
+        o.mgr = True
     return o
 
 
@@ -383,3 +394,86 @@ def test_a_misaligned_checkerboard_is_flat_to_a_1e4_inclusion(name):
         counts.append(_count(patch(mesh, product, checkerboard(mesh, p)), mesh))
         print(f"  {name:15s} K = 1e{p:+03d}   {counts[-1]:4d} its")
     assert max(counts) <= min(counts) + 8
+
+
+# ---- 8. MGR: reduction instead of the Riesz map ----------------------------
+#
+# The Riesz map preconditions the flux block and pairs it with the pressure
+# block-diagonally. MGR instead ELIMINATES the flux: F = q, C = p, and the
+# coarse operator is
+#
+#     S = -D M^-1 D^T ,
+#
+# the cell-centred Laplacian -- one unknown a cell, which is BoomerAMG's ground
+# and is what the two-point family already is. The flux block here carries no
+# div term, so its F-relaxation is not facing the a_div near-nullspace that ADS
+# exists for, which is why this is available for flow and not for the stress.
+#
+# TWO LEVELS WHEN A FACET CARRIES MORE THAN ONE MOMENT. div is topological and
+# reads only the constant moment, D = [0 | D_0], so the higher moments lie
+# entirely in ker D. Reducing the whole flux at once asks relaxation to invert M
+# on a divergence-free subspace it cannot damp -- measured as 15, 22, 28 over
+# the ladder against 12, 13, 14 when the moments are split off first, and no
+# convergence at all with an AMG V-cycle on the F block. Splitting them makes
+# level 0 EXACT on the constraint: the eliminated block contributes nothing to
+# it, so level 1 is the RT0 system. The solver identifies the constants from the
+# operator -- a flux dof is one exactly when it appears in a constraint row --
+# rather than from an assumed dof ordering, so it holds for either route.
+MGR_PRODUCTS = {**ONE_PER_FACET, **BDM}
+
+
+@pytest.mark.parametrize("name", sorted(MGR_PRODUCTS))
+def test_mgr_is_h_robust(name):
+    _hypre()
+    counts = []
+    for n in (4, 6, 8):
+        mesh = cube(n)
+        model = patch(mesh, MGR_PRODUCTS[name])
+        counts.append(_count(model, mesh, "mgr"))
+        print(f"  {name:15s} {model.n_cells:6d} cells {model.n_dofs:7d} dofs   "
+              f"{counts[-1]:4d} its")
+    assert max(counts) <= min(counts) + 4
+
+
+@pytest.mark.parametrize("name", sorted(MGR_PRODUCTS))
+def test_mgr_does_not_track_the_contrast(name):
+    """One bounded interface, fourteen orders across it."""
+    _hypre()
+    mesh = cube(6)
+    counts = []
+    for p in JUMPS:
+        counts.append(_count(patch(mesh, MGR_PRODUCTS[name], enclosure(mesh, p)),
+                             mesh, "mgr"))
+        print(f"  {name:15s} K_in = 1e{p:+03d}   {counts[-1]:4d} its")
+    assert max(counts) <= min(counts) + 4
+
+
+@pytest.mark.parametrize("name", sorted(MGR_PRODUCTS))
+def test_mgr_does_not_track_a_checkerboard(name):
+    """Jumps on every interior interface, which is the sharper question -- and
+    the one where MGR beats the Riesz map on a d-moment facet: measured spread
+    3 against ADS's 6."""
+    _hypre()
+    mesh = cube(6)
+    counts = []
+    for p in JUMPS:
+        counts.append(_count(patch(mesh, MGR_PRODUCTS[name], checkerboard(mesh, p)),
+                             mesh, "mgr"))
+        print(f"  {name:15s} K = 1e{p:+03d}   {counts[-1]:4d} its")
+    assert max(counts) <= min(counts) + 4
+
+
+@pytest.mark.parametrize("name", sorted(MGR_PRODUCTS))
+def test_the_mgr_answer_is_the_direct_answer(name):
+    """A count measured on a wrong answer is not a measurement."""
+    _hypre()
+    mesh = cube(4)
+    direct = patch(mesh, MGR_PRODUCTS[name])
+    direct.solve()
+    got = patch(mesh, MGR_PRODUCTS[name])
+    solve(got, mesh, "mgr")
+    worst = max(
+        abs(direct.cell_pressure(e) - got.cell_pressure(e)) for e in range(direct.n_cells)
+    )
+    print(f"  {name:15s} max |mgr - direct| = {worst:.2e}")
+    assert worst < 1e-6

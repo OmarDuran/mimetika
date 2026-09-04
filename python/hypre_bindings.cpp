@@ -190,6 +190,9 @@ PYBIND11_MODULE(_hypre, m) {
       .def_readwrite("block_iterations", &HypreSolver::Options::block_iterations,
                      "inner CG steps on the block; 0 applies one ADS cycle instead")
       .def_readwrite("block_rtol", &HypreSolver::Options::block_rtol)
+      .def_readwrite("mgr", &HypreSolver::Options::mgr)
+      .def_readwrite("mgr_frelax", &HypreSolver::Options::mgr_frelax)
+      .def_readwrite("mgr_relax_sweeps", &HypreSolver::Options::mgr_relax_sweeps)
       .def_readwrite("ads_iterations", &HypreSolver::Options::ads_iterations,
                      "cycles per application of the block; 1 is the Riesz map itself");
 

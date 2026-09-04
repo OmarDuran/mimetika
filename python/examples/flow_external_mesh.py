@@ -121,7 +121,7 @@ def solvers(rtol):
     }
 
 
-SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg", _hypre.NAME)
+SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg") + _hypre.HYPRE_NAMES
 DEFAULT_RTOL = 1e-9
 
 
@@ -338,9 +338,14 @@ def main():
     # is cheapest where K is smooth; a jumping coefficient needs the block
     # solved instead -- one cycle stops converging past a contrast of ~1e4 --
     # and this is how many CG steps to allow under the cycle.
-    ap.add_argument("--ads-block-its", type=int, default=None, metavar="N",
-                    help="hypre-ads: CG steps on the flux block (default: one ADS "
-                         "cycle). Use ~20 for a jumping coefficient")
+    ap.add_argument("--ads-block-its", type=int, default=50, metavar="N",
+                    help="hypre-ads: CG steps on the flux block. The default "
+                         "SOLVES the block under a short CG, which is what makes "
+                         "the count h-independent; 0 applies a single cycle, "
+                         "which drifts. Measured on the hybrid ladder l_0..l_3: "
+                         "stabilized_rt 18, 22, 26, 31 on one cycle against 11 "
+                         "flat, and stabilized_bdm 19, 28, 36, 44 against 11, "
+                         "12, 12, 12.")
     ap.add_argument(
         "--hybrid",
         action="store_true",
@@ -398,9 +403,9 @@ def main():
         raise SystemExit(
             f"{args.mesh}: top cells are {dim}-dimensional, expected 2 or 3"
         )
-    if args.solver == _hypre.NAME and not _hypre.available():
+    if args.solver in _hypre.HYPRE_NAMES and not _hypre.available():
         raise SystemExit(_hypre.why_unavailable())
-    if (args.solver.startswith("ads") or args.solver == _hypre.NAME) and dim != 3:
+    if (args.solver.startswith("ads") or args.solver in _hypre.HYPRE_NAMES) and dim != 3:
         raise SystemExit(
             f"--solver {args.solver} is a 3D construction (it needs the discrete "
             f"gradient and curl of a 3-complex); {args.mesh} is {dim}D. "
@@ -461,7 +466,7 @@ def main():
     if args.assemble_only:
         # the direct hypre path is not one of the PETSc option sets, so it
         # assembles through its own bridge rather than through model.assemble
-        if args.solver == _hypre.NAME:
+        if args.solver in _hypre.HYPRE_NAMES:
             report = _hypre.assemble(model, mesh, dim)
         else:
             report = model.assemble(progress=True, options=solvers(args.rtol)[args.solver])
@@ -487,8 +492,11 @@ def main():
                 method="cg", preconditioner="hypre", rtol=args.rtol, max_iterations=2000
             ),
         )
-    elif args.solver == _hypre.NAME:
-        report = _hypre.solve(model, mesh, dim, _hypre.options(args.rtol, block_iterations=args.ads_block_its))
+    elif args.solver in _hypre.HYPRE_NAMES:
+        report = _hypre.solve(
+            model, mesh, dim,
+            _hypre.options(args.rtol, block_iterations=args.ads_block_its,
+                           mgr=args.solver == _hypre.MGR_NAME))
     else:
         report = model.solve(progress=True, options=solvers(args.rtol)[args.solver])
     # The two assemblies, always. They are what scales with the mesh, and they

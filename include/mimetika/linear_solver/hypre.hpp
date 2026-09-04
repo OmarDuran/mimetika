@@ -114,6 +114,24 @@ struct HypreOptions {
   // monolithic vector solve; 13 is the 5-level multiplicative (034515430)
   // that measured fastest per application on the hybrid mesh.
   int ads_cycle_type{13};
+  // MGR INSTEAD OF THE RIESZ MAP. Reduce the flux away rather than precondition
+  // it: F = the flux, C = the pressure, and the coarse operator is
+  //
+  //     S = -D M^-1 D^T ,
+  //
+  // the cell-centred Laplacian -- one unknown a cell, which is BoomerAMG's own
+  // ground and is what the two-point family already is. The flux block here is
+  // a MASS matrix (no div term), so F-relaxation is not facing the a_div
+  // near-nullspace ADS exists for.
+  bool mgr{false};
+  // F-relaxation on the flux block: hypre's MGR relax methods (0 single-level,
+  // 1 V-cycle AMG, 2 AMG).
+  // 0 and 1: single-level relaxation, ONE sweep. Measured h-ladders at n = 4,
+  // 6, 8: stabilized_rt 9, 10, 10 and stabilized_bdm 12, 13, 14. A second sweep
+  // costs BDM its h-independence outright -- 15, 22, 28 -- and an AMG V-cycle
+  // on the F block (relax method 1) does not converge at all.
+  int mgr_frelax{0};
+  int mgr_relax_sweeps{1};
   // The auxiliary hierarchies' strength thresholds -- what PETSc cannot set.
   // hypre's own defaults are 0.25 for both.
   double amg_theta{0.25};
@@ -383,6 +401,30 @@ class HypreSolver {
         b_rows[r].emplace_back(fc, A.value[k]);
       }
     }
+    // WHICH FLUX DOFS THE CONSTRAINT TOUCHES. div is topological and reads only
+    // a facet's constant moment, so these ARE the constants -- identified from
+    // the operator rather than from an assumed dof ordering.
+    std::vector<char> in_constraint(A.n, 0);
+    // BY MAGNITUDE, NOT BY PRESENCE: a slot a row does not pair with is
+    // structurally there and numerically zero -- measured at 3e-15 against 0.9
+    // on the strong-symmetry stress -- so counting entries rather than weighing
+    // them marks every dof.
+    for (std::size_t r = 0; r < b_rows.size(); ++r) {
+      double rmax = 0.0;
+      for (const auto& [c3, v3] : b_rows[r]) rmax = std::max(rmax, std::abs(v3));
+      for (const auto& [c2, v2] : b_rows[r]) {
+        if (std::abs(v2) <= 1e-10 * rmax) continue;
+        (void)v2;
+        (void)v2;
+        // c2 is the block numbering; old_of takes it to a POSITION in `flux`,
+        // and flux[] to the global unknown
+        const auto pos = block_l.old_of.empty()
+                             ? static_cast<std::size_t>(c2)
+                             : static_cast<std::size_t>(block_l.old_of[(std::size_t)c2]);
+        if (pos < flux.size()) in_constraint[(std::size_t)flux[pos]] = 1;
+      }
+    }
+
     for (std::size_t r = 0; r < b_rows.size(); ++r) {
       const double s = inv_w[r];
       if (s == 0.0) continue;
@@ -661,7 +703,87 @@ class HypreSolver {
     HYPRE_FlexGMRESSetPrintLevel(ksp, opts.print_level);
     Vec rhs = to_vec(b, dofs);
     Vec sol = to_vec(std::vector<double>(A.n, 0.0), dofs);
-    HYPRE_FlexGMRESSetPrecond(ksp, apply, setup, reinterpret_cast<HYPRE_Solver>(&block));
+    HYPRE_Solver mgr = nullptr, mgr_amg = nullptr;
+    std::vector<HYPRE_Int> mgr_marker, mgr_cidx;
+    HYPRE_Int mgr_ncpts[1] = {0};
+    HYPRE_Int* mgr_lvl[1] = {nullptr};
+    if (opts.mgr) {
+      // THE MARKERS, AND WHY THERE ARE TWO LEVELS WHEN A FACET CARRIES MORE
+      // THAN ONE MOMENT.
+      //
+      // div is topological, so it reads ONLY the constant moment of a facet:
+      // D = [0 | D_0]. The higher moments lie entirely in ker D, so a single
+      // reduction of the whole flux asks F-relaxation to invert M on a
+      // divergence-free subspace, which it cannot damp -- measured on
+      // stabilized_bdm as 71, 1736 and then no convergence over three
+      // refinements where RT held 9, 10, 11. Splitting them off first makes
+      // level 0 exact on the constraint: the eliminated block contributes
+      // nothing to it, so level 1 is the RT0 system and its Schur complement is
+      // the cell-centred Laplacian.
+      //
+      //   marker 0   the higher facet moments      F at level 0
+      //   marker 1   the facet constants           F at level 1
+      //   marker 2   the multipliers               C throughout
+      //
+      // The constants are read off norm.lowest_order, whose rows ARE them; with
+      // one moment a facet there is no such injection and one level suffices.
+      std::size_t n_touch = 0, n_flux_dofs = 0;
+      for (std::size_t i = 0; i < A.n; ++i)
+        if (in_flux[i] >= 0) { ++n_flux_dofs; n_touch += in_constraint[i] ? 1 : 0; }
+      const bool split_moments = n_touch > 0 && n_touch < n_flux_dofs;
+      if (std::getenv("MIMETIKA_MGR_MARKERS") != nullptr && rank == 0) {
+        std::fprintf(stderr, "[mgr] flux %zu, touched by the constraint %zu -> %s\n",
+                     n_flux_dofs, n_touch, split_moments ? "two levels" : "one level");
+        std::fflush(stderr);
+      }
+      const std::vector<char>& is_const = in_constraint;
+      mgr_marker.assign(static_cast<std::size_t>(dofs.local), 0);
+      for (std::size_t i = 0; i < A.n; ++i) {
+        const int at = dofs.new_of[i];
+        if (!dofs.owns(at)) continue;
+        const int f = factor_of[i];
+        HYPRE_Int mk2 = 0;
+        if (f >= 1) mk2 = split_moments ? 2 : 1;                 // a multiplier
+        else if (split_moments) mk2 = is_const[i] ? 1 : 0;        // constant or higher
+        mgr_marker[static_cast<std::size_t>(at - dofs.begin)] = mk2;
+      }
+      const HYPRE_Int nfac = split_moments ? 3 : 2;
+      const HYPRE_Int n_lvl = split_moments ? 2 : 1;
+      // NOT static: the one-level branch writes into these, and a static would
+      // carry that into the next solve in the same process.
+      mgr_cidx.clear();
+      if (split_moments) { mgr_cidx.push_back(1); mgr_cidx.push_back(2); }
+      else { mgr_cidx.push_back(1); }
+      std::vector<HYPRE_Int> lvl1_cidx{2};
+      HYPRE_Int ncpts2[2] = {static_cast<HYPRE_Int>(mgr_cidx.size()), 1};
+      HYPRE_Int* lvl2[2] = {mgr_cidx.data(), lvl1_cidx.data()};
+
+      HYPRE_MGRCreate(&mgr);
+      HYPRE_MGRSetCpointsByPointMarkerArray(mgr, nfac, n_lvl, ncpts2, lvl2,
+                                            mgr_marker.data());
+      HYPRE_MGRSetNonCpointsToFpoints(mgr, 1);
+      HYPRE_MGRSetMaxIter(mgr, 1);   // a preconditioner, not a solver
+      HYPRE_MGRSetTol(mgr, 0.0);
+      HYPRE_MGRSetPrintLevel(mgr, opts.print_level);
+      HYPRE_MGRSetFRelaxMethod(mgr, opts.mgr_frelax);
+      HYPRE_MGRSetNumRelaxSweeps(mgr, opts.mgr_relax_sweeps);
+      HYPRE_BoomerAMGCreate(&mgr_amg);
+      HYPRE_BoomerAMGSetMaxIter(mgr_amg, 1);
+      HYPRE_BoomerAMGSetTol(mgr_amg, 0.0);
+      HYPRE_BoomerAMGSetPrintLevel(mgr_amg, 0);
+      HYPRE_BoomerAMGSetCoarsenType(mgr_amg, opts.amg_coarsen_type);
+      HYPRE_BoomerAMGSetRelaxType(mgr_amg, opts.amg_relax_type);
+      HYPRE_BoomerAMGSetStrongThreshold(mgr_amg, opts.amg_theta);
+      HYPRE_BoomerAMGSetInterpType(mgr_amg, opts.amg_interp_type);
+      HYPRE_BoomerAMGSetPMaxElmts(mgr_amg, opts.amg_pmax);
+      HYPRE_MGRSetCoarseSolver(mgr, HYPRE_BoomerAMGSolve, HYPRE_BoomerAMGSetup, mgr_amg);
+      HYPRE_MGRSetup(mgr, mat_of(a_full), vec_of(rhs), vec_of(sol));
+      HYPRE_FlexGMRESSetPrecond(ksp,
+                                reinterpret_cast<HYPRE_PtrToSolverFcn>(HYPRE_MGRSolve),
+                                reinterpret_cast<HYPRE_PtrToSolverFcn>(HYPRE_MGRSetup), mgr);
+    } else {
+      HYPRE_FlexGMRESSetPrecond(ksp, apply, setup, reinterpret_cast<HYPRE_Solver>(&block));
+    }
     HYPRE_ParCSRFlexGMRESSetup(ksp, mat_of(a_full), vec_of(rhs), vec_of(sol));
     const auto t1 = std::chrono::steady_clock::now();
     HYPRE_ParCSRFlexGMRESSolve(ksp, mat_of(a_full), vec_of(rhs), vec_of(sol));
@@ -681,6 +803,8 @@ class HypreSolver {
     read_back(sol, dofs, x);
 
     HYPRE_ParCSRFlexGMRESDestroy(ksp);
+    if (mgr != nullptr) HYPRE_MGRDestroy(mgr);
+    if (mgr_amg != nullptr) HYPRE_BoomerAMGDestroy(mgr_amg);
     if (block.l1_norms != nullptr) hypre_TFree(block.l1_norms, HYPRE_MEMORY_HOST);
     if (block.inner != nullptr) {
       if (block.inner_is_flex) HYPRE_ParCSRFlexGMRESDestroy(block.inner);
