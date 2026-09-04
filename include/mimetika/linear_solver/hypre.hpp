@@ -990,7 +990,15 @@ class HypreSolver {
     // the rotation and the trace. The point sweep is what damps the
     // high-frequency part of that. Dropped, the mechanics ladder stops
     // converging outright: 9.4e-02 then 2.7e-01, a rate of -1.8.
-    const int sweeps = b.ads.size() > 1 ? 2 : 1;
+    // ONE SWEEP, NOT TWO. The second pre- and post-sweep was carried over from
+    // the weak-symmetry cycle and buys nothing: measured on the hybrid meshes
+    // the outer count is UNCHANGED at one sweep -- stabilized_vem 16 and 17 at
+    // levels 1 and 2, stabilized_bdm 18 and 16 -- while the solve drops 2.18 s
+    // to 1.78 s and 20.76 s to 16.45 s for vem, 29.63 s to 26.19 s for bdm. On
+    // strong symmetry the reason is visible: the facet slots the injection does
+    // NOT carry are a mass matrix, cond 2.3 after diagonal scaling with no
+    // near-nullspace, so one sweep already resolves them.
+    const int sweeps = 1;
     for (int q = 0; q < sweeps; ++q) smooth(b, r, x);  // pre-smooth
 
     // MULTIPLICATIVE OVER THE COPIES, SWEPT BOTH WAYS.
