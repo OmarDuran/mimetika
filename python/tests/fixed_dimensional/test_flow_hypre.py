@@ -477,3 +477,67 @@ def test_the_mgr_answer_is_the_direct_answer(name):
     )
     print(f"  {name:15s} max |mgr - direct| = {worst:.2e}")
     assert worst < 1e-6
+
+
+
+# ---- 9. adaptive_rt with the selection ACTUALLY ON --------------------------
+#
+# adaptive_rt derives a binary eta per cell from the degeneracy scan: 1 where
+# the stabilized member is used, 0 on the cells the scan flags. At exokal's
+# DEFAULT threshold none of these meshes has a flagged cell, so every other
+# test in this file runs adaptive_rt as an alias of stabilized_rt and says
+# nothing about the adaptive path. The threshold here is chosen to flag a real
+# fraction of the annulus, and the first test refuses to let that go silently
+# vacuous.
+#
+# What ADS is told does NOT change with eta: the space is one moment a facet
+# either way, so G, C and the coordinates are the same and only the entries of
+# A_h move, cell by cell. That is the same kind of variation as a jumping K,
+# which is why the count is expected to hold -- and does.
+ADAPTIVE_PERCENT = 80.0
+
+
+def _flagged(mesh):
+    """Cells the scan flags at ADAPTIVE_PERCENT, from the mesh alone."""
+    percent = np.asarray(mk.cell_collapse_percent(mesh, 3))
+    judged = percent[~np.isnan(percent)]
+    return int((judged < ADAPTIVE_PERCENT).sum()), int(judged.size)
+
+
+def _adaptive(mesh, permeability=None):
+    model = patch(mesh, R.adaptive_rt, permeability)
+    model.set_degeneracy_percent(ADAPTIVE_PERCENT)
+    return model
+
+
+def test_the_adaptive_selection_is_active_on_this_ladder():
+    """Without this the two tests below would pass on stabilized_rt."""
+    for n in (4, 6, 8):
+        mesh = wedge(n)
+        flagged, judged = _flagged(mesh)
+        print(f"  wedge({n})  {flagged:4d} of {judged:4d} cells flagged")
+        assert flagged > 0, "the selection is inactive; the tests below are vacuous"
+
+
+def test_adaptive_rt_is_h_robust_with_the_selection_on():
+    _hypre()
+    counts = []
+    for n in (4, 6, 8):
+        mesh = wedge(n)
+        flagged, judged = _flagged(mesh)
+        model = _adaptive(mesh)
+        counts.append(_count(model, mesh))
+        print(f"  wedge({n})  {flagged:4d}/{judged:4d} flagged  "
+              f"{model.n_dofs:7d} dofs   {counts[-1]:4d} its")
+    assert max(counts) <= min(counts) + 6
+
+
+def test_adaptive_rt_does_not_track_the_contrast_with_the_selection_on():
+    """The selection and the coefficient jump at once."""
+    _hypre()
+    mesh = wedge(6)
+    counts = []
+    for p in JUMPS:
+        counts.append(_count(_adaptive(mesh, enclosure(mesh, p)), mesh))
+        print(f"  K_in = 1e{p:+03d}   {counts[-1]:4d} its")
+    assert max(counts) <= min(counts) + 6
