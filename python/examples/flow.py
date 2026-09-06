@@ -206,9 +206,11 @@ def main():
     ap.add_argument("--rtol", type=float, default=DEFAULT_RTOL,
                     help="residual tolerance of the iterative solver")
     ap.add_argument("--degeneracy-percent", type=float, default=None,
-                    help="adaptive_rt's scan threshold: cells below this "
-                         "percentage of their node-star mean take the "
-                         "two-point star instead of the stabilized product")
+                    help="eta_E = 0 where |E| falls below this percent of the "
+                         "mean measure of its node star -- an admissibility "
+                         "condition on the local moment problem. It is "
+                         "independent of cond(M_E); flow_external_mesh.py adds "
+                         "--cond-threshold, which selects on the spectrum")
     args = ap.parse_args()
 
     family, how = FAMILIES[args.family], PRODUCTS[args.product]

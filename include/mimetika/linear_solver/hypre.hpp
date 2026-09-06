@@ -270,12 +270,16 @@ class HypreSolver {
           "HypreSolver: a distributed run needs the owner of every unknown; "
           "call set_owners()");
     }
-    if (ranks > 1 && norm.entity_owner.size() < 3) {
+    if (ranks > 1 && !opts.mgr && norm.entity_owner.size() < 3) {
       throw std::invalid_argument(
           "HypreSolver: a distributed run needs the owner of every vertex, edge and face");
     }
     if (norm.empty()) throw std::invalid_argument("HypreSolver: the norm has no factors");
-    if (norm.discrete_gradient.empty() || norm.discrete_curl.empty()) {
+    // MGR REDUCES A, NOT THE RIESZ MAP. It partitions the assembled system by
+    // F/C markers and never forms A0, so A0's graph term, the complex and the
+    // ADS hierarchies are unused under it.
+    const bool need_ads = !opts.mgr;
+    if (need_ads && (norm.discrete_gradient.empty() || norm.discrete_curl.empty())) {
       throw std::invalid_argument("HypreSolver: ADS needs the discrete gradient and curl");
     }
     const auto n = static_cast<HYPRE_BigInt>(A.n);
@@ -289,8 +293,8 @@ class HypreSolver {
     // the block is then a two-level cycle whose coarse operator is where ADS
     // runs. `lowest_order` is that injection, and it is a matrix of ones
     // because the constant moment IS one of the unknowns.
-    const bool two_level = !norm.lowest_order.empty();
-    if (!two_level && static_cast<HYPRE_BigInt>(norm.discrete_curl.rows) != nf) {
+    const bool two_level = need_ads && !norm.lowest_order.empty();
+    if (need_ads && !two_level && static_cast<HYPRE_BigInt>(norm.discrete_curl.rows) != nf) {
       throw std::invalid_argument("HypreSolver: the curl's rows are not the first factor");
     }
     if (two_level && norm.lowest_order.cols != norm.discrete_curl.rows * norm.lowest_order_components) {
@@ -317,12 +321,15 @@ class HypreSolver {
     // the four spaces, on the partition
     const Layout dofs = ranks > 1 ? layout_of(owners_, ranks, rank)
                                   : serial_layout(static_cast<int>(A.n));
-    const Layout verts = ranks > 1 ? layout_of(norm.entity_owner[0], ranks, rank)
-                                   : serial_layout(norm.discrete_gradient.cols);
-    const Layout edges = ranks > 1 ? layout_of(norm.entity_owner[1], ranks, rank)
-                                   : serial_layout(norm.discrete_gradient.rows);
-    const Layout faces = ranks > 1 ? layout_of(norm.entity_owner[2], ranks, rank)
-                                   : serial_layout(norm.discrete_curl.rows);
+    const Layout verts = !need_ads ? serial_layout(0)
+                         : ranks > 1 ? layout_of(norm.entity_owner[0], ranks, rank)
+                                     : serial_layout(norm.discrete_gradient.cols);
+    const Layout edges = !need_ads ? serial_layout(0)
+                         : ranks > 1 ? layout_of(norm.entity_owner[1], ranks, rank)
+                                     : serial_layout(norm.discrete_gradient.rows);
+    const Layout faces = !need_ads ? serial_layout(0)
+                         : ranks > 1 ? layout_of(norm.entity_owner[2], ranks, rank)
+                                     : serial_layout(norm.discrete_curl.rows);
     // The block's own numbering. With one moment a facet it IS the faces --
     // the same owners in the same order, so the same permutation -- and with d
     // moments it is d times larger and the faces are its coarse space.
@@ -425,25 +432,35 @@ class HypreSolver {
       }
     }
 
-    for (std::size_t r = 0; r < b_rows.size(); ++r) {
-      const double s = inv_w[r];
-      if (s == 0.0) continue;
-      for (const auto& [i, vi] : b_rows[r]) {
-        for (const auto& [j, vj] : b_rows[r]) m.add(i, j, s * vi * vj);
+    if (need_ads) {
+      for (std::size_t r = 0; r < b_rows.size(); ++r) {
+        const double s = inv_w[r];
+        if (s == 0.0) continue;
+        for (const auto& [i, vi] : b_rows[r]) {
+          for (const auto& [j, vj] : b_rows[r]) m.add(i, j, s * vi * vj);
+        }
       }
-    }
-    // and the constrained flux unknowns, with the diagonal A gave them
-    for (std::size_t k = 0; k < norm.pinned.size(); ++k) {
-      const auto i = static_cast<std::size_t>(norm.pinned[k]);
-      if (in_flux[i] < 0) continue;
-      m.add(in_flux[i], in_flux[i],
-            k < norm.pinned_diagonal.size() ? norm.pinned_diagonal[k] : 1.0);
+      // and the constrained flux unknowns, with the diagonal A gave them
+      for (std::size_t k = 0; k < norm.pinned.size(); ++k) {
+        const auto i = static_cast<std::size_t>(norm.pinned[k]);
+        if (in_flux[i] < 0) continue;
+        m.add(in_flux[i], in_flux[i],
+              k < norm.pinned_diagonal.size() ? norm.pinned_diagonal[k] : 1.0);
+      }
     }
 
     Mat a_full = to_mat(A, dofs);
-    Mat a0 = to_mat(m, block_l);
-    Mat grad = to_mat(norm.discrete_gradient, edges, verts);
-    Mat curl = to_mat(norm.discrete_curl, faces, edges);
+    // DECLARED HERE, ASSIGNED UNDER THE GATE. block.a0 and the ADS hierarchies
+    // hold raw handles into these and are read below the gate, so their scope
+    // has to outlive it.
+    Block block;
+    Mat a0, grad, curl, pi_rt, pi_nd;
+    Vecs xyz;
+    std::vector<Mat> inject;
+    if (need_ads) {
+    a0 = to_mat(m, block_l);
+    grad = to_mat(norm.discrete_gradient, edges, verts);
+    curl = to_mat(norm.discrete_curl, faces, edges);
 
     // THE INTERPOLATIONS, WHEN THE SPACE IS NOT LOWEST ORDER.
     //
@@ -473,7 +490,7 @@ class HypreSolver {
     const Layout vnodes =
         (supplied_pi && ranks > 1) ? layout_of(norm.interpolation_owner, ranks, rank)
                                    : serial_layout(supplied_pi ? norm.rt_interpolation.cols : 1);
-    Mat pi_rt, pi_nd;
+
     if (supplied_pi) {
       pi_rt = to_mat(norm.rt_interpolation, faces, vnodes);
       pi_nd = to_mat(norm.nd_interpolation, edges, vnodes);
@@ -494,7 +511,6 @@ class HypreSolver {
     // of 594 -- and the linear part is then a rounding error on the constant.
     // Subtracting the minimum changes the span of {1, x, y, z} not at all and
     // restores the precision.
-    Vecs xyz;
     std::vector<double> origin(3, 0.0);
     for (int d = 0; d < norm.space_dim && d < 3; ++d) {
       double lo = std::numeric_limits<double>::infinity();
@@ -538,7 +554,7 @@ class HypreSolver {
     // sub-block directly, which is the operator ADS is written for; extracting
     // it from a wide Galerkin product afterwards would be the same matrix by a
     // longer road.
-    std::vector<Mat> inject(static_cast<std::size_t>(copies));
+    inject.resize(static_cast<std::size_t>(copies));
     if (two_level) {
       std::vector<std::vector<int>> ir(static_cast<std::size_t>(copies)), ic(
           static_cast<std::size_t>(copies));
@@ -564,7 +580,6 @@ class HypreSolver {
       }
     }
 
-    Block block;
     block.two_level = two_level;
     block.n_flux = static_cast<int>(nf);
     block.inv_w_local.assign(static_cast<std::size_t>(dofs.local), 0.0);
@@ -651,12 +666,19 @@ class HypreSolver {
       HYPRE_ADSSetup(block.ads[0], block.a0, vec_of(block.rhs), vec_of(block.sol));
     }
 
-    // the inner CG on the block, with that cycle as its preconditioner
+    // THE INNER KRYLOV ON A0, FlexGMRES EVEN WHERE CG IS ADMISSIBLE.
+    //
+    // A0 is SPD, and without two_level so is the preconditioner -- one ADS
+    // cycle, cycle 13 = 01234543210, palindromic -- so CG applies. It is
+    // nonetheless slower, by the stopping criterion rather than the work a
+    // step: block_rtol = 1e-2 is read on ||r||_2, which FlexGMRES minimizes
+    // and CG does not, CG being optimal in the A-norm of the error. At that
+    // tolerance the two differ by the whole cost -- 93 s against 33 s on 5.2e5
+    // cells at the same 6 outer iterations -- and FlexGMRES pays k(k+1)/2
+    // inner products for the k steps it takes, not for KDim. Under two_level
+    // the forward-only cycle omits the backward sweep, and CG is then
+    // inadmissible rather than merely slower.
     if (opts.block_iterations > 0 && forward_only()) {
-      // EXPERIMENT (MIMETIKA_ADS_FORWARD_ONLY): the backward sweep exists only
-      // to make the cycle symmetric for the inner CG. Dropped, the cycle costs
-      // half as much and the inner Krylov has to tolerate a non-symmetric
-      // preconditioner -- FlexGMRES, as the outer one already does.
       block.inner_is_flex = true;
       HYPRE_ParCSRFlexGMRESCreate(MPI_COMM_WORLD, &block.inner);
       HYPRE_FlexGMRESSetKDim(block.inner, opts.block_iterations);
@@ -694,6 +716,7 @@ class HypreSolver {
       }
       HYPRE_ParCSRPCGSetup(block.inner, block.a0, vec_of(block.rhs), vec_of(block.sol));
     }
+    }  // need_ads
 
     HYPRE_Solver ksp = nullptr;
     HYPRE_ParCSRFlexGMRESCreate(MPI_COMM_WORLD, &ksp);
@@ -727,6 +750,7 @@ class HypreSolver {
       //
       // The constants are read off norm.lowest_order, whose rows ARE them; with
       // one moment a facet there is no such injection and one level suffices.
+
       std::size_t n_touch = 0, n_flux_dofs = 0;
       for (std::size_t i = 0; i < A.n; ++i)
         if (in_flux[i] >= 0) { ++n_flux_dofs; n_touch += in_constraint[i] ? 1 : 0; }

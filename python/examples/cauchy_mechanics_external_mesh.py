@@ -335,14 +335,19 @@ def main():
         "--degeneracy-percent",
         type=float,
         default=None,
-        help="a cell is degenerate below this percent of its node-star mean; defaults to exokal's default_degeneracy_percent",
+        help="eta_E = 0 where |E| falls below this percent of the mean measure of "
+             "its node star: an admissibility condition on the local moment "
+             "problem, which loses rank as the measure collapses relative to its "
+             "star. Independent of cond(M_E). exokal imposes its own such "
+             "threshold whatever this says, so the set can only widen.",
     )
     ap.add_argument(
         "--cond-threshold",
         type=float,
         default=None,
-        help="adaptive_vem: a cell whose stabilized vem block has lambda_max/lambda_min above "
-             "this takes the diagonal star as well (composes with --degeneracy-percent)",
+        help="eta_E = 0 where the stabilized vem block has cond(M_E) = "
+             "lambda_max/lambda_min above this. Each selector only sets eta_E = 0, "
+             "so the two commute and the selection is their union.",
     )
     ap.add_argument(
         "--rotation-jump",

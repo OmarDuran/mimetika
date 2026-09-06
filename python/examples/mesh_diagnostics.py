@@ -71,12 +71,14 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--mesh", required=True, help="the .vtu to diagnose")
     ap.add_argument("--degeneracy-percent", type=float, default=None,
-                    help="a cell is degenerate below this percent of its node-star mean "
-                         "measure; defaults to exokal's default_degeneracy_percent")
+                    help="eta_E = 0 where |E| falls below this percent of the mean "
+                         "measure of its node star: an admissibility condition on the "
+                         "local moment problem, which loses rank as the measure "
+                         "collapses. Independent of cond(M_E). Defaults to exokal's.")
     ap.add_argument("--cond-threshold", type=float, default=None,
-                    help="for an adaptive product: select eta from CONDITIONING as well -- "
-                         "a cell whose stabilized block has lambda_max/lambda_min above this "
-                         "takes the diagonal star (eta = 0); composes with the collapse scan")
+                    help="eta_E = 0 where the stabilized block has cond(M_E) = "
+                         "lambda_max/lambda_min above this. Each selector only sets "
+                         "eta_E = 0, so the two commute and the selection is their union.")
     ap.add_argument("--physics", default="flow", choices=("flow", "elasticity"),
                     help="which family --product names (derham_bdm exists in both)")
     ap.add_argument("--product", default="adaptive_rt",
