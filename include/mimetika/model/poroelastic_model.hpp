@@ -32,12 +32,12 @@
 //                    drained top (natural)      prescribed pressure on both
 //                                               radial boundaries (natural)
 //
-// Everything that differs is in this struct; nothing that differs is in a
-// term, a package or a model. That is the claim the catalogue makes.
+// Everything that differs between the two is configuration held here; no term,
+// package or catalogue entry differs.
 //
-// The conditions are forms, so a curved wall is not a special case. The
+// The conditions are forms, so a curved wall is not a special case: the
 // borehole's inner boundary has a different normal on every facet, and
-// "the radial stress is -p1 there" is one statement about all of them.
+// n . (sigma n) = -p1 is one statement about all of them.
 
 namespace mimetika {
 
@@ -99,19 +99,19 @@ class PoroelasticModel {
   // is chosen once and both spaces follow it.
   //
   //   bdm             d moments per facet: flux d per facet, stress d^2, both
-  //                   de Rham -- derham_bdm under derham_bdm. The
-  //                   mimetic-AFW-BDM formulation. Any cell type, either
-  //                   dimension.
+  //                   realized as derham_bdm. The mimetic-AFW-BDM formulation.
+  //                   Any cell type, either dimension.
   //   bdm_stabilized  the same layout and the same flux, with the stress star
   //                   realized as stabilized_bdm: the full linear tensor
   //                   reconstruction, stabilized on ker(N^T) where a polytope
   //                   leaves one. On a simplex mesh it coincides with `bdm`
   //                   cell by cell, since the stabilization vanishes and both
   //                   reduce to the conforming AFW element.
-  //   rt              one per facet: flux 1, stress d. d copies of the minimal
-  //                   de Rham pair; sound as a product, and not an element --
-  //                   its weak-symmetry inf-sup degenerates (see
-  //                   test_dimensions).
+  //   rt              one per facet: flux 1, stress d. Both realized as
+  //                   derham_rt -- d copies of the minimal de Rham pair; sound
+  //                   as a product, and not an element: the discrete inf-sup
+  //                   for gamma degenerates and the saddle point is singular
+  //                   (tests/model/test_confined_compression.cpp).
   enum class Layer { bdm, bdm_stabilized, rt };
 
   PoroelasticModel(const exokal::Mesh& mesh, int cell_dim, PoroelasticMaterial material, double dt,
@@ -161,8 +161,8 @@ class PoroelasticModel {
         *mesh_, dim_, material_.shear, material_.lame, stress_how,
         exokal::hodge::StressOperators::Formulation::weak_symmetry,
         layer_ == Layer::bdm ? &geometry_ : nullptr);
-    // backward Euler without stepping machinery: the flux over a step is
-    // q~ = dt q, which is the Darcy mobility set to dt
+    // the star carries the medium's mobility k/mu_f; the step's dt enters
+    // through o.mobility below
     flux_ = exokal::hodge::FluxOperators::build(
         *mesh_, dim_, exokal::hodge::Coefficient::uniform(material_.mobility),
         bdm ? exokal::hodge::FluxOperators::Realization::derham_bdm
@@ -176,6 +176,8 @@ class PoroelasticModel {
     ctx_.provide("boundary_pressure", pressure_data_);
 
     physics::ModelOptions o;
+    // backward Euler without stepping machinery: the flux over a step is
+    // q~ = dt q, which is the Darcy term's mobility set to dt
     o.mobility = dt_;
     o.storage = material_.storage(dim_);
     o.volumetric_compliance = material_.volumetric_compliance(dim_);

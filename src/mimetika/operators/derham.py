@@ -1,15 +1,11 @@
 r"""De Rham (consistency-only) mimetic inner products.
 
-The default, fully supported operators of the library: the scalar flux
-product and its elasticity descendants (three- and four-field), all free of
-stabilization by construction.  The names are structural: what makes the
-construction work is the de Rham complex -- each field (a flux, a stress
-row) is an H(div) unknown, and the divergence-free fields that complete the
-local spaces to unisolvence are supplied by the exactness of the complex
-(images of the curl).  The operators written in ``M_consistency + M_stab``
-form (:mod:`mimetika.operators.diffusion`,
-:mod:`mimetika.operators.elasticity`) are retained as examples of the
-stabilized family.
+The scalar flux product and its elasticity descendants (three- and
+four-field).  Each field (a flux, a stress row) is an H(div) unknown, and the
+divergence-free fields completing the local space to unisolvence are images
+of the curl, supplied by exactness of the de Rham complex.  The operators
+written in ``M1 + M2`` form (:mod:`mimetika.operators.diffusion`,
+:mod:`mimetika.operators.elasticity`) are the stabilized family.
 
 Scalar member (the BDM equivalent):
 
@@ -25,22 +21,20 @@ Galerkin (mass) matrix of that space,
 
     ``M_E = |E| N^{-T} Kbar N^{-1}``    (``ker N^T = {0}``),
 
-which is pure consistency: no stabilization matrix exists, by construction
-rather than by cell type.  There is no stabilized fallback: a cell whose
-enrichment cannot reach unisolvence by ``max_degree`` raises.
+so ``M2 = s C C^T`` is absent on every cell type.  A cell whose enrichment
+cannot reach unisolvence by ``max_degree`` raises; there is no stabilized
+fallback.
 
-The enrichment is dictated by the exterior-calculus structure of the problem:
-the fields invisible to the divergence are ``rot`` of scalar potentials in 2D
-and ``curl`` of vector potentials in 3D, so enriching never perturbs the
-discrete equilibrium structure, and consistency for constant fluxes survives
-verbatim -- the boundary pairing of a linear potential is captured exactly by
-the facet ``P_1`` moments, and the volume term dies at the centroid because
-every mode has cell-wise constant divergence.
+The fields invisible to the divergence are ``rot`` of scalar potentials in 2D
+and ``curl`` of vector potentials in 3D, so enriching does not perturb the
+discrete equilibrium structure and consistency for constant fluxes is
+unchanged: the boundary pairing of a linear potential is captured exactly by
+the facet ``P_1`` moments, and the volume term vanishes at the centroid
+because every mode has cell-wise constant divergence.
 
 On a simplex the count ``d n_f = d (d+1)`` forbids enrichment, the local
 space is ``BDM_1(E)`` and ``M_E`` its mass matrix.  Off simplices, strong
-consistency holds for constants (the patch test), not for linears -- the
-price of keeping the degrees of freedom lowest order.
+consistency holds for constants (the patch test), not for linears.
 
 The built-in mesh quadrature is exact only for quadratics, while the Gram of
 degree-``k`` enrichment needs degree ``2(k-1)``; the module therefore carries
@@ -233,9 +227,9 @@ class DeRhamDiffusionInnerProduct:
 
     ``d`` DOFs per facet, ordered ``facet * d + b`` with ``b = 0`` the constant
     moment (the average normal flux, which the discrete divergence reads) and
-    ``b >= 1`` the moments against the centred, diameter-scaled in-facet
-    coordinates -- the same facet basis as the elasticity product, so a stress
-    row and a flux carry identical degrees of freedom.
+    ``b >= 1`` the moments against the in-facet coordinates, centred on the
+    facet centroid and scaled by ``|e|^{1/2}`` -- the same facet basis as the
+    elasticity product, so a stress row and a flux carry identical DOFs.
     """
 
     def __init__(
@@ -372,13 +366,11 @@ class DeRhamDiffusionInnerProduct:
             )
         proj = N_all[:, m1:] - Q1 @ (Q1.T @ N_all[:, m1:])
         _, _, piv = scipy.linalg.qr(proj, mode="economic", pivoting=True)
-        # Sorted, so congruent cells produce identical N and G.  LAPACK breaks
-        # equal-magnitude pivots by encounter order, which round-off flips from
-        # cell to cell.  M is invariant under the permutation, but N and G are
-        # not, which defeats caching on congruent cells and leaves the operator
-        # reproducible only up to that permutation.  Sorting fixes the order; it
-        # does not fix which columns are chosen when two candidates are
-        # near-tied in magnitude.
+        # Sorted: LAPACK breaks equal-magnitude pivots by encounter order, which
+        # round-off flips from cell to cell.  M is invariant under that column
+        # permutation, N and G are not, so congruent cells would otherwise yield
+        # different N and G.  Sorting fixes the order, not which columns are
+        # selected when two candidates are near-tied in magnitude.
         sel = m1 + np.sort(piv[: n_dof - m1])
         idx = np.concatenate([np.arange(m1), sel])
         N = N_all[:, idx]
@@ -444,9 +436,8 @@ class DeRhamDiffusionInnerProduct:
         """``R`` columns of the ``d`` constant modes, in the local basis.
 
         ``R[(i, b), c]`` is the coefficient of the linear potential
-        ``psi_c = (K^{-1} e_c) . xi`` in the facet basis: the identity
-        ``M N e_c = R e_c`` is the (S2) consistency the construction
-        guarantees, and the tests verify.
+        ``psi_c = (K^{-1} e_c) . xi`` in the facet basis; ``M N e_c = R e_c``
+        is the (S2) consistency identity.
         """
         g = self.mesh.geometry
         lc = LocalCell.build(g, cell_id, self.frame)
@@ -493,8 +484,8 @@ class DeRhamDeviatoricStress:
         material=None,
         max_degree: int = 6,
     ) -> None:
-        # the AFW sibling supplies everything that is metric-independent of the
-        # inner product: facet data (X), the volumetric pair (W, c), materials
+        # the AFW sibling supplies what does not depend on the enriched space:
+        # facet data (X), the volumetric pair (W, c), the material arrays
         self._afw = ElasticityInnerProduct(mesh, mu=mu, lam=lam, material=material)
         self.mesh = mesh
         self.frame = self._afw.frame
@@ -547,10 +538,9 @@ class DeRhamDeviatoricStress:
     def local_matrices(self, cell_id: int, with_facet_data: bool = False):
         """``(N, R, Kbar, vol, lc[, X])`` in the full ``d^2``-per-facet layout.
 
-        ``N`` is square and invertible (the row blocks are), ``R`` is the
-        unique solution of ``N^T R = |E| Kbar`` -- no completion step exists --
-        and :func:`assemble_local_inner_product` on these returns pure
-        consistency: the stabilization branch is unreachable.
+        ``N`` is square and invertible (its row blocks are), so ``R`` is the
+        unique solution of ``N^T R = |E| Kbar``: no min-norm completion is
+        needed and :func:`assemble_local_inner_product` returns ``M1`` alone.
         """
         Ns, Gs, lc, _ = self._scalar_local(cell_id)
         d, nf, vol = lc.dim, lc.n_facets, lc.volume
@@ -594,10 +584,11 @@ class DeRhamDeviatoricStress:
         """``(P, Gvol)``: the ``P_1`` trace moments and their Gram blocks.
 
         ``P`` maps canonical stress DOFs to the coefficients of the ``P_1``
-        projection of ``tr R`` in the cell basis ``{1, xi / h}``; ``Gvol`` is
-        block diagonal with the exact ``P_1`` Grams.  The folded member
+        projection of the trace of the local stress reconstruction, in the
+        cell basis ``{1, xi / h}`` with ``h = |E|^{1/d}``; ``Gvol`` is block
+        diagonal with the exact ``P_1`` Grams.  The folded member
         ``M_row - (a/2mu) P^T Gvol P`` equals the AFW product on simplices,
-        where ``tr R`` *is* linear -- the linear solid pressure of
+        where that trace is linear; the linear solid pressure of
         :class:`~mimetika.assembly.four_field.FourFieldElasticity` carries
         exactly these moments.
         """
@@ -649,12 +640,11 @@ class DeRhamDeviatoricStress:
         """Stacked scalar products ``Ms`` on a group of 2D triangles.
 
         The closed forms of ``_local_simplex_2d`` vectorised over the group:
-        canonical edge tangents, star-shapedness outward normals, edge
-        moments, and the exact Gram from the triangle second moments
-        ``S2 = (A/12) sum_k v_k v_k^T`` (centroid origin).  With the
-        isotropic scalar tensor ``K = 2 mu I`` the frame projection is
-        ``2 mu I_2``, so no per-cell inversion appears anywhere; the whole
-        group reduces to one stacked ``solve``.
+        canonical edge tangents, outward normals by the star-shapedness test,
+        edge moments, and the exact Gram from the triangle second moments
+        ``S2 = (A/12) sum_k v_k v_k^T`` (centroid origin).  With the isotropic
+        scalar tensor ``K = 2 mu I`` the frame projection is ``2 mu I_2``, so
+        no per-cell inversion is needed.
         """
         g = self.mesh.geometry
         Q = self.frame
@@ -764,11 +754,10 @@ class DeRhamElasticityInnerProduct(DeRhamDeviatoricStress):
     """The full AFW compliance built as ``d`` copies of the BDM product.
 
     ``assemble()`` returns ``M_row - (a/2mu) P^T Gvol P``: the block-diagonal
-    row-wise (BDM) part plus the exact ``P_1`` trace-energy term.  On a
-    simplicial mesh this is the Arnold--Falk--Winther product, entry by
-    entry -- the implementation reflects the structural fact that AFW is
-    ``d`` copies of the ``BDM_1`` inner product coupled only through the
-    trace of the compliance; off simplices it is the row-wise member with
+    row-wise (BDM) part minus the exact ``P_1`` trace-energy term.  On a
+    simplicial mesh this is the Arnold--Falk--Winther product entry by entry:
+    AFW is ``d`` copies of the ``BDM_1`` inner product, coupled only through
+    the trace of the compliance.  Off simplices it is the row-wise member with
     the ``P_1``-projected trace energy.  Drop-in three-field usage:
     ``MixedElasticity(mesh, inner=DeRhamElasticityInnerProduct(mesh, ...))``.
     """

@@ -95,22 +95,15 @@ BENCHMARKS = pathlib.Path(__file__).parent / "benchmarks"
 def pytest_collection_modifyitems(items):
     """Tag everything under ``tests/benchmarks`` with the ``benchmark`` marker.
 
-    Those are not unit tests of the source: they reproduce published problems --
-    Terzaghi consolidation, the Novikov fault-reactivation cases -- end to end, and
-    take minutes rather than milliseconds.  ``addopts`` in ``pyproject.toml`` carries
-    ``-m "not benchmark"``, so a plain ``pytest`` run exercises the library and
-    ``pytest -m benchmark`` checks the literature still reproduces.  Deselected is
-    NOT passing -- run them before a release and after touching an operator, a mesh
-    generator or a solver.
+    Those reproduce published problems -- Terzaghi consolidation, the Novikov
+    fault-reactivation cases -- end to end, in minutes rather than milliseconds.
+    ``addopts`` in ``pyproject.toml`` carries ``-m 'not benchmark'``; run them with
+    ``pytest -m benchmark``.
 
-    Marking here, in the *root* conftest, rather than in ``tests/benchmarks/conftest.py``:
-    several test modules do ``from conftest import ...``, which resolves by module
-    name, so a second ``conftest`` anywhere under ``tests/`` shadows this one and
-    breaks those imports at collection time.
-
-    The path test is load-bearing too.  A subdirectory conftest hook still receives
-    the *whole* session's item list, and marking unconditionally would deselect the
-    entire suite -- which reports as "3707 deselected" and reads like success.
+    Marked in this conftest rather than ``tests/benchmarks/conftest.py``: ``conftest``
+    resolves by module name, so a second one under ``tests/`` shadows this one and
+    breaks the ``from conftest import ...`` in several test modules.  The path test is
+    required because a subdirectory hook still receives the whole session's item list.
     """
     for item in items:
         if BENCHMARKS in pathlib.Path(str(item.path)).parents:

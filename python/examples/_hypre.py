@@ -1,4 +1,4 @@
-r"""The `hypre-ads` solver of flow.py and flow_external_mesh.py.
+r"""The `hypre-ads` and `hypre-mgr` solvers of the flow and mechanics examples.
 
 The same Riesz map every other solver in those examples uses --
 P = diag(M + B^T W^-1 B, W) -- with its first block inverted by hypre's ADS
@@ -18,15 +18,17 @@ gives PETSc, so both paths are preconditioned by the same map and a difference
 between them is the library rather than the method.
 
 ADS is written for ONE unknown per facet in 3D -- derham_rt, stabilized_rt and
-the eta = 1 cells of adaptive_rt -- and it takes those directly.  A facet
-carrying d moments, derham_bdm and stabilized_bdm, reaches it through the
-facet-constant subspace: the block is then a two-level cycle whose coarse
-operator P^T A0 P is where ADS runs, with a symmetric SOR sweep as the smoother
-because what the coarse space omits is the divergence-free part and that is not
-facet-local.  All five run on one process and on several.
+the eta = 1 cells of adaptive_rt -- and it takes those on the mesh's own
+complex.  A facet carrying three moments, derham_bdm and stabilized_bdm, is
+lifted to the degree-2 rung P3 -> N2E2 -> BDM1 with its interpolations Pi_rt,
+Pi_nd; where that upgrade does not apply -- not 3D, or not three moments a
+facet -- the block falls back to the facet-constant subspace, a two-level cycle
+whose coarse operator P^T A0 P is where ADS runs.  All five run on one process
+and on several.
 
-What is NOT here is a weak-symmetry stress: d COPIES of an H(div) space need
-the per-component split the PETSc path builds, and the solve refuses it.
+A weak-symmetry stress is d COPIES of the H(div) space, split by ROW: the
+multipliers are handed over unmerged, so no C^T W_gamma^-1 C term couples one
+row of sigma to another and each row is one a_div problem on the same complex.
 """
 
 import sys
@@ -35,18 +37,46 @@ import time
 import mimetika_cxx as mk
 
 NAME = "hypre-ads"
-# THE OTHER PRECONDITIONER THIS MODULE OFFERS, and it is flow-only.
+# THE OTHER PRECONDITIONER THIS MODULE OFFERS.
 #
-# ADS preconditions the flux block of the Riesz map; MGR eliminates the flux
-# instead -- F = q, C = p -- leaving the cell-centred Laplacian
+# ADS preconditions the first block of the Riesz map; MGR eliminates it instead
+# -- F = the flux or the stress, C = the multipliers -- leaving
 #
 #     S = -D M^-1 D^T
 #
-# for BoomerAMG. That is one unknown a cell, and is what the two-point family
-# already is. It is available for FLOW because the flux block carries no div
-# term and so none of the a_div near-nullspace ADS exists for; on the stress it
-# reconstructs the locking displacement operator and loses nu-robustness --
-# measured 75 to 429 over nu = 0.25 to 0.4999 -- so it is not offered there.
+# for BoomerAMG. On flow that is the cell-centred Laplacian, one unknown a cell,
+# which is what the two-point family already is: h- and contrast-robust, and the
+# faster of the two.
+#
+# ON THE STRESS IT IS BOUNDED RATHER THAN FLAT. Eliminating the stress
+# reconstructs the displacement operator, so the count moves where ADS holds at
+# 19. Measured on the hybrid ladder, stabilized_vem at nu = 1/4, rtol 1e-5:
+#
+#     level      0     1     2     3        nu    0.25  0.40  0.49  .499  .4999
+#     ads       19    19    19    19        ads     19    19    19    19     19
+#     mgr       19    26    37    61        mgr     26    29    38    45     49
+#
+# The stress gets AMG on its F block, which the solver picks wherever a facet
+# carries more than one moment. Jacobi there cannot damp the hydrostatic mode --
+# the compliance's one small eigenvalue, 1/(2mu + d lam) against 1/2mu on the
+# five deviatoric ones -- and the count then grows like sqrt(2mu + d lam): the
+# nu row reads 66 78 133 240 under Jacobi. It is the F block and NOT the coarse
+# one, since div of a constant stress is zero and the hydrostatic direction
+# therefore never enters S = -B M^-1 B^T.
+#
+# AMG there costs about 43 percent more a solve at nu = 1/4 on 1.2e5 cells.
+# mgr_relax_sweeps must be ODD -- an even count does not converge, on flow or on
+# the stress. At l_3 MGR is 83 s against ADS's 194 s.
+#
+# THE SCOPE OF THE ROBUSTNESS CLAIM: stabilized_vem, AMG on F. On its own
+# ladders test_mechanics_hypre_mgr asserts a ratio of at most 1.5 in h (worst
+# measured 1.44), at most 2 across an eight-decade lambda jump, and at most 3
+# over nu = 0.25 .. 0.4999. Nothing is asserted for the weak family.
+#
+# THE WEAK PATH IS NOT OFFERED. A facet carrying d moments takes MGR's two-level
+# reduction, and that path does not converge -- flow derham_bdm and
+# stabilized_bdm stall at the cap. See the note in linear_solver/hypre.hpp: it
+# survives every F-relaxation, interpolation type and reduction depth.
 MGR_NAME = "hypre-mgr"
 HYPRE_NAMES = (NAME, MGR_NAME)
 
@@ -93,7 +123,8 @@ def require_serial():
 
 def options(rtol, cycle_type=13, amg_theta=0.25, ams_theta=0.25, max_iterations=2000,
             block_iterations=None, block_rtol=None, mgr=False):
-    """The ADS knobs, including the two PETSc registers and never queries.
+    """The ADS knobs, amg_theta and ams_theta included: PETSc registers those
+    two and never queries them, so they are reachable only here.
 
     `block_iterations` is the one that changes the character of the solve. The
     default applies ONE ADS cycle per application, which is what the Riesz map
@@ -125,8 +156,8 @@ def assemble(model, mesh, dim):
 
     Two costs, reported apart because they are different objects: A and b, the
     saddle-point system; and the complex the Riesz map's first block is
-    preconditioned through -- the discrete gradient and curl, and for a facet
-    carrying d moments the degree-2 rung P3 -> N2E2 -> BDM1 with its
+    preconditioned through -- the discrete gradient and curl, and for three
+    moments a facet the degree-2 rung P3 -> N2E2 -> BDM1 with its
     interpolations Pi_rt, Pi_nd.
     """
     import mimetika_hypre as mh
@@ -162,6 +193,11 @@ class _Assembly:
         self.block_solver = ("ads, degree-2 complex" if self.degree2 else "ads")
 
 
+def _reduced_onto(model):
+    """What MGR's C block is: the multipliers the first factor pairs with."""
+    return "the displacement" if hasattr(model, "n_rotations") else "the pressure"
+
+
 def solve(model, mesh, dim, opts):
     """Assemble in mimetika_cxx, solve in mimetika_hypre, accept back.
 
@@ -182,11 +218,9 @@ def solve(model, mesh, dim, opts):
     mk.mpi_size()
     mh.init()
 
-    # THE STAGES ARE ANNOUNCED BEFORE THEY RUN, NOT AFTER.
-    #
-    # The other solvers report from inside solve(), so this path printing
-    # nothing left a minute of real work looking like a hung process. Written
-    # to stderr unbuffered and in the same shape, so one run reads as one run.
+    # The stages are announced before they run: the other solvers report from
+    # inside solve(), so this path would print nothing for the whole assembly.
+    # stderr, unbuffered, in the shape the C++ Stage class uses.
     t0 = time.perf_counter()
     _stage("assembling")
     # the partition is numbered inside build(), so it has to be asked for first
@@ -202,44 +236,42 @@ def solve(model, mesh, dim, opts):
     _stage_done(time.perf_counter() - t1)
     _line("preconditioner", report.setup_seconds)
     _line("iteration", report.solve_seconds)
-    # WHICH PRECONDITIONER RAN. A facet carrying d moments is split by ROW and
-    # each row handed to ADS on the degree-2 complex -- on ANY cell shape, and
-    # so on a hybrid mesh too, because C is built facet-wise and needs no cell
-    # reconstruction. Anything else reaches ADS through its lowest-order space:
-    # the mesh's own complex for one moment a facet, the frame-weighted coarse
-    # space for a strong-symmetry stress. Nothing else printed here would say
-    # which, since they converge at similar counts.
+    # WHICH PRECONDITIONER RAN. A facet carrying three moments is split by ROW
+    # and each row handed to ADS on the degree-2 complex -- on ANY cell shape,
+    # because C is facet-wise and needs no cell reconstruction. Anything else
+    # reaches ADS through its lowest-order space: the mesh's own complex for one
+    # moment a facet, the frame-weighted coarse space for a strong-symmetry
+    # stress. The two converge at similar counts, so the count does not say
+    # which ran.
     if opts.mgr:
-        # two levels when a facet carries more than one moment: div reads only
-        # the constant, so the higher moments are eliminated first and level 1
-        # is the RT0 system
-        _note("mgr reduction onto the pressure")
+        # ONE LEVEL OR TWO, and the marker scheme decides from the operator.
+        # div reads only a facet's constant moment, so where a facet carries
+        # more the higher moments lie in ker D and are eliminated first; where
+        # it carries one -- flow, and the strong-symmetry stress, whose div
+        # pairs against the whole of RM(E) -- a single reduction is exact.
+        _note(f"mgr reduction onto {_reduced_onto(model)}")
     else:
         _note("ads on the degree-2 complex" if handoff["degree2"]
               else "ads on the lowest-order complex")
 
-    # A PRECONDITIONER THAT DID NOT CONVERGE STILL RETURNS A VECTOR.
-    #
-    # The examples read the answer and print an error table; without this a
-    # capped solve reads as a discretization that stopped converging -- 3.8e-02
-    # then 3.9e-01 on a mesh ladder, which is not a rate, it is a failure.
+    # A capped solve still returns a vector, and the examples read it into an
+    # error table: unreported it looks like a discretization that stopped
+    # converging -- 3.8e-02 then 3.9e-01 on a mesh ladder.
     if not report.converged:
         if _root():
             sys.stdout.flush()
             sys.stderr.write(
-                f"\n  {NAME}: DID NOT CONVERGE -- {report.iterations} iterations, "
+                f"\n  {MGR_NAME if opts.mgr else NAME}: DID NOT CONVERGE -- "
+                f"{report.iterations} iterations, "
                 f"{report.reason}. The answer below is whatever the last iterate was.\n")
             sys.stderr.flush()
     mk.accept(model, list(x))
     return _Report(report, assembly, handoff)
 
 
-# RANK 0 ALONE REPORTS.
-#
-# Every rank runs the same script and reaches the same stage at a slightly
-# different moment; eight of them writing to an unbuffered stderr produces
-# "assembling ... assembling ... assembling ..." on one line and eight
-# durations on the next. This mirrors what the C++ Stage class does.
+# Rank 0 alone reports: every rank runs the same script, so N ranks writing to
+# an unbuffered stderr interleave N copies of each stage line. Same convention
+# as the C++ Stage class.
 def _root():
     return mk.mpi_rank() == 0
 
@@ -279,12 +311,7 @@ class _Report:
     """A SolveReport-shaped view, so the examples print one table."""
 
     def __init__(self, r, assembly_seconds=0.0, handoff=None):
-        # WHICH PRECONDITIONER RAN, because they are not interchangeable. A
-        # facet carrying d moments is split by ROW onto the degree-2 complex,
-        # whatever the cells are -- C is facet-wise, so a polytopal or hybrid
-        # mesh takes it too. Anything else reaches ADS through its lowest-order
-        # space. They converge at similar counts, so nothing else printed here
-        # would distinguish them.
+        # which complex ADS ran on, for the block_solver line below
         self.degree2 = bool(handoff.get("degree2", False)) if handoff else False
         self.iterations = r.iterations
         self.reason = r.reason

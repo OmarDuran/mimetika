@@ -1,16 +1,15 @@
 r"""Systematic parametric sweep of ``y = CD(x)``, for every contact law.
 
-The point-checks in :mod:`test_map` pin specific values.  This file asks the
-different question: **does ``CD`` behave for every ``x``?**  Each law is swept
+The point-checks in :mod:`test_map` pin specific values.  Here each law is swept
 over a grid spanning tension and compression, pure normal and pure shear, and
-twelve orders of magnitude, and every sample is required to satisfy the
-invariants that hold by construction *whatever* ``x`` is:
+twelve orders of magnitude, and every sample must satisfy the invariants that
+hold for any ``x``:
 
 ============================  ====================================================
 invariant                     why it must hold for all ``x``
 ============================  ====================================================
 finite                        a projection of a finite trial is finite; a ``nan``
-                              here is silent corruption downstream
+                              here propagates into every later evaluation
 shape preserved               ``CD: R^(P x D) -> R^(P x D)``
 deterministic                 the map is a function, not a procedure with memory
 admissible                    ``y`` lies in the law's set -- that is what ``P`` is
@@ -88,8 +87,7 @@ def stub_map(law, r=0.4, load=3.0, points=POINTS, dim=DIM):
         block_sizes=(size, size),
         # these tests exercise CD, not the linear solver, so the backend is
         # pinned: PETSc pays KSP setup and a MUMPS factorisation per solve, which
-        # on a stub this small is pure overhead and makes the suite's runtime
-        # depend on which environment it runs in
+        # on a stub this small is overhead and makes the runtime environment-dependent
         solver={"method": "direct", "backend": "scipy"},
     )
 
@@ -186,9 +184,9 @@ def test_an_open_point_carries_no_shear(name, x_row):
 def test_cone_laws_are_positively_homogeneous(name, scale, x_row):
     """``P(s t) = s P(t)`` for ``s > 0`` when the admissible set is a cone.
 
-    Checked on the projection directly: scaling the *trial* is what the identity
-    is about, and running it through the solve as well would confound it with
-    the response of the stub system.
+    Checked on the projection directly: the identity is about scaling the trial,
+    and running it through the solve would confound it with the response of the
+    stub system.
     """
     law = LAWS[name]
     trial = np.tile(x_row, (POINTS, 1))
@@ -240,15 +238,14 @@ def test_the_fixed_point_does_not_depend_on_where_it_started(name):
 
 @pytest.mark.parametrize("name", list(LAWS))
 def test_divergence_is_reported_as_divergence(name):
-    """An augmentation far outside the contraction range must not report success.
+    """``r = 50``, far outside ``0 < r < 2 s / c``, must not report success.
 
-    Guards the overflow trap: once the iterate overflows, ``tolerance * |x|`` is
-    ``inf`` and a naive ``change <= tol * |x|`` test passes, so a diverging run
-    would be indistinguishable from a converged one.
+    Once the iterate overflows, ``tolerance * |x|`` is ``inf`` and a naive
+    ``change <= tol * |x|`` test passes, so the overflow must be trapped.
     """
-    # a *compressive* load, so the unilateral laws are actually engaged: under
-    # tension they clamp to zero traction on the first evaluation, which is a
-    # genuine fixed point (an open fault) and cannot diverge for any r
+    # a compressive load, so the unilateral laws are engaged: under tension they
+    # clamp to zero traction on the first evaluation, which is a genuine fixed
+    # point (an open fault) and cannot diverge for any r
     result = fixed_point(
         stub_map(LAWS[name], r=50.0, load=-3.0),
         relaxation=1.0,
@@ -260,13 +257,12 @@ def test_divergence_is_reported_as_divergence(name):
 
 @pytest.mark.parametrize("name", UNILATERAL)
 def test_a_tensile_load_opens_the_fault_regardless_of_augmentation(name):
-    """The flip side: under tension the answer is ``t = 0`` for *any* ``r``.
+    """Under tension the answer is ``t_N = 0`` for any ``r``.
 
     A unilateral law clamps the first trial to zero normal traction and stays
-    there, so this is one of the few places where an arbitrarily large
-    augmentation is harmless.  A **cohesive** fault still carries shear up to
-    ``c`` once open -- that is what cohesion means -- so only the normal
-    component is required to vanish.
+    there, so an arbitrarily large augmentation is harmless here.  A cohesive
+    fault still carries shear up to ``c`` once open, so only the normal component
+    is required to vanish.
     """
     law = LAWS[name]
     cohesion = getattr(law, "cohesion", 0.0)
@@ -284,7 +280,7 @@ def test_a_tensile_load_opens_the_fault_regardless_of_augmentation(name):
 
 
 def test_the_sweep_actually_covers_the_regimes():
-    """Guard the guard: an all-zero or one-sided grid would pass everything."""
+    """The grid spans both signs, magnitudes 1e-8 to 1e8, and shear-only rows."""
     assert len(SWEEP) > 30
     assert (SWEEP[:, 0] < 0).any() and (SWEEP[:, 0] > 0).any()  # both signs
     assert (np.abs(SWEEP) > 1e6).any() and (np.abs(SWEEP[SWEEP != 0]) < 1e-6).any()
@@ -294,7 +290,7 @@ def test_the_sweep_actually_covers_the_regimes():
 
 @pytest.mark.parametrize("name", UNILATERAL)
 def test_the_sweep_would_catch_a_broken_projection(name):
-    """The invariants have teeth: a law that skips clipping must fail them."""
+    """A tensile trial is clipped: ``y_N <= 0``, and ``P`` is not the identity."""
     law = LAWS[name]
     tensile = np.tile(np.array([5.0] + [0.0] * (DIM - 1)), (POINTS, 1))
     projected, _ = law.project(tensile, law.initial_state(POINTS), None, None, 1e-3)
@@ -304,17 +300,16 @@ def test_the_sweep_would_catch_a_broken_projection(name):
 
 # -- condensation: the same map, with the mechanics eliminated --------------------------
 #
-# The nonlinear system is small -- ``n_points * dim`` unknowns -- so paying a
-# global linear solve per residual evaluation is backwards.  The constrained
-# matrix does not depend on ``x`` and the right-hand side depends on it affinely,
-# so the gap condenses to ``g(x) = g_0 + Ghat x`` and ``CD`` becomes a dense
-# matvec.  These tests require that this changes the cost and *nothing else*.
+# The nonlinear system has ``n_points * dim`` unknowns.  The constrained matrix
+# does not depend on ``x`` and the right-hand side depends on it affinely, so the
+# gap condenses to ``g(x) = g_0 + Ghat x`` and ``CD`` becomes a dense matvec.
+# These tests require that this changes the cost and nothing else.
 
 
 @pytest.mark.parametrize("name", list(LAWS))
 @pytest.mark.parametrize("x_row", SWEEP, ids=SWEEP_IDS)
 def test_condensation_reproduces_the_full_map(name, x_row):
-    """Not merely close: the condensed form is the same algebra, so it is exact."""
+    """The condensed form is the same algebra: value and gap agree to 1e-12."""
     law = LAWS[name]
     cd = stub_map(law)
     condensed = cd.condense()
@@ -359,7 +354,7 @@ def test_the_condensed_system_is_the_size_of_the_contact_problem():
 
 
 def test_condensation_drops_the_solution_vector():
-    """The one thing given up, stated rather than discovered later."""
+    """``condense()`` gives up the mechanics solution: ``solution`` is None."""
     condensed = stub_map(LAWS["signorini-mu0.6"]).condense()
     assert condensed(np.zeros((POINTS, DIM))).solution is None
 
@@ -368,11 +363,11 @@ def test_condensation_drops_the_solution_vector():
 
 
 def test_the_normal_term_uses_the_total_gap_and_the_shear_the_increment():
-    """Frigo et al. (2025) eqs (10a)/(10b): the two components differ on purpose.
+    """Frigo et al. (2025) eqs (10a)/(10b).
 
-    ``g_N >= 0`` constrains the *absolute* gap, while Coulomb friction opposes
-    the slip **rate**, discretised as the backward increment.  Driving the shear
-    with the total jump is equivalent only under monotone proportional loading.
+    ``g_N >= 0`` constrains the absolute gap, while Coulomb friction opposes the
+    slip rate, discretised as the backward increment.  Driving the shear with the
+    total jump is equivalent only under monotone proportional loading.
     """
     from mimetika.contact.map import driving_gap
 
@@ -385,7 +380,7 @@ def test_the_normal_term_uses_the_total_gap_and_the_shear_the_increment():
 
 
 def test_the_shear_traction_follows_the_slip_increment_not_the_total():
-    """Under a rotating load the traction must oppose the *current* increment."""
+    """Under a rotating load the traction opposes the current increment."""
     from mimetika.contact.map import driving_gap
 
     total = np.array([[-1.0, -0.05, 0.05]])  # accumulated path points up-left

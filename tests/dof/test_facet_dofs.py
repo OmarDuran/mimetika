@@ -1,14 +1,13 @@
 """Facet DOF numbering, with and without fracture duplication.
 
-The fracture makes the normal trace discontinuous, which is a property of the
-discrete *space*: the mesh, the complex and ``dd = 0`` are untouched and only
-the numbering changes.  Two things must hold:
+Duplication changes the discrete space only: the mesh, the complex and ``dd = 0``
+are untouched, and the normal trace becomes discontinuous across tagged facets.
+Two invariants:
 
 * with no tags the map is the identity, so every un-fractured result is
   unchanged; and
-* with tags the two sides of a fracture facet are independent, so the mass
-  exchanged with the fracture, ``un+ + un-``, is free rather than identically
-  zero -- which is the whole reason the duplication exists.
+* with tags the two sides of a fracture facet carry independent dofs, so the
+  exchange flux ``un+ + un-`` is free rather than identically zero.
 """
 
 import numpy as np
@@ -132,7 +131,7 @@ def test_every_dof_is_owned_by_exactly_one_or_two_cells():
 
 
 def test_exchange_flux_is_identically_zero_without_duplication():
-    """The point of the whole exercise: sum of the two sides cancels."""
+    """One shared dof per facet, entered with opposite signs: the column sums to 0."""
     mesh, tags = _mesh_and_tags()
     dm = FacetDofMap(mesh, 1)
     B = discrete_divergence(mesh, dm)

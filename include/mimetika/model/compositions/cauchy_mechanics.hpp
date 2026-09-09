@@ -6,11 +6,10 @@
 
 // Linear elasticity as a catalogue entry: one package.
 //
-// It lives apart from the poroelastic entries because a consumer that wants
-// only mechanics should not have to include -- and thereby register -- flow,
-// the Biot coupling and fluid storage to get it. Registration happens at
-// static initialization: whatever a translation unit includes is what its
-// catalogue contains.
+// Registration happens at static initialization, so a translation unit's
+// catalogue is what it includes. This entry sits apart from the poroelastic
+// ones so that a mechanics-only consumer does not register flow, the Biot
+// coupling and fluid storage as well.
 
 namespace mimetika::compositions {
 

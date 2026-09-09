@@ -17,18 +17,20 @@ whose body force is the Navier operator
 terms give a genuinely non-symmetric strain, so the rates are not flattered by
 grid alignment.
 
-The method solves for **all three** unknowns of the weakly-symmetric
-formulation, and all three are reported: the stress ``sigma``, the displacement
-``u``, and the rotation multiplier ``s = skw(grad u)`` that enforces the
-symmetry of ``sigma`` weakly.  Errors are measured against the interpolant of
-the exact solution: element means for ``u`` and ``s``, traction moments for
-``sigma`` (in the mesh-dependent ``M``-norm).
+All three unknowns of the weakly-symmetric formulation are solved for and
+reported: the stress ``sigma``, the displacement ``u``, and the rotation
+multiplier ``s = skw(grad u)`` that enforces the symmetry of ``sigma`` weakly.
+Errors are measured against the interpolant of the exact solution: element means
+for ``u`` and ``s``, traction moments for ``sigma`` (in the mesh-dependent
+``M``-norm).
 
 Two mesh families are compared:
 
-* **hexahedra** -- a polytopal case, ``stab dim = 18`` per cell;
-* **tetrahedra** -- simplicial, ``stab dim = 0``: the stabilization vanishes and
-  the scheme reduces to the AFW (BDM_1-based) mixed element.
+* **hexahedra** -- a polytopal case; the default ``DeRhamDeviatoricStress``
+  enriches to unisolvence, so ``stab dim = 0`` there as well (the stabilized
+  ``ElasticityInnerProduct`` reports 18 per cell on the same mesh);
+* **tetrahedra** -- simplicial, ``stab dim = 0``, where the scheme coincides with
+  the AFW (BDM_1-based) mixed element.
 
 The last table repeats the hex case at ``lambda = 1e4`` to show that the rates
 survive the near-incompressible limit.
@@ -49,7 +51,7 @@ from common import (  # noqa: E402  (path bootstrap lives in common)
     print_table,
 )
 
-# the *classic* three-field AFW formulation, kept as the reference example;
+# the classic three-field AFW formulation, kept as the reference example;
 # the standard four-field split lives in mimetika.assembly.four_field
 from mimetika.assembly.mixed import MixedElasticity  # noqa: E402
 from mimetika.mesh import structured_box, structured_tets  # noqa: E402

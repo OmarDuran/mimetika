@@ -14,7 +14,7 @@
 
 namespace mimetika::compositions {
 
-// The budget is ten lines: no new term, no new field, no new package.
+// Three packages: Flow, Mechanics, and the Biot coupling between them.
 inline const physics::RegisterModel poroelasticity{
     "poroelasticity", "Single-phase flow coupled to linear elasticity (Biot)",
     [](const physics::ModelOptions& o) {
@@ -28,7 +28,7 @@ inline const physics::RegisterModel poroelasticity{
     }};
 
 // Consolidation: poroelasticity made transient by the fluid's own storage.
-// The fourth package adds one term and no field.
+// The fourth package, Storage, adds one term and no field.
 inline const physics::RegisterModel consolidation{
     "consolidation", "Terzaghi consolidation: poroelasticity with fluid storage",
     [](const physics::ModelOptions& o) {

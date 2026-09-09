@@ -1,14 +1,13 @@
 """Mixed-dimensional Darcy: a 3D matrix coupled to a 2D fracture.
 
-The reference case is 1D flow across a single planar fracture, where the total
-resistance is a **series sum** in closed form,
+The reference case is 1D flow across a single planar fracture, whose total
+resistance is the series sum
 
     R = 1/k_m  +  eps/k_n            (matrix, then both half-apertures)
 
-so the scheme can be checked against an exact number rather than against
-itself.  The lateral walls must be **no-flow**: prescribing ``p = 1 - x`` all
-round is data consistent with the *unfractured* solution, and once the fracture
-raises the upstream pressure the sides start draining it.
+with ``kappa = 2 k_n / eps``.  The lateral walls are no-flow: prescribing
+``p = 1 - x`` all round is data consistent with the unfractured solution, so
+once the fracture raises the upstream pressure the sides drain it.
 """
 
 import numpy as np
@@ -77,7 +76,7 @@ def test_system_is_symmetric():
 
 
 def test_interface_stiffness_is_the_robin_resistance():
-    """``S = 1 / (kappa |f|)`` against the **integrated** flux DOF.
+    """``S = 1 / (kappa |f|)`` against the integrated flux DOF.
 
     The physical Robin resistance is ``|f| / kappa`` against the facet-average
     flux; with ``F = |f| F_avg`` the flux-flux pairing picks up ``1/|f|`` on each
@@ -103,8 +102,8 @@ def test_coupling_is_the_adjoint_of_the_pressure_pairing():
     for fc, f in enumerate(pb.facet_of_cell):
         row = C[fc].toarray().ravel()
         assert np.count_nonzero(row) == 2  # two independent sides
-        # the DOF already *is* the mass crossing the facet, so the entries are
-        # bare signs -- no area factor, exactly as in the discrete divergence
+        # the DOF is the mass crossing the facet, so the entries are bare signs,
+        # no area factor, as in the discrete divergence
         assert np.isclose(np.abs(row).sum(), 2.0)
         assert set(np.unique(row[row != 0])) == {-1.0, 1.0}
         assert np.isclose(row.sum(), 0.0)  # equal and opposite signs

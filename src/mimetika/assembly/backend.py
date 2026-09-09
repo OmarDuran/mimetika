@@ -43,10 +43,7 @@ def with_explicit_diagonal(A: sp.spmatrix) -> sp.csr_matrix:
 
 def insert_petsc_options(options: str) -> None:
     """Push a PETSc options string (e.g. ``"-ksp_view -ksp_monitor"``) into the
-    global options database, where ``KSP.setFromOptions()`` will pick it up.
-
-    This is the authoritative way to inspect or override the solver: the values
-    come from PETSc itself, not from anything this library reports.
+    global options database, where ``KSP.setFromOptions()`` picks it up.
     """
     from petsc4py import PETSc
 

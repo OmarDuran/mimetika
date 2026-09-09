@@ -9,10 +9,9 @@
 
 // The Biot coupling.
 //
-// Poromechanics is not a third physics beside flow and mechanics. It is the
-// two of them plus the exchange between them, and that exchange contributes
-// no field of its own: it reads a pressure that flow declared and a stress
-// that mechanics declared, and adds two terms.
+// Poromechanics is flow plus mechanics plus the exchange between them, and that
+// exchange contributes no field of its own: it reads a pressure that flow
+// declared and a stress that mechanics declared, and adds two terms.
 //
 //     r_sigma += -c T^T p        the pore pressure in the momentum balance
 //     r_p     += +c T sigma      the volumetric response in the mass balance
@@ -25,17 +24,16 @@
 //     c = alpha * (1 - 2nu) / (2 mu (1 - 2nu + d nu))
 //
 // the Biot coefficient times the skeleton's volumetric compliance — 1/(dK) in
-// three dimensions. Using alpha by itself makes the coupling independent of
-// how stiff the skeleton is, so a rigid medium would respond to pressure
-// exactly as a soft one does.
+// three dimensions. With alpha by itself the coupling would be independent of
+// the skeleton stiffness, so a rigid medium would respond to pressure as a soft
+// one does.
 //
 // Written this way rather than as alpha/(dK) because it stays finite at
 // nu = 1/2, where it is zero: the incompressible limit arrives continuously
 // instead of through a division by an infinite bulk modulus.
 //
-// Both blocks come from one array. Writing them separately would let them
-// drift, and a poroelastic system whose coupling is not adjoint loses the
-// energy structure that makes it solvable — quietly, since it still runs.
+// Both blocks are written from one array, so the (sigma, p) and (p, sigma)
+// blocks are exact transposes rather than two kernels that can drift.
 
 namespace mimetika::physics {
 
@@ -62,21 +60,20 @@ class BiotCouplingCell {
 
     for (std::size_t i = 0; i < D; ++i) {
       const std::size_t ri = S.begin + i;  // already in ProductSpace order
-      // THE SAME SIGN ON BOTH ROWS. The Biot coupling is a CONSTITUTIVE
-      // symmetry, not a differential adjoint: both terms are second
-      // derivatives of one free energy, so the block is symmetric and
+      // The same sign on both rows. The Biot coupling is a constitutive
+      // symmetry, not a differential adjoint: both terms are second derivatives
+      // of one free energy, so the block is symmetric and
       //
       //     eps = C^{-1} sigma + (alpha/dK) p I     the stress row
       //     zeta = (alpha/dK) tr sigma + S p        the mass balance
       //
-      // carry the SAME coefficient with the SAME sign. The antisymmetric
+      // carry the same coefficient with the same sign. The antisymmetric
       // convention [M, -B^T; +B, 0] belongs to the div/grad pair of the Darcy
-      // system, where the two blocks really are adjoint differential
-      // operators; applying it here instead is a sign error with no visible
-      // symptom. Undrained confined compression is where it shows: it must
-      // give p = sigma_0/alpha, and with the sign flipped it gives
-      // 5 sigma_0/13 at mu = lam = alpha = 1 -- a plausible number, on the
-      // right clock, with the right profile shape.
+      // system, where the two blocks are adjoint differential operators.
+      // Undrained confined compression separates them: it must give
+      // p = sigma_0/alpha, and with the sign flipped it gives 5 sigma_0/13 at
+      // mu = lam = alpha = 1, on the right clock and with the right profile
+      // shape.
       const double t = alpha_ * c.T(0, i);
       exokal::axpy(r[ri], t, a[P.begin]);
       exokal::axpy(r[P.begin], t, a[ri]);
@@ -106,8 +103,8 @@ class PoroCoupling final : public Package {
   std::string name() const override { return "PoroCoupling"; }
 
   // No fields: the coupling reads what the two physics it joins already
-  // declared, so `{single-phase poromechanics, compositional multiphase
-  // poromechanics}` is two catalogue rows and zero implementations.
+  // declared, so single-phase and compositional multiphase poromechanics are
+  // two catalogue rows over one implementation.
   Requirements requirements(int, int) const override {
     Requirements r;
     r.needs = {"pressure", "displacement"};

@@ -1,10 +1,9 @@
 r"""Local (single-element) mixed saddle-point problems.
 
-These are the element-level counterparts of the global mixed systems, and they
-are the sharpest available test of a mimetic inner product: an inner product
-satisfying strong consistency ``M N = R`` reproduces the exact solution of the
-local problem whenever that solution lies in the reconstruction space.  This is
-the mimetic *patch test*.
+These are the element-level counterparts of the global mixed systems: an inner
+product satisfying strong consistency ``M N = R`` reproduces the exact solution
+of the local problem whenever that solution lies in the reconstruction space --
+the mimetic patch test.
 
 Diffusion (mixed Poisson with Dirichlet data)::
 
@@ -127,8 +126,8 @@ def elasticity_local_operators(inner: ElasticityInnerProduct, cell_id: int):
 
     # div_h: pair the tractions with the constant fields phi_k(xi) = e_k, as as_h
     # below pairs them with the rigid rotations S_p xi.  Going through the facet
-    # basis makes this independent of ndf; the previous form indexed the DOF vector
-    # directly (i*ndf + k*d + 0) and so assumed the AFW layout ndf = d*d.
+    # basis keeps this independent of ndf; indexing the DOF vector directly as
+    # i*ndf + k*d + 0 assumes the AFW layout ndf = d*d.
     Dv = np.zeros((d, D))
     for i in range(lc.n_facets):
         nq = len(lc.facet_quadrature[i][0])

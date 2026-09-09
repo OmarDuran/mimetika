@@ -81,7 +81,7 @@ Poromechanics: the diagonal Biot coupling
 In the three-field form the pore pressure enters the stress row through
 ``Tc^T = alpha (1-ad) W^T``.  Absorbing it into the slack variable,
 
-    ``p_tilde = p_s - eta p_f`` ,   ``eta = 2 mu alpha (1/(2mu)) ... = 2 mu alpha inv_modulus / (a d)`` ,
+    ``p_tilde = p_s - eta p_f`` ,   ``eta = 2 mu alpha inv_modulus / (a d)`` ,
 
 removes ``p_f`` from the stress row altogether; the coupling reappears as the
 **diagonal** block ``delta = alpha d |E| inv_modulus = alpha |E| / K`` between
@@ -97,7 +97,7 @@ removes ``p_f`` from the stress row altogether; the coupling reappears as the
 
 Eliminating ``p_tilde`` reproduces the five-field system verbatim (the
 ``Delta`` augmentation cancels against the elimination), so the two are
-solution-identical; the honest solid pressure is recovered as
+solution-identical; the solid pressure is recovered as
 ``p_s = p_tilde + eta p_f`` and reported in the solution.  In the quasi-steady
 regime (``dt = None``) a prescribed pressure enters the right-hand side only
 through ``-delta p`` on the ``p_tilde`` row -- one diagonal entry per cell,
@@ -118,12 +118,12 @@ from mimetika.solver.saddle import solve_saddle
 def _require_volumetric_energy(a: np.ndarray) -> None:
     """The split stores the hydrostatic energy on ``p_s``; ``a = 0`` has none.
 
-    Only the *zero* is degenerate: at ``a = 0`` (``nu = 0``) the solid-pressure
-    row would be identically zero.  A **negative** ``a`` (auxetic material) is
-    fine -- the congruence with the three-field system is exact for any
-    ``a != 0`` -- the ``p_s`` diagonal merely changes sign, so the ``(sigma,
-    p_s)`` block is then indefinite rather than definite.  Direct solvers do
-    not care; a block preconditioner assuming a definite leading block would.
+    Only ``a = 0`` (``nu = 0``) is degenerate: there the solid-pressure row is
+    identically zero.  Negative ``a`` (auxetic) is admissible -- the congruence
+    with the three-field system is exact for any ``a != 0`` -- and only flips
+    the sign of the ``p_s`` diagonal, leaving the ``(sigma, p_s)`` block
+    indefinite rather than definite; a block preconditioner assuming a definite
+    leading block must account for that.
     """
     a = np.asarray(a)
     if np.any(np.abs(a) < 1e-12):
@@ -197,8 +197,8 @@ class FourFieldElasticity(MixedElasticity):
         """``(Gamma, B)``: the ``p_s`` coupling ``diag(-a d) W`` and its diagonal.
 
         ``B = diag(a d^2 |E| / 2mu)``; the scaling is fixed by requiring both
-        exactness (``Gamma^T B^{-1} Gamma = -W^T diag(c) W``) and an honest
-        unknown (row two evaluating ``p_s = tr_h(sigma)/d``).
+        exactness (``Gamma^T B^{-1} Gamma = -W^T diag(c) W``) and row two
+        evaluating ``p_s = tr_h(sigma)/d``.
         """
         if self._pressure_blocks is not None:
             return self._pressure_blocks
@@ -314,8 +314,8 @@ class FourFieldPoroMechanics(PoroMechanics):
     by exact congruence; the matrix differs.  The pore pressure couples to the
     mechanics only through the diagonal ``(p_tilde, p_f)`` block, and the trace
     operator never enters the system (it is still used to evaluate the
-    previous-step right-hand side).  The reported ``solid_pressure`` is the
-    honest ``p_s = tr_h(sigma)/d = p_tilde + eta p_f``.
+    previous-step right-hand side).  The reported ``solid_pressure`` is
+    ``p_s = tr_h(sigma)/d = p_tilde + eta p_f``.
     """
 
     mechanics_class = FourFieldElasticity

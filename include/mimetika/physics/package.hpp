@@ -15,28 +15,23 @@
 // A physics package: one set of equations, with the fields it introduces,
 // the closures it must be given, and the terms it attaches.
 //
-// This is the unit the model catalogue is built from, and the reason the
-// catalogue can grow without the code growing with it. The models mimetika
-// supports read as a product — flow times mechanics times domain type —
-// but they are assembled from a handful of packages that each exist once.
-// Poromechanics is not a third physics: it is flow, plus mechanics, plus a
-// coupling package that reads the pressure and the displacement without
-// caring how many components produced either.
+// This is the unit the model catalogue is built from. The catalogue reads as a
+// product — flow times mechanics times domain type — over a sum of packages
+// that each exist once: poromechanics is flow, plus mechanics, plus a coupling
+// package that reads the pressure and the displacement without caring how many
+// components produced either.
 //
-// A package declares rather than assumes. It says which capabilities it
-// provides and which it needs, so a composition missing a package is
-// rejected by name — "PoroCoupling needs 'displacement', provided by no
-// package" — instead of a term indexing past the end of a stencil at
-// assembly time. It declares its closure slots the same way, so the
-// complete configuration surface of a model can be reported before anything
-// is built.
+// A package declares which capabilities it provides and which it needs, so a
+// composition missing a package is rejected by name — "PoroCoupling needs
+// 'displacement', provided by no package" — instead of a term indexing past the
+// end of a stencil at assembly time. Closure slots are declared the same way,
+// so the configuration surface of a model can be reported before it is built.
 //
 // A package may not mention the domain type. Whether the mesh is a single
 // stratum, a static stratification, or one that changes between epochs is a
 // property of the mesh and the driver, never of the equations — exokal's
 // stratified epoch already carries a term across every codimension it makes
-// sense on. A package that branches on the domain has reintroduced the
-// multiplication this layer exists to avoid.
+// sense on.
 
 namespace mimetika::physics {
 
@@ -97,10 +92,9 @@ class Package {
   virtual void attach(exokal::forms::Model& model, const exokal::forms::TermContext& ctx) const = 0;
 };
 
-// Several packages, validated together. This is where the catalogue's
-// product collapses back onto the code's sum: it takes packages that know
-// nothing of each other and checks that what one needs another provides,
-// before a single degree of freedom is numbered.
+// Several packages, validated together: it takes packages that know nothing of
+// each other and checks that what one needs another provides, before a single
+// degree of freedom is numbered.
 class Composition {
  public:
   Composition& add(std::unique_ptr<Package> p) {
@@ -144,10 +138,9 @@ class Composition {
     }
   }
 
-  // The product space every package contributes to. Field order is the
-  // order packages were added, and no term depends on it — exokal resolves
-  // a term's fields by name against whatever space it is given, which is
-  // what lets flow ⊕ mechanics be a composition.
+  // The product space every package contributes to. Field order is the order
+  // packages were added, and no term depends on it: exokal resolves a term's
+  // fields by name against whatever space it is given.
   ProductSpace space(const graphos::Complex& c, int cell_dim = -1, int codim = 0) const {
     const int dim = cell_dim < 0 ? c.dim() : cell_dim;
     validate(dim, codim);

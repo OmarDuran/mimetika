@@ -10,7 +10,7 @@ from mimetika.postprocess import export_vtk
 
 
 def _roundtrip(mesh, tmp_path, name="m.vtk"):
-    """Write with the VTK exporter, read back with the VTU reader."""
+    """Write with ``_write_vtu`` below, read back with ``read_vtu``."""
     vtu = tmp_path / "m.vtu"
     _write_vtu(vtu, mesh)
     return read_vtu(vtu)
@@ -104,7 +104,7 @@ def test_reader_repairs_scrambled_face_orientation(tmp_path):
 
 
 def test_check_orientation_rejects_a_broken_cell():
-    """A single reversed face must be detected, not silently accepted."""
+    """One reversed face leaves the cell boundary unclosed; the check raises."""
     mesh = structured_box(1, 1, 1)
     cells = [
         [list(reversed(mesh.complex.polygon_loops[0]))]
@@ -151,7 +151,7 @@ def test_cells_in_box_selects_by_centroid():
 
 
 def test_subset_solves_correctly():
-    """The extracted mesh is a valid problem domain, not just valid topology."""
+    """A linear pressure is reproduced on the extracted submesh, atol 1e-10."""
     from mimetika.assembly.mixed import MixedPoisson
 
     mesh = structured_box(3, 3, 3)
@@ -164,7 +164,7 @@ def test_subset_solves_correctly():
 
 
 def test_export_then_read_is_consistent(tmp_path):
-    """The VTK exporter and the VTU reader agree on the same mesh."""
+    """``export_vtk`` emits VTK_POLYHEDRON cells (type 42)."""
     mesh = structured_box(2, 1, 1)
     out = export_vtk(tmp_path / "m.vtk", mesh)
     assert out.exists() and "42" in out.read_text()

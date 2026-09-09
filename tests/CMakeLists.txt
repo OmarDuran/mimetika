@@ -38,7 +38,7 @@ option(MIMETIKA_BUILD_BENCHMARKS "Build and register the benchmark tests" OFF)
 
 # tests that need a solver, built only when there is one
 if(MIMETIKA_USE_PETSC)
-  foreach(t solver/test_fields solver/test_petsc model/test_confined_compression model/test_diagonal_condensation model/test_hybrid_interface model/test_flow_model model/test_cauchy_mechanics_model model/test_global_patch model/test_hybrid_flux algebraic_constraints/contact/test_jump algebraic_constraints/contact/test_cauchy_mechanics)
+  foreach(t solver/test_fields solver/test_petsc model/test_confined_compression model/test_diagonal_condensation model/test_hybrid_interface model/test_flow_model model/test_cauchy_mechanics_model model/test_global_patch postprocess/test_vem_stress_projection model/test_hybrid_flux algebraic_constraints/contact/test_jump algebraic_constraints/contact/test_cauchy_mechanics)
     string(REPLACE "/" "." name ${t})
     add_executable(${name} ${t}.cpp)
     target_link_libraries(${name} PRIVATE mimetika::mimetika mimetika_petsc)

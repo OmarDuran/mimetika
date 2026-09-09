@@ -18,22 +18,17 @@
 
 // PETSc, with a direct factorization first.
 //
-// A direct solve is the right instrument while a discretization is being
-// validated: it answers "is this operator right" with no preconditioner in
-// between. If a direct solve gives the wrong displacement field, the
-// discretization is wrong — there is nowhere else for the error to have come
-// from.
+// A direct solve validates the discretization: it answers "is this operator
+// right" with no preconditioner in between.
 //
-// MUMPS rather than PETSc's built-in LU because the systems here are
-// saddle points: indefinite, so the factorization needs symmetric pivoting to
-// stay stable, and PETSc's own LU does not do it well. MUMPS also handles the
-// zero diagonal blocks — the (u,u) and (gamma,gamma) blocks that make this a
-// saddle point in the first place — without a shift.
+// SuperLU is the default package, not PETSc's built-in LU and not MUMPS: these
+// systems are indefinite saddle points, the multiplier blocks putting
+// structural zeros on the diagonal, so the factorization lives or dies on its
+// pivoting. See the constructor's note.
 //
-// An iterative path is the same object with a different prefix, which is why
-// the KSP is configured from options rather than hard-coded: `-ksp_type
-// fgmres -pc_type fieldsplit` selects one without recompiling, and the
-// matrix-free operator already built can be attached to it later.
+// The KSP is configured from the options database rather than hard-coded, so
+// `-ksp_type fgmres -pc_type fieldsplit` selects an iterative path without a
+// rebuild.
 
 namespace mimetika::solver {
 
@@ -82,13 +77,9 @@ inline std::string parallel_package(const std::string& package) {
   return (package.empty() || package == "petsc" || package == "superlu") ? "mumps" : package;
 }
 
-// How the system is solved, as an argument rather than an environment. The
-// MIMETIKA_FACTOR environment variable and the PETSc options database are
-// invisible to the caller, absent from the Python surface, silently ignored
-// when misspelled, and cannot be set differently for two solves in one
-// process.
-//
-// A misspelled value here is refused by PETSc and surfaces as an exception.
+// How the system is solved, as an argument rather than an environment: an
+// option here is on the Python surface, can differ between two solves in one
+// process, and a misspelled value is refused by PETSc as an exception.
 
 struct SolverOptions {
   // "direct" is KSPPREONLY with a full factorization. Anything else names a
@@ -97,47 +88,42 @@ struct SolverOptions {
   // the factorization package, used when the preconditioner is one:
   // "superlu", "mumps", or "petsc" for the built-in.
   std::string factorization{"superlu"};
-  // the PC type: "lu", "ilu", "jacobi", "none", "fieldsplit", ...
+  // the PC type: "lu", "ilu", "jacobi", "hypre", "none", plus this layer's own
+  // two -- "riesz", the fieldsplit of the Riesz map, and "exact", P = A
   std::string preconditioner{"lu"};
-  // How the Riesz blocks are inverted. The first factor is SPD but large -- it
-  // is most of the unknowns -- so a complete factorization of it costs about
-  // what a direct solve of the whole system costs, in time and in fill: exact,
-  // and it does not scale.
-  //
-  // An approximate inverse is still a Riesz map as long as it is spectrally
-  // equivalent to the block: the iteration count rises by a constant and stops
-  // depending on the mesh. "gamg" is algebraic multigrid, which is the
-  // scalable choice; "lu" is the exact one, for small problems and for
-  // checking that an approximation is what changed an answer.
   // Eliminate the first field first, when the caller says it can be. A
   // diagonal star -- diagonal_tpfa, diagonal_afw -- makes that block diagonal,
   // and then the flux or the stress is divided out cell by cell and what is
   // solved is the finite volume system itself. Off is the saddle point, which
   // every other product must have.
   bool condense{true};
+  // How the first Riesz block is inverted. That factor is SPD but is most of
+  // the unknowns, so a complete factorization of it costs about what a direct
+  // solve of the whole system costs, in time and in fill. An approximate
+  // inverse is still a Riesz map as long as it is spectrally equivalent to the
+  // block: the count rises by a constant and stops depending on h.
+  //
+  // Empty is chosen from the block's size and from whether the complex is
+  // supplied -- "ads", "icc" or "cholesky", see build_riesz. Naming one
+  // overrides that choice.
   std::string riesz_block_pc{};
-  // The Riesz block is SPD and is solved as such, by MUMPS.
+  // The Riesz block is SPD -- a material inner product plus B^T W^-1 B -- so it
+  // takes a Cholesky, half the fill and half the work of an LU, even though
+  // `factorization` is SuperLU for the indefinite whole system.
   //
-  // `factorization` defaults to SuperLU because the whole system is an
-  // indefinite saddle point. The first Riesz factor has no such structure: a
-  // material inner product plus B^T W^-1 B, symmetric positive definite. So it
-  // takes a Cholesky, half the fill and half the work of an LU.
-  //
-  // Which package is not a detail. Measured on the H(div) block of the 22k-cell
-  // polyhedral mesh (77k unknowns), solving to 1e-9:
+  // Measured on the H(div) block of the 22k-cell polyhedral mesh (77k
+  // unknowns), solving to 1e-9:
   //
   //     Cholesky / MUMPS    64 iterations    1.1 s
   //     Cholesky / PETSc    38              64.1 s
   //     Cholesky / SuperLU  -- SuperLU has no Cholesky
   //
-  // PETSc's own factorization takes fewer iterations, because it is the more
-  // exact of the two, and is sixty times slower: it orders the matrix
-  // naturally, and the fill of a natural ordering on an unstructured
-  // three-dimensional block is ruinous. MUMPS reorders before it factors.
+  // PETSc's own factorization is the more exact and sixty times slower: it
+  // orders the matrix naturally, and the fill of a natural ordering on an
+  // unstructured three-dimensional block is ruinous. MUMPS reorders first.
   //
-  // An empty value falls back to `factorization`, which is SuperLU -- and
-  // SuperLU cannot do a Cholesky at all, so that fallback is an error rather
-  // than a slow path. Naming MUMPS here keeps the default working.
+  // An empty value falls back to `factorization` = SuperLU, which has no
+  // Cholesky at all, so that fallback is an error rather than a slow path.
   std::string riesz_block_factorization{"mumps"};
   // How the first factor is inverted, and it is a memory decision.
   //
@@ -160,7 +146,7 @@ struct SolverOptions {
   // First-factor unknowns above which the auxiliary-space solver is preferred
   // to the exact one, when the complex makes it possible at all. Against a
   // factorization that reorders, the exact block is the cheaper way to apply P
-  // at every size that fits in memory -- see the crossover note in factorize()
+  // at every size that fits in memory -- see the crossover note in build_riesz
   // -- so the default matches riesz_exact_limit and ADS is reached only where
   // the factorization is refused for its fill.
   int riesz_ads_limit{400000};
@@ -190,28 +176,17 @@ struct SolverOptions {
 
 class PetscSolver final : public LinearSolver {
  public:
-  // `type` selects the factorization package; MUMPS is the default because
-  // these systems are indefinite. An empty prefix means the KSP also reads
-  // command-line options, so an iterative method can be selected at run time.
-  // SUPERLU BY DEFAULT, NOT MUMPS.
+  // `options.factorization` names the package and defaults to SuperLU. An
+  // empty `prefix` leaves the KSP reading unprefixed command-line options, so
+  // an iterative method can be selected at run time.
   //
-  // The mixed form is an INDEFINITE SADDLE POINT: the multiplier blocks put
-  // structural zeros on the diagonal, so a factorization lives or dies on its
-  // pivoting. MUMPS sizes its working array from a symbolic estimate, and
-  // delayed pivots on a saddle point overrun that array -- it SEGVs inside the
-  // factorization, on a well-posed system, returning no error at all. Raising
-  // ICNTL(14) to 200% does not rescue it. That is what cost benchmark 3 its
-  // first working run.
-  //
-  // SuperLU is an UNSYMMETRIC supernodal factorization with genuine partial
-  // pivoting: it allocates as it goes, so there is no estimate to overrun, and
-  // it makes no assumption about the sign structure of the diagonal. It is the
-  // right default for this class of system; at these sizes the cost difference
-  // is not what decides anything.
-  //
-  // The choice stays a constructor argument, and MIMETIKA_FACTOR overrides it
-  // at run time, so a solver can be swapped without a rebuild when one of them
-  // misbehaves -- which is exactly how this was diagnosed.
+  // Not MUMPS: it sizes its working array from a symbolic estimate, and
+  // delayed pivots on an indefinite saddle point overrun that array -- a SEGV
+  // inside the factorization, on a well-posed system, with no error returned.
+  // ICNTL(14) at 200% does not rescue it. SuperLU is an unsymmetric supernodal
+  // factorization with partial pivoting: it allocates as it goes, so there is
+  // no estimate to overrun and no assumption on the sign structure of the
+  // diagonal.
   explicit PetscSolver(SolverOptions options = {}, std::string prefix = "")
       : opts_(std::move(options)), prefix_(std::move(prefix)) {
     PetscSession::instance();
@@ -219,16 +194,15 @@ class PetscSolver final : public LinearSolver {
 
   const SolverOptions& options() const { return opts_; }
 
-  // What factorize() spent, so a caller can report the two halves of it
-  // separately: the matrix is linear in the assembly, the preconditioner is
-  // what decides whether a mesh is reachable at all.
+  // The two halves of factorize(): the matrix build and the preconditioner
+  // setup.
   double matrix_seconds() const { return matrix_seconds_; }
   double preconditioner_seconds() const { return preconditioner_seconds_; }
 
   // How much of the matrix crosses a process boundary. PETSc stores an MPIAIJ
   // row in two pieces -- the columns this rank owns and the rest -- and the
-  // second is exactly what a mat-vec has to communicate. It is the measure of
-  // a partition that does not depend on the machine, the load or the timer.
+  // second is what a mat-vec has to communicate: a measure of the partition
+  // that depends on neither the machine nor the timer.
   double off_rank_fraction() const {
     const double total = local_entries_ + off_rank_entries_;
     return total > 0.0 ? off_rank_entries_ / total : 0.0;
@@ -281,10 +255,8 @@ class PetscSolver final : public LinearSolver {
 
   // Bind the operator once. A transient linear problem at constant dt has a
   // tangent that never moves, so the assembly, the symbolic analysis and the
-  // numeric factorization are all done once and every step after that is a
-  // back-substitution. Terzaghi takes 400 steps and the borehole 400: paying
-  // MUMPS for each of them is the difference between minutes and seconds, and
-  // nothing in the answer changes.
+  // numeric factorization are done once and every step after that is a
+  // back-substitution. Terzaghi and the borehole take 400 steps each.
   void factorize(const SparseSystem& A) {
     release();
     n_ = static_cast<PetscInt>(A.n);
@@ -311,8 +283,7 @@ class PetscSolver final : public LinearSolver {
   }
 
   // Solve against the bound operator. Refuses an unbound solver rather than
-  // silently factorizing, because a caller reaching here without binding has
-  // a different bug than a slow one.
+  // factorizing one here.
   SolveReport solve(const std::vector<double>& b, std::vector<double>& x) {
     if (ksp_ == nullptr) {
       throw std::logic_error("PetscSolver::solve: no operator bound; call factorize() first");
@@ -340,13 +311,11 @@ class PetscSolver final : public LinearSolver {
     return ordinary(A, b, x);
   }
 
-  // Build what a solve would build, and nothing more -- for the caller that
-  // measures the two assemblies without iterating. Measuring the
-  // factorization of a saddle the solve immediately eliminates reports a
-  // cost, in time and in memory, that no run ever pays: on a facet-diagonal
-  // star the block is divided out and the preconditioner that matters is the
-  // reduced system's. So the same gate decides here as in solve(), and the
-  // report carries the same condensation facts.
+  // Build what a solve would build and nothing more, for a caller measuring
+  // the two assemblies without iterating. The same condensation gate decides
+  // here as in solve(): on a facet-diagonal star the block is divided out, so
+  // factorizing the saddle instead would report a time and a memory no run
+  // pays.
   SolveReport prepare(const SparseSystem& A, const std::vector<double>& b) {
     SolveReport r;
     r.converged = true;
@@ -391,27 +360,18 @@ class PetscSolver final : public LinearSolver {
     return r;
   }
 
-  // A RESIDUAL THIS LARGE IS NOT A CONVERGED SOLVE, WHATEVER THE
-  // FACTORIZATION SAID.
+  // ||Ax - b|| / ||b|| < 1, checked whatever the factorization reported: a
+  // direct solver handed a singular matrix returns a vector, reports CONVERGED
+  // and leaves 1e18 in the answer -- measured on diagonal_afw under an
+  // essential stress condition (9.4e3), on the Kuhn tetrahedra (5.8e3), and at
+  // 3e20. The bound is 1 because x = 0 leaves exactly 1; a converged condensed
+  // solve leaves 8e-3, recovering the eliminated field dividing by a small
+  // diagonal and amplifying what the reduced solve left, so a tighter bound
+  // would reject it.
   //
-  // A direct solver handed a singular matrix returns a vector, reports
-  // CONVERGED, and leaves 1e18 in the answer -- measured, on diagonal_afw
-  // under an essential stress condition (relative residual 9.4e3) and on the
-  // Kuhn tetrahedra (5.8e3). The residual is one pass over the triplets, which
-  // is nothing beside a factorization, and it is the only thing that
-  // distinguishes an answer from a vector.
-  //
-  // The bound is one: a relative residual of 1 is what the answer x = 0
-  // leaves, so anything at or above it is not a solution by any reading. The
-  // singular cases measured are 9.4e3, 5.8e3 and 3e20; a
-  // converged condensed solve leaves 8e-3, because recovering the eliminated
-  // field divides by a small diagonal and amplifies whatever the reduced solve
-  // left. A tighter bound would call that a failure, and it is not one.
-  //
-  // Not on several processes. A rank holds its own rows and its halo, and the
+  // One process only. A rank holds its own rows and its halo, and the
   // eliminated field is recovered only where its row is here, so the sum below
-  // is over rows whose columns this rank cannot all evaluate. The number would
-  // be large and mean nothing.
+  // would run over rows whose columns this rank cannot all evaluate.
   SolveReport checked(const SparseSystem& A, const std::vector<double>& b,
                       const std::vector<double>& x, SolveReport r) const {
     PetscMPIInt size = 1;
@@ -459,20 +419,17 @@ class PetscSolver final : public LinearSolver {
     return checked(A, b, x, r);
   }
 
-  // The condensed solve, which is the same solver on a smaller problem.
+  // The condensed solve: the same solver on a smaller problem.
   //
   // S is handed to a second PetscSolver with this one's options and no
   // condensable set, so it takes the ordinary path -- the same methods, the
-  // same factorizations, the same reporting -- and there is one implementation
-  // of a solve rather than two. What this adds is the elimination either side
-  // of it, and the timing of the elimination itself, which belongs to the
-  // matrix rather than to the iteration.
+  // same factorizations, the same reporting. What this adds is the elimination
+  // either side of it, timed with the matrix rather than with the iteration.
   //
-  // One process. The elimination reads whole rows and whole columns of the
-  // eliminated unknowns, and distributed assembly gives a rank its own rows and
-  // its halo -- so on several processes the outer products would be emitted
-  // twice on the halo and missing nowhere. Rather than half-condense, a
-  // distributed run takes the saddle point, which is correct.
+  // On several processes it needs set_owners: the elimination reads whole rows
+  // and whole columns of the eliminated unknowns, and distributed assembly
+  // gives a rank its own rows and its halo. Without an ownership a distributed
+  // run takes the saddle point instead.
   SolveReport solve_condensed(const SparseSystem& A, const std::vector<double>& b,
                               std::vector<double>& x) {
     // PETSC_COMM_WORLD, not comm_: comm_ is chosen inside factorize(), which
@@ -482,11 +439,8 @@ class PetscSolver final : public LinearSolver {
     MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
     const bool spread = size > 1;
 
-    // Without an ownership there is nothing to condense on several processes.
-    // Each rank holds its own rows and its halo, so a rank that cannot tell
-    // which reduced rows are its own would emit some twice and some never. A
-    // caller that distributes without set_owners gets the saddle point, which
-    // is correct.
+    // A rank that cannot tell which reduced rows are its own would emit some
+    // twice and some never, so without an ownership the saddle point is taken.
     if (spread && owners_.size() != static_cast<std::size_t>(A.n)) {
       return ordinary(A, b, x);
     }
@@ -585,9 +539,8 @@ class PetscSolver final : public LinearSolver {
   // preconditioner from Pmat in KSPSetOperators(ksp, Amat, Pmat) and a
   // fieldsplit reads its diagonal blocks from there. Handing the blocks to the
   // sub-KSPs instead -- after PCSetUp, by KSPSetOperators on each -- is undone
-  // the next time the outer KSP sets up and rebuilds them from Pmat, which
-  // leaves the preconditioner silently equal to the operator: it converges on
-  // nothing and reports DIVERGED_ITS.
+  // the next time the outer KSP sets up and rebuilds them from Pmat, leaving
+  // the preconditioner equal to the operator and the solve at DIVERGED_ITS.
   void build_riesz(KSP ksp, PC pc) {
     const std::size_t nf = norm_.factors.size();
     if (nf < 2 || norm_.l2_weight.size() != nf - 1) {
@@ -967,8 +920,8 @@ class PetscSolver final : public LinearSolver {
                               : two_level              ? 1e-2
                                                        : opts_.riesz_block_rtol;
     // an inner Krylov makes the preconditioner a varying operator, which only a
-    // flexible outer method may use; applying it under plain gmres is a silent
-    // wrong answer, so the promotion happens here rather than in the caller
+    // flexible outer method may use, so the promotion happens here rather than
+    // in the caller
     if (inner_krylov) check(KSPSetType(ksp, KSPFGMRES), "KSPSetType(fgmres)");
     // Orthogonality, kept. P^-1 A has a cluster at 1 from the constrained
     // rows and its other eigenvalues a few decades away, and classical
@@ -1309,7 +1262,7 @@ class PetscSolver final : public LinearSolver {
     // 13 measure the same. Serial only -- the parallel breakdown noted above
     // is why none of them is the default.
     //
-    // What is NOT reachable is the auxiliary hierarchy's own strength
+    // What is not reachable is the auxiliary hierarchy's own strength
     // threshold. PETSc registers -pc_hypre_ads_amg_theta,
     // -pc_hypre_ads_ams_theta and -pc_hypre_ads_ams_cycle_type but never
     // queries them: each is accepted, reported by -options_left as unused, and
@@ -1367,26 +1320,6 @@ class PetscSolver final : public LinearSolver {
     riesz_.push_back(C);
   }
 
-  // A two-level cycle whose coarse space is the facet constants.
-  //
-  // The AFW stress block is not an ADS problem: a facet carries d traction
-  // components measured against the d functions of its P_1 basis, so d^2
-  // unknowns sit on it and hypre would not know what a facet is. But the
-  // auxiliary-space argument is about a subspace where the operator is
-  // spectrally equivalent to something a solver exists for, and here that
-  // subspace is written down rather than interpolated: the facet-constant
-  // moments are a subset of the degrees of freedom, so the injection is a
-  // matrix of ones.
-  //
-  //   smoother   Chebyshev/Jacobi on the whole block -- the higher moments are
-  //              local to a facet, and what is local is what a smoother is for
-  //   coarse     the constants, one H(div) problem per component: the coupling
-  //              between components is the material's, bounded and dropped by
-  //              an additive split, and each diagonal block is what ADS takes
-  //
-  // The coarse operator is Galerkin, P^T A P, so nothing about the physics is
-  // restated at the coarse level -- it is the same operator seen on the
-  // subspace.
   // d copies of a one-unknown-per-facet space, split and handed to ADS, one
   // component at a time and in sequence.
   //
@@ -1467,6 +1400,25 @@ class PetscSolver final : public LinearSolver {
     for (IS& s : parts) ISDestroy(&s);
   }
 
+  // A two-level cycle whose coarse space is the facet constants.
+  //
+  // The AFW stress block is not an ADS problem: a facet carries d traction
+  // components measured against the d functions of its P_1 basis, so d^2
+  // unknowns sit on it and hypre would not know what a facet is. The
+  // auxiliary-space argument still applies through a subspace on which the
+  // operator is spectrally equivalent to something a solver exists for, and
+  // here that subspace is written down rather than interpolated: the
+  // facet-constant moments are a subset of the degrees of freedom, so the
+  // injection is a matrix of ones.
+  //
+  //   smoother   Chebyshev over a symmetric SOR sweep on the whole block
+  //   coarse     the constants, one H(div) problem per component, composed
+  //              symmetric-multiplicatively and each solved by ADS
+  //
+  // The coarse operator is Galerkin, P^T A P: the same operator seen on the
+  // subspace, with nothing about the physics restated there. A block whose
+  // injection is square is already d copies of a one-unknown-per-facet space
+  // and takes no cycle at all -- see split_by_component above.
   void build_lowest_order_cycle(PC pc) {
     const auto& inj = norm_.lowest_order;
     const int nc = norm_.lowest_order_components;
@@ -1584,21 +1536,17 @@ class PetscSolver final : public LinearSolver {
     check(PCMGSetInterpolation(pc, 1, interpolation), "PCMGSetInterpolation");
     riesz_.push_back(interpolation);
 
-    // THE SMOOTHER CARRIES THE DIV-FREE PART, so it is a sweep and not a
-    // facet-local inverse.
+    // The smoother carries the divergence-free part, so it is a sweep and not
+    // a facet-local inverse.
     //
-    // What the coarse space does not carry is the non-constant moments -- and
-    // those are exactly the DIVERGENCE-FREE directions, only the constant
-    // moment reaching div. That is the near-nullspace Kolev and Vassilevski
-    // (SISC 34-6, A3079) say must be addressed explicitly and "cannot be
-    // handled by simple relaxation on the fine grid", and for which they use a
-    // convergent Gauss-Seidel smoother rather than a point method.
-    //
-    // Inverting each facet's block exactly looks right -- the non-constant
-    // moments do live on one facet -- and is not: it splits facet from facet,
-    // and a div-free field is global. Measured on the AFW block, mean inner CG
-    // steps per cycle application at 3^3, 6^3, 8^3 cells, and the solve time
-    // at 8^3:
+    // What the coarse space omits is the non-constant moments, and those are
+    // the divergence-free directions -- only the constant moment reaches div.
+    // That near-nullspace "cannot be handled by simple relaxation on the fine
+    // grid" (Kolev and Vassilevski, SISC 34-6, A3079), who use a convergent
+    // Gauss-Seidel smoother rather than a point method. Inverting each facet's
+    // block exactly splits facet from facet, and a div-free field is global.
+    // Measured on the AFW block, mean inner CG steps per cycle application at
+    // 3^3, 6^3, 8^3 cells, and the solve time at 8^3:
     //
     //     Chebyshev + point-block Jacobi   16.8  18.1  18.5   3.67 s
     //     Richardson + symmetric SOR       12.9  14.1  15.4   3.11 s
@@ -1672,20 +1620,19 @@ class PetscSolver final : public LinearSolver {
       PetscOptionsSetValue(nullptr, ("-" + key + "ksp_type").c_str(), "preonly");
       PetscOptionsSetValue(nullptr, ("-" + key + "pc_type").c_str(), "none");
     }
-    // SYMMETRIC-MULTIPLICATIVE, and the symmetry is not decoration: this cycle
-    // is applied inside a CG, so the composition has to stay SPD. Plain
-    // multiplicative is faster per sweep and wrecks it -- 70, 100, 148 inner
-    // steps over three refinements against 17, 18, 18, growing with h, which
-    // is CG being handed a non-symmetric preconditioner.
+    // Symmetric-multiplicative: this cycle is applied inside a CG, so the
+    // composition has to stay SPD. Plain multiplicative is faster per sweep
+    // and costs that symmetry -- 70, 100, 148 inner steps over three
+    // refinements against 17, 18, 18, growing with h.
     //
     // What the split composes is the d copies of the coarse H(div) problem,
-    // and what an ADDITIVE composition drops is the coupling between them --
-    // which is the TRACE, since the compliance couples the copies through it.
-    // That coupling is negligible on a unit box, which is why additive looked
-    // adequate, and it is not on a mesh written in metres: with lambda > 0 the
-    // hydrostatic direction is where the compliance goes singular, and the
-    // graph term's D^2 makes it dominate as the domain grows. Measured on 5^3
-    // hexahedra of a box of side L, ads-cg outer iterations:
+    // and what an additive composition drops is the coupling between them --
+    // the trace, since the compliance couples the copies through it. That
+    // coupling is negligible on a unit box and not on a mesh written in
+    // metres: with lambda > 0 the hydrostatic direction is where the
+    // compliance goes singular, and the graph term's D^2 makes it dominate as
+    // the domain grows. Measured on 5^3 hexahedra of a box of side L, ads-cg
+    // outer iterations:
     //
     //     L            1     10    100    300
     //     additive    34     28     51     80
@@ -1810,10 +1757,9 @@ class PetscSolver final : public LinearSolver {
 
   bool owns(PetscInt i) const { return i >= own_begin_ && i < own_end_; }
 
-  // A phase takes as long as its slowest process, and a report from one of them
-  // is a sample rather than a duration -- the ranks of a partitioned solve
-  // differ by whatever their subdomains differ by. So what is reported is the
-  // maximum, which is also what the wall clock outside measures.
+  // The maximum over the ranks: a phase takes as long as its slowest process,
+  // which is what the wall clock outside measures. One rank's own duration is
+  // a sample, the ranks differing by whatever their subdomains differ by.
   double slowest(double seconds) const {
     if (!distributed_) return seconds;
     MPI_Allreduce(MPI_IN_PLACE, &seconds, 1, MPI_DOUBLE, MPI_MAX, comm_);
@@ -1980,12 +1926,9 @@ class PetscSolver final : public LinearSolver {
                                     ? std::string(PCLU)
                                     : (riesz ? std::string(PCFIELDSPLIT) : opts_.preconditioner);
     check(PCSetType(pc, pc_type.c_str()), "PCSetType");
-    // the package is a property of a factorization, so it is set only when the
-    // preconditioner is one; naming it otherwise is how a silent no-op happens
     // Complete factorizations only. Naming a package on an incomplete one
-    // changes what it computes -- PCILU under a package that offers no ILU
-    // quietly becomes an exact solve, and the iteration count then says the
-    // preconditioner is excellent when there is no iteration happening.
+    // changes what it computes: PCILU under a package that offers no ILU
+    // becomes an exact solve, and the count then reports no iteration at all.
     const bool factorizing = pc_type == "lu" || pc_type == "cholesky";
     const std::string package =
         distributed_ ? parallel_package(opts_.factorization) : opts_.factorization;
@@ -2004,21 +1947,16 @@ class PetscSolver final : public LinearSolver {
       riesz_.push_back(P);
     }
     if (riesz) build_riesz(ksp, pc);
-    // MUMPS workspace headroom.
+    // MUMPS workspace headroom, ICNTL(14) from its ~20% default to 200%. On an
+    // indefinite saddle point delayed pivots make the real fill exceed the
+    // symbolic estimate, and MUMPS writes past its working array rather than
+    // reporting a shortage: a SEGV inside the factorization, on a well-posed
+    // system. The default suffices for the small cases and not for a 90k-dof
+    // fault mesh.
     //
-    // MUMPS sizes its working array from a symbolic estimate. On an indefinite
-    // saddle point -- which every mixed form is, with structural zeros on the
-    // diagonal of the multiplier blocks -- delayed pivots make the real fill
-    // far exceed that estimate, and MUMPS then writes past the array rather
-    // than reporting a shortage: a SEGV inside the factorization, on a system
-    // that is perfectly well posed. The default headroom (ICNTL(14), ~20%) is
-    // enough for the small cases and not for a 90k-dof fault mesh.
-    //
-    // Set on the global options database as strings so this compiles whether or
-    // not PETSc was built with the MUMPS headers exposed; PETSc ignores an
-    // option no solver claims.
-    // Only when MUMPS is the package. Set unconditionally these are options no
-    // solver claims, and PETSc reports every run as having unused options.
+    // Strings on the global options database, so this compiles whether or not
+    // PETSc exposes the MUMPS headers; set only when MUMPS is the package,
+    // since PETSc reports an option no solver claims as unused.
     if (factorizing && package == "mumps") {
       PetscOptionsSetValue(nullptr, "-mat_mumps_icntl_14", "200");
       PetscOptionsSetValue(nullptr, "-mat_mumps_icntl_24", "1");  // detect null pivots

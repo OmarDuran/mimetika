@@ -51,22 +51,16 @@
 // frictionless case at mu = 0) and FrictionlessBilateral are the ones the
 // Novikov et al. (2024) benchmarks exercise, against the mimetic-AFW stress
 // product. SlipWeakening derives from SignoriniCoulomb by overriding the
-// friction coefficient alone, which is why `friction_at` is virtual: a
-// user-supplied law should need to state only what differs.
+// friction coefficient alone, which is why `friction_at` is virtual.
 //
-// The consistent tangent is not written down anywhere. dt/dt_trial turns the
-// fixed-point sweep into a semismooth Newton iteration -- linear convergence
-// into quadratic -- and is the part of a contact law that implementations
-// reliably get wrong: the projection has branches, the derivative has the same
-// branches, and the two drift apart the moment either is edited. So no law here
-// differentiates itself. Each states its projection once, as a template over
-// the scalar type, and `differentiate` re-runs that same body on exokal's local
-// AD type. The branch is chosen by the values, the derivative is carried by the
-// arithmetic, and the two cannot disagree because there is only one body.
-//
-// That is also why AssociativeMohrCoulomb -- whose closest-point return map has
-// four active sets, each with its own closed form -- costs no more to
-// differentiate than the identity.
+// No law differentiates itself. Each states its projection once as a template
+// over the scalar type, and `differentiate` re-runs that same body on exokal's
+// local AD type: the branch is chosen by the values, the derivative is carried
+// by the arithmetic, so the two cannot disagree. The tangent dt/dt_trial turns
+// the fixed-point sweep into a semismooth Newton iteration. So
+// AssociativeMohrCoulomb -- whose closest-point return map has four active
+// sets, each with its own closed form -- costs no more to differentiate than
+// the identity.
 
 namespace mimetika::contact {
 
@@ -144,8 +138,7 @@ enum class Status { open = 0, stick = 1, slip = 2 };
 // block -- and the law's own `project_at` template is evaluated on exokal's
 // Local. Every branch it takes is decided by the values, which are the same
 // values the double instantiation would see, so the derivative returned is the
-// derivative of the branch actually taken. That is what "consistent" means in
-// consistent tangent.
+// derivative of the branch actually taken.
 //
 // The state and the jump are held fixed: they are the step's data, not the
 // unknown, which is why a slip-weakening coefficient enters as a constant. The
@@ -211,10 +204,8 @@ class ContactLaw {
 
   // A_f in the facet frame when the law is exactly linear, else absent.
   //
-  // The diagonal in the (n, t_1, ..., t_{dim-1}) components. A law that
-  // supplies one is solved in a single linear solve, with no outer iteration
-  // and no projection -- which is why LinearContact never reaches the fixed
-  // point map in practice.
+  // The diagonal in the (n, t_1, ..., t_{dim-1}) components. The driver caps
+  // the outer iteration at one evaluation for a law that supplies one.
   virtual bool has_linear_compliance() const { return false; }
   virtual Vec3 linear_compliance(int /*dim*/) const { return Vec3{}; }
 
@@ -227,12 +218,11 @@ class ContactLaw {
   // a semismooth Newton iteration.
   //
   // Every law shipped here obtains it from `differentiate` -- its own
-  // projection re-run on exokal's AD scalar -- so it is exact and cannot drift
-  // out of step with the projection. The default below is a central difference,
-  // and exists so the contract of this class stays what it says it is: a law
-  // must supply its projection, and nothing else. A law that takes the default
-  // pays the accuracy of a difference quotient near the nonsmooth branches,
-  // where a contact law lives.
+  // projection re-run on exokal's AD scalar -- so it cannot drift out of step
+  // with the projection. The default below is a central difference at
+  // h = 1e-6 max(1, |t_n| + |t_t|), so a law need supply only its projection;
+  // it carries the accuracy of a difference quotient across the nonsmooth
+  // branches.
   virtual Tangent tangent(const Vec3& trial, const State& state, int dim, const Vec3* g = nullptr,
                           const Vec3* g_prev = nullptr, double dt = 0.0) const {
     const double h = 1e-6 * std::max(1.0, std::abs(trial[0]) + trial.shear_norm(dim));
@@ -255,7 +245,7 @@ class ContactLaw {
   virtual void advance(const Vec3& /*traction*/, const Vec3* /*g*/, State& /*state*/, int /*dim*/,
                        const Vec3* /*g_prev*/ = nullptr, double /*dt*/ = 0.0) const {}
 
-  // where the point stands; open by default for laws with no unilateral part
+  // where the point stands; stick by default for laws with no unilateral part
   virtual Status status(const Vec3& /*traction*/, int /*dim*/, double /*tol*/ = 1e-10) const {
     return Status::stick;
   }
@@ -266,8 +256,8 @@ class ContactLaw {
 // A_f sigma n = [[u]] -- linear springs, always bonded.
 //
 // Allows tension and interpenetration: there is no unilateral condition. The
-// law is exactly representable, so the driver solves it in a single linear
-// solve rather than iterating.
+// projection is the identity, so the driver caps the outer iteration at one
+// evaluation.
 class LinearContact final : public ContactLaw {
  public:
   explicit LinearContact(double normal_stiffness = 1.0, double shear_stiffness = 1.0)
@@ -607,14 +597,9 @@ class RateAndStateFriction final : public SignoriniCoulomb {
 // with rho = |t_t| >= 0. The convex feasible set has three faces, giving four
 // candidate active sets -- the trial itself, the lateral cone, the truncation
 // disc t_n = 0, and the axis rho = 0. Each has a closed form, so the projection
-// evaluates all four and takes the nearest feasible one. That is exact and free
-// of nested case analysis; hand-written case logic on a cone is where these
-// implementations usually go wrong.
-//
-// Its tangent costs nothing: a hand-derived tangent would carry the four closed
-// forms again, each having to agree with the branch the projection took. Here
-// the branch is selected by the values and the winning candidate is
-// differentiated by re-running it, so the four cases exist once.
+// evaluates all four and takes the nearest feasible one, with no nested case
+// analysis. The winning candidate is differentiated by re-running it, so the
+// four closed forms are written once.
 class AssociativeMohrCoulomb final : public SignoriniCoulomb {
  public:
   AssociativeMohrCoulomb(double friction = 0.6, double cohesion = 0.0, double eps_n = 1.0,

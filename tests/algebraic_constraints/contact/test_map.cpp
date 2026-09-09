@@ -6,11 +6,9 @@
 
 // y = CD(x) as a nonlinear algebraic function, tested without a mesh.
 //
-// The design claims the contact problem is only algebra, so that is what these
-// tests check: the mechanics below is a hand-written 2x2 system. No mesh, no
-// material, no boundary condition and no model object appears in this file, so
-// the driver plugs into CauchyMechanicsModel and PoroelasticModel without
-// either being mentioned here.
+// The mechanics below is a hand-written 2x2 system: no mesh, no material, no
+// boundary condition and no model object appears in this file, so the same map
+// serves CauchyMechanicsModel and PoroelasticModel without naming either.
 //
 // The stub is small enough to have a closed form. With one enforcement point,
 // to_moments = [1] and the system
@@ -21,9 +19,9 @@
 //
 //     g(x) = (b1 - c x) / d    and    CD(x) = P(x + r g(x)).
 //
-// With the identity projection the fixed point is x* = b1 / c, where g(x*) = 0
-// -- the bilateral contact condition -- and every statement below is checked
-// against those two formulas rather than against a previous run.
+// With the identity projection the fixed point is x* = b1 / c, where g(x*) = 0,
+// the bilateral contact condition. Every statement below is checked against
+// those two formulas.
 
 using mimetika::contact::ContactLaw;
 using mimetika::contact::ContactMap;
@@ -39,8 +37,7 @@ bool near(double a, double b, double tol = 1e-9) { return std::abs(a - b) <= tol
 
 // The coupling sign is not free. g(x) = (b1 - c x)/d must decrease as the
 // traction grows -- pushing harder closes the gap -- so c/d > 0. With the
-// opposite sign the map has multiplier 1 + r|c|/d > 1 and no r converges, which
-// is a statement about contact being unstable, not about the solver.
+// opposite sign the map has multiplier 1 + r|c|/d > 1 and no r converges.
 constexpr double kA11 = 4.0, kC12 = 1.0, kD22 = 2.0;
 constexpr double kB0 = 0.0, kB1 = 3.0;
 
@@ -129,10 +126,9 @@ MIMETIKA_TEST(the_map_is_the_closed_form) {
   }
 }
 
-// The pinned unknown really is pinned -- an essential condition, not a
-// compliance. With an augmented relation inside the operator the solved traction
-// would be the trial value, so an open fracture would come out carrying
-// tension.
+// z_0 = x exactly: the traction is an essential condition, not a compliance. An
+// augmented relation inside the operator would return the trial value, so an
+// open fracture would come out carrying tension.
 MIMETIKA_TEST(the_pinned_unknown_really_is_pinned) {
   const StubMechanics m;
   const Identity law;
@@ -261,7 +257,7 @@ MIMETIKA_TEST(the_iteration_count_is_reported_honestly) {
   const auto res = fixed_point(map, opt);
   CHECK(res.iterations == 3);
   CHECK(!res.converged);
-  CHECK(m.solves >= 3);  // one solve per evaluation, no caching behind the back
+  CHECK(m.solves >= 3);  // one solve per evaluation
 }
 
 // -- the projection is what makes it contact ---------------------------------

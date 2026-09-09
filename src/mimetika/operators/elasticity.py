@@ -3,7 +3,7 @@ r"""Mimetic inner product for linear elasticity (Mimetic-AFW).
 Discretises the stress inner product ``(sigma, tau) = \int_E C^{-1} sigma : tau``
 of the Hellinger--Reissner (mixed, weakly-symmetric) formulation, following
 Beir\~ao da Veiga, ESAIM M2AN 44 (2010) 231--250.  This is the mimetic
-counterpart of the Arnold--Falk--Winter mixed finite element and shares its
+counterpart of the Arnold--Falk--Winther mixed finite element and shares its
 algebraic (saddle-point) structure.
 
 Degrees of freedom
@@ -15,11 +15,11 @@ facet -- 9 per face in 3D, matching eqs (2.8)--(2.11).
 
 Reconstruction space and the simplex property
 ---------------------------------------------
-The reconstruction space is the **full linear tensor space** ``[P_1(E)]^{d x d}``
+The reconstruction space is the full linear tensor space ``[P_1(E)]^{d x d}``
 (``m = d^2 (d+1)`` modes).  On a simplex (``d+1`` facets) the DOF count is
-``D = d^2 (d+1) = m``, so ``ker(N^T) = {0}`` and **the stabilization vanishes** --
-the scheme reduces to the AFW (BDM_1-based) mixed element.  On genuine polytopes
-a stabilization remains (e.g. dimension 18 on a hexahedron).
+``D = d^2 (d+1) = m``, so ``ker(N^T) = {0}``, ``M2 = 0`` and the scheme reduces
+to the AFW (BDM_1-based) mixed element.  On genuine polytopes a stabilization
+remains (dimension 18 on a hexahedron: ``D = 54``, ``m = 36``).
 
 The moment matrix
 -----------------
@@ -75,13 +75,12 @@ def cell_groups(mesh: Mesh):
     """Group cell ids by facet count.
 
     Yields ``(facet_ids, signs, cell_ids)`` with ``facet_ids`` and ``signs`` of
-    shape ``(n_cells_in_group, n_facets)``.  Grouping is what makes the local
-    matrices batchable: cells with equal facet counts have identical array
-    shapes, so a whole group goes through one set of stacked NumPy
-    linear-algebra calls instead of a Python loop.
+    shape ``(n_cells_in_group, n_facets)``.  Cells with equal facet counts have
+    identical array shapes, so a whole group goes through one set of stacked
+    NumPy linear-algebra calls instead of a Python loop.
 
-    A free function because it is pure topology -- every facet-DOF inner product
-    needs the same traversal, whatever it then does with it.
+    Pure topology, hence a free function: every facet-DOF inner product needs
+    the same traversal.
     """
     csc = mesh.complex._boundary_csc(mesh.dim)
     counts = np.diff(csc.indptr)
@@ -94,12 +93,11 @@ def cell_groups(mesh: Mesh):
 class ElasticityInnerProduct:
     """Stress inner product for elasticity on facet DOFs (``d^2`` per facet)."""
 
-    #: :meth:`assemble` returns the **full** compliance, volumetric part
-    #: included.  The lumped space sets this ``False``: there the volumetric
-    #: part is kept out of ``M`` (to preserve its diagonality) and carried
-    #: separately by :meth:`volumetric_operator`.  Assembly code keys off this
-    #: flag, never off the mere presence of ``volumetric_operator`` -- both
-    #: spaces provide that method.
+    #: :meth:`assemble` returns the full compliance, volumetric part included.
+    #: The lumped space sets this ``False``: there the volumetric part is kept
+    #: out of ``M`` (to preserve its diagonality) and carried separately by
+    #: :meth:`volumetric_operator`.  Assembly code keys off this flag, not off
+    #: the presence of ``volumetric_operator`` -- both spaces provide it.
     volumetric_included = True
 
     def __init__(
@@ -119,7 +117,7 @@ class ElasticityInnerProduct:
             )
         self.material = material.expand(mesh.num_cells(d))
         # per-cell shear modulus and compliance coefficient; both stay finite at
-        # nu = 1/2, which is what makes the incompressible limit unremarkable
+        # nu = 1/2 (a -> 1/d), so the incompressible limit needs no special case
         self._mu = np.broadcast_to(
             self.material.shear_modulus, (mesh.num_cells(d),)
         )
@@ -143,10 +141,9 @@ class ElasticityInnerProduct:
         """Offsets within a facet block holding the constant traction moment.
 
         The discrete divergence is the constant moment of each component summed
-        over facets, so assembly needs to know *where* in a facet's DOF block those
-        live.  Declaring it here rather than hardcoding it at the assembly site is
-        what lets a different stress space -- LumpedDeviatoricStress carries only
-        the constant traction, `ndf = d` -- share the same assembly code.
+        over facets, so assembly needs the offsets rather than a hardcoded
+        layout; :class:`~mimetika.operators.lumped.LumpedDeviatoricStress`
+        carries only the constant traction (``ndf = d``) and shares the code.
 
         AFW orders a facet block as ``component * d + basis`` with the facet P_1
         constant first, so component ``k`` sits at ``k * d``.
@@ -193,8 +190,7 @@ class ElasticityInnerProduct:
         * ``expansions[i]`` is ``(nb, d)`` with the ``L^2(e_i)`` expansion
           coefficients of the coordinate ``xi_c`` in the facet basis.
 
-        Both are tiny, and they are all the geometry the tensor-product mode
-        structure needs.
+        These are all the geometry the tensor-product mode structure needs.
         """
         d, nf, nb = lc.dim, lc.n_facets, lc.dim
         if d != 3:
@@ -282,7 +278,7 @@ class ElasticityInnerProduct:
     def local_matrices(self, cell_id: int, with_facet_data: bool = False):
         """Return ``(N, R, Kbar, volume, lc)`` for one cell, in the local frame.
 
-        Built from the **tensor-product structure** of the reconstruction space
+        Built from the tensor-product structure of the reconstruction space
         rather than by sampling dense mode arrays.  With modes
         ``T_{(s,r,c)} = phi_s E_{rc}`` and ``C^{-1}T = (T - a tr(T) I)/2mu``:
 
@@ -290,8 +286,8 @@ class ElasticityInnerProduct:
             ``R[(i,k,b),(r,c)]    = (delta_kr X_i[b,c] - a delta_rc X_i[b,k])/2mu``
             ``Kbar                = kron(G, (I - a vec(I) vec(I)^T)/2mu)``
 
-        with ``G_ss' = (1/|E|) int_E phi_s phi_s'``.  Every object on the right
-        is tiny, so no ``(nq, m, d, d)`` array is ever formed.
+        with ``G_ss' = (1/|E|) int_E phi_s phi_s'``.  No ``(nq, m, d, d)`` array
+        is formed.
         """
         lc = LocalCell.build(self.mesh.geometry, cell_id, self.frame)
         d, vol = lc.dim, lc.volume
@@ -365,14 +361,13 @@ class ElasticityInnerProduct:
         ``c = -2 mu a / |E|``.
 
         Same payload and normalisation as
-        :meth:`.LumpedDeviatoricStress.volumetric_operator`, but the *meaning*
-        differs by :attr:`volumetric_included`: here ``assemble()`` already
-        carries the full compliance, so ``M - W^T diag(c) W`` **adds back** the
-        constant-hydrostatic stiffness (``c < 0``) and yields the ``M_dev`` of
-        the four-field split, whereas for the lumped space ``M + W^T diag(c) W``
-        completes the compliance.  Either way ``M_full = M_dev + W^T diag(c) W``
-        holds exactly, which is the identity the four-field formulation rests on
-        (see :mod:`mimetika.assembly.four_field`).
+        :meth:`.LumpedDeviatoricStress.volumetric_operator`; the sign of use
+        differs by :attr:`volumetric_included`.  Here ``assemble()`` already
+        carries the full compliance, so ``M - W^T diag(c) W`` (``c < 0``) adds
+        back the constant-hydrostatic stiffness and yields the ``M_dev`` of the
+        four-field split; for the lumped space ``M + W^T diag(c) W`` completes
+        the compliance.  Either way ``M_full = M_dev + W^T diag(c) W`` holds
+        exactly (see :mod:`mimetika.assembly.four_field`).
         """
         d, ndf = self.mesh.dim, self.dofs_per_facet(self.mesh.dim)
         n_cells = self.mesh.num_cells(d)
@@ -459,7 +454,7 @@ class ElasticityInnerProduct:
         ).reshape(nB, nf * ndf, d * d) / (2.0 * mu)[:, None, None]
 
         # Kbar = kron(G, block); the first moment vanishes at the centroid, so G
-        # is the identity bordered by the cell inertia tensor
+        # is block diagonal: 1 and the cell second moments / (|E| h^2)
         G = np.zeros((nB, d + 1, d + 1))
         G[:, 0, 0] = 1.0
         G[:, 1:, 1:] = g.cell_second_moments()[cell_ids] / (

@@ -1,13 +1,12 @@
 """Linear contact law on fracture facets, in the mixed elasticity problem.
 
-The reference cases are piecewise-linear displacement fields with a prescribed
-jump, for which the contact law gives the opening in closed form.  Because both
-the field and the stress lie in the reconstruction space, the discrete solution
-must reproduce them to round-off.
+Reference cases are piecewise-linear displacement fields with a prescribed jump,
+for which the contact law gives the opening in closed form; field and stress lie
+in the reconstruction space, so the discrete solution reproduces them to round-off.
 
-Note on the boundary data: a lateral face touching the fracture plane has
-quadrature points *exactly* on it, so an ``x > 0.5`` indicator is ambiguous
-there.  The side is therefore decided per facet, from the mean of its points.
+A lateral face touching the fracture plane carries quadrature points on it, so an
+``x > 0.5`` indicator is ambiguous there; the side is decided per facet from the
+mean of its points.
 """
 
 import numpy as np
@@ -163,7 +162,7 @@ def test_shear_slip_matches_the_contact_law(ks):
         assert abs(op[0]) < 1e-8  # no opening
 
 
-# -- rigid body motion: the test the naive jump operator fails ----------------------
+# -- rigid body motion --------------------------------------------------------------
 
 
 def test_rigid_translation_produces_no_traction_and_no_opening():
@@ -178,10 +177,10 @@ def test_rigid_translation_produces_no_traction_and_no_opening():
 
 
 def test_rigid_rotation_produces_no_traction_and_no_opening():
-    """The jump operator must include the rotation lever arm.
+    """The jump operator carries the rotation lever arm.
 
-    A jump built from cell displacements alone would see the two sides of the
-    fracture move differently under a rigid rotation and invent a traction.
+    Failure mode: a jump built from cell displacements alone invents a traction
+    under a rigid rotation.
     """
     mesh, tags, ct = setup()
     W = np.array([[0.0, 0.7, -0.4], [-0.7, 0.0, 0.25], [0.4, -0.25, 0.0]])
@@ -219,12 +218,11 @@ def test_rigid_fracture_recovers_the_unfractured_solution():
 
 
 def test_soft_fracture_carries_almost_no_traction():
-    """k -> 0: the fracture stops transmitting traction.
+    """k -> 0: only the traction on the fracture facets vanishes.
 
-    Only the traction *on the fracture* vanishes.  The rest of the body still
-    carries stress, because the lateral walls hold prescribed displacements and
-    keep forcing it to deform -- the two halves decouple from each other, not
-    from their own boundary data.
+    The rest of the body still carries stress: the lateral walls hold prescribed
+    displacements, so the two halves decouple from each other, not from their own
+    boundary data.
     """
     transmitted = []
     for kn in (1e-4, 1e-8):

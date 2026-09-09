@@ -13,7 +13,8 @@
 //
 // Contact is a fixed-point problem in the contact traction, and nothing more:
 //
-//     y = CD(x),   CD(x) = P(x + r g(x)),   g(x) = J z,   A(x) z = b(x)
+//     y = CD(x),   CD(x) = P(x + r g(x)),   A(x) z = b(x),
+//     g(x) = -(A_f z - b_f)   the residual of the replaced fault rows
 //
 // where A(x) is the mechanics system with the fracture traction degrees of
 // freedom pinned to x. One evaluation is: pin, solve, read the gap, project.
@@ -21,20 +22,13 @@
 //
 // The seam. Everything here is algebra: a linear solve, two linear maps, an
 // index set and a projection. There is no mesh, no material, no boundary
-// condition and no model object -- those sit behind the Mechanics interface
-// below. That matters three ways:
-//
-//   * The mechanics is interchangeable. Whatever supplies (A, b) -- the mixed
-//     elasticity of CauchyMechanicsModel, or the poromechanics of
-//     PoroelasticModel with its pore-pressure coupling on the right-hand side --
-//     is invisible here, so adding a boundary condition upstream needs no
-//     change in the contact code, and the driver plugs into both.
-//   * The iteration is interchangeable. CD is just a function, so the relaxed
-//     Picard iteration in fixed_point() can be replaced by Newton or Anderson
-//     acceleration without touching the map.
-//   * It is testable without a mesh. Feed CD any x and check y: contraction,
-//     the fixed point and the projection can each be checked on stub mechanics,
-//     separately from the discretization.
+// condition and no model object -- those sit behind the ContactMechanics
+// interface below. So whatever supplies (A, b) -- the mixed elasticity of
+// CauchyMechanicsModel, or the poromechanics of PoroelasticModel with its
+// pore-pressure coupling on the right-hand side -- is invisible here, the
+// relaxed Picard iteration of fixed_point() can be replaced by the newton()
+// below without touching the map, and CD can be exercised on stub mechanics
+// with no discretization at all.
 //
 // What x contains. x and y are always the same object: the contact traction at
 // the enforcement points, in the facet frame, normal component first --
@@ -328,9 +322,10 @@ inline CondensedMap condense(const ContactMechanics& mech) {
 //     F(x) = P(x + r (g_0 + Ghat x)) - x ,
 //     J    = T (I + r Ghat) - I ,          T = dP/dt ,
 //
-// the step is a dense solve of size n_points * dim. For an affine law (a
-// frictionless fault) the residual is linear and this converges in a single
-// iteration.
+// the step is a dense solve of size n_points * dim, taken with the relaxation
+// factor of FixedPointOptions. For an affine law (a frictionless fault) the
+// residual is linear, so an undamped step, relaxation = 1, lands on the
+// solution in one iteration.
 //
 // T is the consistent tangent: the law's own AD tangent, the same projection
 // body re-run on exokal's Local. A hand-differentiated T would have to agree
@@ -447,10 +442,6 @@ inline FixedPointResult newton(const ContactMap& map, const CondensedMap& cond,
 // relaxation = 1 converges; while it slides it is not, and the plain iteration
 // settles into a limit cycle of constant amplitude rather than converging.
 // Damping restores convergence.
-//
-// Deliberately separate from ContactMap: the map is the problem, this is one way
-// of solving it, and a Newton or Anderson variant would replace only this
-// function.
 inline FixedPointResult fixed_point(const ContactMap& map, const FixedPointOptions& opt = {},
                                     const std::vector<Vec3>* x0 = nullptr,
                                     const std::vector<State>* internal = nullptr,
@@ -460,10 +451,9 @@ inline FixedPointResult fixed_point(const ContactMap& map, const FixedPointOptio
   std::vector<State> state = internal != nullptr ? *internal : map.initial_state();
   const int d = map.dim();
 
-  // CONVERGED MEANS SMALL, which a non-finite iterate never is. Without the
-  // finiteness guard a diverging iteration reports success: once x overflows,
-  // tolerance * max(|x|, 1) is inf and the test change <= inf passes, so
-  // divergence would be indistinguishable from convergence in the returned flag.
+  // Converged means small, which a non-finite iterate never is: once x
+  // overflows, tolerance * max(|x|, 1) is inf and the test change <= inf
+  // passes, so without this guard a diverging iteration reports success.
   const auto settled = [&](const std::vector<Vec3>& x, double change) {
     if (!std::isfinite(change)) return false;
     double biggest = 1.0;

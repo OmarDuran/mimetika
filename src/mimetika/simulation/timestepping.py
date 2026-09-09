@@ -1,14 +1,12 @@
 """Time stepping as its own abstraction: the Runge--Kutta family.
 
-The Biot system is marched with diagonally implicit Runge--Kutta schemes;
-the single member implemented today is **backward Euler** -- DIRK with one
-stage, Butcher tableau ``(A, b, c) = ([[1]], [1], [1])`` -- which is what
-the mixed formulation's ``previous``-state right-hand side realises.  The
-abstraction owns the *step sizes*: a constant ``dt``, or an explicit
-``schedule`` of times (the adaptive case: geometric refinement through a
-transient, coarsening in the tail), and yields ``(t, dt)`` pairs for the
-solver to march through.  Which scheme advances each step and which sizes
-the steps have are independent choices, and this class keeps them apart.
+The Biot system is marched with diagonally implicit Runge--Kutta schemes; the
+one member implemented is backward Euler -- DIRK with a single stage, Butcher
+tableau ``(A, b, c) = ([[1]], [1], [1])`` -- which the mixed formulation's
+``previous``-state right-hand side realises.  Step sizes are held here,
+independently of the scheme: a constant ``dt``, or an explicit ``schedule`` of
+times (geometric refinement through a transient, coarsening in the tail),
+yielded as ``(t, dt)`` pairs.
 """
 
 from __future__ import annotations
@@ -28,11 +26,10 @@ TABLEAUS = {
 class RKTimeStepping:
     """Step sizes and scheme of a transient march.
 
-    Exactly one of ``dt`` (constant stepping, together with ``n_steps`` or a
-    final time given to :meth:`steps`) and ``schedule`` (explicit times --
-    the adaptive case) must be provided.  ``tableau`` names the RK member;
-    only ``"backward-euler"`` exists today, and asking for another raises
-    rather than silently integrating with the wrong scheme.
+    Exactly one of ``dt`` (constant stepping, with ``n_steps`` or a final time
+    given to :meth:`steps`) and ``schedule`` (explicit times) must be provided.
+    ``tableau`` names the RK member; only ``"backward-euler"`` is in
+    :data:`TABLEAUS`, and any other name raises.
     """
 
     dt: float | None = None
@@ -73,9 +70,10 @@ class RKTimeStepping:
               t_end: float | None = None) -> Iterator[tuple[float, float]]:
         """Yield ``(t, dt)`` for each step of the march.
 
-        Constant mode needs ``n_steps`` or ``t_end`` (or both, consistency
-        checked by construction of the count); schedule mode ignores them
-        and walks the given times.
+        Constant mode needs ``n_steps`` or ``t_end``; ``n_steps`` takes
+        precedence when both are given, otherwise the count is
+        ``round((t_end - t0) / dt)``.  Schedule mode ignores both and walks
+        the given times.
         """
         if self.schedule is not None:
             t = self.t0

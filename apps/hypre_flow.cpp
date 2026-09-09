@@ -1,13 +1,11 @@
 // Darcy flow preconditioned by hypre's ADS, called directly.
 //
 // The same Riesz map the PETSc path builds -- P = diag(M + B^T W^-1 B, W) --
-// with the first block handed to HYPRE_ADS rather than to PCHYPRE. What that
-// buys is the auxiliary hierarchies' strength thresholds, which PETSc
-// registers and never queries.
+// with the first block handed to HYPRE_ADS rather than to PCHYPRE, which reaches
+// the auxiliary hierarchies' strength thresholds PETSc registers and never queries.
 //
 // The datum is affine, so the field lies in the lowest-order space exactly and
-// ||Pi_0(p - p_h)|| IS the solver's error: on this problem a converged run
-// returns ~1e-10 and a run that merely satisfied a stopping test does not.
+// max|p - p_h| over the cells is the solver's error: a converged run returns ~1e-10.
 //
 // Usage: mimetika-hypre-flow [n ...]
 
@@ -57,12 +55,12 @@ SpaceNorm flow_norm(const FlowModel& model, const exokal::Mesh& mesh, int dim) {
   for (const Index g : blocks[0].indices()) flux.push_back(static_cast<int>(g));
   norm.factors.push_back(std::move(flux));
 
-  // W CARRIES K. It stands for the Schur complement B star_K^-1 B^T of the
-  // divergence constraint, and star_K^-1 scales with K, so W does too. The
-  // measure alone names the norm of a HOMOGENEOUS coefficient only: with K
-  // jumping across facets the pairing the map is built from is no longer the
-  // pairing the operator has, and the count pays the inf-sup constant of the
-  // mismatch -- measured, 17 iterations become the 500-step cap at 1e6.
+  // W carries K: it stands for the Schur complement B star_K^-1 B^T of the
+  // divergence constraint, and star_K^-1 scales with K, so W does too. The measure
+  // alone names the norm of a homogeneous coefficient only: with K jumping across
+  // facets the pairing the map is built from is no longer the pairing the operator
+  // has, and the count pays the inf-sup constant of the mismatch -- measured, 17
+  // iterations become the 500-step cap at contrast 1e6.
   const std::vector<double> k_cell = model.norm_permeability();
   if (!k_cell.empty() && k_cell.size() != n_cells) {
     throw std::runtime_error("flow: the coefficient does not cover the cells");
@@ -164,8 +162,8 @@ int main(int argc, char** argv) {
   mimetika::solver::HypreSolver::Options opts;
   opts.rtol = 1e-8;
   opts.max_iterations = 500;
-  // The knobs PETSc registers and never queries, reachable here. Read from the
-  // environment so a sweep needs no rebuild.
+  // the ADS cycle and the two strength thresholds, read from the environment so a
+  // sweep needs no rebuild
   if (const char* v = std::getenv("MIMETIKA_ADS_CYCLE")) opts.ads_cycle_type = std::atoi(v);
   if (const char* v = std::getenv("MIMETIKA_AMG_THETA")) opts.amg_theta = std::atof(v);
   if (const char* v = std::getenv("MIMETIKA_AMS_THETA")) opts.ams_theta = std::atof(v);

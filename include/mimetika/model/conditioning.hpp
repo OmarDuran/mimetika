@@ -5,11 +5,11 @@
 // The metric-degeneracy scan judges a cell by its measure against its node
 // star, which catches a collapsed cell and misses a sliver of ordinary volume:
 // a tetrahedron whose flux block has lambda_min ~ 1e-8 against lambda_max ~ 1e2
-// sits well above the collapse threshold and still breaks every factorization
-// built on the stabilized product. Its block says so directly. cond() is the
-// exact 2-norm condition number of the cell block in the facet-flux basis --
-// the basis the assembled matrix and its preconditioner live in -- from a
-// Jacobi eigensolve, to roundoff; infinite where the block is not positive.
+// sits above the collapse threshold and still breaks the factorization of the
+// stabilized product. block_conditioning() is the 2-norm condition number
+// lambda_max/lambda_min of the cell block in the facet-flux basis -- the basis
+// the assembled matrix and its preconditioner live in -- from a Jacobi
+// eigensolve, to roundoff; infinite where the block is not positive.
 //
 // cond_selection() zeroes eta where the stabilized member's conditioning
 // exceeds a threshold. It composes with the scan's selection rather than

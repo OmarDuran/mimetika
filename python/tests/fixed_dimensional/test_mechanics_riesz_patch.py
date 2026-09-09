@@ -13,8 +13,7 @@ family carries the symmetry in the reconstruction instead and has no gamma.
 The datum is affine, u = a + B(x - x_E).  Then sym(grad u) is constant, sigma is
 constant, and the field lies in the space exactly, so the direct answer is its
 interpolant.  Both solvers see the SAME discrete system, so a disagreement
-between them is the iterative method and never the discretization -- which is
-what makes the direct solve the reference here.
+between them is the iterative method and never the discretization.
 
 The Riesz map is the Gram matrix of the norm the operator is an isomorphism in,
 
@@ -30,14 +29,14 @@ TWO TIERS OF PRODUCT, and they are held to different standards.
     material contrast, and incompressibility.
 
     IN DEVELOPMENT -- diagonal_afw, diagonal_vem.  Cartesian meshes only, where
-    the two-point star's consistency condition holds.  They are not asked to
-    deliver off face-orthogonality; that the condition is real rather than an
-    untested gap is shown once, by a negative case.
+    the two-point star's consistency condition holds.  That the condition is
+    real is shown once, by a negative case
+    (test_the_two_point_stars_need_face_orthogonality).
 
 The blends adaptive_afw and adaptive_vem sit in the first tier for the family
-matrix, because the scan flags nothing on these meshes and eta is then one
-everywhere -- each blend IS its stabilized member there.  What is specific to
-them, the per-cell selection, is exercised on its own below.
+matrix: the scan flags nothing on these meshes, eta is one everywhere and each
+blend IS its stabilized member there.  The per-cell selection is exercised on
+its own below.
 """
 
 import numpy as np
@@ -120,11 +119,11 @@ AVAILABLE = {
 }
 IN_DEVELOPMENT = {"diagonal_afw", "diagonal_vem"}
 
-# The Riesz map still does not deliver on the weak two-point star, even where it
-# is exact: measured, 26 and 59 iterations on cartesian_2d and the iteration cap
-# on the coarse cartesian_3d. The four-field WEAK norm is what is mismatched, not
-# the mesh -- stabilized_bdm in the same form runs at 11 -- so this is recorded
-# rather than asserted away. diagonal_vem, on the strong axis, is fine at 22/25.
+# The Riesz map does not deliver on the weak two-point star, even where it is
+# exact: measured, 26 and 59 iterations on cartesian_2d and the iteration cap on
+# the coarse cartesian_3d. It is the four-field weak norm that is mismatched and
+# not the mesh -- stabilized_bdm in the same form runs at 11 -- so the count is
+# recorded, not asserted. diagonal_vem, on the strong axis, runs 22/25.
 RIESZ_FRAGILE = {("diagonal_afw", f) for f in CARTESIAN}
 
 CASES = [(p, f) for p in REALIZATIONS for f in sorted(AVAILABLE[p])]
@@ -244,9 +243,9 @@ def test_the_two_point_stars_need_face_orthogonality(product):
     """Why the tier above is cartesian-only, shown rather than assumed.
 
     The constant slots of a two-point star close on a face-orthogonal cell and
-    its linear slots nowhere, so off that condition the patch is lost. Asserting
-    the failure keeps the restriction honest: without it, a product that silently
-    started working everywhere -- or never worked at all -- would read the same.
+    its linear slots nowhere, so off that condition the patch is lost. The
+    failure is asserted, so a product that started working everywhere -- or
+    never worked at all -- does not read the same as the restriction.
     """
     family = "simplex_3d" if product == "diagonal_vem" else "simplex_2d"
     dim, meshes = LADDERS[family]
@@ -263,8 +262,8 @@ def test_the_two_point_stars_need_face_orthogonality(product):
 def test_the_riesz_answer_is_the_direct_answer(product, family):
     """Same discrete system, two solvers: the gap is the tolerance and nothing else.
 
-    Where the map is still fragile the solve may not converge at all; what may
-    never happen is a converged solve that disagrees with the factorization.
+    On RIESZ_FRAGILE the solve may fail to converge; a converged solve that
+    disagrees with the factorization may not happen anywhere.
     """
     dim, meshes = LADDERS[family]
     fragile = (product, family) in RIESZ_FRAGILE
@@ -288,9 +287,9 @@ def test_the_riesz_answer_is_the_direct_answer(product, family):
 def test_the_count_does_not_grow_under_refinement(product, family):
     """h-independence: the bound is the inf-sup constant, which does not see h.
 
-    Growth in h would show as hundreds of iterations on these ladders, so a small
-    absolute cap is the sharp statement. The strong four-field members sit
-    highest, adaptive_vem at 73 and 80 on cartesian_3d.
+    Growth in h would show as hundreds of iterations on these ladders, so the
+    caps are absolute: 120 outright and 20 of drift. The strong four-field
+    members sit highest, adaptive_vem at 73 and 80 on cartesian_3d.
     """
     dim, meshes = LADDERS[family]
     counts = [iterative(mesh, dim, product)[0] for mesh in meshes]
@@ -308,10 +307,10 @@ def test_the_count_does_not_grow_under_refinement(product, family):
 # spread, and these thresholds land on five distinct selections of it.
 #
 # This exercises the diagonal member off face-orthogonality, where it is not yet
-# expected to be accurate. What is asserted here is therefore the SELECTION
-# MECHANISM -- that eta is binary, that five thresholds give five distinct
-# selections, that the two ends are exactly the two members, and that everything
-# between stays inside them -- and not the accuracy of the member selected.
+# expected to be accurate. What is asserted is the SELECTION MECHANISM -- eta
+# binary, five thresholds giving five distinct selections, the two ends exactly
+# the two members, everything between inside them -- not the accuracy of the
+# member selected.
 
 AFW_MESH = mk.annulus(5, 10, 2, mk.Family.simplex, 1.0, 3.0, 1.0)
 AFW_SELECTIONS = ((50.0, 0), (80.0, 10), (88.0, 25), (92.0, 50), (150.0, 100))
@@ -369,10 +368,10 @@ def test_the_blend_stays_bounded_by_its_two_members(blend):
     """The stabilized member is exact on these meshes and the diagonal one is not,
     so every selection sits between the two ends.
 
-    Not monotone in the count of flagged cells: which cells are handed over
-    matters, since a flagged cell contributes according to how far from
-    face-orthogonal it is. Measured for adaptive_afw: 6.9e-16, 9.9e-02, 7.3e-02,
-    2.9e-01, 1.2e-01 -- so the envelope is the claim, not an ordering.
+    Not monotone in the count of flagged cells: a flagged cell contributes
+    according to how far from face-orthogonal it is. Measured for adaptive_afw:
+    6.9e-16, 9.9e-02, 7.3e-02, 2.9e-01, 1.2e-01. The claim is the envelope, not
+    an ordering.
     """
     mesh, dim, selections, _, _ = BLENDS[blend]
     errors = [direct(mesh, dim, blend, degeneracy=t)[1] for t, _ in selections]
@@ -414,16 +413,15 @@ def test_the_count_is_bounded_under_material_contrast(realization, family):
         stabilized_vem_total  73  152  156  156     strong, four fields
 
     Every one of the six takes a single step of about two at the first jump and
-    is flat after it, so all are bounded in the contrast -- which is the claim --
-    and none grows with it. The strong four-field member is the most expensive
-    and still bounded, at 244 on the simplex ladder.
+    is flat after it: bounded in the contrast, which is the claim. The strong
+    four-field member is the most expensive and still bounded, at 244 on the
+    simplex ladder.
 
-    Three fields used to be flat outright here (15, 15, 15, 15). It is not any
-    more, and that is the price of the lambda-free stress norm: the rank-one
-    correction carries a = lambda/(2mu + d lambda), so a jump in lambda now
-    enters the norm where before it entered only the operator. Bounded either
-    way; the correction buys correctness under incompressibility for one step in
-    the contrast.
+    Three fields were flat outright here (15, 15, 15, 15) before the rank-one
+    correction to the stress norm. That correction carries
+    a = lambda/(2mu + d lambda), so a jump in lambda now enters the norm as well
+    as the operator -- one step in the contrast, in exchange for correctness
+    under incompressibility.
     """
     dim, meshes = LADDERS[family]
     mesh = meshes[0]
@@ -449,9 +447,8 @@ def test_the_count_is_bounded_under_material_contrast(realization, family):
 #
 #     lambda = 2 mu nu / (1 - 2 nu) ,
 #
-# so nu = 0.3, 0.49, 0.499, 0.4999 is lambda = 0.86, 49, 499, 4999. nu = 1/2 is
-# the incompressible limit itself, where lambda is not finite; 0.4999 is the
-# bar, and a map that carries it is robust for anything a material can be.
+# so at mu = 1 the sweep nu = 0.3, 0.49, 0.499, 0.4999 is lambda = 1.5, 49, 499,
+# 4999. nu = 1/2 is the incompressible limit itself, where lambda is not finite.
 POISSON = (0.3, 0.49, 0.499, 0.4999)
 INCOMPRESSIBLE_FAMILIES = {"cartesian_2d", "cartesian_3d", "simplex_3d"}
 INCOMPRESSIBLE_CASES = [(r, f) for r in STRICT_FORMS
@@ -491,8 +488,8 @@ def test_three_fields_are_robust_to_incompressibility(realization, family):
     and goes singular on the trace. Adding (a/2mu)(tr sigma)^2 back leaves
     (1/2mu)|sigma|^2, the plain L2 mass, which does not see lambda at all.
 
-    Without it the map lost the volumetric direction the operator still had, and
-    GMRES stopped on a preconditioned residual that no longer tracked the true
+    Without it the map loses the volumetric direction the operator still has,
+    and GMRES stops on a preconditioned residual that no longer tracks the true
     one: CONVERGED_RTOL with the answer 8.2e-02 from the factorization.
 
     Measured, at nu = 0.3, 0.49, 0.499, 0.4999:
@@ -545,9 +542,8 @@ def test_four_fields_are_not_yet_robust_to_incompressibility(realization, family
     barely moves (2.5 to 1.5), which leaves the displacement weight W_u = mu
     against a Schur complement the operator scales differently.
 
-    A RECORDED LIMITATION with both ends pinned: nu = 0.3 converges and the
-    answer is right wherever it converges, so a fix flips this test rather than
-    passing quietly.
+    A RECORDED LIMITATION with both ends pinned: nu = 0.3 must converge, and the
+    answer must agree with the factorization wherever it converges.
     """
     dim, meshes = LADDERS[family]
     mesh = meshes[0]
@@ -569,13 +565,13 @@ def test_four_fields_are_not_yet_robust_to_incompressibility(realization, family
 #
 # THE BLOCK IS SOLVED, NOT SAMPLED. A stress facet carries d^2 unknowns and ADS
 # is written for one per facet, so the block reaches it through the
-# facet-constant subspace as a two-level cycle -- and a cycle whose coarse
-# space is a subspace corrects only part of the block, so it is wrapped in a
-# CG. That CG's tolerance is what these counts measure: at 1e-2 they read the
-# tolerance instead of the preconditioner (29 against 23 on the ladder below,
-# 205 against 132 at nu = 0.4999), and on a mesh written in metres rather than
-# unit lengths it does not converge at all. Solved to 1e-6 the count is the
-# map's, and that is the claim worth pinning.
+# facet-constant subspace as a two-level cycle -- and a cycle whose coarse space
+# is a subspace corrects only part of the block, so it is wrapped in a CG. That
+# CG's tolerance is what these counts measure: at 1e-2 they read the tolerance
+# instead of the preconditioner (29 against 23 on the ladder below, 205 against
+# 132 at nu = 0.4999), and on a mesh written in metres rather than unit lengths
+# it does not converge. Hence riesz_block_rtol = 1e-6 here, at which the count
+# is the map's.
 ADS_CG = mk.SolverOptions(
     method="gmres", preconditioner="riesz", rtol=1e-10, max_iterations=3000,
     riesz_block_pc="ads", riesz_block_its=500, riesz_block_rtol=1e-6,
@@ -610,11 +606,10 @@ def _ads(mesh, dim, realization, lam=LAM, contrast=1.0):
 
 # ---- 1. the answer ----------------------------------------------------------
 #
-# CONVERGED IS NOT CORRECT. An auxiliary space is a preconditioner, so it may
-# not move the answer: a cycle built on the wrong complex, or on a permutation
-# of the block's rows, still converges -- to something else. `_ads` asserts the
-# departure from the factorization on every call below; this states it once on
-# its own, so a failure here reads as "wrong answer" rather than "slow".
+# CONVERGED IS NOT CORRECT. A cycle built on the wrong complex, or on a
+# permutation of the block's rows, still converges -- to something else. `_ads`
+# asserts the departure from the factorization on every call below; this asserts
+# it alone, so a failure here reads as "wrong answer" rather than "slow".
 @pytest.mark.parametrize("realization", ADS_REALIZATIONS)
 def test_the_auxiliary_space_answer_is_the_direct_answer(realization):
     _needs_ads()
@@ -632,9 +627,8 @@ def test_the_auxiliary_space_answer_is_the_direct_answer(realization):
 #     stabilized_bdm  23  23     (23  23)
 #     stabilized_vem  33  36     (33  36)
 #
-# The cycle reproduces the map iteration for iteration, which is the strongest
-# statement available: the auxiliary space costs nothing in count, only in work
-# per iteration.
+# The cycle reproduces the map iteration for iteration: the auxiliary space
+# costs nothing in count, only in work per iteration.
 @pytest.mark.parametrize("realization", ADS_REALIZATIONS)
 def test_the_ads_count_does_not_grow_under_refinement(realization):
     _needs_ads()
@@ -674,7 +668,8 @@ def test_the_ads_count_is_bounded_under_material_contrast(realization):
 # Against 23/60/83/103, 24/56/106/132 and 36/63/90/145 for the exact block: the
 # cycle tracks the map over four orders in 1/(1-2nu). It is also the axis the
 # coarse split's composition decides -- the trace is what couples the d copies,
-# and an additive composition drops it; see attach_two_level.
+# and an additive composition drops it; see build_lowest_order_cycle in
+# linear_solver/petsc.hpp.
 @pytest.mark.parametrize("realization", ADS_REALIZATIONS)
 def test_ads_three_fields_are_robust_to_incompressibility(realization):
     _needs_ads()

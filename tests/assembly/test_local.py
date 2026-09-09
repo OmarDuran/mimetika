@@ -1,12 +1,12 @@
-"""Mimetic patch tests: exactness of *local saddle-point solves*.
+"""Mimetic patch tests: exactness of the local saddle-point solves.
 
 For every reference cell of dimension >= 1 (0-cells carry no differential
-operators) we take a generic linear potential / displacement in ``R^3``, form
-the corresponding local mixed problem, **solve it**, and require the discrete
-solution to equal the exact interpolant.
+operators): a generic linear potential / displacement in ``R^3``, the
+corresponding local mixed problem solved, and the discrete solution required to
+equal the exact interpolant.
 
-This is strictly stronger than an energy-exactness check: it passes only if the
-inner product satisfies strong consistency ``M N = R``.
+Stronger than an energy-exactness check: it passes only if the inner product
+satisfies strong consistency ``M N = R``.
 """
 
 import numpy as np
@@ -156,7 +156,7 @@ def test_incompressible_limit_stays_exact(rc):
 
 @pytest.mark.parametrize("rc", CELLS, ids=IDS)
 def test_discrete_divergence_matches_the_exact_divergence(rc):
-    """``div_h`` applied to a constant stress gives zero; to a linear one, div."""
+    """``div_h`` of a constant stress is zero."""
     ip = ElasticityInnerProduct(rc.mesh)
     _, Dv, _, lc = elasticity_local_operators(ip, 0)
     rng = np.random.default_rng(0)

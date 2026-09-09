@@ -15,10 +15,10 @@ Reconstruction space
 * ``basis="const"`` (default): the ``d`` constant flux fields.  The classic
   lowest-order mimetic diffusion inner product.
 * ``basis="rt0"``: lowest-order Raviart--Thomas ``{a + b xi}``, ``m = d + 1``.
-  On a simplex (``d+1`` facets) this is unisolvent, so ``D = m`` and the
-  stabilization vanishes -- the scheme coincides with RT0 mixed FE.
+  On a simplex (``d+1`` facets) this is unisolvent, so ``D = m``, ``M2 = 0``
+  and the scheme coincides with RT0 mixed FE.
 
-Both mode families admit a potential, so **every** column of the moment matrix
+Both mode families admit a potential, so every column of the moment matrix
 ``R`` is canonical here (``R_e = |e| (psi_e - psi_E)`` with ``grad psi = K^{-1} w``):
 the constants give the classical closed form ``R_e = |e| K^{-1}(x_e - x_E)`` and
 the radial mode a quadratic potential.  Hence ``M N = R`` holds exactly and

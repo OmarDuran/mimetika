@@ -17,14 +17,12 @@
 //
 //     [| D^T u + A^T gamma |]_f = (D^T u + A^T gamma)_f^+ - (...)_f^-
 //
-// The right-hand side is not something to be assembled twice and subtracted.
 // D is the discrete divergence, a map from facet tractions to cell vectors, and
 // its adjoint D^T maps cell displacements back onto facets; each cell's
 // contribution carries that cell's outward incidence on the facet, so the two
 // cofaces of an interior facet enter with opposite signs and the assembled row
-// is the difference. The jump comes out of the adjoint for free. The same holds
-// for A and the rotation gamma, which supplies the rigid-rotation part of the
-// displacement field the facet sees.
+// is the difference. The same holds for A and the rotation gamma, which
+// supplies the rigid-rotation part of the displacement field the facet sees.
 //
 // So the operator is the constitutive row of the unfractured system,
 //
@@ -33,8 +31,7 @@
 // evaluated on the solution. Three consequences:
 //
 //   * It is linear, so it can be applied even though that row was replaced by
-//     the contact constraint. The row the fractured system solves is gone; the
-//     functional it used to express is not.
+//     the contact constraint.
 //   * It must be the unfractured row. At the solution the fractured row is
 //     satisfied exactly and its residual is zero, whereas the unfractured
 //     residual is precisely the jump this exists to extract.
@@ -97,9 +94,8 @@ class Fracture {
   const FacetFrame& frame(std::size_t i) const { return frames_[i]; }
 
   // One enforcement point per facet: the law is applied to the facet-mean
-  // traction, which is what most discrete-fracture codes do. Applying it at the
-  // facet quadrature points instead resolves partial contact within a facet at
-  // the cost of state per point; the choice belongs to the caller and the law is
+  // traction. Applying it at the facet quadrature points instead resolves
+  // partial contact within a facet at the cost of state per point; the law is
   // written the same way either way.
   std::size_t n_points() const { return facets_.size(); }
 

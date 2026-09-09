@@ -1,18 +1,16 @@
 """The Riesz map preconditioner, and the one property that defines it.
 
-A block preconditioner is not judged by being fast on one mesh. P is the matrix
-of the inner product of the space the operator is an isomorphism on,
+P is the Gram matrix of the inner product of the space the operator is an
+isomorphism on,
 
     ||(q, p)||_X^2 = (K^-1 q, q) + ||div q||_L2^2 + ||p||_L2^2
 
-and the theorem that makes it worth building says P^-1 A has a condition number
-bounded by the inf-sup and continuity constants alone. Those do not depend on h.
-So the ITERATION COUNT MUST NOT GROW under refinement, and a count that grows is
-the signature of a P that is not that Gram matrix -- which is what a plain B^T B
-in place of B^T diag(1/|E|) B produces, and what leaving the constrained rows
-alone produces.
+and P^-1 A then has a condition number bounded by the inf-sup and continuity
+constants alone, which do not depend on h. So the iteration count must not grow
+under refinement; a count that grows is a P that is not that Gram matrix --
+a plain B^T B in place of B^T diag(1/|E|) B, or the constrained rows left alone.
 
-The test is therefore a refinement sweep, not a timing.
+The test is a refinement sweep, not a timing.
 """
 
 import math
@@ -55,9 +53,8 @@ def dupuit(nr, dim=2, family=None, product=None):
     return model
 
 
-# THE DEFINING PROPERTY. Six meshes over a hundredfold in unknowns, and the
-# count is not allowed to drift upward: the slack here is wide enough that
-# ordinary variation passes and a preconditioner that scales with h does not.
+# THE DEFINING PROPERTY. Five meshes, nr = 8 to 64, a factor of 64 in cells,
+# and the count is not allowed to drift upward.
 def test_the_iteration_count_does_not_grow_under_refinement():
     counts = []
     for nr in (8, 16, 32, 48, 64):
@@ -66,14 +63,13 @@ def test_the_iteration_count_does_not_grow_under_refinement():
         counts.append(report.iterations)
         print(f"  {model.n_cells:6d} cells {model.n_dofs:7d} dofs   {report.iterations:4d} its")
     assert counts[-1] <= 2 * counts[0]
-    # and the growth is not monotone creep either: the finest is no worse than
-    # the coarsest, which is what "independent of h" actually claims
+    # and no monotone creep: the finest is within 5 of the coarsest
     assert counts[-1] <= counts[0] + 5
 
 
-# CONVERGED IS NOT CORRECT. A preconditioner that quietly changes the operator
-# converges to the wrong vector, so the answer is compared against the direct
-# solve of the same system rather than against a tolerance.
+# CONVERGED IS NOT CORRECT. A preconditioner that changes the operator converges
+# to the wrong vector, so the answer is compared against the direct solve of the
+# same system rather than against a tolerance.
 @pytest.mark.parametrize("nr", [8, 24])
 def test_the_preconditioned_answer_is_the_direct_answer(nr):
     direct = dupuit(nr)
@@ -126,10 +122,10 @@ def test_it_holds_across_dimension_and_cell_type(dim, family):
 # Hiptmair-Xu auxiliary-space framework) inverts it by splitting along the de
 # Rham complex instead, which costs no fill and is linear in the unknowns.
 #
-# It needs the discrete gradient and curl -- the complex's own boundary
-# operators, d_1 and d_2 -- and the vertex coordinates, and it is defined for
-# ONE UNKNOWN PER FACET in 3D. Those are supplied automatically when they
-# exist, which is why this is a 3D RT test and not a BDM one.
+# It needs the discrete gradient and curl -- d_1 (edges x vertices) and d_2
+# (faces x edges) -- and the vertex coordinates, and it is defined for ONE
+# UNKNOWN PER FACET in 3D. Those are supplied when they exist, which is why
+# these are 3D RT cases.
 ADS = mk.SolverOptions(
     method="gmres", preconditioner="riesz", rtol=1e-10, max_iterations=2000,
     riesz_block_pc="ads",
@@ -247,18 +243,16 @@ def test_the_stress_block_reaches_the_auxiliary_space():
     assert worst < 1e-7
 
 
-# THE TWO-LEVEL CYCLE, WITH ITS BLOCK SOLVED TO TOLERANCE. What is h-uniform
-# is the Riesz map: with the stress block solved to rtol 1e-2 by CG under the
-# cycle, the outer count on the 3D annulus is 20, 20, 21 over three
-# refinements (11 flat with the block factorized exactly). What is NOT uniform
-# is the cycle as a preconditioner of that block: the CG steps each
-# application needs grow, median 56 -> 100 -> 168, and did so under the
-# previous, unit-bound norm as well (70 -> 179 -> 338); the old version of
-# this test capped that CG at 50 and read a flat outer count off a capped
-# inner one -- 35, 37, 40 -- which measured the cap. The solver's two-level
-# default is now the same "to tolerance" budget, so plain ADS options measure
-# the map's count; the smoother/coarse-space growth is the open item, not
-# hidden by a budget.
+# THE TWO-LEVEL CYCLE, WITH ITS BLOCK SOLVED TO TOLERANCE. The Riesz map is
+# h-uniform: with the stress block solved to rtol 1e-2 by CG under the cycle,
+# the outer count on the 3D annulus is 20, 20, 21 over three refinements (11
+# flat with the block factorized exactly). The cycle as a preconditioner of that
+# block is NOT uniform: the CG steps each application needs grow, median
+# 56 -> 100 -> 168, and did so under the previous unit-bound norm as well
+# (70 -> 179 -> 338). Capping that CG at 50 makes the outer count read the cap,
+# 35, 37, 40. The solver's two-level default is the same "to tolerance" budget,
+# so plain ADS options measure the map's count; the smoother/coarse-space growth
+# is the open item.
 STRESS_CYCLE = ADS
 
 
@@ -288,9 +282,8 @@ def test_the_elasticity_answer_is_the_direct_answer(nr):
     assert worst < 1e-7
 
 
-# P = A, factorized: a perfect preconditioner, so one iteration. It tests the
-# Pmat wiring, not a preconditioner -- and an earlier version that handed the
-# blocks to the sub-KSPs after PCSetUp failed exactly here, silently.
+# P = A, factorized: one iteration. This pins the Pmat wiring -- handing the
+# blocks to the sub-KSPs after PCSetUp fails here and nowhere else.
 @pytest.mark.parametrize("kind", ["flow", "elasticity"])
 def test_an_exact_preconditioner_converges_in_one_iteration(kind):
     exact = mk.SolverOptions(method="gmres", preconditioner="exact", rtol=1e-12)
@@ -315,9 +308,8 @@ def test_an_exact_preconditioner_converges_in_one_iteration(kind):
 # which is the trace term above. Taking the three-field reading instead scales
 # the pressure block by c_p |E|^2 and the solve stops converging on 6^3 cells.
 #
-# What did NOT change: the rotation keeps its graph term. skw is bounded
-# L^2 -> L^2 so the norm does not need it, but the count does -- 41 iterations
-# against 85 -- and a norm the iteration disagrees with is not the norm.
+# The rotation keeps its graph term. skw is bounded L^2 -> L^2 so the norm does
+# not need it, but the count does: 41 iterations against 85 without it.
 def test_the_total_pressure_row_keeps_the_scale_the_operator_gave_it():
     counts = []
     for nr in (6, 12, 24):
@@ -325,9 +317,9 @@ def test_the_total_pressure_row_keeps_the_scale_the_operator_gave_it():
         report = model.solve(options=RIESZ)
         counts.append(report.iterations)
         print(f"  {model.n_cells:6d} cells {model.n_dofs:7d} dofs   {report.iterations:4d} its")
-    # four fields cost a constant factor over three -- 136 against 41 -- and
-    # that is the form, not the norm: what the norm owes is that the factor
-    # STAYS constant, which is what is asserted
+    # four fields cost a constant factor over three -- 136 against 41 -- which
+    # is the form, not the norm; what is asserted is that the factor stays
+    # constant under refinement
     assert counts[-1] <= counts[0] + 15
 
 
@@ -336,9 +328,8 @@ def test_the_total_pressure_row_keeps_the_scale_the_operator_gave_it():
 # diagonal_afw carries a diagonal star, so a solve of it is CONDENSED by
 # default: the stress is divided out and what reaches a Krylov method is the
 # reduced system, whose iteration count says nothing about the norm on the
-# saddle point. This test is about the norm, so it asks for the saddle point
-# explicitly -- condense=False -- and the count it reports is then the one the
-# theorem bounds.
+# saddle point. condense=False asks for the saddle point, and the count is then
+# the one the theorem bounds.
 SADDLE_RIESZ = mk.SolverOptions(
     method="gmres", preconditioner="riesz", rtol=1e-10, max_iterations=2000, condense=False
 )

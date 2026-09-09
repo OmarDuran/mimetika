@@ -1,36 +1,30 @@
 """One interface for a poromechanics PDE solve with frictional fractures.
 
-Everything a simulation is made of is stated once, up front:
+The inputs are stated once, up front:
 
-* the **mesh** with its **fractures**: a ``{fracture set: ContactDriver}``
-  mapping.  A key names a *fracture set* -- one or several fractures
-  treated as a single contact unit -- and fractures *imply* contact, so
-  every set carries its own driver: its facets and its own contact law
-  (constitutive map).  Different sets may use different laws.  The contact
-  algebra (:class:`~mimetika.contact.driver.ContactDriver`) stays cleanly
-  separated from the PDE side.  No fractures means a plain unfractured
-  poromechanics simulation, and no driver is needed;
-* the **boundary conditions**: :class:`MechanicsBC` for the mechanics and
+* the mesh with its fractures: a ``{fracture set: ContactDriver}`` mapping.
+  A key names a fracture set -- one or several fractures treated as a single
+  contact unit -- and fractures imply contact, so every set carries its own
+  driver: its facets and its own contact law (constitutive map).  Different
+  sets may use different laws.  An empty mapping is plain unfractured
+  poromechanics and needs no driver;
+* the boundary conditions: :class:`MechanicsBC` for the mechanics and
   :class:`FlowBC` for the flow;
-* the **flow mode**: ``flow="prescribed"`` (the quasi-steady one-way
-  coupling -- the pore pressure is per-step *data* handed to
-  :meth:`PoromechanicsSolver.step`, and the flow BC is empty) or
-  ``flow="solved"`` (a Darcy step coupled to the mechanics; reserved, not
-  implemented yet);
-* the **initial conditions** (:class:`PoromechanicsIC`): the pore-pressure
-  field, the in-situ fault prestress, and optionally a starting contact
-  state;
-* the **time step** ``dt`` (constant, for now) and the **linear solver**
-  type (``"direct"``, for now).
+* the flow mode: ``flow="prescribed"`` (quasi-steady one-way coupling -- the
+  pore pressure is per-step data handed to :meth:`PoromechanicsSolver.step`,
+  and the flow BC must be empty) or ``flow="solved"`` (the transient coupled
+  Biot system, marched by :meth:`PoromechanicsSolver.flow_step`;
+  contact-active fractures and nonzero prescribed flux raise there);
+* the initial conditions (:class:`PoromechanicsIC`): the pore-pressure field,
+  the in-situ fault prestress, and optionally a starting contact state;
+* the time step ``dt`` (constant) and the linear solver type (``"direct"``).
 
-The solver owns everything derived from those inputs: the assembled
-four-field system and its cache, the pressure-dependent right-hand side
-(the Biot coupling is the only place the flow enters, additively on the
-stress block), the condensed contact map and its factorization reuse, the
-locked (pre-slip) solve and the warm start built from it, and the fault
-readbacks.  A time/loading program -- which pressures to apply, in which
-order, with which continuation policy -- belongs to the caller; the solver
-advances one step at a time.
+The solver owns what follows from those: the assembled four-field system and
+its cache, the pressure-dependent right-hand side (the Biot coupling enters
+additively on the stress block), the condensed contact map and its
+factorization reuse, the locked (pre-slip) solve and the warm start built from
+it, and the fault readbacks.  The loading program belongs to the caller; the
+solver advances one step at a time.
 """
 
 from __future__ import annotations
@@ -51,12 +45,12 @@ from mimetika.solver.saddle import solve_saddle
 class MechanicsBC:
     """Boundary data of the mechanics problem.
 
-    ``traction`` is essential in the Hellinger--Reissner form (the traction
-    is a degree of freedom) and may return either the stress tensor
-    ``(nq, 3, 3)`` -- the safe choice -- or the traction vector against the
-    canonical facet normal.  ``dirichlet`` is the boundary displacement
-    datum, entering naturally.  ``pins`` are discrete solution DOFs to
-    constrain to zero (rigid-mode removal for all-traction problems).
+    ``traction`` is essential in the Hellinger--Reissner form (the traction is
+    a degree of freedom) and may return either the stress tensor ``(nq, 3, 3)``
+    or the traction vector against the canonical facet normal.  ``dirichlet``
+    is the boundary displacement datum, entering naturally.  ``pins`` are
+    solution DOFs constrained to zero (rigid-mode removal for all-traction
+    problems).
     """
 
     traction: Callable | None = None
@@ -71,13 +65,12 @@ class MechanicsBC:
 class FlowBC:
     """Boundary data of the flow problem.
 
-    In the mixed (flux-pressure) form the flux is the degree of freedom, so
-    a prescribed **flux** is essential and a prescribed **pressure** enters
-    naturally -- the mirror image of the mechanics.  The current solver
-    takes the pore pressure as *prescribed data* per step (the
-    quasi-steady one-way coupling of the benchmark model), so a non-trivial
-    ``FlowBC`` marks a solved-flow simulation, which is not implemented
-    yet; the field exists so the interface states the full problem.
+    In the mixed (flux-pressure) form the flux is the degree of freedom, so a
+    prescribed flux is essential and a prescribed pressure enters naturally --
+    the mirror image of the mechanics.  With ``flow="prescribed"`` the pore
+    pressure is per-step data and this must be trivial; with ``flow="solved"``
+    ``flux_facets`` lists the sealed (zero-flux) facets and ``pressure`` is the
+    natural datum, while a nonzero ``flux`` raises.
     """
 
     flux: Callable | None = None
@@ -118,14 +111,12 @@ class PoromechanicsSolver:
     material
         The :class:`~mimetika.materials.Material` (drained moduli, Biot).
     fractures
-        ``{fracture set: ContactDriver}`` -- each key names a *fracture
-        set* (one or several fractures treated as a single contact unit;
-        any hashable label, e.g. a string or a tuple of fracture names).
-        Fractures imply contact, so every set carries its own driver over
-        the concatenation of its facets, with its own contact law -- sets
-        may differ in their constitutive maps.  An empty mapping (or
-        ``None``) means a plain unfractured poromechanics simulation, which
-        needs no driver at all.
+        ``{fracture set: ContactDriver}`` -- each key names a fracture set
+        (one or several fractures treated as a single contact unit; any
+        hashable label).  Every set carries its own driver over the
+        concatenation of its facets, with its own contact law.  An empty
+        mapping (or ``None``) is plain unfractured poromechanics and needs
+        no driver.  At most one set per solve.
     bc, ic
         :class:`MechanicsBC` and :class:`PoromechanicsIC`.
     dt
@@ -315,10 +306,10 @@ class PoromechanicsSolver:
     # -- solves -----------------------------------------------------------------
 
     def locked_solution(self, pressure_cells):
-        """The **locked** (no-contact) solve: ``(problem, solution, rhs)``.
+        """The locked (no-contact) solve: ``(problem, solution, rhs)``.
 
-        The plain continuum under the load -- the pre-slip state, and the
-        basis of the warm start.
+        The continuum under the load: the pre-slip state, and the basis of the
+        warm start.
         """
         problem, matrix, rhs = self.mechanics(pressure_cells)
         solution = problem.split(
@@ -331,9 +322,8 @@ class PoromechanicsSolver:
         """A contact state whose multiplier is the locked fault tractions.
 
         On stiff, confined domains the contact Newton diverges from a zero
-        multiplier (the first trial has the fault carrying nothing); the
-        locked tractions sit next to the contact solution and keep the
-        iteration in the physical basin.
+        multiplier, whose first trial has the fault carrying no traction; the
+        locked tractions start the iteration near the contact solution.
         """
         driver = self._require_driver()
         _, sol0, _ = self.locked_solution(pressure_cells)
@@ -366,9 +356,8 @@ class PoromechanicsSolver:
         Without active fractures there is no contact: the step is the plain
         poromechanics solve, returned as a state with empty contact fields.
 
-        With ``flow="solved"`` the step is the transient coupled Biot one:
-        pass ``previous`` (the last step's solution, or the initial state)
-        instead of ``pressure``, and see :meth:`flow_step`.
+        With ``flow="solved"`` this raises: the transient coupled Biot system
+        is advanced by :meth:`flow_step`.
         """
         if self.flow == "solved":
             raise ValueError(
@@ -421,12 +410,11 @@ class PoromechanicsSolver:
         construction.  Returns the
         :class:`~mimetika.assembly.mixed.MixedSolution` of the new time.
 
-        With a **constant** step and time-independent boundary data the
-        system matrix never changes: the first call assembles and
-        factorizes once, and every later call is a back-substitution plus
-        an update of the previous-state block of the right-hand side.  An
-        adaptive schedule (varying ``dt``) reassembles per step, since the
-        time step scales the flow blocks.
+        With a constant step and time-independent boundary data the system
+        matrix never changes: the first call assembles and factorizes once,
+        every later call is a back-substitution plus an update of the
+        previous-state block of the right-hand side.  A varying ``dt``
+        reassembles per step, since the time step scales the flow blocks.
         """
         if self.flow != "solved":
             raise ValueError("flow_step() needs flow='solved'")
@@ -499,7 +487,7 @@ class PoromechanicsSolver:
 
         poro = self.poro
         n1 = poro.n_stress
-        # the solid pressure lives on the *mechanics* (four-field) block
+        # the solid pressure lives on the mechanics (four-field) block
         n1p = n1 + getattr(poro.mechanics, "n_pressure", 0)
         n2 = n1p + poro.d * poro.n_cells
         n3 = n2 + poro.n_skew * poro.n_cells
@@ -520,10 +508,8 @@ class PoromechanicsSolver:
     def fracture_centroids(self, key=None) -> np.ndarray:
         """Ambient centroids of fracture facets, ``(nf, 3)``.
 
-        ``key`` selects one fracture set; ``None`` gives all active facets
-        in driver order.  What coordinate to read off is the caller's
-        business -- the interface knows nothing about the geometry's
-        orientation.
+        ``key`` selects one fracture set; ``None`` gives all active facets in
+        driver order.
         """
         facets = (np.asarray(self.fractures[key].facets, dtype=int)
                   if key is not None else self.active_facets)

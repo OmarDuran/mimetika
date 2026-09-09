@@ -56,9 +56,8 @@ MIMETIKA_TEST(the_operator_is_consistent) {
   }
 }
 
-// Pair antisymmetry: U_ab(nu) = U_ba(-nu). The physical consequence is that the
-// buoyant fluxes summed over ordered pairs cancel, so the component fluxes add
-// up to the total flux with nothing left over.
+// Pair antisymmetry: U_ab(nu) = U_ba(-nu), so the buoyant contribution summed
+// over ordered pairs cancels and the component fluxes sum to the total flux.
 MIMETIKA_TEST(pairs_are_antisymmetric_so_the_component_fluxes_close) {
   const std::vector<double> L = {0.4, 1.1, 0.25, 0.7};
   const std::vector<double> R = {0.9, 0.2, 1.4, 0.05};
@@ -158,8 +157,7 @@ MIMETIKA_TEST(the_operator_is_monotone_under_constrained_variation) {
   }
 }
 
-// a pair vanishes when either member is absent from its upstream side —
-// the property the interface directionality argument rests on
+// a pair vanishes when either member is absent from its own upstream side
 MIMETIKA_TEST(an_absent_member_kills_the_pair) {
   std::vector<double> L = {0.0, 1.1, 0.25};  // phase 0 absent at L
   const std::vector<double> R = {0.9, 0.2, 1.4};

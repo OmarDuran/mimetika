@@ -1,26 +1,25 @@
 r"""Terzaghi's consolidation column, 2D and 3D, against the closed form.
 
-The column exists to exercise the boundary conditions -- applied traction,
-rollers, a drained face and sealed faces -- on a problem whose answer is known
-exactly.  So the tests check the boundary conditions as directly as they check
-the numbers:
+The column exercises the boundary conditions -- applied traction, rollers, a
+drained face and sealed faces -- on a problem whose answer is known exactly, so
+the tests check the boundary conditions as directly as the numbers:
 
-* the section stays **uniform** (the rollers really do impose uniaxial strain),
-* the answer does not depend on the column's **width** or its lateral cell count,
-* **2D and 3D agree**, which they must, having the same 1D solution,
-* the error **converges** at first order, so what remains is discretization.
+* the section stays uniform (the rollers impose uniaxial strain),
+* the answer does not depend on the column's width or its lateral cell count,
+* 2D and 3D agree, having the same 1D solution,
+* the error converges at first order, so what remains is discretization.
 
 Both cell families are run: ``cart`` (quadrilaterals, hexahedra) and ``simplex``
-(triangles, tetrahedra).  They are not two spellings of one test.  On simplices
-the mimetic stabilization vanishes, so ``M = M1`` alone; and because every cell
-is split the same way, the mesh is not laterally symmetric, so the column is only
-one-dimensional in the limit.  ``cart`` is uniform across its section to machine
-precision and ``simplex`` is not -- the two therefore carry different tolerances,
-with the simplex asymmetry pinned by a *convergence* test rather than a bound.
+(triangles, tetrahedra).  On simplices the mimetic stabilization vanishes, so
+``M = M1`` alone; and because every cell is split the same way, the mesh is not
+laterally symmetric and the column is one-dimensional only in the limit.
+``cart`` is uniform across its section to machine precision and ``simplex`` is
+not, so the two carry different tolerances, with the simplex asymmetry pinned by
+a convergence test rather than a bound.
 
-The closed form is itself checked against an independent route -- the settlement
-series is verified by integrating the pressure series -- so a mistake in the
-analytic side cannot quietly define the answer.
+The settlement series is checked against an independent route -- numerical
+integration of the pressure series -- so the analytic side is not verified
+against itself.
 """
 
 import numpy as np
@@ -59,8 +58,8 @@ def solved(column):
 
 #: ``cart`` is exactly one-dimensional; ``simplex`` is not.  Splitting every cell
 #: the same way breaks the column's left-right symmetry, so a triangulated or
-#: tetrahedralised column has a genuine lateral variation that converges away
-#: under refinement rather than being zero.  Two tolerances, one reason.
+#: tetrahedralised column carries a lateral variation that converges away under
+#: refinement rather than being zero.
 UNIFORM = {"cart": 1e-6, "simplex": 2e-1}
 
 #: Below this the drained boundary layer (thickness ~2 sqrt(T)) is thinner than a
@@ -100,8 +99,8 @@ def test_the_late_column_has_fully_drained():
 def test_the_settlement_series_is_the_integral_of_the_pressure_series():
     """Independent route to ``U``: ``w = (sigma_0 L - alpha int p dz)/K_v``.
 
-    If both series were derived the same way this would be circular; they are
-    not -- one is integrated numerically here and compared to the closed form.
+    The pressure series is integrated numerically here and compared against the
+    closed-form settlement series, so the two routes are independent.
     """
     grid = np.linspace(0.0, 1.0, 20001)
     for factor in TIME_FACTORS:
@@ -150,8 +149,8 @@ def test_the_pressure_profile_matches_once_the_layer_is_resolved(
 @pytest.mark.parametrize("family,dim", FAMILIES)
 def test_the_consolidation_curve_matches(column, solved, family, dim):
     """Settlement is an integral of the pressure, so the early-time ringing --
-    which is local to a few cells and changes sign -- largely cancels out of it.
-    It is checked at *every* time factor, including the unresolved ones."""
+    local to a few cells and sign-changing -- largely cancels out of it.  Checked
+    at every time factor, including the unresolved ones."""
     for row in compare(column, solved[(family, dim)]):
         assert abs(row["consolidation"] - row["consolidation_exact"]) < 3e-2
 
@@ -212,12 +211,12 @@ def test_the_lateral_cell_count_does_not_matter_on_cart(column):
 
 
 def test_the_simplex_section_converges_to_uniform(column):
-    """The triangulated column is 1D only in the limit -- but it does get there.
+    """The triangulated column is 1D only in the limit.
 
     Every quad is split the same way, which breaks left-right symmetry, so the
     section varies with the lateral count.  That spread must shrink under lateral
-    refinement -- otherwise the asymmetry is a bug rather than a discretisation
-    error.  The settlement, being axial, must instead stay put.
+    refinement; an asymmetry that does not shrink is a bug, not a discretisation
+    error.  The settlement, being axial, must stay put.
     """
     spreads, settlements = [], []
     for lateral in (2, 4, 8):
@@ -231,21 +230,20 @@ def test_the_simplex_section_converges_to_uniform(column):
     # not monotone in the column count (measured 0.0176, 0.0197, 0.0155).
     assert spreads[-1] < spreads[0], spreads
 
-    # The settlement is an *axial* quantity, fixed by axial=60 and the time steps.
-    # Lateral refinement must leave it alone, and does: it sits on the axial error
-    # floor at ~5e-4, varying by a few percent (measured 5.02, 5.13, 5.31 e-4).
-    # Requiring it to converge laterally would be requiring the wrong thing.
+    # The settlement is axial, fixed by axial=60 and the time steps, so lateral
+    # refinement leaves it on the axial error floor at ~5e-4, varying by a few
+    # percent (measured 5.02, 5.13, 5.31 e-4).  Bounded, not converging.
     assert max(settlements) < 1.3 * min(settlements), settlements
     assert max(settlements) < 5e-3, settlements
 
 
 def test_the_early_time_oscillation_is_confined_to_the_drained_face(column):
-    """A known limitation, pinned so it cannot spread unnoticed.
+    """The early-time ringing, bounded to the cells at the drained face.
 
     Below ``T ~ (dz/L)^2`` the drained boundary layer is thinner than a cell and
     the unstabilised Biot system rings -- the Vermeer-Verruijt condition
-    ``dt >= h^2/(6 c_v)``, a *lower* bound on the step.  What matters is that the
-    ringing stays next to the drained face; the rest of the column must be clean.
+    ``dt >= h^2/(6 c_v)``, a lower bound on the step.  The assertion is that the
+    ringing stays next to the drained face and the interior stays clean.
     """
     result = simulate(column, dim=2, **COARSE)
     layers = result["profiles"][1e-5]
@@ -259,10 +257,8 @@ def test_the_early_time_oscillation_is_confined_to_the_drained_face(column):
 
 
 def test_refinement_converges_at_first_order(column):
-    """Backward Euler in time, lowest-order mixed in space: halve h and dt, halve the error.
-
-    Without this the tolerances above are arbitrary; with it they are a statement
-    about a converging scheme.
+    """Backward Euler in time, lowest-order mixed in space: halve h and dt,
+    halve the error.  The ratio is asserted in [1.6, 2.4] over three levels.
     """
     errors = []
     for axial, per_decade in ((30, 8), (60, 16), (120, 32)):

@@ -1,18 +1,16 @@
-// TWO BENCHMARKS, ONE MODEL, TWO CONFIGURATIONS.
+// Two benchmarks, one model, two configurations:
 //
 //   consolidation   Terzaghi's column (Coussy Sect. 5.2.2)
 //   borehole        drilling of a borehole (Coussy Sect. 5.2.3), plane strain
 //
-// Nothing below chooses a discretization, a term or a package. Both problems
-// are the `consolidation` model of the catalogue -- Biot poroelasticity on the
-// mimetic-AFW-BDM de Rham spaces -- and they differ only in what a
-// PoroelasticModel carries: a domain, five material numbers, an initial
-// state and a list of boundary forms.
+// Nothing below chooses a discretization, a term or a package. Both problems are
+// the `consolidation` model of the catalogue -- Biot poroelasticity on the
+// mimetic-AFW-BDM de Rham spaces -- differing only in what a PoroelasticModel
+// carries: a domain, five material numbers, an initial state and a list of
+// boundary forms.
 //
-// The borehole is the one that could not have been written before the boundary
-// conditions became forms. Its wall is curved, so every facet there has its own
-// normal, and "the radial stress is -p1" is a single statement about all of
-// them rather than a component to pin.
+// The borehole wall is curved, so every facet there carries its own normal and one
+// traction form states sigma n = -p1 n over all of them.
 
 #include <algorithm>
 #include <array>
@@ -36,14 +34,13 @@ enum class Family { cartesian, simplex };
 
 // ---- the domains, in either dimension and either cell family -------------
 //
-// One generator per (problem, dimension); the family is a split inside it. A
-// simplex mesh is not a different problem and must not be a different code
-// path above the mesh: everything downstream -- the operators, the boundary
-// forms, the solver -- sees only a complex.
+// One generator per (problem, dimension); the family is a split inside it, so
+// everything downstream -- the operators, the boundary forms, the solver -- sees
+// only a complex.
 
-// EXTRUSION, shared by both three-dimensional domains. A layer of quads
-// becomes hexahedra; a layer of triangles becomes prisms, each split into
-// three tetrahedra by the standard rule that tiles and keeps orientation.
+// Extrusion, shared by both three-dimensional domains: a layer of quads becomes
+// hexahedra, a layer of triangles becomes prisms, each split into three tetrahedra
+// by the standard rule that tiles and keeps orientation.
 exokal::Mesh extrude(const std::vector<exokal::Mesh::Point>& plane,
                      const std::vector<std::vector<Index>>& faces, double h, Family family) {
   const auto n = static_cast<Index>(plane.size());
@@ -55,15 +52,11 @@ exokal::Mesh extrude(const std::vector<exokal::Mesh::Point>& plane,
   const auto hi = [n](Index v) { return v + n; };
 
   if (family == Family::simplex) {
-    // A PRISM SPLITS INTO THREE TETRAHEDRA, but only one choice of the three
-    // quadrilateral-face diagonals makes neighbouring prisms agree. Getting it
-    // wrong does not produce a warning: it produces a mesh with internal holes,
-    // whose "boundary" is most of the facets, and the first solve fails on a
-    // system that was never a discretization of anything.
-    //
-    // Ordering each triangle's vertices by GLOBAL INDEX before applying a fixed
-    // rule is what makes the choice agree: two prisms sharing a quad face see
-    // the same two global indices on it and cut it the same way.
+    // A prism splits into three tetrahedra, but only one choice of the three
+    // quadrilateral-face diagonals makes neighbouring prisms agree; a mismatched
+    // choice leaves internal holes, with most facets reported as boundary.
+    // Sorting each triangle's vertices by global index before applying a fixed
+    // rule makes two prisms sharing a quad face cut it the same way.
     std::vector<std::vector<Index>> cells;
     for (const auto& f : faces) {
       std::array<Index, 3> v{f[0], f[1], f[2]};
@@ -88,7 +81,7 @@ exokal::Mesh extrude(const std::vector<exokal::Mesh::Point>& plane,
   return exokal::Mesh::from_polyhedra(std::move(pts), cells);
 }
 
-// A COLUMN: one cell across, n tall. Terzaghi's domain.
+// A column: one cell across, n tall. Terzaghi's domain.
 exokal::Mesh column(int n, int dim, Family family, double h, double width) {
   std::vector<exokal::Mesh::Point> plane;  // the cross-section, in x-y
   std::vector<std::vector<Index>> faces;
@@ -187,8 +180,8 @@ std::array<double, 9> isotropic(double s, int d) {
 // march a built problem, reporting at the requested time factors
 void march(PoroelasticModel& prob, const std::vector<double>& report_at, double t_scale,
            const std::function<void(double, const PoroelasticModel&)>& report) {
-  // BIND ONCE: the tangent is constant for a linear model at constant dt, so
-  // the factorization is paid one time and every step is a back-substitution
+  // the tangent is constant for a linear model at constant dt: one factorization,
+  // every step a back-substitution
   solver::PetscSolver petsc;
   petsc.factorize(prob.system());
   std::size_t next = 0;
@@ -236,7 +229,7 @@ int main(int argc, char** argv) {
     PoroelasticMaterial mat{1.0, 1.0, 1.0, 0.0, 1.0};  // mu, lam, b, 1/M, k
     const exokal::Mesh m = column(n, dim, family, h, width);
     const graphos::Complex& c = m.topology();
-    // the uniaxial clock, which is a property of the material and not of d
+    // c_v = mobility / (1/M + b^2 / K_oed): a material property, independent of dim
     const double c_v =
         mat.mobility / (mat.inverse_biot_modulus + mat.biot * mat.biot / mat.oedometer_modulus());
     const double dt = 1.0e-4 * h * h / c_v;
@@ -249,11 +242,11 @@ int main(int argc, char** argv) {
     }
     std::array<double, 9> load{};
     load[static_cast<std::size_t>(axis * 3 + axis)] = -1.0;
-    // MECHANICS: the step load on top, free slip everywhere else
+    // mechanics: the step load on top, free slip everywhere else
     prob.mechanics().emplace<TractionBC>(loaded, load);
     prob.mechanics().emplace<FreeSlipBC>(confined);
-    // FLOW: sealed on the confined faces; the drained top needs nothing, a
-    // zero pressure there being the homogeneous natural case
+    // flow: sealed on the confined faces; the drained top needs nothing, a zero
+    // pressure there being the homogeneous natural case
     prob.flow().emplace<NormalFluxBC>(confined);
     prob.build();
 
@@ -310,13 +303,12 @@ int main(int argc, char** argv) {
         far.push_back(f);
       }
     }
-    // MECHANICS: free slip on every symmetry plane, hydrostatic tractions on
-    // both radial boundaries -- the wall's is ONE form over a curved surface
+    // mechanics: free slip on every symmetry plane, hydrostatic tractions on both
+    // radial boundaries -- the wall's is one form over a curved surface
     prob.mechanics().emplace<FreeSlipBC>(sym);
     prob.mechanics().emplace<TractionBC>(wall, isotropic(-p1, dim));
     prob.mechanics().emplace<TractionBC>(far, isotropic(-w, dim));
-    // FLOW: sealed on the symmetry planes, prescribed pressure on the radial
-    // ones. The two sets are genuinely different here.
+    // flow: sealed on the symmetry planes, prescribed pressure on the radial ones
     prob.flow().emplace<NormalFluxBC>(sym);
     prob.flow().emplace<PressureBC>(wall, p1);
     prob.flow().emplace<PressureBC>(far, p0);

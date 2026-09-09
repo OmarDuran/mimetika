@@ -15,17 +15,15 @@
 // The one configuration both physics share: the exact field is prescribed as
 // natural data on every boundary facet -- the pressure for the flow, the affine
 // displacement for the mechanics -- nothing is strongly constrained, and the
-// discrete answer must be the field itself. It is the smallest test that
-// exercises the whole boundary machinery: the datum terms, the facet frames,
-// the incidence signs, and the pairing they feed. A boundary condition that
-// stops being applied fails here, on a mesh small enough to debug by hand.
+// discrete answer must be the field itself. It covers the datum terms, the
+// facet frames, the incidence signs and the pairing they feed.
 //
 // The field is a full affine map -- dilation, shear and rotation at once --
-// because a pure dilation cannot see a rotation readback that broke, and an
-// axis-aligned gradient cannot see a tangent frame that rotated. Every
-// realization is asserted on its own claim: the consistent products
-// everywhere, the two-point stars where the mesh is face-orthogonal with
-// isotropic second moment, which the cartesian patch is.
+// since a pure dilation cannot see a broken rotation readback and an
+// axis-aligned gradient cannot see a rotated tangent frame. Every realization
+// is asserted on its own claim: the consistent products everywhere, the
+// two-point stars where the mesh is face-orthogonal with isotropic second
+// moment, which the cartesian patch is.
 
 using graphos::Index;
 using mimetika::CauchyMechanicsModel;
@@ -53,9 +51,8 @@ std::array<double, 9> gradient(int dim) {
   return g;
 }
 
-// a patch of fewer than ten cells, per family: 6 tetrahedra, 8 hexahedra,
-// 8 prisms -- small enough to debug by hand, closed enough to have interior
-// facets on every axis
+// a patch of fewer than ten cells per family; in 3D: 6 tetrahedra, 8 hexahedra,
+// 8 prisms -- with interior facets on every axis
 exokal::Mesh patch_mesh(int dim, Family family) {
   switch (family) {
     case Family::simplex: return mimetika::mesh::box({1, 1, 1}, dim, family);
@@ -77,11 +74,10 @@ double flow_patch(int dim, Family family, FlowModel::Realization how,
     return a[0] * x[0] + a[1] * x[1] + a[2] * x[2];
   };
   // the exact pressure on every boundary facet, at its own centroid: pure
-  // Dirichlet, naturally imposed, no facet strongly constrained
-  // THE DATUM IS THE FIELD, not a number: value at the facet centroid AND the
-  // gradient, which is what a facet carrying d flux moments tests against its
-  // centred basis functions. `affine_datum = false` is the old one-number form,
-  // kept because the difference between them is a test of its own.
+  // Dirichlet, naturally imposed, no facet strongly constrained. The datum is
+  // the field, not a number: the value at the facet centroid and the gradient,
+  // which is what a facet carrying d flux moments tests against its centred
+  // basis functions. `affine_datum = false` supplies the value alone.
   const std::array<double, 3> slope = affine_datum ? a : std::array<double, 3>{0.0, 0.0, 0.0};
   for (const Index f : mimetika::boundary_facets(m.topology(), dim)) {
     prob.flow().emplace<mimetika::PressureBC>(
@@ -109,7 +105,7 @@ double flow_patch(int dim, Family family, FlowModel::Realization how,
 }
 
 MIMETIKA_TEST(the_flow_patch_is_exact_where_the_datum_is_complete) {
-  // one moment per facet: the constant the datum supplies IS the whole facet
+  // one moment per facet: the constant the datum supplies is the whole facet
   // trace, so nothing of a linear pressure is dropped and the answer is the
   // field. stabilized_rt and adaptive_rt everywhere; derham_rt where its
   // enrichment is consistent (see the pinned deficit below for the prism).
@@ -126,21 +122,19 @@ MIMETIKA_TEST(the_flow_patch_is_exact_where_the_datum_is_complete) {
   CHECK(flow_patch(2, Family::prism, R::derham_rt) < 1e-10);
 }
 
-// THE CHECK HAS FLIPPED, and the two halves are why the gradient exists.
+// Why the BDM datum carries the gradient.
 //
 // A BDM facet carries d flux moments and the row is int_f p_D (tau.n), so the
 // datum is tested against d basis functions. The chart is equilibrated -- the
 // facet Gram is |f| I -- so moment b takes (1/|f|) int_f p_D phi_b. The higher
-// basis functions are CENTRED: blind to a constant, and seeing exactly the
-// variation of p across the facet. So one number per facet is the whole datum
-// at lowest order and is missing a term at BDM order, and the missing term is
-// not small -- the patch it should reproduce exactly comes out at 1e-2 on a
-// Kuhn box and 1e0 on a simplicial annulus, with the flux worse than the
+// basis functions are centred: blind to a constant, and seeing exactly the
+// variation of p across the facet. One number per facet is therefore the whole
+// datum at lowest order and misses a term at BDM order: the patch comes out at
+// 1e-2 on a Kuhn box and 1e0 on a simplicial annulus, the flux worse than the
 // pressure. Given the gradient, every product is exact on every family.
 //
-// Writing the same NUMBER into every moment instead is not the fix and was
-// measured: it destroys the Cartesian patch too (2e-15 -> 1e-1), the centred
-// basis functions having no business seeing a constant.
+// Writing the same number into every moment instead destroys the Cartesian
+// patch too, 2e-15 -> 1e-1, the centred basis functions seeing a constant.
 MIMETIKA_TEST(the_bdm_flow_datum_needs_the_gradient_and_is_exact_with_it) {
   using R = FlowModel::Realization;
   for (const int dim : {2, 3}) {
@@ -159,10 +153,8 @@ MIMETIKA_TEST(derham_rt_on_prisms_is_not_yet_consistent_in_the_plane) {
   // A pinned defect, exokal's: the curl-enriched derham_rt on a 3D prism
   // reproduces an axial linear pressure to round-off and loses an in-plane one
   // at O(1e-2), while stabilized_rt is exact in every direction on the same
-  // mesh with the same datum -- so the datum path is exonerated and the
-  // enriched product's consistency is what fails. This check flips the day the
-  // enrichment is fixed, and the exactness claim above then absorbs the prism
-  // row.
+  // mesh with the same datum -- so the enriched product's consistency is what
+  // fails, not the datum path. This check flips when the enrichment is fixed.
   using R = FlowModel::Realization;
   CHECK(flow_patch(3, Family::prism, R::derham_rt) > 1e-4);
   CHECK(flow_patch(3, Family::prism, R::stabilized_rt) < 1e-10);

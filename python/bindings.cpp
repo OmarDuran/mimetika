@@ -86,16 +86,16 @@ py::array_t<double> to_array(const exokal::numerics::Dense& A) {
 
 // ---- the owning problem ----------------------------------------------------
 //
-// One class per star, because the star decides the space and the space decides
-// the model: an elasticity problem is d copies of a stress product, a flow
-// problem is one flux product, and the two share no member beyond the mesh.
+// The star decides the space and the space decides the model: this one is d
+// copies of a stress product. The flux star is bound through
+// mimetika::FlowModel, which owns its own operators.
 
 class CauchyMechanicsProblem {
  public:
   CauchyMechanicsProblem(exokal::Mesh mesh, int cell_dim, double mu, double lam,
                     StressOperators::Realization how, const std::string& model)
       : mesh_(std::move(mesh)), dim_(cell_dim) {
-    // the RT star carries no de Rham geometry; the BDM ones do
+    // derham_rt carries no de Rham geometry; every other realization does
     const bool bdm = how != StressOperators::Realization::derham_rt;
     if (bdm) geo_ = DeRhamGeometryCache::build(mesh_, cell_dim);
     ops_ = StressOperators::build(mesh_, cell_dim, mu, lam, how,
@@ -310,21 +310,15 @@ class AssembledModel {
   std::unique_ptr<Simulation> sim_;
 };
 
-// Which stage is running, on request.
+// Which stage is running, on request: assembly, preconditioner, iteration.
 //
-// Assembly, preconditioner and iteration are the three long stages, and from
-// the outside a process in any of them is indistinguishable from a hung one.
+// The write goes to stderr, unbuffered. On a redirected Python stdout the bytes
+// sit in a buffer `flush=True` does not push to the operating system, so a long
+// stage would print its label only at process exit. Python's own output is
+// flushed first so the two streams stay in order.
 //
-// The write goes to stderr, unbuffered. On a redirected Python stdout the
-// bytes sit in a buffer that `flush=True` does not push to the operating
-// system, so a stage that takes ten minutes prints its label immediately and
-// its duration only when the process exits. Python's own output is flushed
-// first so the two streams stay in order.
-//
-// Rank 0 alone reports. Every rank runs the same script and reaches the same
-// stages at slightly different moments; eight of them writing to an unbuffered
-// stderr produces "assembling ... assembling ... assembling ..." on one line
-// and their timings on the next eight.
+// Rank 0 alone reports: every rank reaches the same stages at slightly
+// different moments, and several on one unbuffered stream interleave.
 class Stage {
  public:
   explicit Stage(bool on) : on_(on && is_root()) {}
@@ -456,21 +450,20 @@ inline std::vector<double> cell_coefficient(const mimetika::FlowModel& m, int) {
   // permeability of the cell's facets, which is K itself when K is isotropic
   return m.norm_permeability();
 }
-// THE MATERIAL DOES NOT GO IN W, AND THIS IS MEASURED, NOT ASSUMED.
+// W CARRIES mu, NOT THE OEDOMETER STIFFNESS 2mu + d lambda.
 //
 // For flow W = scale * K * |E|: the constraint's Schur complement is
-// B star_K^-1 B^T and star_K^-1 scales with K, so W must carry it. The elastic
-// analogue looks like it should be B A^-1 B^T with A the compliance, hence the
-// stiffness 2mu + d lambda -- and it is not. W appears TWICE in the Riesz map,
-// P = diag(M + B^T W^-1 B, W), so inflating it by 2mu + d lambda shrinks
-// W^-1 and discards the divergence control precisely where incompressibility
-// needs it. Measured on a tetrahedral annulus, moving from mu to 2mu + d lambda:
+// B star_K^-1 B^T and star_K^-1 scales with K, so W carries it. The elastic
+// analogue B A^-1 B^T with A the compliance would give 2mu + d lambda instead,
+// and W appears TWICE in P = diag(M + B^T W^-1 B, W): inflating it shrinks
+// W^-1 and discards the divergence control where incompressibility needs it.
+// Measured on a tetrahedral annulus, moving from mu to 2mu + d lambda:
 //
 //   nu -> 1/2         60 .. 90   becomes   17, 21, 49, 164, 749
 //   lambda contrast   17 flat    becomes   23, 99, then no convergence at 1e4
 //
-// mu alone is what keeps both flat. The stress block carries lambda where it
-// belongs -- in the compliance, and so in every Galerkin product ADS forms.
+// lambda enters through the compliance in the stress block, and so through
+// every Galerkin product ADS forms.
 inline std::vector<double> cell_coefficient(const mimetika::CauchyMechanicsModel&, int) {
   return {};
 }
@@ -488,22 +481,23 @@ inline std::vector<mimetika::CauchyMechanicsModel::NormTraceTerm> trace_terms(
   return {};
 }
 
-// THE DEGREE-2 COMPLEX, WHERE ADS CAN TAKE IT DIRECTLY.
+// THE DEGREE-2 COMPLEX, WHERE ADS CAN TAKE THE BLOCK DIRECTLY.
 //
-// build_norm hands a BDM flux block to ADS through the facet-constant
-// subspace, because ADS's own construction assumes one unknown a facet. On a
-// TETRAHEDRAL mesh there is a better answer: give ADS the degree-2 complex
+// build_norm hands a BDM block to ADS through the facet-constant subspace,
+// because ADS's own construction assumes one unknown a facet. Given instead the
+// degree-2 complex
 //
 //     P3 nodal --G--> N2E2 circulation --C--> BDM flux
 //
-// and the two interpolations, and it preconditions the block itself -- no
-// coarse space, no smoother carrying the divergence-free part. Measured
-// h-independent and contrast-independent where the subspace cycle diverges.
+// and the two interpolations, ADS preconditions the block itself -- no coarse
+// space, no smoother carrying the divergence-free part. Measured h-independent
+// and contrast-independent where the subspace cycle diverges.
 //
 // Any cell shape: C is surface Stokes on a facet and needs no reconstruction,
 // and Pi's vertex hats reproduce the linears exactly on a tetrahedron and in
-// least squares beyond it. Returns false and changes nothing when the layout is
-// not three moments a facet.
+// least squares beyond it. Returns false and changes nothing outside 3D, on a
+// block that is already one moment a facet, and when the layout is not three
+// moments a facet.
 template <class Model>
 bool upgrade_to_degree2(const Model& m, mimetika::solver::SpaceNorm& norm,
                         const exokal::Mesh& mesh, int dim) {
@@ -847,8 +841,9 @@ mimetika::solver::SpaceNorm build_norm(const Model& m, const exokal::Mesh& mesh,
     }
   }
 
-  // the three-field stress norm's lambda-free correction, where the model has
-  // one: empty for flow, and for the total forms, where p carries the trace
+  // the rank-one trace correction that leaves the stress norm lambda-free,
+  // where the model has one: empty for flow, and for the _total forms, where
+  // p carries the trace
   for (const auto& t : trace_terms(m)) {
     if (t.dofs.empty()) continue;
     norm.rank_one_dofs.emplace_back(t.dofs.begin(), t.dofs.end());
@@ -872,40 +867,26 @@ mimetika::solver::SpaceNorm build_norm(const Model& m, const exokal::Mesh& mesh,
 template <class Model>
 void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exokal::Mesh& mesh,
                  int dim, bool divergence_is_an_integral, bool merge_multipliers = true) {
-  // THE DIRECT PATH'S CONSTRUCTION IS NOT USED HERE, AND THAT WAS MEASURED.
-  //
-  // PETSc's 'ads' is a wrapper over hypre's and hides nothing the degree-2
-  // complex needs -- PCHYPRESetInterpolations is HYPRE_ADSSetInterpolations --
-  // so the same norm was tried here: rotation unmerged out of the stress norm,
-  // gamma on its own L^2 scale, lowest_order a split by ROW of sigma, and Pi
-  // supplied. build_lowest_order_cycle already routes a permutation-shaped
-  // injection to one ADS per block, so it needed no new branch.
-  //
-  // It made this path WORSE, on a tetrahedral stress:
+  // MERGED MULTIPLIERS AND THE FACET-CONSTANT SUBSPACE, NOT THE DIRECT PATH'S
+  // ROW SPLIT. PCHYPRESetInterpolations is HYPRE_ADSSetInterpolations, so the
+  // direct path's norm -- rotation unmerged, gamma on its own L^2 scale,
+  // lowest_order a split by ROW of sigma, Pi supplied -- transfers without a
+  // new branch (build_lowest_order_cycle already routes a permutation-shaped
+  // injection to one ADS per block). Measured on a tetrahedral stress it is
+  // worse here, and fails three tests:
   //
   //     h        40 40 46 37 44   became   59 65 57 59
   //     nu->1/2  46 74 352 1303   became   65 94 350 1538
   //
-  // and three tests with it. The reason looks structural: the direct cycle
-  // keeps a smoother either side of its row corrections -- removing it there
-  // stops that path converging too -- while split_by_component hands each
-  // component straight to ADS with KSPPREONLY and no relaxation at all. Two
-  // things that did NOT explain it and were ruled out: the monolithic Pi
-  // (supplying the scalar triple as well fixed a segfault and changed no
-  // count), and the sweep's symmetry (SYMMETRIC_MULTIPLICATIVE moved nothing).
-  //
-  // So the port needs split_by_component to gain a smoother first, which is a
-  // change to the solver rather than to the norm.
+  // split_by_component hands each component to ADS with KSPPREONLY and no
+  // relaxation, where the direct cycle keeps a smoother either side of its row
+  // corrections; removing that smoother stops the direct path converging too.
+  // Ruled out: the monolithic Pi (supplying the scalar triple fixed a segfault
+  // and changed no count) and the sweep's symmetry (SYMMETRIC_MULTIPLICATIVE
+  // moved nothing). The port waits on a smoother in split_by_component.
   petsc.set_norm(build_norm(m, mesh, dim, divergence_is_an_integral, merge_multipliers));
 }
 
-// Assemble only: the Jacobian and the preconditioner, and no iteration.
-//
-// The two are what a mesh has to survive before a solve is attempted, and they
-// are the part that scales with the mesh rather than with the physics. A
-// caller measuring them wants them without waiting for a Krylov method to
-// converge, and wants to know that they completed, which a timing alone does
-// not say.
 // The partition, in two halves, because it is needed on both sides of the
 // build: the model must know it before it assembles, and the solver only
 // after, when the unknowns it lays out exist.
@@ -934,6 +915,9 @@ void attach_partition(mimetika::solver::PetscSolver& petsc, const Model& m) {
   petsc.set_owners(m.distribution().owner_of_dof);
 }
 
+// Assemble only: the Jacobian and the preconditioner, no iteration. These are
+// the two stages that scale with the mesh rather than with the physics, and the
+// report says they completed, which a timing alone does not.
 template <class Model>
 mimetika::solver::SolveReport assemble_only(Model& m, bool progress,
                                             const mimetika::solver::SolverOptions& opts,
@@ -973,15 +957,14 @@ mimetika::solver::SolveReport assemble_only(Model& m, bool progress,
 // pinned, so a conjugate gradient applies where the condensed mixed system was
 // quasi-definite.
 //
-// The boundary roles swap. The multiplier is the facet displacement, so
-// prescribe_displacement pins one and a traction loads the free rows. The
-// model does that mapping; nothing here restates it.
+// The boundary roles swap: the multiplier is the facet displacement, so
+// prescribe_displacement pins one and a traction loads the free rows. The model
+// carries that mapping.
 //
 // Serial. The assembly walks every cell and scatters into a global multiplier
 // numbering; distributed, each rank holds only its own cells and would emit
-// some interface rows twice and others never. That needs the row ownership the
-// condensation has and does not have here, so a distributed call is refused
-// rather than answered wrongly.
+// some interface rows twice and others never. The row ownership that would fix
+// it exists in the condensation and not here, so a distributed call is refused.
 mimetika::solver::SolveReport solve_cauchy_mechanics_hybrid(mimetika::CauchyMechanicsModel& m,
                                                       bool progress,
                                                       const mimetika::solver::SolverOptions& opts) {
@@ -1045,7 +1028,6 @@ mimetika::solver::SolveReport solve_cauchy_mechanics(mimetika::CauchyMechanicsMo
   stage.end();
   mimetika::solver::PetscSolver petsc(opts);
   attach_partition(petsc, m);
-  // the momentum row is Dv, whose entries already carry 1/|E|: it is an average
   // The same question the solver asks, asked here because the norm is built
   // before the solve: a system whose first block is diagonal will be condensed,
   // and then the split it needs is the unmerged one.
@@ -1053,6 +1035,7 @@ mimetika::solver::SolveReport solve_cauchy_mechanics(mimetika::CauchyMechanicsMo
   const bool will_condense =
       opts.condense && mimetika::solver::block_is_diagonal(m.system(), eliminable);
   if (opts.preconditioner == "riesz") {
+    // false: the momentum row is Dv, already divided by |E| -- an average
     attach_norm(petsc, m, m.mesh(), m.dim(), false, !will_condense);
   }
   std::vector<double> x;
@@ -1133,13 +1116,14 @@ mimetika::solver::SolveReport solve_flow(mimetika::FlowModel& m, bool progress,
   stage.end();
   mimetika::solver::PetscSolver petsc(opts);
   attach_partition(petsc, m);
-  // the mass-balance row is the incidence: (Bq)_E is the integral of div q
   // as in solve_cauchy_mechanics: a diagonal first block will be condensed, and
   // then the norm needs the unmerged split.
   const std::vector<int> eliminable = mimetika::solver::first_field_dofs(m.simulation().epoch());
   const bool will_condense =
       opts.condense && mimetika::solver::block_is_diagonal(m.system(), eliminable);
   if (opts.preconditioner == "riesz") {
+    // true: the mass-balance row is the incidence, so (Bq)_E is the integral
+    // of div q
     attach_norm(petsc, m, m.mesh(), m.dim(), true, !will_condense);
   }
   std::vector<double> x;
@@ -1280,8 +1264,8 @@ py::dict ads_handoff_impl(const Model& model, const exokal::Mesh& mesh, int dim,
 PYBIND11_MODULE(_core, m) {
   m.doc() = "Python interface to the mimetika C++ application";
 
-  // The factors of a model's space, as the solver sees them: name, size and
-  // where each run begins -- what a block preconditioner is built from.
+  // The factors of a model's space, as the solver sees them: name, size, and
+  // the (begin, end) of each run -- what a block preconditioner is built from.
   m.def(
       "field_blocks",
       [](const mimetika::FlowModel& s) {
@@ -1366,9 +1350,6 @@ PYBIND11_MODULE(_core, m) {
                           : "SolverOptions(" + o.method + " + " + o.preconditioner + ")";
       });
 
-  // The assembled operator as triplets. For diagnosis on small problems: a
-  // preconditioner is a claim about the spectrum of P^{-1}A, and that claim is
-  // checkable directly rather than inferred from an iteration count.
   // Everything the DIRECT hypre path needs, as arrays.
   //
   // mimetika_hypre links its own hypre and cannot link PETSc -- two copies
@@ -1417,6 +1398,9 @@ PYBIND11_MODULE(_core, m) {
         py::arg("model"), py::arg("solution"),
         "Write a solution computed elsewhere back into the model's fields.");
 
+  // The assembled operator as triplets. For diagnosis on small problems: a
+  // preconditioner is a claim about the spectrum of P^{-1}A, and that claim is
+  // checkable directly rather than inferred from an iteration count.
   m.def(
       "system_triplets",
       [](const mimetika::CauchyMechanicsModel& s) {
@@ -1503,7 +1487,7 @@ PYBIND11_MODULE(_core, m) {
   // classification at the library constants, and the metric-degeneracy
   // witnesses. One read of the file, one judge, nothing recomputed here.
   //
-  // percent = 100 |s| / mean over the node star, so a uniform mesh reports 100
+  // percent = 100 |E| / mean over the node star, so a uniform mesh reports 100
   // at every cell whatever its valence; neighborhood_total is carried for a
   // volume-weighted consumer and is not the denominator. vtk_cell_id is the id
   // of the original file -- the cell ParaView selects.
@@ -1919,11 +1903,9 @@ PYBIND11_MODULE(_core, m) {
   m.def("family_name", &mimetika::mesh::name, py::arg("family"));
   m.def("column", &mimetika::mesh::column, py::arg("n"), py::arg("dim"), py::arg("family"),
         py::arg("height") = 1.0, py::arg("width") = 1.0);
-  // A box, which is the mesh a scaling study wants: the resolution is a
-  // number per axis, the shape is a choice, and nothing about the geometry
-  // varies as it is refined. The annulus curves and grades, so refining it
-  // changes the conditioning as well as the size; a box changes only the size,
-  // so a timing at two resolutions is comparable.
+  // A box: n[k] cells per axis, geometry unchanged under refinement, so a
+  // timing at two resolutions is comparable. The annulus curves and grades, so
+  // refining it moves the conditioning as well as the size.
   //
   // Cartesian gives one hexahedron per cell of the grid, simplex gives six
   // tetrahedra (the Freudenthal cut of the cube), and both are 2D as well:
@@ -2023,7 +2005,11 @@ PYBIND11_MODULE(_core, m) {
            py::arg("generator"))
       .def_property_readonly("n_rotations", &mimetika::CauchyMechanicsModel::n_rotations)
       .def("normal_traction", &mimetika::CauchyMechanicsModel::normal_traction, py::arg("facet"))
-      .def("cell_stress", &mimetika::CauchyMechanicsModel::cell_stress, py::arg("cell"))
+      .def("cell_stress", &mimetika::CauchyMechanicsModel::cell_stress, py::arg("cell"),
+           "the reported constant stress: the projection Pi_E sigma_h for the strong "
+           "family, the divergence-theorem average for the weak one")
+      .def("cell_stress_projection", &mimetika::CauchyMechanicsModel::cell_stress_projection,
+           py::arg("cell"), "Pi_E sigma_h, the L^2 projection onto the constant symmetric modes")
       .def("facet_traction", &mimetika::CauchyMechanicsModel::facet_traction, py::arg("facet"))
       .def_property_readonly(
           "n_invalid_star", &mimetika::CauchyMechanicsModel::n_invalid_star,
@@ -2111,10 +2097,9 @@ PYBIND11_MODULE(_core, m) {
       // the selection as built, one value per cell.
       .value("adaptive_rt", FluxOperators::Realization::adaptive_rt);
 
-  // How many processes the solver will use: launched under mpirun with a
-  // mismatched runtime, MPI falls back to singletons and every rank solves the
-  // whole problem believing it is alone. That looks like a working parallel
-  // run and is not one.
+  // How many processes the solver will use. Under mpirun with a mismatched
+  // runtime MPI falls back to singletons: every rank reports size 1 and solves
+  // the whole problem.
   m.def(
       "mpi_size",
       [] {
@@ -2137,15 +2122,12 @@ PYBIND11_MODULE(_core, m) {
   // A cell field the whole mesh can see.
   //
   // Distributed, a process builds the per-cell operators of its own cells and
-  // its halo, and no others -- that is what makes the assembly divide. So
-  // anything reconstructed from those operators, stress above all, exists only
-  // where they do; asked for elsewhere it comes back zero, which reads as a
-  // wrong answer rather than as an absent one.
+  // its halo only, so anything reconstructed from them -- the stress above all
+  // -- is zero on every other cell.
   //
-  // Each cell is owned by exactly one process, so zeroing what this one does
-  // not own and summing over all of them assembles the exact field, once. The
-  // displacement and the rotation do not need this: they are read from the
-  // solution, which every process already has in full.
+  // Each cell has exactly one owner, so zeroing what this process does not own
+  // and summing over all of them assembles the field once. The displacement and
+  // the rotation are read from the solution, which every process holds in full.
   m.def(
       "gather_cells",
       [](const mimetika::CauchyMechanicsModel& model, py::array_t<double> values) {
@@ -2199,12 +2181,10 @@ PYBIND11_MODULE(_core, m) {
       py::arg("model"), py::arg("values"),
       "sum a per-cell field over the processes, each contributing the cells it owns");
 
-  // The partition as a field, so it can be looked at rather than trusted.
-  //
-  // The same geometric bisection the solver uses, asked for any number of
-  // parts: written into a .vtu it colours the mesh by process, which is how a
-  // partition that has gone wrong -- a rank with a disconnected piece, or with
-  // most of the mesh -- is seen rather than inferred from a timing.
+  // The partition as a field: the same recursive coordinate bisection the
+  // solver uses, at max(n_ranks, 2) parts. Written into a .vtu it colours the
+  // mesh by process, so a rank with a disconnected piece or with most of the
+  // mesh is visible rather than inferred from a timing.
   m.def(
       "cell_ranks",
       [](const exokal::Mesh& mesh, int dim, int n_ranks) {
@@ -2218,7 +2198,7 @@ PYBIND11_MODULE(_core, m) {
         return out;
       },
       py::arg("mesh"), py::arg("dim"), py::arg("n_ranks"),
-      "the rank owning each cell, under an n_ranks-way partition");
+      "the rank owning each cell, under a max(n_ranks, 2)-way partition");
 
   m.def("flux_realization_name", &FluxOperators::name, py::arg("realization"));
 

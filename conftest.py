@@ -1,8 +1,7 @@
 """Make ``src/`` and the repository root importable without an editable install.
 
-The root goes on the path too so ``tests/benchmarks`` can import the
-``benchmarks.contact_mechanics`` package, which is a runnable study rather than
-part of the library and so deliberately lives outside ``src/``.
+The root goes on the path too so ``tests/benchmarks`` can import the ``benchmarks``
+packages, which are runnable studies and live outside ``src/``.
 """
 
 import sys

@@ -14,25 +14,22 @@
 // Boundary conditions, one physics at a time.
 //
 // Poromechanics is two physics coupled, and their boundary conditions are
-// separate descriptions. A face of a domain may be traction-loaded and sealed,
-// or roller-supported and drained, or loaded and drained -- the mechanical and
-// the hydraulic sets do not have to coincide and in a real problem they do not.
-// Holding one list of conditions with a tag saying which physics each belongs
-// to makes that accidental; holding two makes it structural.
+// separate descriptions: a face may be traction-loaded and sealed, or
+// roller-supported and drained. Hence two lists rather than one list tagged by
+// physics.
 //
 //     MechanicsBoundary   acts on the stress field       s
 //     FlowBoundary        acts on the flux and pressure  q, p
 //
-// A condition is three things, and a consumer needs all three:
+// A condition carries three things:
 //
 //     the parameters   the numbers it carries -- a stress tensor, a datum
 //     the form         the linear functional it imposes on the unknowns
 //     the dofs         which unknowns it reaches, and the facets they came from
 //
-// Keeping the dofs is what makes a condition an object rather than a side
-// effect. A driver reads the traction back off the wall it prescribed it on; a
-// transient datum is updated in place without re-deriving the numbering; a
-// diagnostic asks which unknowns a condition actually touched.
+// The dofs are kept so that a driver can read the traction back off the wall it
+// prescribed it on, and a transient datum can be updated without re-deriving
+// the numbering.
 
 namespace mimetika {
 
@@ -44,12 +41,13 @@ struct FacetForm {
   double value{0.0};
 };
 
-// The wrench layout, recognized from the space rather than told: the
-// d(d+1)/2 rigid-motion moments of one scalar layout -- six in space, three
-// in the plane -- is the signature no componentwise stress field has, those
-// carrying d components. The strong family always, diagonal_afw on the weak
-// axis; a condition serves all of them through the one space it is resolved
-// against. In the plane the wrench is {t, n chi_0, n chi_1}: no rotation slot.
+// The wrench layout, recognized from the space rather than told: d(d+1)/2
+// rigid-motion moments on ONE scalar layout -- six in space, three in the
+// plane -- against the d components a componentwise stress field carries, so
+// the pair (components, moments) is the signature. It is the layout of the
+// strongly symmetric realizations, StressOperators::wrench_layout; a condition
+// serves either family through the one space it is resolved against. In the
+// plane the wrench is {t, n chi_0, n chi_1}: no rotation slot.
 inline bool strong_layout(const FacetDofs& d) {
   return d.components == 1 && (d.moments == 6 || d.moments == 3);
 }
@@ -104,9 +102,9 @@ class BoundaryCondition {
 
 // ------------------------------------------------------------- mechanics
 
-// sigma n = g, from a stress tensor rather than a traction vector: the caller
-// never has to know which way a facet's canonical normal points, and a vector
-// assembled against the wrong one is silently sign-flipped.
+// sigma n = g, from a stress tensor rather than a traction vector: the traction
+// is formed against the facet's canonical normal here, so the sign of that
+// normal never reaches the caller.
 class TractionBC final : public BoundaryCondition {
  public:
   TractionBC(std::vector<Index> facets, std::array<double, 9> stress) : stress_(stress) {
@@ -260,8 +258,8 @@ class NormalFluxBC final : public BoundaryCondition {
 
 // p = g on the facet: natural in the mixed form, so it is data a term reads
 // rather than an equation replaced. It still resolves its dofs -- the flux
-// moments the datum will reach -- because a caller asking "which unknowns does
-// this condition touch" deserves the same answer whichever kind it is.
+// moments the datum reaches -- so that dofs() answers for a natural condition
+// as it does for a strong one.
 class PressureBC final : public BoundaryCondition {
  public:
   // p_D(x) = value + gradient . (x - x_f), x_f the facet centroid. The
@@ -484,7 +482,7 @@ class BoundarySet {
   std::vector<std::unique_ptr<BoundaryCondition>> conditions_;
 };
 
-// Named for what they are, so a driver reads as the problem does.
+// One BoundarySet per physics; the names say which list a driver is holding.
 using MechanicsBoundary = BoundarySet;
 using FlowBoundary = BoundarySet;
 

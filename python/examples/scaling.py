@@ -17,13 +17,11 @@ reconstructing products reproduce exactly. For those the error column is a
 check, not a convergence study -- it must stay at the solver tolerance as the
 mesh grows, and anything else means the scaling was measured on a wrong answer.
 
-Two cases do not reproduce it, and there the error column is not that check.
-diagonal_afw's linear moment slots are inconsistent on every mesh, so it is
-never exact, so its error column is not that check. Every flux product here
-is, on every mesh: the flow datum is affine -- value and gradient -- which is
-what a facet carrying d moments needs, the same shape the mechanics
-displacement datum has always had. It times the right operator on an inexact
-answer only in the one case above, which is what a scaling study wants.
+One case does not reproduce it: diagonal_afw, whose linear moment slots are
+inconsistent on every mesh, so there the error column is not that check. Every
+flux product here reproduces it, because the flow datum is affine -- value and
+gradient -- which is what a facet carrying d moments needs, the same shape the
+mechanics displacement datum has.
 
 Defaults are deliberately small: a scaling curve is read from its shape, which
 is visible long before a mesh becomes inconvenient. Raise --n when the times
@@ -71,12 +69,11 @@ MU, LAM = 1.0, 1.0
 def solver_options(name, rtol, block_its, block_rtol):
     """The solver, and how hard the block is solved.
 
-    The Riesz map needs the first block inverted, not solved: what the theory
-    asks of it is spectral equivalence, and an inner Krylov run to a tight
-    tolerance buys an accuracy the outer iteration cannot use. `block_its = 0`
-    applies one ADS cycle as a fixed operator -- the cheapest thing that is
-    still a Riesz map -- and anything larger is an inner CG, which makes the
-    preconditioner vary and promotes the outer method to FGMRES.
+    What the Riesz map asks of the first block is spectral equivalence, not an
+    exact inverse. `block_its = 0` applies one ADS cycle as a fixed operator --
+    the cheapest thing that is still a Riesz map -- and anything larger is an
+    inner CG, which makes the preconditioner vary and promotes the outer method
+    to FGMRES.
     """
     if name == "direct":
         return mk.SolverOptions()

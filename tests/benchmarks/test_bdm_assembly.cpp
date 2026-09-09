@@ -7,17 +7,17 @@
 //   bdm_complex()   C, G, Pi_rt, Pi_nd -- what hypre's ADS is handed
 //
 // Per-cell microseconds are printed beside the totals: every term here is
-// cell-local, so every column must be FLAT against mesh size. A column that
-// rises is something rebuilding a mesh-wide structure per cell, which turns the
-// whole assembly quadratic. That is the number to read, not the total.
+// cell-local, so every column must be flat in mesh size. A rising column is a
+// mesh-wide structure rebuilt per cell, i.e. quadratic assembly.
 //
-// NOT A UNIT TEST -- built on request, `benchmark` label:
+// Built on request, `benchmark` label; registered under MIMETIKA_USE_HYPRE even
+// though it links only mimetika::mimetika:
 //
-//     cmake -B build-hypre -DMIMETIKA_BUILD_TESTS=ON -DMIMETIKA_BUILD_BENCHMARKS=ON
+//     cmake -B build-hypre -DMIMETIKA_USE_HYPRE=ON -DMIMETIKA_BUILD_BENCHMARKS=ON
 //     ctest --test-dir build-hypre -L benchmark
 //
-// With no arguments it asserts that per-cell cost does not run away over the
-// ladder. With arguments it is a plain measurement: test_bdm_assembly 2 4 6 8
+// With no arguments it asserts the per-cell cost stays flat over the ladder
+// {2, 4, 6, 8}. With arguments it only measures: test_bdm_assembly 2 4 6 8
 
 #include <algorithm>
 #include <chrono>
@@ -102,12 +102,13 @@ int main(int argc, char** argv) {
       ++failures;
     }
   };
-  // EVERY TERM IS CELL-LOCAL, SO EVERY TERM MUST STAY FLAT.
+  // Every term is cell-local, so every column must stay flat.
   //
-  // The degree-2 curl was not, once: exokal's mimetic_curl rebuilt
-  // graphos::incidence(3,1) and (1,0) on every call, O(mesh) per cell, and it
-  // ran 333 -> 1253 us/cell over 48 -> 10368 cells. Sharing them through a
-  // MimeticCurlCache made it flat at ~26. The bound is what guards that.
+  // The degree-2 curl column was not: exokal's mimetic_curl rebuilt
+  // graphos::incidence(3,1) and (1,0) on every call, O(mesh) per cell, running
+  // 333 -> 1253 us/cell over 48 -> 10368 cells. bdm_complex now hoists those
+  // adjacencies above the cell loop and builds C facet-wise, flat at ~26
+  // us/cell; these bounds guard it.
   flat("model.build", per_cell_build, 2.0);
   flat("mimetic_curl", per_cell_curl, 1.6);
   std::printf(failures ? "  [FAIL] %d\n" : "  [PASS]\n", failures);

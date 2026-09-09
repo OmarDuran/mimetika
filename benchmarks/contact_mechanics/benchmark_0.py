@@ -1,21 +1,21 @@
 r"""Benchmark 0 -- in-situ state and depletion response, no fault (paper 2.4).
 
-Two things are checked, and they are checked differently on purpose:
+Two claims, checked differently:
 
-1. **The in-situ state** is analytic.  It is *derived* from the Table 2
-   parameters and compared with the coefficients the paper prints, so an error
-   in the setup shows up before any solver runs.
+1. The in-situ state is analytic.  It is derived from the Table 2 parameters and
+   compared with the coefficients the paper prints, so an error in the setup
+   shows up before any solver runs.
 
-2. **The depletion response** is simulated.  A uniformly depleted, laterally
+2. The depletion response is simulated.  A uniformly depleted, laterally
    confined domain compacts uniaxially, and the mixed poromechanics solver must
    reproduce the closed forms
 
        ``eps_yy = alpha Delta p / Kv`` ,
        ``Delta sigma'_xx = nu/(1-nu) alpha Delta p`` ,   ``sigma_yy = 0`` .
 
-   Lateral confinement is imposed with **rollers** -- prescribed normal
-   displacement and free slip -- which in Hellinger--Reissner means pinning the
-   *shear traction* DOFs, since the displacement side is natural there.
+   Lateral confinement is imposed with rollers -- prescribed normal displacement
+   and free slip -- which in Hellinger--Reissner means pinning the shear traction
+   DOFs, the displacement side being natural there.
 
 Run with ``python -m benchmarks.contact_mechanics.benchmark_0``.
 """
@@ -67,8 +67,8 @@ def in_situ_report(parameters: Parameters, samples: int = 11):
 def depletion_response(parameters: Parameters, n: int = 8, stress_space: str = "derham"):
     """Simulate uniform depletion of a confined block; return the key responses.
 
-    The mesh is the unit square: the response is a *strain*, so the domain size
-    only enters through ``Delta h = h eps_yy``, applied afterwards.
+    The mesh is the unit square: the response is a strain, so the domain size
+    enters only through ``Delta h = h eps_yy``, applied afterwards.
     """
     mesh = structured_quads(n, n)
     material = Material(
@@ -113,12 +113,12 @@ def finite_reservoir(parameters: Parameters, nx: int = 20, ny: int = 120,
                      stress_space: str = "derham"):
     """Deplete a reservoir of finite thickness inside the full domain.
 
-    Different from :func:`depletion_response`, and harder.  That one depletes the
-    **whole** domain, which is why it reproduces the uniaxial closed form to
-    round-off -- there is nothing for the rock to arch over.  Fig. 4 needs a
-    ``h = 225`` m reservoir inside a ``4500`` m domain, so the surrounding rock
-    carries part of the load and the stress steps sharply at the reservoir top
-    and bottom.  The uniaxial formulae survive only in the interior.
+    :func:`depletion_response` depletes the whole domain, which is why it
+    reproduces the uniaxial closed form to round-off -- there is nothing for the
+    rock to arch over.  Fig. 4 needs a ``h = 225`` m reservoir inside a ``4500``
+    m domain, so the surrounding rock carries part of the load and the stress
+    steps sharply at the reservoir top and bottom.  The uniaxial formulae survive
+    only in the interior.
     """
     width, height = parameters.width, parameters.height
     mesh = structured_quads(
@@ -167,7 +167,7 @@ def combined_stress_profile(
 
     Sampled along a line at ``dip`` to the horizontal through the reservoir
     centre -- the line the fault would occupy -- and resolved onto that plane.
-    "Combined" means in-situ **plus** the depletion increment, which is what the
+    "Combined" means in-situ plus the depletion increment, which is what the
     figure plots.
     """
     mesh, stress, _ = finite_reservoir(parameters, nx=nx, ny=ny)
@@ -241,11 +241,9 @@ def depletion_series(
 ):
     """The finite-reservoir stress state over a depletion ramp, as a ``.pvd``.
 
-    **Bulk only** -- benchmark 0 has no fault, so there is no lower-dimensional
-    part to write.  The series exists so the stress state can be watched building
-    up: the combined stresses resolved on the ``dip``-degree plane are exactly the
-    quantities the paper plots in Fig. 4, and the step at the reservoir edges is
-    the feature to look for.
+    Bulk only -- benchmark 0 has no fault, so there is no lower-dimensional part
+    to write.  The combined stresses resolved on the ``dip``-degree plane are the
+    quantities the paper plots in Fig. 4, with the step at the reservoir edges.
     """
     normal, tangent = parameters.fault_basis(dip)
     series = None

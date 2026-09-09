@@ -10,16 +10,16 @@ its width is the moments a facet carries:
     AFW     (sigma n)|_f linear       d.nb per facet   -- a vector P_1 field
     wrench  the rigid-motion moments  d(d+1)/2         -- a displacement screw
 
-Giving BDM one multiplier per facet would enforce continuity of the MEAN flux
+Giving BDM one multiplier per facet would enforce continuity of the mean flux
 alone, the linear part of q.n could jump, and the hybridized system would stop
-being the mixed one. So the width is a statement to test, not a parameter.
+being the mixed one. So the width is asserted.
 
-The claim of the method is EQUIVALENCE -- the same discrete problem, a
-different elimination -- so the test is not that the interface solve converges
-but that it lands on the monolithic answer, which on this patch is the exact
-field. Anything that reaches the multiplier wrongly (a datum truncated to its
-constant moment, a recovery that reads the kinematic fields in the local
-saddle's order rather than the space's) still converges, and to something else.
+The claim is EQUIVALENCE -- the same discrete problem, a different elimination
+-- so what is checked is not that the interface solve converges but that it
+lands on the monolithic answer, which on this patch is the exact field. A
+multiplier reached wrongly (a datum truncated to its constant moment, a
+recovery that reads the kinematic fields in the local saddle's order rather
+than the space's) still converges, to something else.
 """
 
 import numpy as np
@@ -40,9 +40,8 @@ FLUX = {
     "derham_bdm": mk.FluxRealization.derham_bdm,
     "stabilized_bdm": mk.FluxRealization.stabilized_bdm,
 }
-# product -> formulation. The diagonal members are left out: they are
-# mathematically incomplete and are being developed, so their hybrid behaviour
-# is not a statement this file should pin.
+# product -> formulation. The diagonal members are left out while they are being
+# developed; their hybrid behaviour is not pinned here.
 STRESS = {
     "derham_bdm": (mk.StressRealization.derham_bdm, mk.StressFormulation.weak_symmetry),
     "stabilized_bdm": (mk.StressRealization.stabilized_bdm, mk.StressFormulation.weak_symmetry),
@@ -53,9 +52,9 @@ FAMILIES = {
     "simplex": mk.Family.simplex,
     "prism": mk.Family.prism,
 }
-# Where a product reproduces a linear field, which is not everywhere: the
-# two-point star is consistent only on a K-orthogonal mesh, and derham_rt's
-# in-plane consistency on prisms is a pinned deficit of its own.
+# (product, family) pairs that do NOT reproduce a linear field: the two-point
+# star is consistent only on a K-orthogonal mesh, and derham_rt's in-plane
+# consistency on prisms is a pinned deficit of its own.
 NOT_EXACT = {("diagonal_tpfa", "simplex"), ("diagonal_tpfa", "prism"),
              ("derham_rt", "prism")}
 
@@ -72,12 +71,12 @@ def _linear(x):
 
 
 def flow_patch(mesh, product):
-    """p = g.x on the whole boundary, as an AFFINE datum.
+    """p = g.x on the whole boundary, as an affine datum.
 
-    The gradient is not decoration: a facet carrying d flux moments tests the
-    datum against d basis functions, and the centred ones see only the
-    variation across the facet. Hybridized, that datum is the pinned
-    multiplier, so a truncated one is a truncated multiplier.
+    A facet carrying d flux moments tests the datum against d basis functions,
+    and the centred ones see only the variation across the facet. Hybridized,
+    that datum is the pinned multiplier, so a truncated one is a truncated
+    multiplier.
     """
     m = mk.FlowModel(mesh, 3, 1.0, FLUX[product])
     for f in mk.boundary_facets(mesh, 3):
@@ -107,7 +106,7 @@ def test_the_flow_multiplier_is_the_normal_trace_space(product):
 @pytest.mark.parametrize("family", sorted(FAMILIES))
 @pytest.mark.parametrize("product", sorted(FLUX))
 def test_the_flow_hybrid_answer_is_the_direct_answer(product, family):
-    """Equivalence, which is the whole claim: same problem, two eliminations."""
+    """Equivalence: the same problem, two eliminations."""
     mesh = box(family)
     direct = flow_patch(mesh, product)
     direct.solve(options=DIRECT)
@@ -247,9 +246,9 @@ def test_a_prescribed_traction_is_refused_rather_than_dropped():
     """The interface load carries the cell rows and the multiplier datum only.
 
     A traction is a sigma-row datum and exokal's hybrid_interface_load has no
-    sigma-row term, so it would be dropped in silence -- measured, a
-    traction-driven column came back zero with the interface reporting zero
-    iterations. Refused until the load can carry it.
+    sigma-row term, so it would be dropped: a traction-driven column came back
+    zero with the interface reporting zero iterations. Refused until the load
+    can carry it.
     """
     mesh = box("simplex", 2)
     product, form = STRESS["stabilized_vem"]

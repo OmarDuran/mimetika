@@ -9,15 +9,14 @@ facet                    edge     polygon
 stress DOFs per facet    4        9
 rotation per cell        1        3
 reconstruction modes     12       36
-stabilisation-free       triangle tetrahedron
+dim ker(N^T) = 0         triangle tetrahedron
 friction set             interval disk
 ======================  =======  =======
 
-The 2D case is the cheap testbed for the contact laws, and it also guards the
-orientation convention: the canonical facet normal must point out of the ``+1``
-incidence cell.  In 3D that holds by construction from the loop orientation; in
-2D it has to be enforced, and getting it wrong silently inverts Signorini --
-tension closes the fracture and compression opens it.
+The 2D case also guards the orientation convention: the canonical facet normal
+points out of the ``+1`` incidence cell.  In 3D that holds by construction from
+the loop orientation; in 2D it is enforced, and inverting it inverts Signorini --
+tension would close the fracture and compression open it.
 """
 
 import numpy as np
@@ -94,7 +93,7 @@ def test_2d_patch_test_is_exact(tris):
 
 @pytest.mark.parametrize("tris", [False, True], ids=["quads", "triangles"])
 def test_facet_normal_points_out_of_the_plus_incidence_cell(tris):
-    """The convention Signorini depends on -- checked in 2D *and* 3D."""
+    """The convention Signorini depends on, checked in 2D and 3D."""
     from mimetika.mesh import structured_box, structured_tets
 
     meshes = [
@@ -209,7 +208,7 @@ def test_moment_value_round_trip_in_2d(mode):
         if mode == "averaged":
             assert np.allclose(back, vals)
         else:
-            assert np.allclose(back, vals)  # exact in 2D too, after the fix
+            assert np.allclose(back, vals)  # the pointwise map is exact in 2D too
 
 
 def test_compliance_block_is_4x4_in_2d():

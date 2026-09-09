@@ -6,10 +6,8 @@
 #include "exokal/forms/model.hpp"
 
 // Field index sets: which global unknowns belong to which factor of the space.
-//
-// A block preconditioner is a statement about the factors of a product space,
-// and it needs exactly one thing from the discretization: the index set of each
-// factor. Nothing about the operator, the mesh or the physics enters here.
+// That index set is all a block preconditioner takes from the discretization;
+// nothing about the operator, the mesh or the physics enters here.
 //
 // The layout already determines them. Stratum s begins at epoch.offset(s) and
 // field f begins space.offset(f) into it, so one (stratum, field) pair owns a
@@ -116,9 +114,7 @@ inline std::vector<int> first_field_dofs(const exokal::forms::StratifiedEpoch& e
   return out;
 }
 
-// Do these blocks partition [0, n) exactly? A fieldsplit is only a
-// preconditioner for the whole operator if they do: an unknown in no block is
-// left out of the preconditioner, and one in two blocks is corrected twice.
+// Do these blocks partition [0, n) exactly? The invariant stated above, tested.
 inline bool blocks_partition(const std::vector<FieldBlock>& blocks, std::size_t n) {
   std::vector<char> hit(n, 0);
   for (const FieldBlock& b : blocks) {

@@ -1,18 +1,16 @@
-r"""The four-field split: exact congruence, honest solid pressure, sparsity.
+r"""The four-field split: exact congruence, solid pressure, sparsity.
 
-The four-field formulation is an *algebraic rearrangement*, not a new
-discretisation: eliminating the solid pressure must reproduce the three-field
-compliance **exactly**.  So the headline tests solve the same problem both ways
--- with data chosen *outside* the reconstruction space, so the discrete
-solutions carry genuine discretisation error -- and demand agreement to solver
-precision.  Two exact solutions agreeing would prove nothing.
+The formulation is an algebraic rearrangement, not a new discretisation:
+eliminating ``p_s`` gives ``M_dev - Gamma^T B^{-1} Gamma = M_full``.  The
+congruence tests solve the same problem both ways with data outside the
+reconstruction space, so both discrete solutions carry discretisation error, and
+demand agreement to solver precision.
 
-The remaining claims are the ones the split exists for: ``p_s`` equals the
-discrete trace ``tr_h(sigma)/d`` (the first invariant is a primary unknown),
-the lumped inner product stays **diagonal** in the assembled system (the
-three-field assembly provably fills it in), and in poromechanics the pore
-pressure reaches the mechanics only through a **diagonal** cell--cell block --
-the stress row never sees it.
+The remaining claims: ``p_s = tr_h(sigma)/d`` (the first invariant is a primary
+unknown, ``I_1 = d p_s``), the lumped inner product stays diagonal in the
+assembled system (the three-field assembly folds the rank-one volumetric term
+back into ``M``), and in poromechanics the pore pressure reaches the mechanics
+only through a diagonal cell--cell block, never through the stress row.
 """
 
 import numpy as np
@@ -97,7 +95,7 @@ def solid_pressure_from_trace(inner, stress):
 
 @pytest.mark.parametrize("name", list(CASES))
 def test_four_field_matches_three_field_elasticity(name):
-    """Same (sigma, u, s) as the three-field solve, on a *non-exact* solution."""
+    """Same (sigma, u, s) as the three-field solve, outside the reconstruction space."""
     make, space = CASES[name]
     mesh = make()
     three = MixedElasticity(mesh, MU, LAM, inner=make_inner(mesh, space))
@@ -113,7 +111,7 @@ def test_four_field_matches_three_field_elasticity(name):
 
 @pytest.mark.parametrize("name", list(CASES))
 def test_solid_pressure_is_the_discrete_trace(name):
-    """Row two evaluates ``p_s = tr_h(sigma)/d`` -- the unknown is honest."""
+    """Row two evaluates ``p_s = tr_h(sigma)/d``."""
     make, space = CASES[name]
     mesh = make()
     four = FourFieldElasticity(mesh, MU, LAM, inner=make_inner(mesh, space))
@@ -148,7 +146,7 @@ def test_four_field_patch_test(name):
 
 
 def test_lumped_inner_product_stays_diagonal():
-    """The whole point: four-field keeps M diagonal; three-field cannot."""
+    """Four-field keeps M diagonal; the three-field Woodbury fold-in fills it in."""
     mesh = structured_quads(3, 3)
     four = FourFieldElasticity(
         mesh, inner=LumpedDeviatoricStress(mesh, mu=MU, lam=LAM)
@@ -255,11 +253,10 @@ def test_quasi_steady_pressure_data_matches(name):
 
 # -- robustness: material contrast and the incompressible limit (mechanics) -----
 #
-# The split moves the volumetric compliance onto ``p_s``, so these regimes are
-# where it could fail *differently* from the three-field form: a modulus
-# contrast scales ``Gamma`` and ``B`` per cell, and ``nu -> 1/2`` sends the
-# ``p_s`` row to its ``gamma = -1`` limit.  Exact uniform/piecewise states make
-# any weakness visible with no discretisation error to hide behind.
+# The split moves the volumetric compliance onto ``p_s``: a modulus contrast
+# scales ``Gamma`` and ``B`` per cell, and ``nu -> 1/2`` sends the ``p_s`` row to
+# its ``gamma = -1`` limit.  The uniform/piecewise states below are exact, so the
+# measured error carries no discretisation component.
 
 
 def layered(mesh, values, axis=1, split=0.5):
@@ -278,9 +275,8 @@ def checkerboard(mesh, values, split=0.5):
 def poisson_for(shear, inverse_modulus, dim):
     """The ``nu`` pairing with ``shear`` to give a prescribed bulk compliance.
 
-    Holding ``K`` fixed while raising ``mu`` drives ``nu`` towards ``-1`` --
-    auxetic, so these cells have ``a < 0``: exactly the sign the four-field
-    split must tolerate (only ``a = 0`` is degenerate).
+    Holding ``K`` fixed while raising ``mu`` drives ``nu`` towards ``-1``: those
+    cells are auxetic, ``a < 0``, admissible since only ``a = 0`` is degenerate.
     """
     t = 2.0 * np.asarray(shear, dtype=float) * inverse_modulus
     c = (1.0 - t) / (t * dim)
@@ -290,8 +286,8 @@ def poisson_for(shear, inverse_modulus, dim):
 def layered_shear(mesh, shear, amplitude=0.5, split=0.5):
     """Exact pure-shear state of a two-layer medium stacked along ``y``.
 
-    The stress is uniform and **traceless**, so the exact solid pressure is
-    zero -- the contrast must not leak into ``p_s``.
+    The stress is uniform and traceless, so the exact solid pressure is zero: the
+    contrast must not leak into ``p_s``.
     """
     tensor = np.zeros((3, 3))
     tensor[0, 1] = tensor[1, 0] = amplitude
@@ -334,9 +330,8 @@ CONTRAST_CASES = {
 def test_layered_shear_survives_the_modulus_contrast(name, contrast):
     """Exact to the accuracy the conditioning allows; ``p_s`` stays at zero.
 
-    The attainable accuracy degrades like ``contrast * eps_machine`` -- the
-    optimal double-precision rate at a condition number proportional to the
-    jump -- and the traceless state must not leak into the solid pressure.
+    Attainable accuracy degrades like ``contrast * eps_machine``, the
+    double-precision rate at a condition number proportional to the jump.
     """
     make, space = CONTRAST_CASES[name]
     mesh = make()
@@ -360,11 +355,10 @@ def test_checkerboard_shear_contrast_puts_the_hydrostatic_load_on_p_s(
 ):
     """``mu`` alternating cell by cell, ``K`` matched: the load lives on ``p_s``.
 
-    Matching the bulk compliance forces the stiff cells auxetic (``a < 0``), so
-    this doubles as the sign test for the ``p_s`` diagonal.  A hydrostatic
-    stress engages only the volumetric compliance, identical in every cell, so
-    the state is uniform, and the four-field split must report it entirely
-    through ``p_s = tr(sigma)/d`` with the facet field carrying no deviation.
+    Matching the bulk compliance makes the stiff cells auxetic (``a < 0``), so this
+    also tests the sign of the ``p_s`` diagonal.  A hydrostatic stress engages only
+    the volumetric compliance, identical in every cell, so the state is uniform and
+    ``p_s = tr(sigma)/d`` carries all of it.
     """
     make, space = CONTRAST_CASES[name]
     mesh = make()
@@ -414,9 +408,9 @@ def boundary_face(mesh, value=1.0, axis=1):
 def test_the_incompressible_limit_is_exact(name, nu):
     """``nu -> 1/2`` including the limit itself: constant stress, exact ``p_s``.
 
-    At ``nu = 1/2`` the ``p_s`` row sits at ``gamma = -1``, ``B = d|E|/2mu`` --
-    nothing degenerates -- but the hydrostatic level is only determined once a
-    traction is prescribed somewhere, so one face carries the stress data.
+    At ``nu = 1/2`` the ``p_s`` row is ``gamma = -1``, ``B = d|E|/2mu``.  The
+    hydrostatic level is determined only once a traction is prescribed, so one face
+    carries the stress data.
     """
     make, space = CASES[name]
     mesh = make()

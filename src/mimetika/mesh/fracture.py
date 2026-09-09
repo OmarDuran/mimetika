@@ -1,17 +1,16 @@
 r"""Fracture tagging and extraction of the lower-dimensional subdomain.
 
-A fracture is a **set of tagged facets** of the existing mesh -- no geometry is
+A fracture is a set of tagged facets of the existing mesh; no geometry is
 created or modified.  From that tag set two things are derived:
 
-* the ``d-1`` dimensional fracture mesh, whose cells *are* the tagged facets
-  (conformal by construction, so no projection is ever needed), and
+* the ``d-1`` dimensional fracture mesh, whose cells are the tagged facets
+  (conformal by construction, so no projection is needed), and
 * the DOF duplication used by the flow problem
   (:class:`~mimetika.dof.facet_dofs.FacetDofMap`).
 
-Tags travel in the ``.vtu`` file as **vertex loops**, not facet indices: facet
-numbering is derived from the cell complex and would not survive a round trip,
-whereas a vertex set identifies a face unambiguously -- it is exactly the key
-the complex itself uses to merge shared faces.
+Tags travel in the ``.vtu`` file as vertex loops, not facet indices: facet
+numbering is derived from the cell complex and does not survive a round trip,
+while a vertex set is the key the complex itself uses to merge shared faces.
 """
 
 from __future__ import annotations
@@ -32,9 +31,8 @@ def facets_on_plane(
 ) -> np.ndarray:
     """Facets whose vertices all lie on the plane through ``point``.
 
-    The usual way to tag a planar fracture in a synthetic test.  By default only
-    interior facets are returned -- a boundary facet has a single side and
-    cannot carry a fracture.
+    With ``interior_only`` only facets with two incident cells are returned; a
+    boundary facet has a single side and cannot carry a fracture.
     """
     n = np.asarray(normal, dtype=float)
     n = n / np.linalg.norm(n)
@@ -128,8 +126,8 @@ def write_fracture_tags(path: str | Path, mesh: Mesh, tagged) -> Path:
 def read_fracture_tags(path: str | Path, mesh: Mesh) -> np.ndarray:
     """Read fracture tags from a ``.vtu`` and resolve them to facet ids.
 
-    Each stored loop is matched to a facet by its **vertex set**, the same key
-    the cell complex uses to identify shared faces.
+    Each stored loop is matched to a facet by its vertex set, the same key the
+    cell complex uses to identify shared faces.
     """
     text = Path(path).read_text()
     flat = _read_int_array(text, "fracture_faces")

@@ -4,10 +4,10 @@ r"""A lumped (diagonal) stress inner product -- the TPFA analogue for elasticity
 per-cell ``M``: eliminating ``sigma`` from the saddle-point system costs as much
 as solving it, so the stress stays in the system.  This module builds the
 mimetic counterpart of the two-point flux approximation instead -- an ``M`` that
-is **diagonal**, so each facet traction can be eliminated on its own and what
+is diagonal, so each facet traction can be eliminated on its own and what
 remains is a cell-centred system in ``(u, s)``.
 
-Three things have to give way for that.
+Three conditions make that possible.
 
 **1.  The volumetric energy cannot be lumped.**  Split the complementary energy
 (the separation is due to Cockburn):
@@ -15,35 +15,35 @@ Three things have to give way for that.
     ``(1/2) int C^{-1} sigma : sigma
       = (1/4mu) int sigma_dev : sigma_dev  +  (a term in tr sigma alone)``
 
-The deviatoric half is facet-localisable.  The volumetric half is not: ``tr
-sigma`` is an average over *all* the facets of a cell -- a cell quantity -- and
-no choice of geometry makes it separate.  Hence the name of the class.  Written
-as a map on ``d x d`` matrices the piece that is left out is exactly rank one,
+The deviatoric half is facet-localisable; ``tr sigma`` is an average over all
+the facets of a cell -- a cell quantity -- and no choice of geometry separates
+it.  Written as a map on ``d x d`` matrices the omitted piece is exactly rank
+one,
 
     ``C^{-1} = (1/2mu) I_{d^2} - (a/2mu) vec(I) vec(I)^T`` ,   ``a = nu/(1-2nu+d nu)``
 
-so it is kept **out** of ``M`` and handed downstream as one rank-one update per
+so it is kept out of ``M`` and handed downstream as one rank-one update per
 cell (:meth:`volumetric_operator`).  Two consumers exist.  The three-field
 assembly folds it back into ``M`` (Woodbury in matrix form), keeping the field
-structure ``(sigma, u, s)`` untouched at the price of the diagonality.  The
-**four-field** assembly (:mod:`mimetika.assembly.four_field`) instead promotes
-the auxiliary ``n_cells``-sized variable -- which *is* the solid pressure
-``p_s = tr_h(sigma)/d`` -- to an explicit unknown, so ``M`` stays diagonal and
-``D`` and ``A`` still keep their usual meaning.
+structure ``(sigma, u, s)`` at the price of diagonality.  The four-field
+assembly (:mod:`mimetika.assembly.four_field`) instead promotes the auxiliary
+``n_cells``-sized variable -- the solid pressure ``p_s = tr_h(sigma)/d`` -- to
+an explicit unknown, so ``M`` stays diagonal and ``D`` and ``A`` keep their
+usual meaning.
 
 **2.  The stress space is reduced: ``d`` DOFs per facet, not ``d^2``.**  The
-DOFs here are the *traction vector* ``int_e sigma n_e`` alone; the ``d-1`` first
+DOFs here are the traction vector ``int_e sigma n_e`` alone; the ``d-1`` first
 moments of the traction over each facet -- the rest of the AFW facet block --
 are dropped.  This is a different discrete space, not a re-conditioning of the
-AFW one: it is those moments that make the full operator consistent for *linear*
+AFW one: those moments are what make the full operator consistent for linear
 stresses, and without them the reconstruction space shrinks to the constants,
-``m = d^2`` (see :meth:`n_modes`).  Keeping them would defeat the purpose,
-because the two-point condition below constrains only the constant-traction rows
--- the moment rows would still couple facets.  The practical consequence is a
-lower formal order; the practical gain is that ``sigma`` is eliminable.
+``m = d^2`` (see :meth:`n_modes`).  Retaining them would not help, because the
+two-point condition below constrains only the constant-traction rows -- the
+moment rows would still couple facets.  The formal order drops; ``sigma``
+becomes eliminable.
 
 **3.  The operator is consistent on orthogonal cells and nowhere else.**  With
-``d_i = x_i - x_c`` the offset from the cell **collocation point** to the facet
+``d_i = x_i - x_c`` the offset from the cell collocation point to the facet
 centroid, strong consistency ``M N = R`` on constant stresses forces, facet by
 facet,
 
@@ -51,48 +51,44 @@ facet,
 
 whose unique solution in the ``(n, t)`` basis is
 ``M_i = (1/(2 mu |e_i|)) [[d_n, d_t], [-d_t, d_n]]``.  So ``M_i`` is diagonal
-**iff ``d_t = 0``**, i.e. iff ``d_i`` is parallel to ``n_i``, and then
+iff ``d_t = 0``, i.e. iff ``d_i`` is parallel to ``n_i``, and then
 
     ``M_i = (d_n / (2 mu |e_i|)) I`` ,   positive definite iff ``d_n > 0``.
 
-There is no condition on ``nu``: splitting the trace off removed the material
-condition and left only the geometric one, so :meth:`local_matrices` and
-:meth:`assemble` are independent of the Poisson ratio and all of the ``nu``
-dependence sits in the rank-one term.
+There is no condition on ``nu``: splitting the trace off left only the geometric
+condition, so :meth:`local_matrices` and :meth:`assemble` are independent of the
+Poisson ratio and all of the ``nu`` dependence sits in the rank-one term.
 
-Off orthogonal cells there is no rescue: the consistent block is then
-non-symmetric, and its antisymmetric part is not absorbed by the rotation
-multiplier -- some 96% of it lies outside ``range([D^T A^T])``, and the rank of
-that pair jumps from 3 to 5 on a skewed quadrilateral.  Weakening the symmetry
-constraint therefore cannot recover consistency.  The class guards: the
-orthogonality defect ``max_i |d_t| / |d|`` is measured on every cell at
-construction and a non-orthogonal cell is an error, not a warning (see
+Off orthogonal cells the consistent block is non-symmetric and its antisymmetric
+part is not absorbed by the rotation multiplier: some 96% of it lies outside
+``range([D^T A^T])``, and the rank of that pair jumps from 3 to 5 on a skewed
+quadrilateral, so weakening the symmetry constraint does not recover
+consistency.  The orthogonality defect ``max_i |d_t| / |d|`` is measured on
+every cell at construction and a non-orthogonal cell raises (see
 :meth:`check_orthogonality`).
 
-Because the collocation point ``x_c`` is a free parameter of the consistency
-derivation -- ``u(x_i) - u(x_c) = eps (x_i - x_c)`` holds for any ``x_c`` -- the
-condition ``d || n`` can be *arranged* rather than merely hoped for.
+The collocation point ``x_c`` is a free parameter of the consistency derivation
+-- ``u(x_i) - u(x_c) = eps (x_i - x_c)`` holds for any ``x_c`` -- so ``d || n``
+can be arranged.
 
-What it asks for is an **orthogonal complex**: a polytopal mesh carrying one point
+What it asks for is an orthogonal complex: a polytopal mesh carrying one point
 per cell such that every facet is orthogonal to the segment joining the two cell
 points it separates.  It is a property of the (mesh, points) pair, not of any cell
 shape.  A Voronoi/PEBI complex is the general construction, its generators being
 the points; a Cartesian grid is the degenerate case where the centroids already
-work.  Simplices with circumcentres are a *special case* of the same idea via
-Delaunay duality, useful but not the definition -- and in 3D they do not even
-deliver it (see :func:`circumcentres`).
+work.  Simplices with circumcentres are a special case via Delaunay duality, and
+in 3D they do not deliver it (see :func:`circumcentres`).
 
-Supply the points as ``collocation``.  Any route to them is acceptable:
-:meth:`check_orthogonality` is what decides whether the operator is legitimate on
-this mesh.
+Supply the points as ``collocation``; :meth:`check_orthogonality` decides whether
+the operator is legitimate on this mesh, whatever their provenance.
 
-A caveat in 3D.  ``d || n`` constrains the cell point *and* the facet
-point, and this class takes the facet point to be the facet centroid, as the rest of
-the library does.  Orthogonality really wants it at the orthogonal projection of
-``x_c`` onto the facet plane.  On a polygon facet in 2D -- an edge -- those coincide,
-which is why 2D works exactly; on a polygonal facet in 3D they differ in general.
-Full 3D polytopal support therefore needs facet points to become mesh data too, so
-that an orthogonal complex is a pairing of cell points *and* facet points.
+A caveat in 3D.  ``d || n`` constrains the cell point and the facet point, and
+this class takes the facet point to be the facet centroid, as the rest of the
+library does.  Orthogonality wants it at the orthogonal projection of ``x_c``
+onto the facet plane.  For an edge in 2D those coincide; on a polygonal facet in
+3D they differ in general.  Full 3D polytopal support therefore needs facet
+points to become mesh data too, so that an orthogonal complex is a pairing of
+cell points and facet points.
 
 Splitting the stress into its deviatoric and hydrostatic components as
 independent discrete quantities goes back to Nguyen, Peraire & Cockburn,
@@ -103,9 +99,9 @@ Degrees of freedom
 ``dof[f, k] = int_f (sigma n_f)_k`` with ``n_f`` the **canonical** facet normal
 (out of the ``+1``-incidence cell) and ``k`` a component in the mesh frame
 ``self.frame``; the global index is ``d * facet_id + k``.  This is the constant
-block of the AFW layout with the moment rows removed -- so a traction vector
-enters as ``dof = |f| t``, exactly as it does there, but the stride is ``d``
-rather than ``d^2``.
+block of the AFW layout with the moment rows removed: a traction vector enters
+as ``dof = |f| t``, exactly as it does there, but the stride is ``d`` rather
+than ``d^2``.
 """
 
 from __future__ import annotations
@@ -134,16 +130,15 @@ class LumpedDeviatoricStress:
         Per-cell :class:`~mimetika.materials.Material`; takes precedence.
     collocation
         ``(n_cells, 3)`` collocation points ``x_c``, one per cell -- the cell
-        points of an **orthogonal complex**.  Defaults to the cell centroids,
-        which already satisfy the condition on a Cartesian grid.  On a general
+        points of an orthogonal complex.  Defaults to the cell centroids, which
+        already satisfy the condition on a Cartesian grid.  On a general
         polytopal mesh supply the Voronoi/PEBI generators; :func:`circumcentres`
         covers simplicial cells in 2D.  The operator is consistent exactly when
-        ``x_i - x_c`` is parallel to ``n_i``; how the points were obtained is
-        irrelevant, so the guard checks the property rather than the provenance.
+        ``x_i - x_c`` is parallel to ``n_i``, which is what the guard checks.
     orthogonality_tol
         Largest tolerated orthogonality defect ``max_i |d_t|/|d|``, checked at
-        construction.  The defect is a *sine*, so it never exceeds 1: passing
-        ``1.0`` disables the guard.
+        construction; default ``1e-9``.  The defect is a sine, so it never
+        exceeds 1: passing ``1.0`` disables the guard.
     """
 
     #: :meth:`assemble` excludes the volumetric compliance, which is what keeps
@@ -211,10 +206,9 @@ class LumpedDeviatoricStress:
     def constant_moment_offsets(self, d: int) -> np.ndarray:
         """Offsets within a facet block holding the constant traction moment.
 
-        The lumped space carries *only* the constant traction, one DOF per
-        component (``ndf = d``), so component ``k`` is simply at ``k`` -- there are
-        no higher moments to skip over.  Contrast AFW, where the same quantity
-        lives at ``k * d``.
+        The lumped space carries only the constant traction, one DOF per
+        component (``ndf = d``), so component ``k`` sits at ``k``.  Contrast
+        AFW, where the same quantity lives at ``k * d``.
         """
         return np.arange(d)
 
@@ -223,11 +217,10 @@ class LumpedDeviatoricStress:
         return d
 
     def n_modes(self, d: int) -> int:
-        """``d^2`` -- the reconstruction space is the *constant* stresses only.
+        """``d^2`` -- the reconstruction space is the constant stresses only.
 
-        Dropping the facet moments removes the DOFs that a linear stress would
-        need in order to be reproduced, so admitting linear modes here would
-        only manufacture an inconsistency.
+        Dropping the facet moments removes the DOFs a linear stress needs to be
+        reproduced, so linear modes would be inconsistent here.
         """
         return d * d
 
@@ -240,12 +233,11 @@ class LumpedDeviatoricStress:
     def _canonical_normals(self) -> np.ndarray:
         """``(n_facets, 3)`` unit normals, each pointing out of its ``+1`` cell.
 
-        Same convention as :meth:`Geometry.facet_frame`, and for the same
-        reason: multiplying by the incidence sign then gives the *outward*
-        normal of either adjacent cell, without a per-cell star-shapedness test.
-        That matters here because the test used elsewhere -- ``(x_e - x_c).n >
-        0`` -- is a theorem about the *centroid*, and this class deliberately
-        allows ``x_c`` to be a circumcentre, which can lie outside the cell.
+        Same convention as :meth:`Geometry.facet_frame`: multiplying by the
+        incidence sign gives the outward normal of either adjacent cell without
+        a per-cell star-shapedness test.  The test used elsewhere,
+        ``(x_e - x_c).n > 0``, holds for the centroid, and this class allows
+        ``x_c`` to be a circumcentre, which can lie outside the cell.
         """
         if self._normals is not None:
             return self._normals
@@ -426,9 +418,8 @@ class LumpedDeviatoricStress:
     def facet_compliances(self, cell_id: int) -> tuple[np.ndarray, list[int]]:
         """``(values, facet_ids)`` with ``values[i] = d_n / (2 mu |e_i|)``.
 
-        The scalar multiplying the identity on facet ``i`` -- the whole content
-        of the local inner product, and the half-compliance that a facet-wise
-        elimination puts in series with its neighbour's.
+        The scalar multiplying the identity on facet ``i``: the half-compliance
+        that a facet-wise elimination puts in series with its neighbour's.
         """
         lc = LocalCell.build(self.mesh.geometry, cell_id, self.frame)
         offset = self._local_offset(lc, cell_id)
@@ -464,10 +455,9 @@ class LumpedDeviatoricStress:
     def diagonal(self) -> np.ndarray:
         """``(d * n_facets,)`` diagonal of the global inner product.
 
-        Interior facets receive ``d_n/(2 mu |e|)`` from *both* sides.  That sum
-        of half-compliances is the elasticity counterpart of TPFA's two
-        half-transmissibilities in series -- and it is the reason the eliminated
-        system is cell-centred.
+        Interior facets receive ``d_n/(2 mu |e|)`` from both sides.  That sum of
+        half-compliances is the elasticity counterpart of the two-point flux
+        half-transmissibilities in series.
         """
         d = self.mesh.dim
         idx, vals = [], []
@@ -492,26 +482,24 @@ class LumpedDeviatoricStress:
     def volumetric_coupling(self, cell_id: int):
         """``(w, facet_ids, c)``: the volumetric term of one cell is ``c w w^T``.
 
-        ``w`` is ``R vec(I)`` -- the moment column of the *hydrostatic* mode --
-        laid out in the canonical DOF basis, i.e. ``w[i*d + k] = s_i d_i[k]/2mu``
-        with ``s_i`` the incidence sign.  Geometrically ``w . g = |E| tr_h(sigma)
-        / 2mu``: it is the discrete trace, which is exactly the functional the
-        solid pressure pairs with.
+        ``w`` is ``R vec(I)``, the moment column of the hydrostatic mode, laid
+        out in the canonical DOF basis: ``w[i*d + k] = s_i d_i[k]/2mu`` with
+        ``s_i`` the incidence sign.  ``w . sigma = |E| tr_h(sigma) / 2mu`` is
+        the discrete trace, the functional the solid pressure pairs with.
 
-        With it, the *full* compliance of the cell is
+        With it, the full compliance of the cell is
 
             ``M_E + c w w^T`` ,   ``c = -2 mu a / |E|`` ,
 
-        an SPD matrix minus a rank-one term -- Woodbury territory, with an
-        auxiliary system of size ``n_cells``.  Both factors are smooth in the
-        material: ``c`` is bounded and ``w`` is material-independent up to the
-        ``1/2mu``, and at ``nu = 1/2`` (``a = 1/d``) nothing degenerates.
+        an SPD matrix minus a rank-one term, so the Woodbury update has an
+        auxiliary system of size ``n_cells``.  ``c`` is bounded and ``w`` is
+        material-independent up to the ``1/2mu``, so nothing degenerates at
+        ``nu = 1/2`` (``a = 1/d``).
 
-        Not added to ``M``: baking it in would destroy the diagonality.  The
-        four-field formulation (:mod:`mimetika.assembly.four_field`) keeps that
-        diagonality by carrying the auxiliary variable explicitly as the solid
-        pressure, leaving ``D`` and ``A`` -- which act on the *total* stress
-        DOFs -- untouched.
+        Not added to ``M``: that would destroy the diagonality.  The four-field
+        formulation (:mod:`mimetika.assembly.four_field`) keeps it by carrying
+        the auxiliary variable explicitly as the solid pressure, leaving ``D``
+        and ``A`` -- which act on the total stress DOFs -- untouched.
         """
         lc = LocalCell.build(self.mesh.geometry, cell_id, self.frame)
         offset = self._local_offset(lc, cell_id)
@@ -557,10 +545,9 @@ class LumpedDeviatoricStress:
         """``(W, c)`` with the full compliance ``M + W^T diag(c) W``.
 
         ``W`` is ``(n_cells, n_dofs)``, one row per cell holding that cell's
-        :meth:`volumetric_coupling` vector, and ``c`` is ``(n_cells,)``.  This is
-        the form a Woodbury update wants: the correction has rank ``n_cells``
-        globally but rank **one per cell**, so the auxiliary system is
-        cell-centred and sparse.
+        :meth:`volumetric_coupling` vector, and ``c`` is ``(n_cells,)``.  The
+        correction has rank ``n_cells`` globally but rank one per cell, so the
+        Woodbury auxiliary system is cell-centred and sparse.
         """
         d = self.mesh.dim
         n_cells, n_facets = self.mesh.num_cells(d), self.mesh.num_cells(d - 1)
@@ -628,35 +615,33 @@ class LumpedDeviatoricStress:
 
 
 def circumcentres(mesh) -> np.ndarray:
-    """``(n_cells, 3)`` circumcentres of a **simplicial** mesh.
+    """``(n_cells, 3)`` circumcentres of a simplicial mesh.
 
-    A convenience for one cell type, not the definition of a collocation point.
-    The concept :class:`LumpedDeviatoricStress` needs is an orthogonal complex;
-    circumcentres are the construction that yields one when the cells are
-    simplices, by Delaunay duality.  On a general polytopal mesh the primitive is
-    the Voronoi/PEBI generator, and this function does not apply.
+    :class:`LumpedDeviatoricStress` needs an orthogonal complex; circumcentres
+    yield one when the cells are simplices, by Delaunay duality.  On a general
+    polytopal mesh the primitive is the Voronoi/PEBI generator and this function
+    does not apply.
 
-    Where it does work, it works because the circumcentre is equidistant from every
-    vertex, so the perpendicular from it to a facet lands on that facet's own
-    circumcentre.  The centroid has no such property.
+    It works because the circumcentre is equidistant from every vertex, so the
+    perpendicular from it to a facet lands on that facet's own circumcentre; the
+    centroid has no such property.
 
-    Solved as the linear system ``2 (v_i - v_0) . x = |v_i|^2 - |v_0|^2`` -- the
-    definition (equidistance) rather than a closed-form formula.
+    Solved as the linear system ``2 (v_i - v_0) . x = |v_i|^2 - |v_0|^2``.
 
     Three warnings:
 
-    * **2D only, in practice.** The perpendicular foot is the *facet's* circumcentre.
-      For an edge that is its midpoint, which is also its centroid, so 2D is exact
-      (defect ~1e-16). For a polygonal facet in 3D the two differ, the condition
-      fails, and on a distorted tetrahedron the circumcentre is measurably *worse*
-      than the centroid. Do not reach for this in 3D; supply generators instead.
-    * On an **obtuse** simplex the circumcentre falls *outside* the cell and the
-      offset ``d_n`` to the far facet goes non-positive, which destroys positive
-      definiteness.  This is the direct analogue of TPFA's negative transmissibility
-      on a non-Delaunay grid.  It is not caught here -- build the operator and call
+    * 2D only, in practice.  The perpendicular foot is the facet's circumcentre.
+      For an edge that is its midpoint, which is also its centroid, so 2D is
+      exact (defect ~1e-16).  For a polygonal facet in 3D the two differ, the
+      condition fails, and on a distorted tetrahedron the circumcentre is
+      measurably worse than the centroid.  Supply generators in 3D instead.
+    * On an obtuse simplex the circumcentre falls outside the cell and the offset
+      ``d_n`` to the far facet goes non-positive, destroying positive
+      definiteness -- the analogue of a negative two-point transmissibility on a
+      non-Delaunay grid.  Not caught here: build the operator and call
       :meth:`LumpedDeviatoricStress.check_orthogonality`, which tests for it.
-    * With ``x_c`` a circumcentre the displacement unknown is ``u(x_c)``, not the cell
-      average.  Nothing downstream may assume the latter.
+    * With ``x_c`` a circumcentre the displacement unknown is ``u(x_c)``, not the
+      cell average.  Nothing downstream may assume the latter.
     """
     d = mesh.dim
     points = mesh.geometry.points

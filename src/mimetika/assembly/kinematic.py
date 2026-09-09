@@ -19,13 +19,12 @@ it as the rotation row,
 
     ``(1/2mu) A sigma + 2|E| s - G u = 0`` ,
 
-the rotation block becomes the diagonal mass ``2|E|`` -- ``s`` is a locally
-eliminable *kinematic* variable, not a multiplier.  There is no zero block, no
-inf-sup condition for the rotation, and no Cosserat physics: no curvature term
-and no internal length enter anywhere.  Symmetry of the stress becomes an
-*output* (it holds to the consistency order) instead of an imposed constraint.
-This is why the kinematic-rotation closure needs no rotation stabilization of
-any kind: a kinematically *defined* quantity never carries an inf-sup burden.
+the rotation block becomes the diagonal mass ``2|E|``: ``s`` is a locally
+eliminable kinematic variable, not a multiplier.  There is no zero block, no
+inf-sup condition for the rotation, and no Cosserat terms -- no curvature, no
+internal length.  Symmetry of the stress is an output, holding to the
+consistency order, rather than an imposed constraint, so the closure carries no
+rotation stabilization.
 
 The gauge modes, and the blended row
 ------------------------------------
@@ -58,16 +57,15 @@ works; MINRES does not and is refused.
 The operator ``G``
 ------------------
 ``(G u)_{E,p} = |E| * gens_p : grad_h(u)|_E`` needs a discrete displacement
-gradient from cell values -- genuinely new information (contracting the
-constitutive row against cell-wise skew tests would be a *dependent* equation
-and the system would be singular).  Here ``grad_h`` is a weighted least-squares
-fit over the face neighbours, supplemented on Dirichlet boundary facets by the
-boundary datum at the facet centroid.  The fit is exact for affine
-displacements on any mesh, which is what keeps the AFW patch test exact.  On
-boundary facets carrying a traction condition the datum is *not* known;
-``traction_facets`` passed to :meth:`assemble_constrained` are simply excluded
-from the fit, so cells next to such facets must retain at least ``d``
-independent neighbour directions (checked, with a clear error).
+gradient from cell values -- new information (contracting the constitutive row
+against cell-wise skew tests gives a dependent equation and a singular system).
+Here ``grad_h`` is a weighted least-squares fit over the face neighbours,
+supplemented on Dirichlet boundary facets by the boundary datum at the facet
+centroid.  The fit is exact for affine displacements on any mesh, which keeps
+the AFW patch test exact.  On boundary facets carrying a traction condition the
+datum is unknown; ``traction_facets`` passed to :meth:`assemble_constrained`
+are excluded from the fit, so cells next to such facets must retain at least
+``d`` independent neighbour directions (checked).
 
 The two-point variant (mu-weighted facet averages in place of the
 least-squares fit) belongs to the lumped stage and trades exactness on general
@@ -177,11 +175,10 @@ def two_point_skew_gradient(mesh, frame, mu, dirichlet=None, exclude_facets=()):
     ``mu``-weighted average:
 
     * interior facet: the ``mu/delta``-weighted average of the two cell values
-      (``delta`` = distance from the cell centre to the facet plane).  The
-      mu-weighting is not cosmetic: continuity of the shear traction gives
-      ``mu_L g_L = mu_R g_R`` for the normal derivatives, which is exactly the
-      cancellation that keeps the average consistent across a shear-modulus
-      jump (the layered-shear state is reproduced exactly);
+      (``delta`` = distance from the cell centre to the facet plane).  Continuity
+      of the shear traction gives ``mu_L g_L = mu_R g_R`` for the normal
+      derivatives, the cancellation that keeps the average consistent across a
+      shear-modulus jump (layered shear reproduced exactly);
     * Dirichlet boundary facet: the datum at the facet centroid (into ``b``);
     * excluded facet (traction, or a fracture with its jump): the one-sided
       cell value -- an admissible closure because ``sum_e |e| n_e = 0``.
@@ -408,11 +405,10 @@ class TwoPointElasticity(KinematicRotationElasticity):
     """Three-field two-point elasticity: lumped stress + two-point rotation.
 
     The lumped inner product is built here (orthogonality guarded at
-    construction); the kinematic rotation row uses the two-point skew
-    gradient.  Note the three-field assembly must fold the volumetric
-    rank-one term back into ``M``, so **this arrangement is not diagonal** --
-    it exists for congruence testing and as the stepping stone; the scheme
-    with every structural payoff is :class:`TwoPointFourField`.
+    construction); the kinematic rotation row uses the two-point skew gradient.
+    The three-field assembly folds the volumetric rank-one term back into ``M``,
+    so this arrangement is not diagonal -- for that use
+    :class:`TwoPointFourField`.
     """
 
     gradient = "two_point"
@@ -441,17 +437,16 @@ class TwoPointElasticity(KinematicRotationElasticity):
 
 
 class TwoPointFourField(KinematicRotationFourField):
-    """The mimetic two-point stress scheme -- the endpoint of the lumping.
+    """The mimetic two-point stress scheme.
 
-    Fields ``(sigma, p_s, u, s)`` with every structural property assembled at
-    once, on a face-orthogonal complex with positive collocation distances:
+    Fields ``(sigma, p_s, u, s)``, on a face-orthogonal complex with positive
+    collocation distances:
 
     * ``M`` **diagonal** (the lumped deviatoric inner product; the volumetric
       part rides on ``p_s``, never folded back);
     * ``B`` and the rotation ``(s, s)`` block diagonal; ``Gamma``, ``A``,
-      ``G`` all two-point: **each facet couples only its two neighbouring
-      cells** -- the minimal fill-in of a cell-centred method, reached from
-      the traction side;
+      ``G`` all two-point: each facet couples only its two neighbouring cells,
+      the minimal fill-in of a cell-centred method;
     * no zero block anywhere: ``sigma`` eliminates facet-wise, ``p_s`` and
       ``s`` cell-wise, and no multiplier inf-sup condition exists;
     * no Cosserat terms: the rotation is the Cauchy macro rotation, closed by

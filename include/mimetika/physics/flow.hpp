@@ -19,11 +19,9 @@
 // in exokal's sense — the discrete Hodge is the whole of the metric content
 // and the divergence is pure topology.
 //
-// One package for both flow rows of the catalogue. Single-phase flow is
-// compositional flow at one component: the equations are the same and only
-// the number of composition fields differs, which is data the fluid model
-// carries rather than a property of this type. A package that hard-coded a
-// phase count would turn one catalogue row into two implementations.
+// One package for both flow rows of the catalogue: single-phase flow is
+// compositional flow at one component, and the component count is data the
+// fluid model carries rather than a property of this type.
 
 namespace mimetika::physics {
 
@@ -38,18 +36,15 @@ struct FlowOptions {
   std::string darcy_term{"mixed_darcy_cell"};
   // The mobility multiplying the Hodge: M(lambda) = M(1)/lambda. A transient
   // step sets it to dt, which rescales the flux to the volume that crosses a
-  // facet during the step and is what makes backward Euler need no
-  // time-stepping machinery at all.
+  // facet during the step.
   double mobility{1.0};
   // Moments per facet of the flux space. Zero means d, the de Rham/BDM_1
   // layout. One is the lowest-order single-flux-per-facet space -- RT_0 in its
   // de Rham realization, or the stabilized polytopal product.
   //
-  // The package does not choose it and does not know which inner product will
-  // be built: it lays out a space, and the layout has to match whatever star
-  // lands on it. The driver derives both from one realization so they cannot
-  // disagree -- a mismatch here is not a wrong answer, it is a space of the
-  // wrong size, and every index downstream is off.
+  // The package lays out the space; the layout has to match whatever star lands
+  // on it, and the driver derives both from one realization. A mismatch is a
+  // space of the wrong size, so every index downstream is off.
   int flux_moments{0};
 };
 
@@ -70,12 +65,11 @@ class Flow final : public Package {
     Requirements r;
     // the flux is a cochain on the facets, the pressure one per cell: the
     // lowest-order mixed pair, and the layouts that make the first row an
-    // (n−1, n−1) pairing and the second an (n, n−1) one
-    // The moment count comes from the realization: d is the BDM_1 / de Rham
-    // space, which a coupled poroelastic model needs because the stress space
-    // it pairs with has d^2; one is RT_0 or the stabilized polytopal product.
-    // These are different discretizations, not a finer and a coarser version
-    // of one, so the choice belongs to whoever states the model.
+    // (n−1, n−1) pairing and the second an (n, n−1) one. The moment count comes
+    // from the realization: d is the BDM_1 / de Rham space, which a coupled
+    // poroelastic model needs because the stress space it pairs with has d^2;
+    // one is RT_0 or the stabilized polytopal product. These are different
+    // discretizations, not a finer and a coarser version of one.
     r.fields.push_back(
         {at("q"),
          DofLayout::moments(dim, dim - 1, opt_.flux_moments > 0 ? opt_.flux_moments : dim)});

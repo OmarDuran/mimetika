@@ -2,18 +2,16 @@
 
 The exterior derivative is metric-free; *all* geometric information in a mimetic
 method enters through the Hodge star (equivalently, the mass / inner-product
-matrix) on k-forms.  This module defines the interface and a lowest-fidelity,
-positive-definite diagonal implementation sufficient to drive the assembly and
-solver layers end to end.
+matrix) on k-forms.  This module defines the interface and one diagonal, SPD
+implementation of it.
 
-Extension points (deliberately left as follow-ups, each a self-contained upgrade
-that does not change any caller):
+Extension points, not yet implemented (each a self-contained upgrade that does
+not change any caller):
 
 * ``CircumcentricHodge`` -- the geometrically-consistent diagonal DEC star
   ``*_k = diag(|dual_k| / |primal_k|)`` using the circumcentric dual mesh.
 * ``PolytopalHodge`` -- a dense-per-cell consistency+stability inner product
-  (``M = M_consistency + M_stability``) assembled cell by cell, the genuinely
-  "mimetic on polytopes" inner product.
+  (``M = M1 + M2``) assembled cell by cell.
 """
 
 from __future__ import annotations
@@ -35,11 +33,10 @@ class HodgeOperator(ABC):
 
 
 class DiagonalHodge(HodgeOperator):
-    """A diagonal mass matrix ``M_k = diag(measure_k)``.
+    """A diagonal mass matrix ``M_k = diag(measure_k)``, zero measures set to 1.
 
-    This is the mass-lumped inner product: SPD, cheap, and exact enough to
-    exercise the full pipeline.  It is *not* the geometrically-consistent DEC
-    star (see module docstring) -- swap in ``CircumcentricHodge`` for that.
+    The mass-lumped inner product: SPD and cheap.  Not the geometrically
+    consistent DEC star, which is an extension point (see module docstring).
     """
 
     def __init__(self, geometry: Geometry) -> None:

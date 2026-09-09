@@ -206,7 +206,7 @@ def test_prestress_shifts_what_the_law_sees():
     mesh, tags, driver, solver = fractured()
     p = np.zeros(mesh.num_cells(3))
     pre = np.zeros((len(tags), 3))
-    pre[:, 0] = -10.0  # strong in-situ compression: surely stuck
+    pre[:, 0] = -10.0  # in-situ normal compression
     state = solver.step(p, prestress=pre)
     assert state.converged
     assert np.allclose(driver.prestress[:, 0], -10.0)
@@ -251,8 +251,8 @@ def test_solved_flow_steps_and_drains():
     early = engine.flow_step(previous=None, dt=1e-3)
     late = engine.flow_step(previous=early, dt=10.0)
     p_early = early["pressure"]
-    assert p_early.min() > 0.0  # undrained: the fluid carries the push
-    assert late["pressure"].max() < 0.1 * p_early.max()  # ...then it drains
+    assert p_early.min() > 0.0  # undrained at dt = 1e-3: p > 0 everywhere
+    assert late["pressure"].max() < 0.1 * p_early.max()  # drained: below 10%
 
 
 def test_constant_dt_fast_path_matches_per_step_assembly():

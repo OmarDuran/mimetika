@@ -10,11 +10,11 @@ cell ``E``, writing the trace of the matrix pressure as
 
     ``tr(p_E)|_f = kappa_E^{-1} un_E + p_2``,      ``kappa = 2 k_n / eps``
 
-and substituting it into the local relation ``M_E F_E - p_E d_E + Pi_E = 0``
-(where ``Pi_f = |f| tr(p_E)`` is exactly the slot a Dirichlet datum occupies)
-gives
+with ``un_E = s_E u_f / |f|`` the outward average flux, and substituting it into
+the local relation ``M_E F_E - p_E d_E + Pi_E = 0`` (whose datum slot holds the
+signed facet mean ``Pi_f = s_E tr(p_E)|_f``) gives
 
-    ``(M_3 u)_f + (|f|/kappa_E) u_f - s_E |f| p_E + s_E |f| p_2 = 0`` .
+    ``(M_3 u)_f + u_f / (kappa_E |f|) - s_E p_E + s_E p_2 = 0`` .
 
 So the Robin coupling is a **diagonal stiffness on the fracture flux DOFs**
 plus a ``B``-like pairing with the fracture pressure -- no mortar unknowns, and
@@ -131,8 +131,9 @@ class MixedDimensionalDarcy:
     def coupling(self) -> sp.csr_matrix:
         """``C`` with ``(C u_3)_F`` = mass entering fracture cell ``F``.
 
-        Row ``F`` holds ``s_E |f|`` for each side of its facet; with duplicated
-        DOFs those are two distinct columns, so the row does not cancel.
+        Row ``F`` holds the incidence sign ``s_E`` for each side of its facet --
+        no measure, since the DOF is the integrated flux; with duplicated DOFs
+        those are two distinct columns, so the row does not cancel.
         """
         area = self.mesh.geometry.measure(2)
         rows, cols, vals = [], [], []
@@ -298,8 +299,7 @@ class MixedDimensionalDarcy:
 
         The DOFs hold the *integrated* flux ``int_f q.n`` -- the convention that
         keeps the discrete divergence purely topological -- so they are divided
-        by the facet measure here.  This accessor reports a physical flux
-        density, which is what a Darcy velocity should be compared against.
+        by the facet measure here, giving a Darcy velocity.
         """
         u = solution["flux"]
         area = self.mesh.geometry.measure(2)[int(facet)]

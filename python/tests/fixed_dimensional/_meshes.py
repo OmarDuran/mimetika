@@ -1,9 +1,8 @@
 """The mesh families the fixed-dimensional tests run on.
 
-Ported cell-for-cell from tests/model/test_confined_compression.cpp so that the Python
-suite meshes the same domains the C++ suite does. A different subdivision here
-would make the two sets of numbers incomparable, which is the whole point of
-having both.
+square and cube are ported cell-for-cell from
+tests/model/test_confined_compression.cpp, so the two suites mesh the same
+domains and their numbers are comparable. honeycomb is Python-side only.
 """
 
 import mimetika_cxx as mk
@@ -62,17 +61,14 @@ def cube(n: int, simplex: bool) -> mk.Mesh:
     )
 
 
-# THE POLYTOPE THAT IS NOT A DEGENERATE HEXAHEDRON.
+# Hexagonal prisms: eight facets a cell -- two hexagons and six quadrilaterals
+# -- so the lowest-order flux space carries eight unknowns on a cell where RT_0
+# spans four modes. That surplus is what a mimetic product has to close; a
+# cartesian hexahedron has six facets and a tetrahedron four.
 #
-# A honeycomb of hexagonal prisms: eight facets a cell -- two hexagons and six
-# quadrilaterals -- so the lowest-order flux space carries eight unknowns on a
-# cell where RT_0 spans four modes. That surplus is what a mimetic product has
-# to close, and what makes this the mesh the polytopal claim is actually about;
-# a cartesian hexahedron has six facets and a tetrahedron four.
-#
-# Corners are deduplicated by rounded coordinate, which is what makes the
-# neighbouring cells share them: a hexagonal lattice's corners coincide exactly
-# in the formulas below, so the tolerance never has to decide anything.
+# Corners are deduplicated by coordinate rounded to 9 decimals, which is what
+# makes neighbouring cells share them; the lattice's corners coincide exactly in
+# the formulas below, so the rounding never has to decide anything.
 def honeycomb(nq: int, nr: int, nz: int, s: float = 1.0, h: float = 1.0) -> mk.Mesh:
     """nq x nr hexagonal prisms in the plane, nz layers deep, circumradius s."""
     import math

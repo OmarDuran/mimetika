@@ -1,9 +1,8 @@
 r"""``y = CD(x)`` as a nonlinear algebraic function, tested without a mesh.
 
-That the contact problem is *only* algebra is the claim the design makes, so it
-is the claim these tests check: every :class:`ContactMap` below is built from
-hand-written 2x2 matrices.  No mesh, no material, no boundary condition, no
-mixed-elasticity problem appears anywhere in this file.
+Every :class:`ContactMap` below is built from hand-written 2x2 matrices: no mesh,
+no material, no boundary condition, no mixed-elasticity problem appears in this
+file.
 
 The stub system is small enough to have a closed form.  With one enforcement
 point, ``to_moments = [1]`` and the system
@@ -15,8 +14,8 @@ pinning ``z_0 = x`` leaves ``z_1 = (b1 - c x) / d``, so
     ``g(x) = (b1 - c x) / d``   and   ``CD(x) = P( x + r g(x) )`` .
 
 With the identity projection the fixed point is ``x* = b1 / c``, where
-``g(x*) = 0`` -- the bilateral contact condition -- and every statement below
-can be checked against those two formulas rather than against a previous run.
+``g(x*) = 0``, the bilateral contact condition.  Every statement below is checked
+against those two formulas.
 """
 
 import numpy as np
@@ -26,10 +25,9 @@ import scipy.sparse as sp
 from mimetika.contact.laws import ContactLaw
 from mimetika.contact.map import ContactMap, fixed_point
 
-# The coupling sign is not free.  ``g(x) = (b1 - c x)/d`` must *decrease* as the
-# traction grows -- pushing harder closes the gap -- so ``c/d > 0``.  With the
-# opposite sign the map has multiplier ``1 + r|c|/d > 1`` and no ``r`` converges,
-# which is a statement about contact being unstable, not about the solver.
+# The coupling sign is not free: ``g(x) = (b1 - c x)/d`` decreases as the traction
+# grows -- pushing harder closes the gap -- so ``c/d > 0``.  With the opposite
+# sign the map has multiplier ``1 + r|c|/d > 1`` and no ``r`` converges.
 A_11, C_12, D_22 = 4.0, 1.0, 2.0
 B_0, B_1 = 0.0, 3.0
 
@@ -62,8 +60,7 @@ def stub_map(law=None, r=0.5):
         block_sizes=(1, 1),
         # these tests exercise CD, not the linear solver, so the backend is
         # pinned: PETSc pays KSP setup and a MUMPS factorisation per solve, which
-        # on a stub this small is pure overhead and makes the suite's runtime
-        # depend on which environment it runs in
+        # on a 2x2 stub is overhead and makes the runtime environment-dependent
         solver={"method": "direct", "backend": "scipy"},
     )
 
@@ -135,7 +132,7 @@ def test_fixed_point_finds_it(r):
 
 
 def test_fixed_point_starts_from_the_supplied_guess():
-    """Seeding at the answer must converge immediately, not re-derive it."""
+    """Seeded at ``x*``, the iteration converges in one step."""
     result = fixed_point(
         stub_map(), x0=np.array([[EXACT_FIXED_POINT]]), tolerance=1e-14
     )
@@ -154,11 +151,7 @@ def test_the_contraction_condition_is_the_expected_one():
 
 
 def test_too_large_an_augmentation_diverges():
-    """The contraction condition is real: ``r c / d > 2`` oscillates outwards.
-
-    Documents *why* the augmentation is derived from stiffness rather than
-    guessed -- the same failure the mesh-based driver shows.
-    """
+    """``r c / d > 2`` oscillates outwards: ``r = 8`` fails in 60 iterations."""
     result = fixed_point(
         stub_map(r=8.0), relaxation=1.0, max_iterations=60, tolerance=1e-14
     )
@@ -166,7 +159,7 @@ def test_too_large_an_augmentation_diverges():
 
 
 def test_relaxation_rescues_a_divergent_augmentation():
-    """Damping widens the range of ``r`` that converges -- the reason it exists."""
+    """At ``r = 5`` the plain iteration diverges; ``relaxation = 0.2`` converges."""
     plain = fixed_point(stub_map(r=5.0), relaxation=1.0, max_iterations=200)
     damped = fixed_point(stub_map(r=5.0), relaxation=0.2, max_iterations=200)
     assert not plain.converged

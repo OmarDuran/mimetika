@@ -6,13 +6,13 @@ question is when, where and how much it slips.
 
 Geometry and sign conventions
 -----------------------------
-``y`` is measured **upwards** from the reservoir reference level, so depth is
-``D0 - y``.  Stresses are **tension positive** throughout (the paper's figures
-are too), which makes every in-situ stress negative.  Effective stress uses the
-Biot convention ``sigma' = sigma + alpha p``.
+``y`` is measured upwards from the reservoir reference level, so depth is
+``D0 - y``.  Stresses are tension positive throughout, as in the paper's figures,
+which makes every in-situ stress negative.  Effective stress uses the Biot
+convention ``sigma' = sigma + alpha p``.
 
-The in-situ state is *derived*, not tabulated
----------------------------------------------
+The in-situ state is derived, not tabulated
+-------------------------------------------
 Everything in the paper's eq. (17)-(19) follows from the Table 2 parameters:
 
     ``rho_b = phi rho_fl + (1 - phi) rho_s``          bulk density
@@ -21,8 +21,8 @@ Everything in the paper's eq. (17)-(19) follows from the Table 2 parameters:
     ``sigma'_xx   = K0 sigma'_yy``                    lateral earth pressure
     ``sigma_xx    = sigma'_xx - alpha p``
 
-Reproducing the paper's coefficients from the parameters -- rather than pasting
-them in -- is what makes the setup checkable; :mod:`tests` does exactly that.
+The coefficients are reproduced from the parameters rather than pasted in, so
+the setup is checkable; the benchmark tests do exactly that.
 
 One deviation: the tabulated fluid density gives a pressure gradient of
 ``1020 * 9.81 = 10.01`` kPa/m, while the paper quotes ``10.06`` kPa/m.  The
@@ -42,8 +42,8 @@ class Parameters:
     """Table 2 of the benchmark paper, in SI units."""
 
     width: float = 4500.0  # W
-    #: Table 2's box.  Benchmark 1's *slip* comparison needs a much larger
-    #: one -- see ``benchmark_1.WIDE_DOMAIN`` for the numbers and the reason.
+    #: Table 2's box.  Benchmark 1's slip comparison needs a much larger one --
+    #: see ``benchmark_1.WIDE_DOMAIN`` for the numbers and the reason.
     height: float = 4500.0  # H
     depth: float = 3500.0  # D0, to the reservoir reference level
     fault_a: float = 75.0  # a: reservoir edge on the shallow side of the throw

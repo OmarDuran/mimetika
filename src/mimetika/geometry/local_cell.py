@@ -10,15 +10,13 @@ alike.
 Conventions
 -----------
 * Local coordinates are ``xi = Q^T (x - x_E)`` with ``Q`` an orthonormal basis
-  of the affine hull and ``x_E`` the true centroid -- so **the cell centroid is
-  the origin** of the local frame.  This is what makes the mimetic consistency
-  identities take their simplest form (the element mean of a linear function
-  vanishes).
-* Facet normals are **outward**.  They are oriented by the star-shapedness
-  assumption (``(x_e - x_E) . n_e > 0``), which is uniform across dimensions.
-* ``signs[i]`` is the incidence sign of facet ``i`` in the cell, i.e. the factor
-  converting a DOF expressed against the *canonical* (global) facet orientation
-  into the *outward* (local) one.
+  of the affine hull and ``x_E`` the centroid: the centroid is the origin of the
+  local frame, so the element mean of a linear function vanishes.
+* Facet normals are outward, oriented by the star-shapedness assumption
+  ``(x_e - x_E) . n_e > 0``, uniform across dimensions.
+* ``signs[i]`` is the incidence sign of facet ``i`` in the cell: the factor
+  converting a DOF expressed against the canonical (global) facet orientation
+  into the outward (local) one.
 """
 
 from __future__ import annotations
@@ -146,9 +144,9 @@ class LocalCell:
     def facet_scalar_basis(self, i: int) -> tuple[np.ndarray, np.ndarray]:
         """Linear scalar basis on facet ``i`` evaluated at its quadrature points.
 
-        Returns ``(values (nq, d), weights (nq,))`` -- the constant ``1`` plus
-        the ``d-1`` in-plane coordinates scaled by the facet diameter, i.e. the
-        ``P_1`` basis on the facet.
+        Returns ``(values (nq, d), weights (nq,))``: the constant ``1`` plus the
+        ``d-1`` in-plane coordinates divided by ``sqrt(|e_i|)`` (by ``1`` when
+        ``d == 1``), i.e. the ``P_1`` basis on the facet.
         """
         qp, qw = self.facet_quadrature[i]
         rel = qp - self.facet_centroids[i]
@@ -163,8 +161,8 @@ class LocalCell:
 
         ``values`` has shape ``(nq, ...)`` (sampled at the facet quadrature
         points); the result has shape ``(d, ...)`` -- one coefficient per basis
-        function.  The expansion is *exact* for functions that are linear on the
-        facet, which is what the mimetic consistency identities require.
+        function.  Exact for functions linear on the facet, as the mimetic
+        consistency identities require.
         """
         B, qw = self.facet_scalar_basis(i)
         values = np.asarray(values, dtype=float)
@@ -180,13 +178,12 @@ def mesh_frame(geometry: Geometry) -> np.ndarray:
     Global assembly must express every cell's DOF components in one common
     basis; for a full-dimensional (``d == 3``) mesh this is just the identity.
 
-    The SVD fixes the *span* but not the basis within it: for a square in the
+    The SVD fixes the span but not the basis within it: for a square in the
     ``xy`` plane the two in-plane singular values are equal, so the returned axes
-    are an arbitrary rotation.  They are then aligned with the ambient axes,
-    which costs nothing (everything downstream is frame-covariant) and buys two
-    things: DOF components of a planar mesh read directly in global coordinates,
-    and axis-aligned facets stay axis-aligned in the frame -- which is what
-    component-wise conditions such as rollers need.
+    are an arbitrary rotation.  Aligning them with the ambient axes is a change
+    of basis (everything downstream is frame-covariant) and keeps axis-aligned
+    facets axis-aligned in the frame, which component-wise conditions such as
+    rollers require.
     """
 
     cached = getattr(geometry, "_mesh_frame", None)
@@ -196,9 +193,8 @@ def mesh_frame(geometry: Geometry) -> np.ndarray:
     if d == 3:
         return np.eye(3)
     p = geometry.points
-    # reduced SVD: only the (3, 3) row space is wanted, and the default
-    # full_matrices=True materialises an (N, N) left factor -- gigabytes and
-    # seconds for nothing on a large point cloud
+    # reduced SVD: only the (3, 3) row space is wanted; the default
+    # full_matrices=True materialises the (N, N) left factor
     _, _, vt = np.linalg.svd(p - p.mean(0), full_matrices=False)
     frame = _align_to_axes(vt[:d].T)
     try:
@@ -232,10 +228,9 @@ def _align_to_axes(frame: np.ndarray) -> np.ndarray:
         chosen.append(best_vector / best_norm)
         remaining.remove(best)
     aligned = np.column_stack(chosen)
-    # Preserve handedness.  The greedy pick can land on a *reflection* of the
-    # original basis, and in 2D the rotation multiplier is a pseudo-scalar that
-    # changes sign under one -- so a reflection here would silently flip the
-    # weak-symmetry constraint.
+    # Preserve handedness: the greedy pick can land on a reflection of the input
+    # basis, and in 2D the rotation multiplier is a pseudo-scalar, so a
+    # reflection flips the sign of the weak-symmetry constraint.
     if np.linalg.det(frame.T @ aligned) < 0:
         aligned[:, -1] *= -1.0
     return aligned
@@ -273,9 +268,9 @@ def _facet_tangents(
 ) -> np.ndarray:
     """``(d-1, d)`` in-facet orthonormal frame, in local coordinates.
 
-    Derived from *globally* determined data (the canonical facet normal in 3D,
-    the canonical edge direction in 2D) rather than from this cell's outward
-    normal, so the two cells sharing a facet agree on its DOF basis.
+    Built from globally determined data (the canonical facet normal in 3D, the
+    canonical edge direction in 2D) rather than this cell's outward normal, so
+    the two cells sharing a facet agree on its DOF basis.
     """
     if d == 1:
         return np.zeros((0, 1))

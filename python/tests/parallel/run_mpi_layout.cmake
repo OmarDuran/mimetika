@@ -1,9 +1,7 @@
 # Solve once on one process, then again under MPI, and compare.
 #
-# Two runs are the test: a reference the same build produced sequentially, and
-# the same problems distributed. Neither number is written down here -- what is
-# asserted is that they agree, which is the property that survives changing the
-# mesh, the tolerance or the machine.
+# The reference is produced by the same build sequentially; no number is written
+# down here, only the agreement between the two runs.
 #
 # Invoked by ctest with -DPYTHON, -DSCRIPT, -DMPIEXEC, -DRANKS, -DWORKDIR.
 
@@ -18,15 +16,13 @@ if(NOT serial_result EQUAL 0)
   message(FATAL_ERROR "the sequential reference failed:\n${serial_output}")
 endif()
 
-# THE LAUNCHER MUST MATCH THE MPI THE EXTENSION LOADS, and on a machine with
-# more than one Open MPI installed it often does not -- MPI_Init then fails, or
-# worse, the ranks come up as SINGLETONS, each solving the whole problem alone
-# and agreeing with the reference perfectly while testing nothing. That is why
-# the script is given --expect-ranks.
+# The launcher must match the MPI the extension loads; with more than one Open
+# MPI installed it often does not, and then MPI_Init fails or the ranks come up
+# as singletons, each solving the whole problem alone. Hence --expect-ranks.
 #
-# So the launcher beside the interpreter is tried first, and whatever is on
-# PATH after it. If none of them can start the ranks, the environment is broken
-# rather than the solver, and the test says SKIP instead of failing.
+# The launcher beside the interpreter is tried first, then whatever is on PATH.
+# If none can start the ranks the environment is broken rather than the solver,
+# and the test SKIPs instead of failing.
 set(candidates "${MPIEXEC}")
 find_program(path_mpiexec NAMES mpirun mpiexec PATHS ENV PATH NO_DEFAULT_PATH)
 if(path_mpiexec AND NOT path_mpiexec STREQUAL MPIEXEC)

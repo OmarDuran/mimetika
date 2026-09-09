@@ -1,4 +1,5 @@
-"""Operators layer: exterior derivative (topology) + Hodge/mass (geometry)."""
+"""Operators layer: exterior derivative (topology) + Hodge/mass and the flux
+and stress inner products (geometry)."""
 
 from mimetika.operators.derivative import curl, div, exterior_derivative, grad
 from mimetika.operators.diffusion import DiffusionInnerProduct

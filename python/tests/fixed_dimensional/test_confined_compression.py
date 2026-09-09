@@ -1,17 +1,14 @@
-"""THE SAME PROBLEM IN EVERY DIMENSION AND EVERY CELL FAMILY, through Python.
+"""Confined uniaxial compression, in every dimension and cell family, through Python.
 
-The Python-side mirror of tests/model/test_confined_compression.cpp: the same meshes, the
-same closed form, the same tolerances. Confined uniaxial compression has no
-freedom left to get wrong -- rollers on the base and sides, a uniform
-compressive traction on top, zero lateral strain forced by geometry alone -- so
-elasticity gives the whole answer in closed form, in ANY dimension:
+The Python-side mirror of tests/model/test_confined_compression.cpp: the same
+meshes, the same closed form, the same tolerances. Rollers on the base and
+sides, a uniform compressive traction on top, zero lateral strain forced by
+geometry, so the answer is closed form in any dimension:
 
-    sigma_nn  = lam/(lam + 2 mu) sigma_axial    on the confined facets
+    sigma_nn  = lam/(lam + 2 mu) sigma_axial    on the lateral confined facets
     eps_axial = sigma_axial / K_oed,            K_oed = lam + 2 mu
 
-Running it on quadrilaterals, triangles, hexahedra and tetrahedra is what
-separates "the binding has a 2D branch" from "the 2D discretization is the same
-method".
+Run on quadrilaterals, triangles, hexahedra and tetrahedra.
 """
 
 import numpy as np
@@ -77,9 +74,9 @@ def confined(mesh, d, how=DERHAM) -> Result:
     for f in confined_facets:
         fr = prob.facet_frame(f)
         # only the LATERAL facets carry lam/(lam+2mu) sigma_axial. The base is
-        # confined too, but the axial load transmits straight through it, so its
-        # normal traction is sigma_axial itself -- a different closed form, and
-        # checking it against the lateral one would fail by exactly 2/3 here.
+        # confined too, but the axial load transmits through it, so its normal
+        # traction is sigma_axial itself: at lam = mu = 1 that is -1 against the
+        # lateral -1/3, a gap of 2/3.
         if abs(fr["normal"][axis]) > 1e-9:
             continue
         t = sum(fr["normal"][k] * x[prob.dof("s_0", d - 1, f, 0, k)] for k in range(d))

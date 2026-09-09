@@ -15,10 +15,8 @@ using mimetika::physics::Composition;
 using mimetika::physics::ModelOptions;
 using mimetika::physics::Scope;
 
-// The catalogue is a declaration, and the two flow rows share one package.
-// Single-phase flow and compositional flow differ by a component count, not
-// by an implementation — the property that keeps the catalogue's product on
-// top of the code's sum.
+// "flow" and "compositional_flow" build the same package: they differ by the
+// component count, hence by the field count, not by an implementation.
 MIMETIKA_TEST(both_flow_models_are_the_same_package) {
   const auto& cat = Catalogue::instance();
   CHECK(cat.has("flow") && cat.has("compositional_flow"));
@@ -36,9 +34,8 @@ MIMETIKA_TEST(both_flow_models_are_the_same_package) {
   CHECK(multi.requirements_of(0, 3).fields.size() == 4);   // q, p, z0, z1
 }
 
-// The slots of flow, at the three scopes. The out-of-plane permeability is
-// bound to a stratum pair and has nowhere to live in a per-cell field, which is
-// the reason the interface scope exists.
+// The closure slots of flow, by scope. The normal permeability is bound to a
+// stratum pair and has nowhere to live in a per-cell field, hence Scope::interface.
 MIMETIKA_TEST(flow_declares_its_closures_at_three_scopes) {
   const Composition c = Catalogue::instance().build("flow", {});
   const auto slots = c.slots(3);
@@ -54,10 +51,9 @@ MIMETIKA_TEST(flow_declares_its_closures_at_three_scopes) {
   CHECK(iface == 1);  // normal_permeability
 }
 
-// And it runs. The composition's space is numbered, the package attaches its
-// term, and exokal assembles a residual and a Jacobian through it. This is the
-// seam between the two repositories, so it is tested end to end rather than by
-// inspection.
+// End to end across the repository seam: number the composition's space, attach
+// the package's term, assemble through exokal, and check the triplets index
+// inside the epoch.
 MIMETIKA_TEST(a_composed_flow_model_assembles) {
   const auto m = mimetika_test::hex_grid(3);
   const graphos::Complex& c = m.topology();
@@ -77,8 +73,8 @@ MIMETIKA_TEST(a_composed_flow_model_assembles) {
   CHECK(sub.has("q_1") && sub.has("p_1"));
 
   // the closures the driver owns and the terms merely read
-  // hexahedra are polytopes, so the stabilized product is the realization
-  // that applies; the RT_0 one is unisolvent only on simplices
+  // hexahedra are polytopes: derham_bdm enriches the de Rham product to
+  // unisolvence there, and carries d moments per facet
   const FluxOperators hodge =
       FluxOperators::build(m, Coefficient::uniform(1.0), FluxOperators::Realization::derham_bdm);
   exokal::forms::TermContext ctx;

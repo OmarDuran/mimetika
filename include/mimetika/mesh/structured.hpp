@@ -18,9 +18,8 @@
 //
 // The prism is neither a simplex nor a tensor-product cell: five faces, two
 // triangles and three quadrilaterals, so a mimetic construction that works on
-// it is genuinely polytopal rather than hex-and-tet with extra steps. In two
-// dimensions a prism over an interval is a quadrilateral, so the family
-// coincides with cartesian there.
+// it is polytopal rather than hex-and-tet. In two dimensions a prism over an
+// interval is a quadrilateral, so the family coincides with cartesian there.
 
 namespace mimetika::mesh {
 
@@ -43,19 +42,19 @@ namespace structured_detail {
 // A layer of planar cells, extruded. Quadrilaterals become hexahedra;
 // triangles become prisms, kept whole or split into three tetrahedra.
 //
-// THE SPLIT MUST AGREE ACROSS A SHARED FACE. A prism's three quadrilateral
+// The split must agree across a shared face. A prism's three quadrilateral
 // faces each need a diagonal, and two prisms meeting on one must cut it the
-// same way -- otherwise the tetrahedra do not share faces, the complex is still
-// valid, and it describes a domain riddled with internal boundary. Ordering the
-// triangle's vertices by global index before applying a fixed rule is what
-// makes two neighbours agree: they see the same two indices on the shared face.
+// same way; otherwise the tetrahedra do not share faces and the complex, still
+// valid, describes a domain riddled with internal boundary. Ordering the
+// triangle's vertices by global index before applying a fixed rule makes two
+// neighbours agree: they see the same two indices on the shared face.
 inline exokal::Mesh extrude(std::vector<Point> plane, const std::vector<std::vector<Index>>& cells,
                             double h, int layers, Family family) {
   const auto n = static_cast<Index>(plane.size());
   std::vector<Point> pts;
   // The plane's own height is where the extrusion starts. Dropping q[2] and
-  // starting at zero silently moves a mesh whose plane is not at the origin:
-  // a box asked for at z = 0.25 lands at z = 0.
+  // starting at zero moves a mesh whose plane is not at the origin: a box asked
+  // for at z = 0.25 lands at z = 0.
   for (int L = 0; L <= layers; ++L) {
     for (const Point& q : plane) pts.push_back({q[0], q[1], q[2] + L * h / layers});
   }
@@ -106,7 +105,8 @@ inline exokal::Mesh extrude(std::vector<Point> plane, const std::vector<std::vec
 
 }  // namespace structured_detail
 
-// A column of `n` cells along the last coordinate, unit cross-section.
+// A column of `n` cells spanning `height` along the last coordinate, on a
+// cross-section of side `width`.
 inline exokal::Mesh column(int n, int dim, Family family, double height = 1.0, double width = 1.0) {
   if (dim == 2) {
     // in the plane a prism over an interval is a quadrilateral
@@ -163,8 +163,7 @@ inline exokal::Mesh box(const std::array<int, 3>& n, int dim, Family family,
   const double lx = lengths[0], ly = lengths[1];
   // The plane is triangulated for everything but cartesian, the same rule
   // `column` follows: a prism is a triangle extruded, so a quadrilateral plane
-  // would produce hexahedra under the name `prism` -- quietly, the count being
-  // the same either way.
+  // would produce hexahedra under the name `prism`, at the same cell count.
   const bool tri = family != Family::cartesian;
 
   std::vector<Point> plane;
@@ -199,19 +198,16 @@ inline exokal::Mesh box(const std::array<int, 3>& n, int dim, Family family,
 // Node coordinates that honour a set of interfaces and cluster cells at them.
 //
 // Every interface becomes a node, so a discontinuity in material or loading
-// lands on a cell face rather than bisecting a cell -- where a cell-centred test
+// lands on a cell face rather than bisecting a cell, where a cell-centred test
 // would put it on the wrong side and shift the answer by half a cell. That is
-// the same requirement Benchmark 0's reservoir boundary has, satisfied by
-// construction rather than checked after the fact.
+// Benchmark 0's reservoir boundary, satisfied by construction.
 //
-// Resolution is concentrated at the interfaces, not spread evenly between them,
-// because that is where the error lives: the fields are non-smooth across a
-// loading jump -- in the displaced-fault benchmark the analytic Coulomb stress
-// is logarithmically singular at the reservoir edges -- so the discretization
-// error is dominated by the few cells nearest each interface and is negligible a
-// handful of cells away. `spacing` is therefore the size at an interface; cells
-// grow by `growth` away from it, towards mid-span between two interfaces and
-// outwards to the extent beyond the outermost.
+// Resolution is concentrated at the interfaces: the fields are non-smooth
+// across a loading jump -- in the displaced-fault benchmark the analytic
+// Coulomb stress is logarithmically singular at the reservoir edges -- so the
+// error is dominated by the few cells nearest each interface. `spacing` is the
+// size at an interface; cells grow by `growth` away from it, towards mid-span
+// between two interfaces and outwards to the extent beyond the outermost.
 
 namespace grading_detail {
 
@@ -317,7 +313,8 @@ inline exokal::Mesh tensor_product(const std::vector<double>& xs, const std::vec
 }
 
 // A quarter annulus from `a` to `b`, graded geometrically in the radius so the
-// cells are fine where the gradient is; in three dimensions, one layer of it.
+// cells are fine where the gradient is; in three dimensions, extruded over
+// `height` in `layers` layers.
 inline exokal::Mesh annulus(int nr, int nt, int dim, Family family, double a = 1.0, double b = 10.0,
                             double height = 1.0, int layers = 1) {
   constexpr double pi = 3.14159265358979323846;

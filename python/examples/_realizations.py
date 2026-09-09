@@ -3,8 +3,9 @@ r"""The stress realizations the examples offer, product and formulation together
 A REALIZATION is a product together with the formulation it is solved in, and the
 two are not independent.  The diagonal members exist only with the total pressure
 -- the plain compliance couples the traction components through the trace and
-cannot be diagonal -- and each blend inherits that demand.  So the formulation is
-not a free dial beside the product; it is part of naming the method.
+cannot be diagonal -- and each adaptive member inherits that demand.  So the
+formulation is not a free dial beside the product; it is part of naming the
+method.
 
 The BDM and VEM products admit both, and the two are DIFFERENT DISCRETIZATIONS
 rather than one with a field appended:
@@ -43,7 +44,7 @@ STRESS = {
     "derham_rt": (mk.StressRealization.derham_rt, W),
     "stabilized_bdm": (mk.StressRealization.stabilized_bdm, W),
     "stabilized_bdm_total": (mk.StressRealization.stabilized_bdm, WT),
-    # the weak two-point star and its blend: four fields only
+    # the weak two-point star and its per-cell selection: four fields only
     "diagonal_afw": (mk.StressRealization.diagonal_afw, WT),
     "adaptive_afw": (mk.StressRealization.adaptive_afw, WT),
     # the strong family (Dassi-Lovadina-Visinoni), a 3D construction
@@ -53,7 +54,11 @@ STRESS = {
     "adaptive_vem": (mk.StressRealization.adaptive_vem, ST),
 }
 
-#: the ones whose star is diagonal, hence the per-cell selection and its blend
+#: the strong family: symmetry in the space, q = d(d+1)/2 traction moments a
+#: facet, so the two VEM stress reconstructions apply
+STRONG = ("stabilized_vem", "stabilized_vem_total", "diagonal_vem", "adaptive_vem")
+
+#: the ones whose star is diagonal, hence the per-cell selection eta in {0, 1}
 ADAPTIVE = ("adaptive_afw", "adaptive_vem")
 TWO_POINT = ("diagonal_afw", "diagonal_vem")
 
@@ -82,9 +87,8 @@ def describe(name):
 def reject_formulation_flag(value):
     """--formulation is gone: the product names the pair.
 
-    Raised rather than ignored, because a script passing the old flag meant
-    something by it and would otherwise get a different discretization in
-    silence.
+    Raised rather than ignored: an ignored flag leaves the caller with a
+    different discretization from the one it asked for.
     """
     if value is None:
         return

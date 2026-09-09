@@ -1,49 +1,46 @@
 r"""Contact driver: turns a :mod:`~mimetika.contact.laws` law into a solve.
 
-The driver owns everything a constitutive law should not know about -- the
-rotation into the facet frame, the conversion between traction *moments* and
-pointwise values, assembly into the mixed elasticity system, and the outer
-iteration.  A law only supplies its projection.
+The driver owns what a constitutive law does not: the rotation into the facet
+frame, the conversion between traction moments and pointwise values, assembly
+into the mixed elasticity system, and the outer iteration.  A law supplies only
+its projection.
 
 Augmented Lagrangian (Uzawa)
 ----------------------------
-The multiplier ``lambda`` **is** the physical contact traction.  Each outer
+The multiplier ``lambda`` is the physical contact traction.  Each outer
 iteration
 
-1. solves the mechanics with the fracture traction *constrained* to ``lambda``
+1. solves the mechanics with the fracture traction constrained to ``lambda``
    (an essential condition, since the traction is a DOF here),
 2. recovers the gap ``g`` from the jump operator, and
 3. updates ``lambda <- law.project(lambda + r g)``.
 
-It matters that the traction is constrained rather than tied to ``lambda + r g``
-through a compliance: with the augmented relation inside the operator the solved
-traction is the *trial* value, so an open fracture comes out carrying tension.
-Constraining it keeps ``t = lambda`` exactly, and an open point is then
-genuinely traction free.
+The traction is constrained rather than tied to ``lambda + r g`` through a
+compliance: with the augmented relation inside the operator the solved traction
+is the trial value and an open fracture carries tension.  Constraining keeps
+``t = lambda`` exactly, so an open point is traction free.
 
-The jump operator is the assembled traction row of the **unfractured** system,
+The jump operator is the assembled traction row of the unfractured system,
 
     ``Jump_f(x) = ( M sigma + D^T u + A^T s )_f = -g_f`` ,
 
-evaluated on the solution -- a linear functional, so it can be applied even
-though that row was replaced by the constraint.
+evaluated on the solution -- a linear functional, so it applies even though that
+row was replaced by the constraint.
 
-An exactly linear law needs no outer iteration at all: the driver detects it via
+An exactly linear law needs no outer iteration: the driver detects it via
 :meth:`~mimetika.contact.laws.ContactLaw.linear_compliance` and does one solve
 with the compliance block.
 
 Enforcement
 -----------
-``"averaged"`` applies the law to the facet-mean traction -- one state per
-facet, which is what most discrete-fracture codes do.  ``"pointwise"`` applies
-it at the facet quadrature points and re-integrates, which resolves partial
-contact within a facet at the cost of state per point.  The choice is the
-caller's; the law is written the same way either way.
+``"averaged"`` applies the law to the facet-mean traction, one state per facet.
+``"pointwise"`` applies it at the facet quadrature points and re-integrates,
+resolving partial contact within a facet at the cost of state per point.  The
+law is written the same way either way.
 
 Stepping
 --------
-:meth:`ContactDriver.solve_step` advances **one** step.  The caller owns the
-loop.
+:meth:`ContactDriver.solve_step` advances one step; the caller owns the loop.
 """
 
 from __future__ import annotations
@@ -68,8 +65,8 @@ class ContactState:
     internal: np.ndarray  # law state, (nf * points_per_facet, n_state)
     jump: np.ndarray  # facet-frame jump at the enforcement points
     solution: object = None
-    #: the mechanics problem the solution belongs to -- needed to interpret it
-    #: (cell stresses, DOF layout), and the caller never built it
+    #: the mechanics problem the solution belongs to; needed to interpret it
+    #: (cell stresses, DOF layout)
     problem: object = None
     iterations: int = 0
     converged: bool = True
@@ -94,8 +91,8 @@ class ContactDriver:
     max_iterations: int = 200
     tolerance: float = 1e-10
     #: in-situ traction at the enforcement points, ``(n_points, dim)``.  Fracture
-    #: state, not a boundary condition: a law constrains the *total* traction, so
-    #: an incremental solve has to tell it what it is sitting on top of.
+    #: state, not a boundary condition: a law constrains the total traction, so
+    #: an incremental solve must supply the state it increments.
     prestress: np.ndarray | None = None
     #: traction DOFs per facet of the stress space the mechanics uses:
     #: ``d^2`` for AFW (the default), ``d`` for the lumped space, whose facet
@@ -134,12 +131,11 @@ class ContactDriver:
     def default_augmentation(self) -> np.ndarray:
         """A per-point augmentation parameter ``r``, from geometry and moduli.
 
-        Uzawa converges only when ``r`` is comparable to the *stiffness the
-        fracture sees*: the update ``lambda <- P(lambda + r g)`` contracts when
-        ``r < 2 / compliance``, and oscillates in a two-cycle otherwise.  The
-        surrounding rock behaves as a spring of compliance ``L / (2 mu + lambda)``
-        where ``L`` is the distance from the two adjacent cell centroids to the
-        facet, so the natural choice is its inverse.
+        The update ``lambda <- P(lambda + r g)`` contracts when
+        ``r < 2 / compliance`` and oscillates in a two-cycle otherwise, so ``r``
+        must match the stiffness the fracture sees.  The surrounding rock is a
+        spring of compliance ``L / (2 mu + lambda)`` with ``L`` the distance
+        from the two adjacent cell centroids to the facet; ``r`` is its inverse.
 
         ``L`` is measured directly as ``|(x_f - x_E) . n_f|`` summed over the two
         cells.  A ``volume / area`` shortcut would be exact only for boxes -- for
@@ -174,14 +170,14 @@ class ContactDriver:
     def _basis(self, facet: int):
         """``(values (npts, 3), weights (npts,))`` of the facet ``P_1`` basis.
 
-        The linear functions are scaled by ``sqrt(|f|)``, which is the scaling
+        The linear functions are divided by ``sqrt(|f|)``, the scaling used by
         :meth:`FractureContact.facet_gram` and
-        :meth:`LocalCell.facet_scalar_basis` -- the basis the stress DOFs are
-        actually defined against -- both use.
+        :meth:`LocalCell.facet_scalar_basis`, the basis the stress DOFs are
+        defined against.
 
         A ``|f| ** (1/k)`` scaling agrees for ``k = 2`` (a polygonal facet of a
         3D cell) but gives ``|f|`` instead of ``sqrt(|f|)`` for ``k = 1`` (an
-        edge of a 2D cell): the Gram matrix then comes out a factor ``|f|`` too
+        edge of a 2D cell): the Gram matrix comes out a factor ``|f|`` too
         small, ``to_values`` inverts a different basis from the one
         ``to_moments`` integrated against, and the round trip is not the
         identity.
@@ -223,10 +219,9 @@ class ContactDriver:
     def expand_to_points(self, per_facet) -> np.ndarray:
         """Repeat one value per facet across that facet's enforcement points.
 
-        Only the driver knows how many points a facet carries -- one under
-        ``averaged``, one per quadrature point under ``pointwise`` -- so data
-        supplied per facet, such as an in-situ prestress, has to be expanded
-        here rather than by the caller.
+        A facet carries one point under ``averaged`` and one per quadrature
+        point under ``pointwise``, so per-facet data such as an in-situ
+        prestress is expanded here.
         """
         per_facet = np.atleast_2d(np.asarray(per_facet, dtype=float))
         return np.repeat(
@@ -239,10 +234,9 @@ class ContactDriver:
         """Collapse enforcement-point values to one per facet -- the inverse of
         :meth:`expand_to_points`.
 
-        Anything indexed by facet -- a plot against position, a VTU cell array --
-        needs this first.  Under ``pointwise`` there are several points per facet,
-        so indexing a point-valued array with facet indices silently reads the
-        wrong entries and pairs them with the wrong facets.
+        Anything indexed by facet (a plot against position, a VTU cell array)
+        needs this first: under ``pointwise`` a facet carries several points, so
+        indexing a point-valued array by facet id reads the wrong entries.
         """
         values = np.atleast_2d(np.asarray(values, dtype=float))
         if len(values) == len(self.facets):
@@ -276,10 +270,10 @@ class ContactDriver:
     def gap(self, problem, solution, rhs=None) -> np.ndarray:
         """Facet-frame gap at the enforcement points, from the jump operator.
 
-        ``g = -( M sigma + D^T u + A^T s - b_f )_f``, with ``M`` the
-        *unfractured* inner product and ``b_f`` the mechanics right-hand side
-        on those rows (pass ``rhs`` to include it -- see :meth:`jump_offset`).
-        Positive normal component means the fracture is open.
+        ``g = -( M sigma + D^T u + A^T s - b_f )_f``, with ``M`` the unfractured
+        inner product and ``b_f`` the mechanics right-hand side on those rows
+        (pass ``rhs`` to include it -- see :meth:`jump_offset`).  Positive
+        normal component means the fracture is open.
         """
         x = np.concatenate([solution[k] for k in solution.blocks])
         r = problem.constitutive_rows(contact=False) @ x
@@ -324,35 +318,31 @@ class ContactDriver:
     def jump_operator(self, problem) -> sp.csr_matrix:
         """``J``: solution vector -> facet-frame gap at the enforcement points.
 
-        The gap is a **linear** functional of the solution -- the assembled
-        traction row of the *unfractured* system
+        The gap is a linear functional of the solution: the assembled traction
+        row of the unfractured system
         (:meth:`~mimetika.assembly.mixed.MixedElasticity.constitutive_rows`,
         in whatever field layout the problem uses; in three-field terms
 
             ``g_f = -( M sigma + D^T u + A^T s )_f`` ),
 
         rotated into the facet frame and evaluated at the enforcement points.
-        Because it is linear it can be applied even though that row was replaced
-        by the contact constraint, and because it is a matrix the contact map
-        never needs the mesh.
+        Being linear it applies even though that row was replaced by the contact
+        constraint, and being a matrix it keeps the mesh out of the contact map.
 
         No ``Gram^{-1}`` here, although the residual looks like a moment vector
-        and :meth:`to_values` *does* invert the Gram: the two convert different
-        objects.  A traction DOF **is** a moment
-        ``m = int_e (sigma n) b``, so recovering a traction's pointwise values
-        needs ``Gram^{-1} m`` -- that is :meth:`to_values`.  The jump term
-        ``int_e [[u]] . (tau n)`` is instead paired *against* that moment DOF:
-        writing ``(tau n) = sum_b phi_b b_b`` gives ``m = Gram phi``, so the
-        pairing already carries a ``Gram^{-1}`` and the residual emerges as the
-        expansion **coefficients** of the jump, ready to evaluate against the
-        basis.  Inserting a second ``Gram^{-1}`` divides the jump by ``|e|``, and
-        the resulting slip then grows like ``1/h`` under refinement.
+        and :meth:`to_values` does invert the Gram: the two convert different
+        objects.  A traction DOF is a moment ``m = int_e (sigma n) b``, so its
+        pointwise values need ``Gram^{-1} m``, which is :meth:`to_values`.  The
+        jump term ``int_e [[u]] . (tau n)`` is paired against that moment DOF:
+        with ``(tau n) = sum_b phi_b b_b``, ``m = Gram phi``, so the pairing
+        already carries a ``Gram^{-1}`` and the residual is the expansion
+        coefficients of the jump.  A second ``Gram^{-1}`` divides the jump by
+        ``|e|`` and the slip then grows like ``1/h`` under refinement.
         """
-        # the assembled stress-row block of the *unfractured* system, in
-        # whatever field layout the problem uses -- three- and four-field
-        # evaluate the same functional.  At the solution the fractured row is
-        # satisfied exactly, so its residual is zero, whereas the unfractured
-        # residual is A_f sigma, the jump this operator extracts.
+        # the assembled stress-row block of the unfractured system, in whatever
+        # field layout the problem uses; three- and four-field evaluate the same
+        # functional.  At the solution the fractured row has zero residual,
+        # while the unfractured residual is A_f sigma, the jump extracted here.
         traction_rows = problem.constitutive_rows(contact=False)
 
         blocks, rows, cols, vals = [], [], [], []
@@ -376,13 +366,12 @@ class ContactDriver:
     def jump_offset(self, rhs: np.ndarray) -> np.ndarray:
         """Gap contribution of the mechanics right-hand side on the fault rows.
 
-        The gap is the **residual** of the replaced constitutive rows,
-        ``g = -(row . z - b_f)``, at the enforcement points: whatever the
-        assembly put into ``b_f`` on the fault facets -- notably the Biot
-        pore-pressure coupling -- belongs in the gap.  Reading ``J z`` alone
-        instead imposes a spurious jump with ``b_f``'s coefficients, which on
-        an unstructured mesh alternate facet to facet and rattle the whole
-        contact solution.
+        The gap is the residual of the replaced constitutive rows,
+        ``g = -(row . z - b_f)``, at the enforcement points: what the assembly
+        put into ``b_f`` on the fault facets -- notably the Biot pore-pressure
+        coupling -- belongs in the gap.  Reading ``J z`` alone imposes a
+        spurious jump with ``b_f``'s coefficients, which on an unstructured
+        mesh alternate facet to facet and oscillate the tractions.
         """
         out = []
         for f in self.facets:
@@ -402,8 +391,8 @@ class ContactDriver:
     def contact_geometry(self, compliance=None) -> FractureContact:
         """The fracture geometry, optionally carrying a linear compliance block.
 
-        Constitutive and geometric data -- the driver's own business.  Handed to
-        whoever builds the mechanics so the fracture is embedded in ``A``.
+        Handed to whoever builds the mechanics, so the fracture is embedded in
+        ``A``.
         """
         return FractureContact(
             self.mesh,
@@ -450,13 +439,12 @@ class ContactDriver:
     ) -> ContactState:
         """Advance one load/time step by solving ``x = CD(x)``.
 
-        ``mechanics(contact) -> (problem, A, rhs)`` is supplied by the caller and
-        is the *only* route by which boundary conditions, materials or a
-        pore-pressure right-hand side reach the contact problem.  The driver
-        never names one.
+        ``mechanics(contact) -> (problem, A, rhs)`` is supplied by the caller
+        and is the only route by which boundary conditions, materials or a
+        pore-pressure right-hand side reach the contact problem.
 
-        A law with an exact linear compliance needs no iteration at all: the
-        compliance goes straight into ``A`` and one solve finishes it.
+        A law with an exact linear compliance needs no iteration: the compliance
+        enters ``A`` and one solve finishes it.
         """
         state = self.initial_state() if state is None else state
         kwargs.setdefault("method", "direct")
@@ -477,16 +465,16 @@ class ContactDriver:
 
         problem, A, rhs = mechanics(None)
         cd = self.contact_map(problem, A, rhs, **kwargs)
-        # condensing eliminates the mechanics once, after which each iteration is
-        # a small dense matvec instead of a global solve -- worth it whenever the
+        # condensing eliminates the mechanics once, after which each iteration
+        # is a small dense matvec instead of a global solve: worth it when the
         # iteration count exceeds the number of contact unknowns
         driven = cd
         if condense or solver == "newton":
             driven = cd.condense(reuse=reuse)
             if self.augmentation is None and solver != "newton":
-                # the condensed operator is the exact fracture compliance, so it
-                # beats the geometric estimate -- decisively so for a fault that
-                # cuts the domain, where the local guess is far too stiff
+                # the condensed operator is the exact fracture compliance; the
+                # geometric estimate is far too stiff for a fault cutting the
+                # domain
                 driven = driven.rescaled()
         common = dict(
             x0=self.values_of(state.multiplier),
@@ -505,8 +493,8 @@ class ContactDriver:
         evaluation = result.evaluation
         if evaluation.solution is None and recover:
             # condensed: recover the field once.  Callers that only read the
-            # jump (an outer iteration on a law parameter) skip this with
-            # ``recover=False`` -- one back-substitution saved per solve.
+            # jump (an outer iteration on a law parameter) pass recover=False
+            # and save one back-substitution per solve.
             z = driven.recover(result.x) if hasattr(driven, "recover") else None
             if z is not None:
                 evaluation = dc_replace(evaluation, solution=z)
@@ -541,15 +529,13 @@ class ContactDriver:
 def elastic_mechanics(mesh, mu: float = 1.0, lam: float = 1.0, **boundary):
     """A ``mechanics`` factory for homogeneous mixed elasticity.
 
-    Belongs to the **caller** side of the seam: it is what closes over the
-    boundary data so the driver never sees any.  For a different problem --
-    per-cell materials, poromechanics, a pressure-driven right-hand side -- write
-    another factory with the same three-value signature; nothing downstream can
-    tell the difference.
+    Closes over the boundary data, so the driver sees none.  Another problem --
+    per-cell materials, poromechanics, a pressure-driven right-hand side --
+    needs another factory with the same three-value signature.
 
-    Builds the **four-field** formulation -- the standard one.  The driver only
-    touches the problem through ``block_sizes``, ``split`` and
-    ``constitutive_rows``, so a factory returning the classic three-field
+    Builds the four-field formulation.  The driver touches the problem only
+    through ``block_sizes``, ``split`` and ``constitutive_rows``, so a factory
+    returning the three-field
     :class:`~mimetika.assembly.mixed.MixedElasticity` works identically.
     """
     from mimetika.assembly.four_field import FourFieldElasticity

@@ -1,21 +1,19 @@
 r"""Kinematic-rotation elasticity: the rotation defined, not enforced.
 
 The closure replaces the multiplier row ``A sigma = 0`` by the blended
-kinematic row (see :mod:`mimetika.assembly.kinematic`).  The headline checks:
+kinematic row (see :mod:`mimetika.assembly.kinematic`).  The checks:
 
-* the **patch test** stays exact on every cell family -- the least-squares
-  skew gradient is exact for affine displacements, so replacing the rotation
-  row costs no consistency;
-* the pure-definition limit (``blend = 1``) is **rejected**: it carries the
-  constant-skew gauge kernel (globally constant in 2D, facet-normal jump
-  fields in 3D), which is a property of keeping the stress independent, not an
-  implementation detail;
-* three- and four-field kinematic systems are **congruent** -- the solid
-  pressure split never touches the rotation row;
-* the scheme **converges** without any rotation stabilization: there is no
-  zero block, hence no multiplier inf-sup to fail;
-* the system is quasi-symmetric, so MINRES is refused rather than silently
-  misused.
+* the patch test stays exact on every cell family: the least-squares skew
+  gradient is exact for affine displacements, so replacing the rotation row
+  costs no consistency;
+* both degenerate blends are rejected -- ``theta = 1`` carries the constant-skew
+  gauge kernel (globally constant in 2D, facet-normal jump fields in 3D) and
+  ``theta = 0`` is the zero-block multiplier form;
+* three- and four-field kinematic systems are congruent: the solid-pressure
+  split never touches the rotation row;
+* ``u`` and ``sigma`` converge above first order, ``s`` at first order; with no
+  zero block there is no multiplier inf-sup condition;
+* the system is quasi-symmetric, so MINRES is refused.
 """
 
 import numpy as np
@@ -154,7 +152,7 @@ def test_skew_gradient_is_exact_for_affine_fields():
 @pytest.mark.parametrize("blend", [0.0, 1.0])
 def test_degenerate_blends_are_rejected(blend):
     """``theta = 1`` has the constant-skew gauge kernel; ``theta = 0`` is the
-    zero-block multiplier form -- both refuse rather than mislead."""
+    zero-block multiplier form -- both raise ValueError."""
     problem = KinematicRotationElasticity(structured_quads(2, 2), MU, LAM)
     problem.blend = blend
     with pytest.raises(ValueError, match="blend"):
@@ -192,14 +190,15 @@ def test_three_and_four_field_kinematic_agree():
         assert np.allclose(s4[field], s3[field], rtol=1e-9, atol=1e-12), field
 
 
-# -- convergence without any rotation stabilization ------------------------------
+# -- convergence of the blended closure ------------------------------------------
 
 
 @pytest.mark.parametrize("maker", [structured_quads, structured_triangles],
                          ids=["quads", "tris"])
 def test_convergence_needs_no_stabilization(maker):
-    """``u`` and ``sigma`` converge at better than first order, ``s`` at least
-    at first order -- with no zero block there is no inf-sup to fail."""
+    """Rates on n = 4, 8, 16: ``u`` > 1.5, ``sigma`` > 1.4, ``s`` > 0.8.
+
+    With no zero block there is no multiplier inf-sup condition."""
     errors = []
     for n in (4, 8, 16):
         mesh = maker(n, n)
@@ -254,14 +253,12 @@ def test_the_incompressible_range_solves(nu):
 def test_the_fracture_jump_is_recovered_exactly(cls):
     """A prescribed jump across a soft fracture is read back exactly.
 
-    Two things are on trial.  The jump *readout* -- the residual of the
-    unfractured constitutive row -- must be formulation-independent, since the
-    kinematic closure never touches that row.  And the skew-gradient stencil
-    must treat the fracture as the internal boundary it is: differencing the
-    displacement across it would smear the jump into a spurious rotation of
-    the fault-adjacent cells at amplitude ``~jump/h``, which is why fracture
-    facets are excluded from the fit automatically (via ``self.contact``).
-    Exactness on two meshes pins both the value and its h-independence.
+    The jump readout is the residual of the unfractured constitutive row, which
+    the kinematic closure never touches, so it is formulation-independent.  The
+    skew-gradient fit excludes fracture facets (via ``self.contact``): differencing
+    the displacement across them smears the jump into a spurious rotation of the
+    fault-adjacent cells at amplitude ``~jump/h``.  Two meshes pin the value and
+    its h-independence.
     """
     from mimetika.contact import ContactDriver, SignoriniCoulomb
     from mimetika.mesh.fracture import facets_on_plane

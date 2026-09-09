@@ -28,7 +28,7 @@ Run it:
     PYTHONPATH=.. python mesh_diagnostics.py --mesh domain.vtu
     PYTHONPATH=.. python mesh_diagnostics.py --mesh domain.vtu --product stabilized_rt
     PYTHONPATH=.. python mesh_diagnostics.py --mesh domain.vtu --physics elasticity \\
-        --product stabilized_vem --formulation strong_symmetry_total
+        --product stabilized_vem_total
     PYTHONPATH=.. python mesh_diagnostics.py --mesh domain.vtu --vtk-id 47788 47789 65113
     PYTHONPATH=.. python mesh_diagnostics.py --mesh domain.vtu --vtu flags.vtu --output diag/
 """

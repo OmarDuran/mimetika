@@ -1,26 +1,24 @@
 r"""Numbering of facet degrees of freedom, with optional per-side duplication.
 
-A fracture makes the normal trace of the flux **discontinuous**: the flow
-problem lives in ``H(div)`` on the cut domain ``Omega \ Gamma``.  That is a
-property of the discrete *space*, not of the geometry -- the mesh, the cell
-complex and ``dd = 0`` are all untouched.  This module expresses exactly that:
-the same :class:`~mimetika.mesh.mesh.Mesh` carries different DOF layouts for
-different physics.
+A fracture makes the normal trace of the flux discontinuous: the flow problem
+lives in ``H(div)`` on the cut domain ``Omega \ Gamma``.  That is a property of
+the discrete space, not of the geometry -- mesh, cell complex and ``dd = 0`` are
+untouched, so one :class:`~mimetika.mesh.mesh.Mesh` carries different DOF
+layouts for different physics.
 
-* An **untagged** facet gives one block of DOFs shared by its two cells -- the
-  usual conforming space, in which ``sum_E s_{E,f} u_f = 0`` structurally, i.e.
-  flux continuity.
-* A **tagged** (fracture) facet gives each incident cell its *own* block, so
-  ``un+`` and ``un-`` are independent and their sum -- the mass exchanged with
-  the fracture -- is free rather than identically zero.
+* An untagged facet gives one block of DOFs shared by its two cells: the
+  conforming space, in which ``sum_E s_{E,f} u_f = 0`` structurally, i.e. flux
+  continuity.
+* A tagged (fracture) facet gives each incident cell its own block, so ``un+``
+  and ``un-`` are independent and their sum -- the mass exchanged with the
+  fracture -- is free rather than identically zero.
 
 Mechanics uses the untagged layout even on fracture facets: a massless contact
 interface satisfies ``t+ + t- = 0`` by equilibrium, so a single traction block
 is the correct space.
 
-Numbering is chosen so that **with no tags the map is the identity** (facet
-``f`` owns dofs ``f*ndf ... f*ndf+ndf-1``), which keeps the un-fractured
-assembly bit-identical to the version that indexed facets directly.
+With no tags the map is the identity: facet ``f`` owns dofs
+``f*ndf ... f*ndf+ndf-1``.
 """
 
 from __future__ import annotations
@@ -50,7 +48,7 @@ class FacetDofMap:
         self.duplicated = frozenset(int(f) for f in self.duplicated)
 
         # Blocks 0..n_facets-1 are the facets themselves; a duplicated facet
-        # gets one extra block, owned by the *second* of its incident cells.
+        # gets one extra block, owned by the second of its incident cells.
         self.n_blocks = n_facets
         for f in sorted(self.duplicated):
             cells = self.facet_cells(f)

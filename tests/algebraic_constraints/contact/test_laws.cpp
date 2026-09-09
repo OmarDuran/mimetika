@@ -8,10 +8,10 @@
 // Contact laws: the constitutive layer, tested without any mesh or solver.
 //
 // A law is a pure function of (traction, jump, state) in the facet frame, so it
-// is checked directly against the conditions it is supposed to encode. Every
-// test here is a port of tests/contact/test_laws.py, which is the authority on
-// the behaviour; exokal is the authority on the operators, and the two meet only
-// in the driver.
+// is checked directly against the conditions it is supposed to encode. The
+// LinearContact, SignoriniCoulomb and RateAndStateFriction tests port
+// tests/contact/test_laws.py, which is the authority on that behaviour;
+// SlipWeakening and FrictionlessBilateral have no Python counterpart.
 
 using mimetika::contact::ContactLaw;
 using mimetika::contact::FrictionlessBilateral;
@@ -226,8 +226,7 @@ MIMETIKA_TEST(the_current_jump_weakens_the_fault_within_a_step) {
 }
 
 // It is a SignoriniCoulomb, so the unilateral normal condition, the projection
-// and the slip accumulation are inherited rather than restated: a new law is
-// one overridden function.
+// and the slip accumulation are inherited; friction_at is the only override.
 MIMETIKA_TEST(the_weakening_law_inherits_the_unilateral_normal_condition) {
   const SlipWeakening law(0.52, 0.20, 0.02);
   State s;

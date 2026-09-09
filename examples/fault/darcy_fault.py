@@ -4,20 +4,19 @@ Solves the mixed (velocity--pressure) form of Darcy's law
 
     div u = f ,     u = -(K/mu) grad p ,     p = p_D  on the whole boundary,
 
-on ``examples/meshes/fault_mesh.vtu`` -- a genuinely polytopal grid of 22 056
-cells with 6 to 24 planar faces each, the kind of mesh produced by cutting a
-corner-point grid with a fault.  This is exactly the setting mimetic methods
-are built for: no reference element, no shape functions, just facet fluxes and
-cell pressures.
+on ``examples/meshes/fault_mesh.vtu`` -- a polytopal grid of 22 056 cells with 6
+to 24 planar faces each, the kind of mesh produced by cutting a corner-point grid
+with a fault.  No reference element and no shape functions: facet fluxes and cell
+pressures.
 
 Unknowns: one normal flux per facet, one pressure per cell::
 
     [  M   -B^T ] [ u ]   [ -g_D ]
     [ -B    0   ] [ p ] = [  -b  ]
 
-``M`` is the mimetic flux inner product; ``B`` is the purely topological
-discrete divergence (signed incidence times facet measures), so mass is
-conserved on every cell to round-off regardless of cell shape.
+``M`` is the mimetic flux inner product; ``B`` is the purely topological discrete
+divergence (the signed incidence matrix, integer entries), so mass is conserved
+on every cell to round-off regardless of cell shape.
 
 **Boundary condition.**  A non-trivial Dirichlet pressure is prescribed on the
 entire boundary: a regional gradient along ``x`` plus a lateral undulation and
@@ -30,9 +29,9 @@ pressure drop.
 
 Run with::
 
-    python examples/fault/darcy_fault.py                 # full mesh, direct solve
-    python examples/fault/darcy_fault.py --method minres # iterative
-    python examples/fault/darcy_fault.py --vtk out.vtk   # write results
+    python examples/fault/darcy_fault.py                  # full mesh, MINRES + CPR
+    python examples/fault/darcy_fault.py --method direct  # direct LU
+    python examples/fault/darcy_fault.py --vtu out.vtu    # write results
 """
 
 from __future__ import annotations

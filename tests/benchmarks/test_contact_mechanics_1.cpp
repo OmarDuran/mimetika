@@ -38,15 +38,13 @@
 // The law is SignoriniCoulomb(friction = 0) -- unilateral and frictionless, the
 // physical model, rather than the bonded law that gives the same answer here.
 //
-// It only works if the law is given the total traction. Signorini constrains
-// t_n <= 0 on the total stress, and this is an incremental problem -- only the
-// depletion response is solved for. The incremental normal traction reaches
-// +8 MPa in tension, but the fault sits on -57 MPa of in-situ compression and is
-// shut by a wide margin, so the law must be told what it is sitting on. That is
-// what the prestress carries. With it, Signorini finds the fault closed and
-// agrees with FrictionlessBilateral to round-off; without it, it reads the
-// tensile increment as opening. The deficiency is in the incremental
-// formulation, not in the law.
+// The law must be given the total traction. Signorini constrains t_n <= 0 on the
+// total stress, while this is an incremental problem: only the depletion
+// response is solved for. The incremental normal traction reaches +8 MPa in
+// tension over -57 MPa of in-situ compression, and the prestress carries that
+// in-situ part. With it, Signorini finds the fault closed and agrees with
+// FrictionlessBilateral to round-off; without it, it reads the tensile increment
+// as opening.
 
 using graphos::Index;
 using mimetika::CauchyMechanicsModel;
@@ -199,8 +197,8 @@ MIMETIKA_TEST(the_graded_mesh_puts_a_node_on_every_interface) {
   for (const double x : xs) on_fault = std::min(on_fault, std::abs(x));
   CHECK(on_fault < 1e-9);
 
-  // and the grading is monotone outwards: fine at the interfaces, coarse at the
-  // boundary, never the other way about
+  // and the list spans the domain exactly: first and last coordinates at
+  // -H/2 and +H/2. Finest and coarsest dy are printed, not asserted.
   CHECK(std::abs(ys.front() + p.height / 2) < 1e-9);
   CHECK(std::abs(ys.back() - p.height / 2) < 1e-9);
   std::printf(
@@ -460,9 +458,8 @@ MIMETIKA_TEST(the_locked_fault_carries_the_analytic_coulomb_stress) {
 
 // -- the slipping fault ----------------------------------------------------------
 
-// A frictionless fault carries no shear, the whole of the constitutive
-// statement. Not approximately zero: the law projects the shear to zero at every
-// enforcement point, so what remains is the residual of the fixed point.
+// A frictionless fault carries no shear. The law projects the shear to zero at
+// every enforcement point, so what remains is the residual of the fixed point.
 MIMETIKA_TEST(the_frictionless_fault_carries_no_shear_traction) {
   const Parameters p = wide();
   const Setup s = build(p, 25.0);
@@ -539,8 +536,7 @@ MIMETIKA_TEST(without_the_prestress_the_unilateral_law_opens_the_fault) {
 
 // And the two laws agree once both see the total traction. FrictionlessBilateral
 // holds the fault shut by construction; SignoriniCoulomb(0) decides that it is
-// shut. Since it really is, the two must give the same answer to round-off,
-// because the unilateral branch is never taken.
+// shut, so the unilateral branch is never taken and the two agree to round-off.
 MIMETIKA_TEST(the_two_laws_agree_once_both_see_the_total_traction) {
   const Parameters p = wide();
   const Setup s = build(p, 25.0);
@@ -627,11 +623,10 @@ MIMETIKA_TEST(the_slip_is_symmetric_about_the_reservoir) {
 
 // Refinement converges, but not necessarily onto the analytic peak.
 //
-// On the wide domain the peak overshoots by around 1% and settles there. That
-// residual is the fault compliance's own discretization error, not a failure to
-// converge, so demanding the peak error shrink would be demanding the wrong
-// thing. What must hold is that the whole profile converges and the peak stays
-// bounded.
+// On the wide domain the peak overshoots by around 1% and settles there: the
+// fault compliance's own discretization error, not a failure to converge. What
+// is asserted is that the profile RMS decreases and the peak error stays under
+// 3%.
 MIMETIKA_TEST(refinement_converges_and_stays_close_to_the_analytic_peak) {
   const Parameters p = wide();
   std::vector<double> profile, peak;

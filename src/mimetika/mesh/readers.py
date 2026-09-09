@@ -8,12 +8,12 @@ polytopal meshes load without any conversion.  The standard linear cell types
 (tetrahedron, hexahedron, wedge, pyramid) are also supported by expanding them
 into their face loops.
 
-Face orientation is normalised on load, **per face**: VTK does not require a
-polyhedron's face loops to be oriented outward, and in practice writers emit
-them in arbitrary directions.  Each loop is therefore reversed individually
-when its area vector points into the cell.  Consistent outward orientation is
-what makes the signed incidence -- and therefore ``dd = 0`` -- come out right;
-without it, interior facets fail to cancel between their two cells.
+Face orientation is normalised on load, per face: VTK does not require a
+polyhedron's face loops to be oriented outward, and writers emit them in
+arbitrary directions.  Each loop is reversed individually when its area vector
+points into the cell.  Without consistent outward orientation the signed
+incidence is wrong and interior facets fail to cancel between their two cells,
+so ``dd = 0`` fails.
 """
 
 from __future__ import annotations
@@ -151,11 +151,9 @@ def _signed_volume(points: np.ndarray, cell: list[list[int]]) -> float:
 def _orient_outward(points: np.ndarray, cell: list[list[int]]) -> list[list[int]]:
     """Orient each face loop of a cell outward, individually.
 
-    A loop points outward when its area vector agrees with the direction from an
-    interior reference point (the mean of the face centroids) to the face.  This
-    is the star-shapedness rule already used elsewhere in the library, and it
-    fixes cells whose loops arrive in mixed directions -- reversing whole cells
-    cannot.
+    A loop points outward when its area vector agrees with the direction from
+    the mean of the face centroids to the face: the star-shapedness rule.  Per
+    loop, so cells whose loops arrive in mixed directions are handled.
     """
     centre = np.mean([points[loop].mean(0) for loop in cell], axis=0)
     oriented = []

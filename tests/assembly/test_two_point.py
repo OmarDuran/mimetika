@@ -1,23 +1,22 @@
 r"""The two-point stress scheme: lumped inner product + kinematic rotation.
 
-:class:`~mimetika.assembly.kinematic.TwoPointFourField` assembles every
-structural property the lumping programme aimed at, and this module pins each
-one:
+What :class:`~mimetika.assembly.kinematic.TwoPointFourField` is pinned on:
 
 * ``M`` diagonal, the ``(s, s)`` and ``(p_s, p_s)`` blocks diagonal, and every
-  facet row coupling **exactly two cells** -- the minimal fill-in of a
-  cell-centred method, reached from the traction side;
-* the patch test exact on tensor-product grids, *including graded ones* (the
+  facet row coupling at most two cells -- the minimal fill-in of a cell-centred
+  method, reached from the traction side;
+* the patch test exact on tensor-product grids, graded ones included (the
   cell-centre line crosses each facet at its centroid there, so the two-point
   facet average is exact for affine fields);
 * the layered-shear state exact across a shear-modulus contrast: continuity of
-  the shear traction gives ``mu_L g_L = mu_R g_R``, which is precisely the
-  cancellation the ``mu/delta``-weighted facet average is built on;
+  the shear traction gives ``mu_L g_L = mu_R g_R``, the cancellation the
+  ``mu/delta``-weighted facet average is built on;
 * a prescribed fracture jump recovered exactly, with the reduced
   (``d``-per-facet) compliance block and the fracture facets excluded from the
   facet-average stencil;
-* convergence at first-to-second order with **no** stabilization of any kind
-  and no inf-sup condition anywhere;
+* convergence at rates ``u`` > 1.5, ``sigma`` > 1.4, ``s`` > 1.4, with no
+  ``s (I - Q Q^T)`` term (the lumping fixes ``ker(N^T)`` instead) and no
+  multiplier inf-sup condition (there is no zero block);
 * the orthogonality guard inherited from the lumped space: non-orthogonal
   meshes are rejected at construction.
 """
@@ -170,7 +169,7 @@ def test_layered_shear_is_exact_across_the_contrast(contrast):
 
 def test_the_assembled_system_has_the_two_point_structure():
     """Diagonal ``M``, diagonal ``(p_s, p_s)`` and ``(s, s)`` blocks, and every
-    facet row coupling exactly two cells -- the minimal cell-centred fill-in."""
+    facet row coupling at most two cells -- the minimal cell-centred fill-in."""
     mesh = structured_quads(3, 3)
     problem = TwoPointFourField(mesh, MU, LAM)
     S, _ = problem.assemble(dirichlet=linear_displacement)

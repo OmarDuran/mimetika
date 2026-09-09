@@ -22,19 +22,16 @@
 //     a (q.n) + b p = c      a Robin condition, coupling a facet to a cell
 //
 // Only on an axis-aligned facet does the first collapse to pinning a single
-// component. On a borehole wall it does not, and a code that can only pin
-// components either refuses the mesh or silently imposes a different
-// condition. Carrying the form is what makes the same statement mean the same
-// thing on any mesh in any dimension.
+// component. On a borehole wall it does not: pinning components there imposes
+// a different condition. The form carries the same statement on any mesh in
+// any dimension.
 //
 // Substitution, not penalty. The form replaces the equation of one of the
 // unknowns it involves -- its leading dof, chosen by largest coefficient, as a
 // pivot is chosen. The residual becomes the discrepancy of the form, the
 // tangent's row becomes the form itself, and the action of the tangent along a
-// direction is the form applied to the direction. The constraint is then exact:
-// a penalty would leave an error scaling with the penalty parameter, and a
-// benchmark checked against a closed form would be measuring the penalty
-// rather than the discretization.
+// direction is the form applied to the direction. The constraint is then
+// exact, where a penalty leaves an error scaling with the penalty parameter.
 //
 // The columns of the constrained unknowns are left alone. That makes the
 // system unsymmetric, which is deliberate: eliminating them means moving their
@@ -48,10 +45,10 @@
 // factorization. The replaced row is a constitutive relation carrying that
 // relation's factors -- a traction moment has A_ii ~ 1/(2 mu), around 1e-9 for
 // rock; a flux moment has A_ii ~ 1/(k dt), which can be 1e14 for a small step.
-// A unit-scaled row sits many orders of magnitude away from everything around
-// it: the system is exactly as well posed, but a direct factorization pivots
-// on the wrong entries and reports a zero pivot somewhere else entirely (MUMPS
-// returns DIVERGED_PC_FAILED on a problem with a perfectly good solution).
+// A unit-scaled row sits many orders of magnitude from the rows around it: the
+// system is as well posed, but a direct factorization pivots on the wrong
+// entries and reports a zero pivot elsewhere (MUMPS returns
+// DIVERGED_PC_FAILED).
 //
 // It must be the same scale on all three paths, and then
 //
@@ -113,10 +110,9 @@ class Constraints {
   // Assign each form the equation it replaces, and build the lookups an
   // assembly needs. The leading dof is the unclaimed one with the largest
   // coefficient -- partial pivoting, and for the orthonormal facet frames the
-  // boundary forms are written in it always succeeds. Two forms that want the
-  // same single unknown are a genuine conflict and are refused; the ambiguous
-  // middle, where a form is left with nothing to lead, is refused too rather
-  // than silently dropped.
+  // boundary forms are written in it always succeeds. A form left with nothing
+  // to lead is refused rather than dropped, unless it repeats an equation
+  // already imposed.
   void finalize(std::size_t n_dofs) {
     mask_.assign(n_dofs, 0);
     leader_of_.assign(n_dofs, -1);

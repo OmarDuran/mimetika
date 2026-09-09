@@ -12,7 +12,7 @@
 //     g_f = -( M sigma - D^T u - A^T gamma )_f
 //         = - sum_{E in {E+, E-}} ( M_E sigma - D_E^T u_E - A_E^T gamma_E )|_f
 //
-// Two claims, and the first is what fixes the formula:
+// Three claims, and the first is what fixes the formula:
 //
 //   The jump vanishes on a bonded interior facet. Per cell the constitutive row
 //   is M_E sigma - D_E^T u - A_E^T gamma = -int_{dE} u.(tau n); the two cofaces
@@ -130,8 +130,7 @@ Worst annulus_case(int nr, int nt, int dim, Family family) {
 }  // namespace
 
 // The jump vanishes wherever the material is continuous -- on every interior
-// facet, every cell type, both dimensions. This is the identity the trace rests
-// on and the one that decided its formula: the discrete [[u]] = 0.
+// facet, every cell type, both dimensions: the discrete [[u]] = 0.
 MIMETIKA_TEST(the_jump_vanishes_on_every_bonded_interior_facet) {
   for (const int dim : {2, 3}) {
     for (const Family f : {Family::cartesian, Family::simplex, Family::prism}) {
@@ -160,9 +159,9 @@ MIMETIKA_TEST(the_jump_vanishes_under_a_non_uniform_stress_state) {
   }
 }
 
-// Every term is load bearing. Removing M sigma leaves a residual of the order of
-// the displacement across a cell -- 4e-2 on this column against a 1e-16 total --
-// so the adjoint pair alone is not the gap.
+// Removing M sigma leaves a residual of the order of the displacement across a
+// cell -- 4e-2 on this column against a 1e-16 total -- so the adjoint pair alone
+// is not the gap.
 MIMETIKA_TEST(the_compliance_term_is_not_optional) {
   const double h = 1.0, load = 0.5;
   const int dim = 3;
@@ -222,7 +221,7 @@ MIMETIKA_TEST(the_compliance_term_is_not_optional) {
   const double full = model.trace(face, z)[2];
   std::printf("  adjoint pair alone %.6e   full residual %.2e\n", adjoint_only, full);
 
-  // the full residual vanishes and the adjoint pair does not, by four orders
+  // the full residual is below 1e-12; the adjoint pair alone stays above 1e-3
   CHECK(std::abs(full) < 1e-12);
   CHECK(std::abs(adjoint_only) > 1e-3);
 

@@ -3,8 +3,7 @@
 #include "mimetika/physics/catalogue.hpp"
 #include "mimetika/physics/flow.hpp"
 
-// Catalogue entries. Each is a composition; the budget is a few lines, and
-// exceeding it means a package is missing.
+// Catalogue entries: each names a composition of packages.
 
 namespace mimetika::compositions {
 

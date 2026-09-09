@@ -15,18 +15,18 @@ of ``m <= D`` modes one builds
 related by the fundamental identity  ``N^T R = |E| Kbar``.  Then
 
     ``M_E = M1 + M2``,
-    ``M1  = (1/|E|) R Kbar^{-1} R^T``            (consistency, rank m),
+    ``M1  = (1/|E|) R Kbar^+ R^T``               (consistency, rank m),
     ``M2  = s C C^T``,  C = orthonormal basis of ker(N^T)   (stability).
 
-Two properties matter, and both are checked in the tests:
+Two properties, both checked in the tests:
 
-* **Strong consistency**: ``M_E N = R`` exactly.  (``M1 N = R`` because
+* Strong consistency: ``M_E N = R`` exactly.  (``M1 N = R`` because
   ``R^T N = |E| Kbar``; ``M2 N = 0`` because ``C^T N = 0``.)  This is what makes
-  a *local mixed solve* reproduce exact polynomial fields -- strictly stronger
-  than the energy identity ``N^T M N = |E| Kbar``, which alone does **not**
-  give exact local solves on general polytopes.
+  a local mixed solve reproduce exact polynomial fields -- strictly stronger
+  than the energy identity ``N^T M N = |E| Kbar``, which alone does not give
+  exact local solves on general polytopes.
 
-* **Stabilization vanishes on simplices**: ``M2 = 0`` iff ``ker(N^T) = {0}`` iff
+* Stabilization vanishes on simplices: ``M2 = 0`` iff ``ker(N^T) = {0}`` iff
   ``D = m``.  Choosing the reconstruction space equal to the target mixed-FE
   space -- unisolvent on a simplex -- gives ``D = m`` there, so stabilization is
   active only on genuine polytopes.
@@ -99,17 +99,16 @@ def complete_moments(
 def apply_pseudo_inverse(Kbar: np.ndarray, B: np.ndarray, rtol: float = 1e-12):
     """``Kbar^+ B`` for symmetric positive *semi*-definite ``Kbar`` (batched).
 
-    ``Kbar`` is only positive **semi**-definite in the incompressible limit: the
+    ``Kbar`` is only positive semi-definite in the incompressible limit: the
     elasticity Gram matrix is ``kron(G, (I - a vec(I) vec(I)^T)/2mu)``, whose
     eigenvalue ``1 - a d`` vanishes exactly at ``a = 1/d``, i.e. ``nu = 1/2``.
-    That direction is the hydrostatic mode, which stores no energy -- so it is
-    not a defect to be regularised away but a genuine null space, and the
-    pseudo-inverse is the right inverse to use.
+    That direction is the hydrostatic mode, which stores no energy -- a genuine
+    null space, not a conditioning defect.
 
-    It costs nothing in accuracy: ``ker(Kbar) subset ker(R)`` (a mode with zero
-    compliance energy also has zero moments), so the rows of ``R`` lie in
-    ``range(Kbar)`` and ``R Kbar^+ Kbar = R`` holds exactly.  Strong consistency
-    ``M1 N = R`` therefore survives the limit intact.
+    ``ker(Kbar) subset ker(R)`` (a mode with zero compliance energy also has
+    zero moments), so the rows of ``R`` lie in ``range(Kbar)`` and
+    ``R Kbar^+ Kbar = R`` holds exactly: strong consistency ``M1 N = R``
+    survives the limit.
 
     Leading dimensions broadcast, so a whole group of cells is done at once.
     """
@@ -128,10 +127,9 @@ def consistency_matrix(R: np.ndarray, Kbar: np.ndarray, volume: float) -> np.nda
 def range_projector(A: np.ndarray, rtol: float = 1e-12) -> tuple[np.ndarray, int]:
     """Orthonormal basis of ``range(A)`` and its rank, via a *thin* SVD.
 
-    The stabilization only ever needs ``I - Q Q^T`` (the projector onto
-    ``ker(A^T)``), never an explicit basis of the null space -- and a thin SVD
-    of a ``D x m`` matrix is far cheaper than the full one, which would build a
-    ``D x D`` factor just to discard most of it.
+    The stabilization only needs ``I - Q Q^T`` (the projector onto
+    ``ker(A^T)``), never an explicit null-space basis, so the thin SVD of the
+    ``D x m`` matrix suffices; the full one would build a ``D x D`` factor.
     """
     A = np.asarray(A, dtype=float)
     # QR is markedly cheaper than SVD and suffices when A has full column rank,
@@ -161,7 +159,9 @@ def assemble_local_inner_product(
     N, R
         ``(D, m)`` consistency and moment matrices with ``N^T R = |E| Kbar``.
     Kbar
-        ``(m, m)`` SPD Gram matrix of the reconstruction modes.
+        ``(m, m)`` symmetric positive semi-definite Gram matrix of the
+        reconstruction modes; singular at ``nu = 1/2``, where
+        :func:`apply_pseudo_inverse` supplies ``Kbar^+``.
     volume
         Element measure ``|E|``.
     stability_scale

@@ -1,33 +1,29 @@
 r"""Exact static condensation of a diagonal leading block.
 
-The lumped stress inner product exists so that the stress can be eliminated
-from the saddle-point system *exactly*: with ``M`` diagonal, the partition
+The lumped stress inner product makes ``M`` diagonal, so the stress is
+eliminated exactly from the saddle-point partition
 
     [ M    C1 ] [ sigma ]   [ g ]
     [ C2   E  ] [   y   ] = [ b ]
 
-gives ``sigma = M^{-1}(g - C1 y)`` facet by facet, and the remaining unknowns
-satisfy the **reduced** system
+facet by facet, ``sigma = M^{-1}(g - C1 y)``, leaving the reduced system
 
     (E - C2 M^{-1} C1) y = b - C2 M^{-1} g .
 
-Because ``M^{-1}`` is a diagonal scaling, forming the reduced matrix is a
-sparse triple product with no fill beyond neighbour coupling: every block of
-``C1``/``C2`` connects a facet to its two adjacent cells, so the reduced
-system is **cell-centred** with a two-point stencil -- ``(1 + d + d(d-1)/2)``
-unknowns per cell for the four-field formulations.  The condensation is exact
-algebra, not an approximation: the recovered ``sigma`` satisfies the original
-system to round-off.
+``M^{-1}`` is a diagonal scaling, so the reduced matrix is a sparse triple
+product with no fill beyond neighbour coupling: every block of ``C1``/``C2``
+connects a facet to its two adjacent cells, so the reduced system is
+cell-centred with a two-point stencil and ``(1 + d + d(d-1)/2)`` unknowns per
+cell for the four-field formulations.  The recovered ``sigma`` satisfies the
+original system to round-off.
 
-This is the payoff of the lumped inner product.  The AFW operator couples the
-facets of each cell, so its stress block cannot be condensed without a global
-factorisation -- which is the whole solve.  The three-field lumped assembly is
-equally stuck: folding the volumetric term back into ``M`` re-couples the
-facets.  Only the four-field arrangements keep ``M`` diagonal in the assembled
-system, which is why the efficient path is four-field + lumped.
+The AFW operator couples the facets of each cell, so its stress block admits no
+such elimination; the three-field lumped assembly folds the volumetric term back
+into ``M``, which re-couples the facets.  Only the four-field arrangements keep
+``M`` diagonal in the assembled system.
 
-Works for symmetric (multiplier) and quasi-symmetric (kinematic rotation)
-systems alike -- ``C1`` and ``C2`` are handled independently.
+Symmetric (multiplier) and quasi-symmetric (kinematic rotation) systems alike:
+``C1`` and ``C2`` are handled independently.
 """
 
 from __future__ import annotations

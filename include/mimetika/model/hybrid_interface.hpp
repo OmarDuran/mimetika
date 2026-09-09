@@ -16,10 +16,9 @@
 // alone -- the facet displacement in the moment chart the tractions carry --
 // and assembling it is this file's whole job.
 //
-// exokal's own assemblers are dense: they are the contract, and the oracle a
-// sparse one is held to. The contract is one sentence -- two multiplier blocks
-// couple iff their facets share a cell -- so the sparsity is the facet
-// adjacency through cells:
+// exokal's own assemblers are dense, and are the oracle this sparse one is
+// held to. Two multiplier blocks couple iff their facets share a cell, so the
+// sparsity is the facet adjacency through cells:
 //
 //     for each cell E, for each pair of its facets (f, g),
 //         S[lambda(f), lambda(g)] += S_E[f-block, g-block]
@@ -29,12 +28,10 @@
 // method is the facet displacement itself, which is why the boundary roles
 // swap relative to the mixed form.
 //
-// Why the second elimination is worth it: S is SPD once any facet is pinned --
-// each S_E is symmetric positive semidefinite with the cell's rigid motions
-// for a kernel, and pinning removes the global ones. The two-point condensation
-// cannot offer that for these realizations: the condensed mixed system is
-// quasi-definite and wants MINRES, this one takes a conjugate gradient and an
-// algebraic multigrid.
+// S is SPD once any facet is pinned: each S_E is symmetric positive
+// semidefinite with the cell's rigid motions for a kernel, and pinning removes
+// the global ones. The condensed mixed system is quasi-definite and wants
+// MINRES; this one takes a conjugate gradient and an algebraic multigrid.
 
 namespace mimetika {
 
@@ -54,8 +51,9 @@ inline std::vector<char> hybrid_free_facets(const exokal::Mesh& mesh, int cell_d
 // One assembler for both physics: the flux and the stress hybridize to the
 // same shape -- a Steklov block per cell over its facets' multiplier blocks --
 // and the sparsity clause is the same, so the walk is written once and
-// instantiated per operator type. Only the offset helper lives in a
-// per-physics namespace upstream, which is what the trait below names.
+// instantiated per operator type. It reaches only facet_dofs(), cell() and
+// steklov(), which both operator types carry; the offsets are recomputed here
+// rather than taken from either upstream per-physics helper.
 template <class Hops>
 inline solver::SparseSystem hybrid_interface_sparse_of(const exokal::Mesh& mesh, int cell_dim,
                                                        const Hops& hops,
@@ -121,11 +119,9 @@ inline solver::SparseSystem hybrid_interface_sparse(
 // The load carries the pinned multiplier's contribution to the free rows, and
 // the recovery reads the multiplier over every facet rather than skipping the
 // pinned ones. Both live upstream -- hybrid_interface_load takes
-// `lambda_data`, hybrid_recovery takes lambda over the whole stratum -- so
-// they are called rather than copied: upstream's sign convention is that the
-// multiplier is the displacement rather than its negative, and a local copy
-// would go on answering an older one while the system it feeds answers this.
-// Only the system assembly is mimetika's, because only that one has a
-// sparsity question to answer.
+// `lambda_data`, hybrid_recovery takes lambda over the whole stratum -- and
+// are called rather than copied, so the sign convention stays upstream's: the
+// multiplier is the displacement, not its negative. Only the system assembly
+// is mimetika's, because only that one has a sparsity question to answer.
 
 }  // namespace mimetika

@@ -25,11 +25,10 @@ in the facet ``P_1`` coefficient basis.  So the trace recovered from a cell is
 
     ``tr(u_E)|_f = ( M_E sigma_E + |E| Dv_E^T u_E + |E| As_E^T s_E )_f``
 
-and ``[[u]]_f = tr(u+)|_f - tr(u-)|_f``.  All three terms matter: the second is
-the cell translation, the third is **the rotation times the lever arm**, and the
-first the deformation inside the cell.  Dropping the rotation term -- taking the
-naive difference of cell displacements -- would make a rigid rotation of the
-whole body produce a spurious jump, and hence spurious traction.
+and ``[[u]]_f = tr(u+)|_f - tr(u-)|_f``.  The three terms are the deformation
+inside the cell, the cell translation, and the rotation times the lever arm;
+dropping the last -- differencing cell displacements alone -- gives a rigid-body
+rotation a spurious jump, and hence a spurious traction.
 
 On an interior facet the two ``G`` contributions enter with opposite incidence
 signs and cancel, which is why traces never appear in the unfractured problem.

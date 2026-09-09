@@ -12,7 +12,7 @@
 // how much it slips. Four cases share one setup, which is what lives here:
 // Table 2's parameters and the in-situ state they imply. Nothing in this file
 // solves anything -- it is the data and the closed forms a solve is judged
-// against, so an error in the setup surfaces before any solver runs.
+// against.
 //
 // Geometry and sign conventions. y is measured upwards from the reservoir
 // reference level, so depth is D0 - y. Stresses are tension positive throughout
@@ -28,9 +28,8 @@
 //     sigma'_xx    = K0 sigma'_yy                          lateral earth pressure
 //     sigma_xx     = sigma'_xx - alpha p
 //
-// Reproducing the paper's printed coefficients from the parameters rather than
-// pasting them in makes the setup checkable, and the tests do that before they
-// run a solver.
+// The printed coefficients are reproduced from the parameters rather than
+// pasted in, and the tests check that before they run a solver.
 //
 // One deviation, deliberate. The tabulated fluid density gives a
 // pressure gradient of 1020 * 9.81 = 10.01 kPa/m, while the paper quotes
@@ -146,14 +145,14 @@ struct Parameters {
 
   // -- the frictionless displaced fault (paper section 3, eqs. 18-21) ---------
   //
-  // Jansen & Meulenbroek (2022), quoted by the paper as eqs. (18)-(22). A
+  // Jansen & Meulenbroek (2022), quoted by the paper as eqs. (18)-(21). A
   // reservoir offset across a vertical fault by the throw b - a puts reservoir
   // against seal on both sides, which loads the fault in shear; with no friction
   // it slips until it carries no shear stress at all.
   //
-  // Both are derived for an unbounded medium, which is why a simulation on a
-  // finite box is compared on the profile shape and the peak rather than
-  // pointwise, and why the box has to be made wide before even those agree.
+  // Sigma_C and delta are both derived for an unbounded medium, so a simulation
+  // on a finite box is compared on the profile shape and the peak rather than
+  // pointwise, and the box has to be wide before even those agree.
 
   // C = (1-2nu) alpha Dp / (2 pi (1-nu)) -- eq. (19), -2.95e6 Pa
   double slip_stress_scale() const {

@@ -6,21 +6,21 @@ Solves on the unit cube, with Dirichlet data,
 
 for the manufactured solution ``p = sin(pi x) sin(pi y) sin(pi z)``.
 
-Errors are measured against the *interpolant* of the exact solution (the
-natural mimetic error): element means for the pressure, average normal fluxes
-for the flux, in the mesh-dependent ``M``-norm.
+Errors are measured against the interpolant of the exact solution (the natural
+mimetic error): element means for the pressure, average normal fluxes for the
+flux, in the mesh-dependent ``M``-norm.
 
 Four cases are run:
 
-* **hex / isotropic** -- a grid-aligned, isotropic problem.  The symmetry makes
-  the leading error terms cancel and the flux *superconverges* far past the
-  guaranteed rate; this is a property of the special configuration, not of the
-  method, which is why the anisotropic case is shown next to it.
+* **hex / isotropic** -- a grid-aligned, isotropic problem.  The symmetry cancels
+  the leading error terms and the flux superconverges past the guaranteed rate;
+  that is a property of the configuration, not of the method.
 * **hex / anisotropic** -- full tensor ``K`` with off-diagonal coupling breaks
   that symmetry and exposes the genuine rate.
 * **tet / anisotropic**, with the ``const`` and ``rt0`` reconstruction spaces.
-  On simplices ``rt0`` is stabilization-free (``stab dim = 0``) and coincides
-  with RT0 mixed FE.
+  On simplices the ``rt0`` reconstruction is unisolvent, so the local
+  stabilization space has dimension 0 (``stab dim = 0``) and the scheme
+  coincides with RT0 mixed FE.
 
 Run with::
 

@@ -94,7 +94,7 @@ MIMETIKA_TEST(the_fault_facet_frames_do_not_flip) {
   CHECK(flips == 0);
 }
 
-// Is the solution symmetric as the geometry is?
+// The slip inherits the geometry's symmetry.
 //
 // The offset reservoir and the dipping fault are invariant under the point
 // reflection (x, y) -> (-x, -y): the left band [-b, a] maps onto the right band
@@ -170,8 +170,7 @@ MIMETIKA_TEST(the_slip_is_symmetric_as_the_geometry_is) {
 // boundary; the reservoir is named surfaces, so its area is exact rather than
 // the result of a centroid test; and the mesh conforms to both by construction.
 MIMETIKA_TEST(the_geometry_is_a_shape_complex_with_the_fault_as_a_shared_boundary) {
-  // unbuffered, so a crash inside a solve does not take the record of which
-  // test was running down with it
+  // unbuffered, so a crash inside a solve leaves the printed record intact
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   const Parameters p = wide();
   const Setup s = build(p, 12.0, 1500.0, 400.0, 40.0, 2.0);
@@ -464,8 +463,7 @@ MIMETIKA_TEST(the_pre_slip_stresses_match_the_published_dataset) {
 //
 // Sigma_C on the slipped state: identically zero on the slipping patches -- a
 // point that slides sits on the cone -- and negative where the fault still
-// holds. This one curve carries both the stress answer and the patch structure,
-// and its zeros are the patch boundaries that Fig. 12 tracks.
+// holds. Its zeros are the patch boundaries Fig. 12 tracks.
 //
 // Fig. 9 is the Table 2 domain and Fig. 10 the wide one. The paper plots them
 // separately because the fault answer is insensitive to the truncation while
@@ -533,10 +531,8 @@ MIMETIKA_TEST(the_post_slip_coulomb_function_matches_the_published_dataset) {
 // -- Fig. 12: the slip patches merge at a definite pressure ----------------------
 //
 // The two patches grow inward as the reservoir depletes and eventually meet.
-// That merging pressure is the sharpest scalar this benchmark produces -- the
-// paper's dataset puts it at -26.87 MPa and the Python port at -26.9 -- because
-// it is a topological change in the solution rather than a value read off a
-// curve.
+// The merge is a topological change in the solution rather than a value read off
+// a curve: the 4TU dataset puts it at -26.87 MPa, the Python port at -26.9.
 //
 // This is what `prepare` is for. The matrix, its factorization and Ghat do not
 // depend on the depletion, so a sweep is a right-hand side per level and a dense

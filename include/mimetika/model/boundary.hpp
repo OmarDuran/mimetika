@@ -16,8 +16,8 @@
 //
 // In a mixed method a boundary condition is a statement about a quantity, and
 // the quantity is generally a linear form on a facet's unknowns rather than one
-// of them. Writing conditions as forms is what makes the same statement mean
-// the same thing on a box, on a borehole wall, and in either dimension:
+// of them. The same form then holds on a box, on a borehole wall, and in either
+// dimension:
 //
 //     n . (sigma n) = g        prescribed normal traction
 //     t_a . (sigma n) = 0      free slip: no shear traction
@@ -25,14 +25,12 @@
 //     q . n = g                prescribed normal flux; g = 0 is a sealed facet
 //     a (q.n) + b p = c        Robin, coupling a facet flux to its cell pressure
 //
-// On an axis-aligned facet the first two collapse to pinning single components,
-// which is why a component-pinning code appears to work on a box. On any other
-// facet they do not, and the difference is not a refinement issue: the wrong
-// condition is imposed, exactly, forever.
+// On an axis-aligned facet the first two collapse to pinning single components.
+// On any other facet they do not, and pinning components there imposes a
+// different condition exactly rather than approximately.
 //
-// Which kind is which is the opposite of what the primal form trains you to
-// expect, and follows from one rule -- the quantity carried as an unknown is
-// imposed strongly, and the one that is not enters naturally:
+// Strong or natural follows from one rule -- the quantity carried as an unknown
+// is imposed strongly, and the one that is not enters naturally:
 //
 //   mixed flow          the flux is the unknown, so a prescribed flux is
 //                       strong and a prescribed pressure is natural
@@ -79,9 +77,8 @@ struct FacetFrame {
 
   // The frame comes from the reference-space normal, so it is right for a facet
   // of a volume cell, of a surface cell tilted anywhere in space, and of a line.
-  // Turning an edge tangent a quarter turn in the xy-plane works only on a
-  // planar mesh lying in that plane and silently produces a vector outside the
-  // surface on any other.
+  // A quarter turn of an edge tangent in the xy-plane holds only for a mesh
+  // lying in that plane; on any other it leaves the surface.
   //
   // `cell` supplies the plane the facet's normal lives in. For a volume cell it
   // is ignored; for a surface cell it is the whole content of the question.
@@ -93,8 +90,7 @@ struct FacetFrame {
     for (int k = 0; k < 3; ++k) fr.normal[k] = av[k] / fr.measure;
     // and the outward one, which is what a boundary condition means. The two
     // differ by the stored boundary coefficient on about half the facets of
-    // any mesh, and leaving that conversion to the caller produces sign errors
-    // no assertion catches.
+    // any mesh, so the conversion is done here rather than by the caller.
     const exokal::Point ov = exokal::outward_normal_vector(mesh, cell_dim, cell, facet);
     for (int k = 0; k < 3; ++k) fr.outward[k] = ov[k] / fr.measure;
     fr.incidence = (fr.outward[0] * fr.normal[0] + fr.outward[1] * fr.normal[1] +
@@ -133,10 +129,6 @@ struct FacetFrame {
   }
 };
 
-// The one cell behind a boundary facet. A boundary condition is a statement
-// about a facet, but the facet's normal lives in the plane of the cell it
-// bounds, so the cell has to be recovered -- and on the boundary there is
-// exactly one, which is what makes it a boundary facet.
 // The cell bounding each of `facets`, for a whole batch at once.
 //
 // The coboundary is built once here. `cofacet_of` builds it per call, which is
@@ -160,6 +152,9 @@ inline std::vector<Index> cofacets_of(const exokal::Mesh& mesh, int cell_dim,
   return out;
 }
 
+// The one cell behind a boundary facet: the facet's normal lives in the plane
+// of the cell it bounds, so the cell has to be recovered, and a boundary facet
+// has exactly one cofacet.
 inline Index cofacet_of(const exokal::Mesh& mesh, int cell_dim, Index facet) {
   const graphos::CoboundaryOperator cob = graphos::coboundary(mesh.topology(), cell_dim - 1);
   const auto b = static_cast<std::size_t>(cob.offsets[static_cast<std::size_t>(facet)]);
@@ -171,10 +166,8 @@ inline Index cofacet_of(const exokal::Mesh& mesh, int cell_dim, Index facet) {
   return cob.indices[b];
 }
 
-// A named selection of facets, chosen by where they are or by what they look
-// like. A predicate keeps the selection in the driver, where the geometry of
-// the problem is known -- a stratum has no idea which of its facets is "the
-// borehole wall".
+// A selection of boundary facets by a predicate on the facet centroid, kept in
+// the driver, where the geometry of the problem is known.
 class FacetSelector {
  public:
   using Predicate = std::function<bool(const Point&)>;
@@ -305,10 +298,9 @@ inline void impose_free_slip(Constraints& c, const exokal::spaces::ProductSpace&
   }
 }
 
-// sigma n = g, the whole traction vector, from the stress tensor rather than a
-// traction vector: the caller never has to know which way a facet's canonical
-// normal points, and a vector assembled against the wrong one is silently
-// sign-flipped.
+// sigma n = g, the whole traction vector, taken from the stress tensor and the
+// facet's canonical normal, so the sign of that normal never reaches the
+// caller.
 inline void impose_traction(Constraints& c, const exokal::spaces::ProductSpace& space,
                             const std::string& field, int cell_dim, const exokal::Mesh& mesh,
                             const std::vector<Index>& facets,
@@ -425,13 +417,12 @@ class BoundaryData {
 // phi_c = |f| delta_bc -- so G = |f| I and the coefficient is simply w_b/|f|.
 //
 // For a CONSTANT datum that is (p_D, 0, ..., 0): the higher basis functions are
-// centred on the facet, so their means vanish. That is why one number per facet
-// suffices at lowest order and why writing the same number into every moment is
-// wrong -- it was measured, and it destroys the Cartesian patch a correct datum
-// reproduces to round-off. For an AFFINE datum the higher coefficients are
-// real, and dropping them is a consistent O(h) perturbation: the linear patch
-// then converges at first order instead of being exact, which is exactly what
-// the BDM products did before this existed.
+// centred on the facet, so their means vanish. One number per facet suffices at
+// lowest order; writing that number into every moment destroys the Cartesian
+// patch a correct datum reproduces to round-off. For an AFFINE datum the higher
+// coefficients are nonzero, and dropping them is a consistent O(h)
+// perturbation: the linear patch converges at first order instead of being
+// exact.
 class BoundaryMoments {
  public:
   BoundaryMoments() = default;
@@ -457,14 +448,9 @@ class BoundaryMoments {
   std::vector<char> set_;
 };
 
-// A vector datum, affine per facet: u(x) = a + B (x - x_E).
-//
-// Affine rather than constant because that is what a patch test needs: a mixed
-// method of this family reproduces linear displacement fields exactly, and the
-// only way to see that is to prescribe one.
 // A scalar per cell: a reservoir is a region at a changed pressure, and zero
-// outside it. The facet-indexed holders above are about boundaries; this one is
-// about a body load.
+// outside it. The facet-indexed holders above are boundary data; this one is a
+// body load.
 class CellData {
  public:
   CellData() = default;
@@ -508,6 +494,10 @@ class CellVectorData {
   std::vector<double> value_;
 };
 
+// A vector datum, affine per facet: u(x) = a + B (x - x_E), stored as the
+// constant a (3 per facet) and the gradient B (9 per facet, row-major).
+// Affine rather than constant because the patch test needs it: this family
+// reproduces linear displacement fields exactly.
 class BoundaryVectorData {
  public:
   explicit BoundaryVectorData(std::size_t n_facets)
@@ -544,11 +534,10 @@ class BoundaryVectorData {
 };
 
 // The prescribed displacement as the strong family's slot coefficients: the
-// expansion of u_D against the six-moment facet basis, one block per facet,
+// expansion of u_D against the wrench facet basis, one block per facet,
 // precomputed by the model. The basis needs the facet's chart and second
-// moments, which the operators do not carry per cell -- and the datum is
-// affine, so a fixed quadrature evaluates the six integrals exactly once at
-// build. The term then reads numbers, as every other natural datum does.
+// moments, which the operators do not carry per cell; the datum is affine, so a
+// fixed quadrature evaluates the integrals exactly, once at build.
 //
 // One wrench per facet: q = d(d+1)/2 slots, six in space and three in the
 // plane, which is the stride the term reads with.

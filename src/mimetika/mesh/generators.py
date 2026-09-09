@@ -1,8 +1,8 @@
-"""Mesh generators.
+"""Mesh generators: structured hex/tet boxes, structured and graded quad/tri
+rectangles, and single reference cells.
 
-Currently: a structured hexahedral box.  Cells are emitted in the polytopal
-cells-as-face-loops format, so they flow through the same topology construction
-as arbitrary polyhedra -- the structured grid is just a convenient source.
+Cells are emitted in the polytopal cells-as-face-loops format, so they flow
+through the same topology construction as arbitrary polyhedra.
 """
 
 from __future__ import annotations
@@ -184,14 +184,12 @@ def structured_quads(
 
 
 def graded_quads(xs, ys) -> Mesh:
-    """A quadrilateral mesh from **explicit** node coordinates, in ``z = 0``.
+    """A quadrilateral mesh from explicit node coordinates, in ``z = 0``.
 
-    ``structured_quads`` spaces nodes uniformly, which is the wrong tool when the
-    solution has features far smaller than the domain: resolving a 150 m
-    reservoir inside a 4500 m block costs thousands of cells that do nothing.
-    Passing the coordinates directly lets the mesh be fine where the physics is
-    and coarse where it is not, and lets material and loading interfaces be
-    placed exactly on cell faces.
+    ``structured_quads`` spaces nodes uniformly; a 150 m reservoir inside a
+    4500 m block then needs thousands of cells away from the feature.  Explicit
+    coordinates grade the mesh and place material and loading interfaces exactly
+    on cell faces.
     """
     xs = np.unique(np.asarray(xs, dtype=float))
     ys = np.unique(np.asarray(ys, dtype=float))
@@ -214,9 +212,8 @@ def graded_quads(xs, ys) -> Mesh:
 def _two_sided(left: float, right: float, spacing: float, growth: float):
     """Cell sizes across ``[left, right]``: smallest at both ends, largest mid-span.
 
-    A one-sided geometric fan would refine one interface and starve the other.
-    The weights are ``growth ** min(i, n-1-i)``, which is symmetric, so both
-    bounding interfaces get the fine cells.
+    Weights ``growth ** min(i, n-1-i)``: symmetric, so both bounding interfaces
+    get the fine cells; a one-sided fan would refine only one of them.
     """
     length = right - left
     for count in range(1, 4096):
@@ -230,11 +227,10 @@ def _two_sided(left: float, right: float, spacing: float, growth: float):
 def graded_triangles(xs, ys) -> Mesh:
     """:func:`graded_quads` with every cell split into two triangles.
 
-    Triangles are the 2D simplex, and on a simplex the Mimetic-AFW stabilisation
-    vanishes identically (``3 edges x 4 DOFs = 12 = d^2(d+1) = m``, so
-    ``ker(N^T) = {0}``): the scheme reduces to the pure Arnold--Falk--Winther
-    mixed element.  A quadrilateral carries ``16 > 12`` DOFs and therefore always
-    carries a stabilisation term -- a genuine discretisation difference.
+    Triangles are the 2D simplex, where the Mimetic-AFW stabilisation vanishes
+    identically (``3 edges x 4 DOFs = 12 = d^2(d+1) = m``, so ``ker(N^T) =
+    {0}``) and the scheme reduces to the Arnold--Falk--Winther mixed element.
+    A quadrilateral carries ``16 > 12`` DOFs, hence a nonzero stabilisation.
     """
     quads = graded_quads(xs, ys)
     points = quads.geometry.points
@@ -249,30 +245,23 @@ def graded_coordinates(interfaces, extent, spacing, growth: float = 1.35,
                        max_spacing: float | None = None,
                        window: tuple[float, float] | None = None,
                        window_spacing: float | None = None):
-    """Node coordinates that **honour** ``interfaces`` and cluster elements at them.
+    """Node coordinates containing every value in ``interfaces``, graded at them.
 
-    Every value in ``interfaces`` becomes a node, so a discontinuity in material
-    or loading lands on a cell face rather than bisecting a cell -- where a
-    cell-centred test would put it on the wrong side and shift the answer by half
-    a cell.
+    Every interface becomes a node, so a material or loading discontinuity lands
+    on a cell face instead of bisecting a cell.
 
-    Resolution is concentrated **at** the interfaces, not spread evenly between
-    them.  That is where it is needed: the fields are non-smooth across a
-    material or loading jump (in the displaced-fault benchmark the analytic
-    Coulomb stress is logarithmically singular at the reservoir edges), so the
-    discretisation error is dominated by the few cells nearest each interface
-    and is negligible a handful of cells away.  ``spacing`` is therefore the size
-    *at* an interface; cells grow by ``growth`` away from it -- towards mid-span
-    between two interfaces, and outwards to ``extent`` beyond the outermost.
+    Resolution is concentrated at the interfaces, where the fields are
+    non-smooth across the jump (in the displaced-fault benchmark the analytic
+    Coulomb stress is logarithmically singular at the reservoir edges).
+    ``spacing`` is the cell size at an interface; cells grow by ``growth`` away
+    from it -- towards mid-span between two interfaces, and outwards to
+    ``extent`` beyond the outermost -- capped at ``max_spacing`` when given.
 
-    ``window`` overrides that between two bounds: the range is meshed **uniformly**
-    at ``window_spacing`` (default ``spacing``) and the geometric coarsening starts
-    from its edges instead.  Clustering at interfaces is the right default when the
-    error is concentrated *at* them, but it thins out in between -- and a solution
-    that is smooth yet not small over a whole neighbourhood (the near field of a
-    slipping fault, say) is then under-resolved there.
-    The interfaces are still forced in, so nothing is lost if they fall off the
-    uniform grid; they simply split one cell.
+    ``window`` replaces the graded interior between two bounds by a uniform mesh
+    at ``window_spacing`` (default ``spacing``), with the geometric coarsening
+    starting from its edges; use it when the solution is smooth but not small
+    over a neighbourhood (the near field of a slipping fault).  Interfaces are
+    still forced in and simply split one uniform cell.
     """
     interfaces = np.unique(np.asarray(interfaces, dtype=float))
     lo, hi = float(interfaces[0]), float(interfaces[-1])

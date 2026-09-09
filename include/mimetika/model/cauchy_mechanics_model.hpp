@@ -6,10 +6,12 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "exokal/geometry/degeneracy.hpp"
 #include "exokal/hodge/stress_operators.hpp"
+#include "exokal/hodge/vem_operators/stress_projection.hpp"
 #include "mimetika/linear_solver/linear.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
 #include "exokal/hodge/hybrid_stress.hpp"
@@ -21,34 +23,30 @@
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/physics/boundary_terms.hpp"
 
-// Cauchy elasticity, stated as data -- the poroelastic model with the flow
-// taken out, and the smallest problem that exercises the stress space alone.
+// Cauchy elasticity: the poroelastic model with the flow taken out.
 //
-// Weakly-symmetric mixed form (Hellinger-Reissner), three fields:
+// Mixed Hellinger-Reissner. Weak symmetry, three fields:
 //
 //     r_sigma = M sigma - D^T u - A^T gamma      the constitutive relation
 //     r_u     = + D sigma                        momentum balance
 //     r_gamma = + A sigma                        symmetry, imposed weakly
 //
-// The space carries no symmetry constraint -- that is what makes it usable --
-// so gamma is the multiplier enforcing sigma = sigma^T against the rigid
-// rotations. Dropping it changes the method rather than simplifying it.
+// The space carries no symmetry constraint, so gamma is the multiplier pairing
+// sigma against the rigid rotations. The _total formulations add a fourth
+// field, p = lambda div u per cell; the strong-symmetry family drops gamma and
+// carries sigma = sigma^T in the space.
 //
-// When a poroelastic answer is wrong, this is what says whether the mechanics
-// half is. Both of its closed forms hold in any dimension:
+// Two closed forms, both valid in any dimension:
 //
 //     a column    uniaxial extension: constant stress, linear displacement,
 //                 which every one of these spaces contains exactly
 //     an annulus  Lame's thick-walled tube: sigma_rr, sigma_tt carry a 1/r^2
 //                 and u_r a 1/r, which none of them contains
-//
-// so the first is a statement about the space and the second about resolution.
 
 namespace mimetika {
 
-// Isotropic linear elasticity, in the two parameters the operators want. The
-// engineering constants are derived rather than stored, so a caller can state
-// whichever pair it has.
+// Isotropic linear elasticity in (mu, lambda), the pair the operators read.
+// The engineering constants are derived rather than stored.
 struct ElasticMaterial {
   double shear{1.0};  // mu
   double lame{1.0};   // lambda
@@ -71,9 +69,11 @@ struct ElasticMaterial {
 
 class CauchyMechanicsModel {
  public:
-  // Which discrete stress Hodge, and only the two that are elements.
+  // Which discrete stress Hodge. exokal's roster is derham_bdm, derham_rt,
+  // stabilized_bdm, diagonal_afw, adaptive_afw, stabilized_vem, diagonal_vem,
+  // adaptive_vem; all but derham_rt are admitted here. The two elements:
   //
-  //   derham          d copies of the mimetic-BDM plus a rank-one volumetric
+  //   derham_bdm      d copies of the mimetic-BDM plus a rank-one volumetric
   //                   fold-back. Consistency-only: the scalar layer is
   //                   unisolvent, so N is square and nothing is stabilized.
   //                   Any cell type, either dimension.
@@ -84,12 +84,11 @@ class CauchyMechanicsModel {
   //                   in exokal's hodge.test_afw_equivalence. On a polytope a
   //                   stabilization remains: 4 on a quadrilateral, 18 on a hex.
   //
-  // The third realization exokal offers, derham_rt, is deliberately not here.
-  // It is a sound inner product -- unisolvent, positive definite, exact on the
-  // compliance energy -- and it is not an element: one constant traction vector
-  // per facet cannot control the rigid rotations across a mesh, the inf-sup for
-  // gamma degenerates, and the saddle point comes out singular. See
-  // tests/model/test_dimensions.cpp, which pins exactly that.
+  // derham_rt is refused. It is a sound inner product -- unisolvent, positive
+  // definite, exact on the compliance energy -- and it is not an element: one
+  // constant traction vector per facet cannot control the rigid rotations
+  // across a mesh, the inf-sup for gamma degenerates, and the saddle point
+  // comes out singular. Pinned in tests/model/test_cauchy_mechanics_model.cpp.
   using Realization = exokal::hodge::StressOperators::Realization;
   using Formulation = exokal::hodge::StressOperators::Formulation;
 
@@ -99,10 +98,10 @@ class CauchyMechanicsModel {
       : mesh_(&mesh), dim_(cell_dim), material_(material), how_(how), form_(form) {
     // derham_rt is unisolvent and still refused; see the realization list above.
     //
-    // diagonal_afw carries the same d per facet and is not refused, because it
-    // is a different scheme rather than a coarser space: its face rotation is a
-    // convention rather than an inf-sup, and exokal admits it in four fields
-    // only, which is where its M is diagonal.
+    // diagonal_afw is not refused: it carries derham_bdm's space -- d moments
+    // on each of d components -- and differs in the product, not the space. Its
+    // face rotation is a convention rather than an inf-sup, and exokal admits
+    // it in four fields only, which is where its M is diagonal.
     if (how == Realization::derham_rt) {
       throw std::invalid_argument(
           "CauchyMechanicsModel: derham_rt is unisolvent but its weak-symmetry inf-sup "
@@ -140,15 +139,16 @@ class CauchyMechanicsModel {
     }
   }
 
-  // The adaptive_vem threshold: scan for metrically degenerate cells at this
-  // percentage of the node-star mean and give them the diagonal star, eta = 0.
-  // The same contract adaptive_rt carries for the flux: eta is derived --
-  // ones, with the flagged cells zeroed -- never given as a field. Unset,
-  // exokal scans at its own default_degeneracy_percent.
+  // The blend threshold, for adaptive_vem and adaptive_afw alike: scan for
+  // metrically degenerate cells at this percentage of the node-star mean and
+  // give them the diagonal star, eta = 0. The same contract adaptive_rt carries
+  // for the flux: eta is derived -- ones, with the flagged cells zeroed --
+  // never given as a field. Unset, exokal scans at its own
+  // default_degeneracy_percent.
   void set_degeneracy_percent(double percent) { degeneracy_percent_ = percent; }
 
-  // The second selector, by conditioning: a cell whose stabilized vem block
-  // has lambda_max / lambda_min above this takes the diagonal star as well.
+  // The second selector, by conditioning: a cell whose stabilized block has
+  // lambda_max / lambda_min above this takes the diagonal star as well.
   // Composes with the scan -- either flag zeroes eta -- at the cost of one
   // probe build of the stabilized member. Same contract as adaptive_rt.
   void set_cond_threshold(double cond) { cond_threshold_ = cond; }
@@ -159,7 +159,7 @@ class CauchyMechanicsModel {
   //
   // assembled into the rotation row as -J gamma by the rotation_jump_facet
   // term. J annihilates constant rotations, so the linear patch test is
-  // unchanged; the wrench star is stable at c = 0 and the term buys
+  // unchanged; the diagonal star is stable at c = 0 and the term buys
   // definiteness in the multiplier block for a constant the physics does not
   // supply. Off by default. Not available under --hybrid: a cofacet coupling
   // does not eliminate cell by cell.
@@ -182,9 +182,9 @@ class CauchyMechanicsModel {
   // how many cells the conditioning selector switched, as built
   std::size_t n_ill_conditioned() const { return n_ill_conditioned_; }
 
-  // The selection as built, one value per cell: 1 is the stabilized vem
-  // product, 0 the diagonal star. Empty unless the realization is
-  // adaptive_vem; the field to write next to the solution.
+  // The selection as built, one value per cell: 1 is the stabilized product,
+  // 0 the diagonal star. Empty unless the realization is adaptive_vem or
+  // adaptive_afw; the field to write next to the solution.
   const std::vector<double>& eta() const {
     if (sim_ == nullptr) {
       throw std::logic_error("CauchyMechanicsModel: not built yet; call build() or solve() first");
@@ -192,11 +192,11 @@ class CauchyMechanicsModel {
     return stress_.eta();
   }
 
-  // The layout is not the symmetry, and exokal separates them: the wrench
-  // layout -- one d(d+1)/2 rigid-motion moment vector per facet, rather than d
-  // copies of a scalar layout -- is what the strong family always uses and what
-  // diagonal_afw brings to the weak axis. Anything counting unknowns per facet
-  // asks this; anything asking whether a rotation field exists asks the other.
+  // The wrench layout: one d(d+1)/2 rigid-motion moment vector per facet,
+  // rather than d copies of a scalar layout. exokal sets
+  // wrench_layout(r) = strongly_symmetric(r), so it is the strong family's
+  // alone and the weak family -- diagonal_afw included -- is componentwise.
+  // Unknowns per facet ask this; whether a rotation field exists asks the other.
   bool wrench_layout() const {
     return exokal::hodge::StressOperators::wrench_layout(how_);
   }
@@ -209,11 +209,10 @@ class CauchyMechanicsModel {
 
   // The validity gate of the diagonal star, which exokal states and leaves to
   // the consumer: a facet the cell centroid does not see squarely carries a
-  // non-positive weight -- delta = (x_f - x_E).n <= 0 -- and the assembled M
-  // is then not positive definite. Condensation divides by those entries and
-  // the solve collapses to a near-zero field that still reports CONVERGED:
-  // the one failure mode worse than a wrong answer. So the count is exposed,
-  // per cell with any offending facet, for the driver to refuse or report.
+  // non-positive weight -- delta = (x_f - x_E).n <= 0 -- and the assembled M is
+  // then not positive definite. Condensation divides by those entries and the
+  // solve returns a near-zero field while reporting CONVERGED. Counted per cell
+  // with any offending facet, for the driver to refuse or report.
   std::size_t n_invalid_star() const {
     if (sim_ == nullptr) {
       throw std::logic_error("CauchyMechanicsModel: not built yet; call build() or solve() first");
@@ -233,9 +232,8 @@ class CauchyMechanicsModel {
 
   Formulation formulation() const { return form_; }
 
-  // The total pressure p = lambda div u, one scalar per cell, and a field in
-  // the four-field formulation rather than a post-processing of the stress.
-  // Asking for it in three fields asks for something that was never solved for.
+  // The total pressure p = lambda div u, one scalar per cell: a field of the
+  // four-field formulations, not a post-processing of the stress.
   double total_pressure(Index cell) const {
     if (form_ != Formulation::weak_symmetry_total && form_ != Formulation::strong_symmetry_total) {
       throw std::logic_error(
@@ -257,16 +255,16 @@ class CauchyMechanicsModel {
   const char* realization_name() const { return exokal::hodge::StressOperators::name(how_); }
   const ElasticMaterial& material() const { return material_; }
 
-  // The rank-one term that makes the THREE-FIELD stress norm lambda-free.
+  // The rank-one term that makes the three-field stress norm lambda-free.
   //
   //     (C^-1 sigma, sigma) = (1/2mu) |sigma|^2 - (a/2mu) (tr sigma)^2 ,
   //     a = lambda / (2 mu + d lambda) ,
   //
-  // so the compliance stays BOUNDED as lambda grows -- a -> 1/d -- and becomes
+  // so the compliance stays bounded as lambda grows -- a -> 1/d -- and becomes
   // singular on the trace. A norm built from it loses the volumetric direction
-  // the operator still has, and the map then stops relating to the residual it
-  // is preconditioning: measured, GMRES reports CONVERGED_RTOL at lambda = 1e8
-  // while the answer is 8e-2 away from the factorization.
+  // the operator still has, so the Riesz map stops relating to the residual it
+  // preconditions: measured, GMRES reports CONVERGED_RTOL at lambda = 1e8 while
+  // the answer is 8e-2 away from the factorization.
   //
   // Adding (a/2mu)(tr sigma)^2 back leaves (1/2mu)|sigma|^2, the plain L^2 mass,
   // which does not see lambda at all. T is the cell's trace functional, so the
@@ -327,11 +325,9 @@ class CauchyMechanicsModel {
   // see it, so a jump in mu or lambda is a jump in the metric of the stress
   // (d-1)-cochains alone.
   //
-  // LAMBDA ONLY, for now. The four-field term carries the trace coupling as a
-  // single (2 mu)^-1 read from the composition, so a per-cell MU would be
-  // applied by the star and not by that row, and the two would disagree. The
-  // volumetric contrast a per-cell lambda gives is the one the total-pressure
-  // form exists to absorb, and it is the one this admits.
+  // Lambda only. The four-field term carries the trace coupling as a single
+  // (2 mu)^-1 read from the composition, so a per-cell mu would be applied by
+  // the star and not by that row, and the two would disagree.
   void set_lame_per_cell(std::vector<double> lam) {
     if (!lam.empty() && lam.size() != static_cast<std::size_t>(mesh_->topology().count(dim_))) {
       throw std::invalid_argument("CauchyMechanicsModel::set_lame_per_cell: one value per cell");
@@ -352,12 +348,12 @@ class CauchyMechanicsModel {
   const solver::SparseSystem& system() const { return system_; }
   const std::vector<double>& rhs() const { return rhs_; }
   std::size_t n_cells() const { return n_cells_; }
-  // how many cells needed a stabilization: zero on a simplex mesh for either
-  // realization, by construction
-  // A BODY FORCE PER CELL, d components cell-major: div sigma + b = 0.
+  // one body force per cell, d components cell-major: div sigma + b = 0
   void set_body_force(std::vector<double> b) { body_force_ = std::move(b); }
   const std::vector<double>& body_force() const { return body_force_; }
 
+  // how many cells carry a stabilization: zero on a simplex mesh, by
+  // construction
   std::size_t n_stabilized() const { return stress_.n_stabilized(); }
   const exokal::hodge::StressOperators& stress_operators() const { return stress_; }
 
@@ -404,8 +400,8 @@ class CauchyMechanicsModel {
     }
     n_ill_conditioned_ = 0;
     if (adaptive && cond_threshold_ >= 0.0) {
-      // the probe: the stabilized vem member on every cell; a cell exokal
-      // already put on the diagonal star is compact and is not judged again
+      // the probe: the stabilized member on every cell; a cell exokal already
+      // put on the diagonal star is compact and is not judged again
       if (eta.empty()) eta.assign(static_cast<std::size_t>(c.count(dim_)), 1.0);
       const std::vector<double> ones(eta.size(), 1.0);
       const exokal::hodge::StressOperators probe = exokal::hodge::StressOperators::build(
@@ -434,25 +430,20 @@ class CauchyMechanicsModel {
     }
     ctx_.provide("boundary_displacement", displacement_data_);
 
-    // The strong datum, expanded at build: the six moments of the affine
-    // u_D = a + B (x - x_E) against the facet basis, divided by the |f| Gram.
-    // The operators do not carry the chart and second moments per cell, and
-    // the datum is affine, so a quadrature that is exact for these integrals
-    // runs once here and the boundary term reads numbers -- the affine datum
-    // stays exact, as it is in the weak family.
-    // The wrench layout decides this, not the symmetry. The coefficients are
-    // (1/|f|) int_f u_D . basis_b against the facet's rigid-motion basis, which
-    // is what a wrench-layout space carries whether its symmetry is strong
-    // (stabilized_vem, diagonal_vem) or weak (diagonal_afw). Keying it off the
-    // symmetry instead writes the componentwise datum into a space that has no
-    // components, and the rhs comes out identically zero.
+    // The strong datum, expanded at build: the coefficients
+    // (1/|f|) int_f u_D . basis_b of the affine u_D = a + B (x - x_E) against
+    // the facet's rigid-motion basis, d(d+1)/2 per facet. The operators carry
+    // no chart and no per-cell second moments, and the datum is affine, so a
+    // quadrature exact for these integrals runs once here and the boundary term
+    // reads numbers -- the affine datum stays exact, as it is in the weak
+    // family. Wrench layout only; the componentwise family takes its datum
+    // through the stress row instead.
     if (wrench_layout() && !displacement_facets_.empty()) {
       strong_displacement_ = StrongDisplacementCoefficients(
           static_cast<std::size_t>(c.count(dim_ - 1)), static_cast<std::size_t>(facet_dofs()));
-      // The coboundary is built once. cofacet_of rebuilds it per call, which
-      // is O(mesh) each time -- 5k boundary facets on a 22k-cell mesh then
-      // spend minutes recomputing the same operator that takes milliseconds
-      // to build once.
+      // Built once: cofacet_of rebuilds the coboundary per call, O(mesh) each
+      // time -- 5k boundary facets on a 22k-cell mesh spend minutes on an
+      // operator that costs milliseconds to build once.
       const graphos::CoboundaryOperator cob = graphos::coboundary(c, dim_ - 1);
       for (const auto& d : displacement_facets_) {
         for (const Index f : d.facets) {
@@ -472,10 +463,9 @@ class CauchyMechanicsModel {
     reservoir_data_ = CellData(static_cast<std::size_t>(c.count(dim_)));
     for (const auto& r : reservoir_) reservoir_data_.set(r.cells, r.pressure);
     ctx_.provide("reservoir_pressure", reservoir_data_);
-    // THE BODY FORCE AS THE ROW WANTS IT. The momentum row is Dv sigma, the
-    // divergence divided by the measure, so the MEAN force over the cell is the
-    // load -- no measure appears here, unlike the flux balance, which is an
-    // integral and takes f|E|.
+    // The momentum row is Dv sigma, the divergence divided by the measure, so
+    // the load is the mean force over the cell -- no measure appears here,
+    // unlike the flux balance, which is an integral and takes f|E|.
     body_force_data_ = CellVectorData(static_cast<std::size_t>(c.count(dim_)),
                                       static_cast<std::size_t>(dim_));
     bool any_force = false;
@@ -489,15 +479,13 @@ class CauchyMechanicsModel {
     }
     ctx_.provide("body_force", body_force_data_);
 
-    // The space follows the star: d^2 traction moments per facet for both of
-    // these, read off the operators rather than restated, so the layout and the
-    // product cannot drift apart.
+    // The space follows the star, read off the operators rather than restated,
+    // so the layout and the product cannot drift apart.
     physics::ModelOptions o;
-    // The wrench layout is d(d+1)/2 moments on one component: a facet carries
-    // the rigid-motion moment vector whole, which the strong branch of the
-    // package already hardcodes as moments(dim, dim-1, 6, 1). The weak member
-    // of that layout -- diagonal_afw -- has to be told the same shape, since
-    // its branch reads these options.
+    // Componentwise: d moments on each of d components, d^2 unknowns per facet.
+    // Wrench: d(d+1)/2 moments on one component, the facet carrying the
+    // rigid-motion moment vector whole, which the strong branch of the package
+    // hardcodes as moments(dim, dim-1, 6, 1).
     o.traction_moments = stress_.moments_per_facet();
     o.traction_components = wrench_layout() ? 1 : dim_;
     // And the field count follows the formulation, read off the operators for
@@ -541,8 +529,8 @@ class CauchyMechanicsModel {
     {
       const auto& ms = sp.map(sp.index_of("s_0"));
       const auto s_base = static_cast<std::size_t>(sp.offset(sp.index_of("s_0")));
-      // the strong family carries its six moments on one scalar layout, the
-      // weak one `moments` per each of d components
+      // the wrench layout carries its d(d+1)/2 moments on one component, the
+      // componentwise one `moments` on each of d components
       const int nb = stress_.moments_per_facet();
       const int nk = wrench_layout() ? 1 : dim_;
       for (const Index f : prescribed_) {
@@ -574,7 +562,7 @@ class CauchyMechanicsModel {
     // The blend carries the contract on the cells it selected, and only those:
     // a boundary facet whose cofacet kept the stabilized product needs no pin
     // and is harmed by one, its linear slots being where that product carries
-    // the datum. eta as BUILT is the selection, exokal's forced zeros included.
+    // the datum. eta as built is the selection, exokal's forced zeros included.
     if (how_ == Realization::diagonal_afw || how_ == Realization::adaptive_afw) {
       const std::vector<char> mask = exokal::hodge::afw_boundary_pins(*mesh_, dim_);
       const std::vector<double>& selection = stress_.eta();  // empty: every cell
@@ -619,13 +607,11 @@ class CauchyMechanicsModel {
 
     // Reserve before assembling, and hand the storage over afterwards.
     //
-    // The triplets are the largest object this model ever holds: every cell
-    // emits a dense block over its own unknowns, so the count is the sum of
-    // their squares -- of order 10^8 on a mesh of tens of thousands of
-    // polyhedra. Growing three vectors to that reallocates about twenty-five
-    // times, and each reallocation copies everything already written; the
-    // transient peak is several times the final size. The count is known here
-    // in closed form, so it is asked for once.
+    // Every cell emits a dense block over its own unknowns, so the triplet
+    // count is the sum of their squares -- of order 10^8 on a mesh of tens of
+    // thousands of polyhedra. Growing three vectors to that reallocates about
+    // twenty-five times, each reallocation copying everything already written.
+    // The count is closed form here, so it is asked for once.
     exokal::forms::TripletSink jac(sim_->n_dofs());
     // n_cells_ is not set until later in this function, so the count comes from
     // the mesh: reading it here reserves nothing at all.
@@ -662,12 +648,12 @@ class CauchyMechanicsModel {
                     : -r[i];
     }
 
-    // The factorization for S is deferred, because most problems never ask for
-    // it. S exists for prescribed tractions -- the contact iteration reuses one
-    // factorization across many right-hand sides -- and a model that prescribes
-    // none never evaluates it. Taking it here makes every build pay a full
-    // direct solve of the whole saddle point: on a mesh of tens of thousands of
-    // polyhedra that is minutes and gigabytes of fill.
+    // The factorization for S is deferred to its first evaluation. S exists for
+    // prescribed tractions -- the contact iteration reuses one factorization
+    // across many right-hand sides -- and a model that prescribes none never
+    // evaluates it. Taking it here costs a direct factorization of the whole
+    // saddle point per build: minutes and gigabytes of fill on a mesh of tens
+    // of thousands of polyhedra.
     factorized_ = false;
     load_ready_ = true;
     work_.assign(sim_->n_dofs(), 0.0);
@@ -680,16 +666,10 @@ class CauchyMechanicsModel {
 
   // Move the load without refactorizing.
   //
-  // The system matrix never depends on the pressure. A depletion is a load: it
-  // enters the stress row as alpha T^T p and touches the right-hand side alone,
-  // while the matrix is fixed by the mesh, the moduli and which facets are
-  // prescribed. So a sweep over depletion levels -- which is what benchmarks 2
-  // and 3 are -- needs one factorization, not one per level.
-  //
-  // Rebuilding the model per level re-runs the whole construction and a direct
-  // factorization of a large system on every step of an outer iteration, which
-  // for a slip-weakening branch tracker is hundreds of times per benchmark.
-  // The Python reference caches exactly this.
+  // A depletion enters the stress row as alpha T^T p and touches the right-hand
+  // side alone; the matrix is fixed by the mesh, the moduli and which facets
+  // are prescribed. A sweep over depletion levels -- benchmarks 2 and 3 --
+  // therefore needs one factorization, not one per level.
   void set_depletion(double pressure) {
     if (!load_ready_) throw std::logic_error("set_depletion: call build() first");
     for (Reservoir& r : reservoir_) r.pressure = pressure;
@@ -717,12 +697,11 @@ class CauchyMechanicsModel {
   //     [| D^T u + A^T gamma |]_f = (D^T u + A^T gamma)_f^+ - (...)_f^-
   //
   // and the right-hand side is not two evaluations and a subtraction. D maps
-  // facet tractions to cell vectors, so its adjoint maps cell displacements
-  // back onto facets carrying each cell's outward incidence on the facet; the
-  // two cofaces of an interior facet therefore enter with opposite signs and the
-  // assembled row is the difference. The same holds for A and the rotation,
-  // which supplies the rigid-rotation part of the displacement field the facet
-  // sees.
+  // facet tractions to cell vectors, so D^T carries each cell's outward
+  // incidence back onto the facet: the two cofaces of an interior facet enter
+  // with opposite signs and the assembled row is the difference. The same holds
+  // for A and the rotation, which supplies the rigid-rotation part of the
+  // displacement field the facet sees.
   //
   // What is returned is the full constitutive row of the unfractured system,
   //
@@ -735,11 +714,11 @@ class CauchyMechanicsModel {
   // [[u]] = 0. Dropping M sigma leaves 4e-2 there on a unit column instead of
   // round-off.
   //
-  // Three properties, each load bearing:
+  // Three properties:
   //
-  //   * It is linear in the state, so it applies even where that row has been
-  //     replaced by a contact constraint. The equation is gone; the functional
-  //     it expressed is not.
+  //   * Linear in the state, so it applies where a contact constraint has
+  //     replaced that row: the equation is gone, the functional it expressed is
+  //     not.
   //   * It must be the unfractured row. Where a constraint replaced it, the
   //     fractured residual is zero at the solution, whereas this residual is
   //     precisely the jump it exists to extract.
@@ -751,14 +730,13 @@ class CauchyMechanicsModel {
   //     coefficients of the jump. A second inversion divides by |f| and the slip
   //     then grows like 1/h under refinement: a mesh-dependent answer.
   //
-  // It is a property of the discretization and not of contact, which is why it
-  // lives here: any consumer wanting relative motion across a facet -- a
-  // fracture, a material interface, a post-processing -- wants this functional.
-  // PoroelasticModel carries the same method with the Biot term added.
+  // A property of the discretization, not of contact: any consumer wanting
+  // relative motion across a facet reads this functional. PoroelasticModel
+  // carries the same method with the Biot term added.
   std::vector<double> trace(Index facet, const std::vector<double>& z) const {
     // the contact machinery reads the componentwise (moment, component) facet
-    // blocks; the wrench basis -- the strong family's and diagonal_afw's -- is
-    // not wired through it yet
+    // blocks; the wrench basis -- the strong family's -- is not wired through
+    // it yet
     if (wrench_layout()) {
       throw std::logic_error(
           "CauchyMechanicsModel::trace: not implemented for the wrench-layout realizations");
@@ -828,20 +806,17 @@ class CauchyMechanicsModel {
         row[k] += acc;
       }
     }
-    // The sign is fixed by the compressed case, not by the bonded one. The
-    // residual vanishes wherever the material is continuous, and zero has no
-    // sign, so the bonded identity cannot distinguish g from -g. What does:
-    // prescribe a zero traction on a fault under compressive boundary
-    // displacement and the two halves must overlap, so the gap has to come out
-    // negative there. With the opposite convention the solver reads that as an
-    // open fault, settles in one iteration carrying no load, and reports a
-    // converged answer satisfying g >= 0, t <= 0 and g t = 0 -- formally
-    // Signorini, and the wrong branch of it.
+    // The sign is fixed by the compressed case: the bonded residual vanishes,
+    // and zero cannot distinguish g from -g. Prescribe a zero traction on a
+    // fault under compressive boundary displacement and the two halves overlap,
+    // so the gap comes out negative there. With the opposite convention the
+    // solver reads an open fault and converges in one iteration to g >= 0,
+    // t <= 0, g t = 0 -- the wrong branch of Signorini.
     //
-    // The same choice is what makes the outer iteration contract. Measured on a
+    // The same choice makes the outer iteration contract. Measured on a
     // compressed column, dg/dt = -0.16 in this convention, and the Uzawa
     // multiplier |1 + r dg/dt| is below one exactly when that slope is
-    // negative; with the sign the other way no augmentation converges.
+    // negative.
     for (double& v : row) v = -v;
     return row;
   }
@@ -903,8 +878,8 @@ class CauchyMechanicsModel {
   // later evaluation is a back-substitution against a moved right-hand side;
   // contact iterates without touching the global system again.
   //
-  // `moments` runs facet-major over prescribed_traction(), d * nb entries each,
-  // in the ProductSpace order (component fastest).
+  // `moments` runs facet-major over prescribed_traction(), facet_dofs() entries
+  // each, in the ProductSpace order (component fastest).
   const std::vector<double>& solution_operator(const std::vector<double>& moments) const {
     const std::size_t ndf = static_cast<std::size_t>(facet_dofs());
     if (moments.size() != prescribed_.size() * ndf) {
@@ -942,15 +917,15 @@ class CauchyMechanicsModel {
   // Each cell keeps its own facet stress, traction continuity moves to a
   // multiplier on the facets, and what a solver sees is the interface system
   // alone -- SPD once a facet is pinned, so a conjugate gradient applies where
-  // the condensed mixed system wanted MINRES and, on a hybrid mesh, converged
-  // under nothing.
+  // the condensed mixed system wanted MINRES.
   //
   // The boundary roles swap: the multiplier is the facet displacement, so a
-  // Dirichlet facet is a pinned multiplier and traction data enters the free
-  // rows naturally -- the opposite of the mixed form. This first cut pins
-  // every boundary facet to zero, which is the homogeneous reference exokal's
-  // assemblers are written against; an inhomogeneous datum needs its pinned
-  // block moved to the load and is not done here.
+  // Dirichlet facet is a pinned multiplier and a traction is natural rather
+  // than essential -- the opposite of the mixed form. Only the facets carrying
+  // a prescribed displacement are pinned, at the datum's own coefficients,
+  // which exokal's hybrid_interface_load reads as lambda_data; every other
+  // facet is free. A prescribed traction is refused below: the interface load
+  // carries no sigma-row term.
   //
   // The recovery is exokal's and cell-local, and it reports `jump`: the worst
   // disagreement between the two cofacet recoveries of a shared facet. It is
@@ -963,13 +938,11 @@ class CauchyMechanicsModel {
   };
 
   HybridReport hybridized(solver::LinearSolver& linear) {
-    // A NATURAL TRACTION HAS NOWHERE TO GO. The interface load is built from
-    // the cell rows and the pinned multipliers alone -- exokal's
-    // hybrid_interface_load takes fu, fp and lambda_data, and no sigma-row
-    // term -- so a prescribed traction is silently dropped and the answer
-    // comes back zero where it should not be. Refused rather than shipped:
-    // measured, a traction-driven column returns 0 with the interface solve
-    // reporting 0 iterations.
+    // The interface load is built from the cell rows and the pinned multipliers
+    // alone -- exokal's hybrid_interface_load takes fu, fp and lambda_data, and
+    // no sigma-row term -- so a prescribed traction would be dropped: measured,
+    // a traction-driven column returns 0 with the interface solve reporting 0
+    // iterations.
     for (std::size_t i = 0; i < mechanics_.size(); ++i) {
       if (dynamic_cast<const TractionBC*>(&mechanics_.at(i)) != nullptr) {
         throw std::invalid_argument(
@@ -993,14 +966,14 @@ class CauchyMechanicsModel {
       for (const Index f : d.facets) {
         free[static_cast<std::size_t>(f)] = 0;
         if (!wrench_layout()) {
-          // THE COMPONENTWISE DATUM: d moments on each of d components, so the
+          // The componentwise datum: d moments on each of d components, so the
           // multiplier is a full vector P_1 field on the facet -- 9 entries in
-          // space against the wrench's 6, because the multiplier spans the
-          // NORMAL TRACE space and a componentwise traction's trace is a linear
-          // vector field, not a rigid motion. Its entry is the datum's
-          // expansion on {chi_b e_k}, Gram^-1 int_f u_D chi_b, which is exactly
-          // what the monolithic term places in the stress row and in the same
-          // order, component fastest.
+          // space against the wrench's 6, the multiplier spanning the normal
+          // trace space and a componentwise traction's trace being a linear
+          // vector field rather than a rigid motion. Its entry is the datum's
+          // expansion on {chi_b e_k}, Gram^-1 int_f u_D chi_b, which is what
+          // the monolithic term places in the stress row, in the same order,
+          // component fastest.
           const Index cell = cofacet_of(*mesh_, dim_, f);
           const auto& cc = stress_.compact(cell);
           std::size_t slot = cc.faces.size();
@@ -1052,14 +1025,12 @@ class CauchyMechanicsModel {
     const auto cells = static_cast<std::size_t>(n_cells());
     // The kinematic load is not one contiguous run. The local saddle wants the
     // divergence rows then the asymmetry rows, and the model keeps those as
-    // separate fields -- u_0 with d per cell, then g_0 with d(d-1)/2 -- laid
-    // out cell-major within each. Reading nk in one stride from u_0 walks off
-    // the end of it into g_0 and, on the last cells, off the array: that is a
-    // segfault.
-    // Read the widths off the space. The wrench family's u is the six-component
-    // displacement screw and carries no rotation field at all; the
-    // componentwise family's u is d wide with the rotation beside it. Assuming
-    // either shape asks for a field that does not exist.
+    // separate fields -- u_0 then g_0 -- laid out cell-major within each, so
+    // reading nk in one stride from u_0 runs past its end into g_0 and, on the
+    // last cells, off the array.
+    // The widths come off the space: the wrench family's u is the six-component
+    // displacement screw with no rotation field beside it, the componentwise
+    // family's is d wide with g_0 of width d(d-1)/2.
     const std::size_t n_u = sp.map(sp.index_of("u_0")).size() / cells;
     const std::size_t n_g = nk - n_u;  // zero where the symmetry is strong
     const std::size_t g_offset =
@@ -1093,28 +1064,25 @@ class CauchyMechanicsModel {
     const exokal::hodge::HybridStressState st =
         exokal::hodge::hybrid_recovery(*mesh_, dim_, hops, all, fu, fp);
     out.jump = st.jump;
-    // back into the model's own state, so every accessor and every write of a
-    // .vtu reads the hybrid answer exactly as it reads the monolithic one
-    // Sigma comes back as itself: the recovered stress agrees with the
-    // monolithic one to 1.7e-11 on both axes, and the two cofacet recoveries
-    // of every shared facet agree to 1e-13, which is `jump`. It reads
-    // straight into the slots the space numbers -- the local saddle holds the
-    // facet stress in that order already, unlike the kinematic fields below.
+    // Back into the model's own state, so every accessor reads the hybrid
+    // answer as it reads the monolithic one. Sigma comes back as itself: the
+    // recovered stress agrees with the monolithic one to 1.7e-11 on both axes,
+    // and the two cofacet recoveries of every shared facet agree to 1e-13,
+    // which is `jump`. It reads straight into the slots the space numbers --
+    // the local saddle holds the facet stress in that order already, unlike the
+    // kinematic fields below.
     for (std::size_t i = 0; i < st.sigma.size() && s_offset_ + i < state_.size(); ++i) {
       state_[s_offset_ + i] = st.sigma[i];
     }
     // No sign here. The local saddle couples the way the mixed assembly does
     // -- sigma row -Dv^T, field row +Dv -- so the two routes solve the same
     // system and every field comes back as itself.
-    // DE-INTERLEAVED, the way the load was built. The local saddle carries the
-    // kinematic unknowns as ONE vector of width nk per cell -- the divergence
-    // rows then the asymmetry rows -- while the model keeps them as SEPARATE
-    // fields, u_0 of width n_u and g_0 of width n_g laid out cell-major. A
-    // straight copy is right only where n_g = 0, which is the wrench layout;
-    // on the componentwise families it wrote the rotation into the
-    // displacement's slots and the answer came back as though the datum had
-    // never been applied. The load assembly above interleaves them; this
-    // undoes it.
+    // De-interleaved, inverting the load assembly above: st.u is one vector of
+    // width nk per cell -- the divergence rows then the asymmetry rows -- while
+    // the model keeps u_0 of width n_u and g_0 of width n_g, cell-major within
+    // each. A straight copy is right only where n_g = 0, the wrench layout; on
+    // the componentwise families it writes the rotation into the displacement's
+    // slots.
     for (std::size_t e = 0; e < cells; ++e) {
       for (std::size_t r = 0; r < n_u; ++r) {
         const std::size_t at = e * nk + r;
@@ -1138,16 +1106,12 @@ class CauchyMechanicsModel {
 
   // The cell displacement, in the sign and the scale a caller means by it.
   //
-  // Two conversions, and both belong here rather than at every read site. The
-  // unknown is the moment of u over the cell, not a nodal value, so the mean is
-  // that divided by the measure. And it carries the opposite sign to the
-  // physical displacement: the mixed form is written [M, -B^T; +B, 0], so the
-  // multiplier standing in the constitutive row is -u. That convention is not a
-  // free choice once several physics land in one system -- two of them meeting
-  // there would give a matrix neither symmetric nor antisymmetric -- so the
-  // place to undo it is the accessor, once. Reading the raw dof gives an answer
-  // that is exactly twice the solution away from it, which looks like a
-  // discretization error and is not.
+  // Two conversions. The unknown is the moment of u over the cell, not a nodal
+  // value, so the mean is that divided by the measure; and it carries the
+  // opposite sign to the physical displacement, the mixed form being written
+  // [M, -B^T; +B, 0], so the multiplier standing in the constitutive row is -u.
+  // That convention is fixed by wanting one symmetry when several physics land
+  // in the same system, so the accessor undoes it once.
   double displacement(Index cell, int axis) const {
     const auto& sp = sim_->epoch().stratum(0).space();
     const auto& mu = sp.map(sp.index_of("u_0"));
@@ -1161,7 +1125,7 @@ class CauchyMechanicsModel {
   // unknown is the moment over the cell and it stands in the constitutive row
   // with the opposite sign. `p` indexes the generators of skew(d) in (i < j)
   // order -- one in two dimensions, three in three -- so gamma(e, 0) is the
-  // rotation of the plane in 2D and the yz, xz, xy components follow in 3D.
+  // rotation of the plane in 2D and the xy, xz, yz components follow in 3D.
   //
   // For a displacement field u, the rotation it is measuring is skew(grad u):
   // an exactly reproduced linear field therefore has an exactly reproduced
@@ -1181,9 +1145,9 @@ class CauchyMechanicsModel {
     //     projection sees the strain: ω_proj = ω + J⁻¹ q(ε), with
     //     J = tr(M₂)I - M₂ and q_a(ε) = ε_{lan} ε_lm (M₂)_nm. The strain is
     //     C⁻¹σ from the cell stress -- exact for affine fields -- so
-    //     ω = ω_proj - J⁻¹ q(ε) restores skw(grad u) on any cell. On a cube
-    //     q vanishes, which is how reporting ω_proj raw passes every
-    //     structured test and fails a sheared polyhedron by O(shear).
+    //     ω = ω_proj - J⁻¹ q(ε) restores skw(grad u) on any cell. q vanishes on
+    //     a cube, so ω_proj raw is exact on structured meshes and off by
+    //     O(shear) on a sheared polyhedron.
     if (strongly_symmetric()) {
       const auto& mu = sp.map(sp.index_of("u_0"));
       const double volume = exokal::measure(*mesh_, dim_, cell);
@@ -1281,11 +1245,68 @@ class CauchyMechanicsModel {
   // cell is in equilibrium with no body load. Under a reservoir pressurization
   // it is not, and the difference is the whole depletion signal.
   //
-  // The result is symmetrized. Symmetry of the stress is imposed weakly in this
-  // formulation -- that is what the rotation multiplier gamma is for -- so the
-  // raw reconstruction carries an antisymmetric part of the size of the
-  // discretization error.
+  // The result is symmetrized: in the weak family sigma = sigma^T holds only
+  // against gamma, so the raw reconstruction carries an antisymmetric part of
+  // the size of the discretization error. The strong family is symmetric by its
+  // space, and cell_stress dispatches it to the projection.
+  //
+  // ---- the strong family's constant stress -------------------------------
+  //
+  //   Pi_E sigma_h   the L^2 projection onto P_0(E; S), built from the facet
+  //                  moments alone. It reproduces a constant stress exactly,
+  //                  which the divergence-theorem average below also does, but
+  //                  it reads all q moments rather than the mean traction.
+  //
+  // The cell's traction dofs, outward-oriented, q slots a facet over the cell's
+  // own facet list: the order the reconstruction expects.
+  std::vector<double> vem_traction_dofs(Index cell, std::size_t q) const {
+    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& ms = sp.map(sp.index_of("s_0"));
+    const auto& op = stress_.compact(cell);
+    std::vector<double> dofs(q * op.faces.size(), 0.0);
+    for (std::size_t i = 0; i < op.faces.size(); ++i) {
+      for (std::size_t j = 0; j < q; ++j) {
+        const auto g = static_cast<std::size_t>(
+            ms.global(dim_ - 1, op.faces[i], static_cast<int>(j), 0));
+        dofs[q * i + j] = op.outward[i] * state_[s_offset_ + g];
+      }
+    }
+    return dofs;
+  }
+
+  static std::array<double, 9> to_row_major(const exokal::hodge::StressTensor& t) {
+    std::array<double, 9> out{};
+    for (std::size_t i = 0; i < 3; ++i) {
+      for (std::size_t j = 0; j < 3; ++j) out[i * 3 + j] = t[i][j];
+    }
+    return out;
+  }
+
+  // The projector is geometry only -- no mu, no lambda -- so it is the same
+  // operator whatever the material does across the mesh.
+  std::array<double, 9> cell_stress_projection(Index cell) const {
+    if (!wrench_layout()) throw std::logic_error("cell_stress_projection: the strong family only");
+    const exokal::hodge::StressProjection r =
+        exokal::hodge::stress_projection_data(*mesh_, dim_, cell);
+    return to_row_major(
+        exokal::hodge::dassi_constant_stress(r, vem_traction_dofs(cell, r.q)));
+  }
+
+  // Per cell, not per realization. The projection is the stabilized product's:
+  // its P comes from that inner product, and it reads all q moments. On a
+  // diagonal star nothing in the operator pairs with the higher moments, so the
+  // divergence-theorem average, which takes only the mean traction, is the
+  // exact one there. adaptive_vem mixes the two cell by cell, which is why the
+  // question is asked of the cell.
   std::array<double, 9> cell_stress(Index cell) const {
+    if (wrench_layout() && stress_.compact(cell).stabilized) {
+      return cell_stress_projection(cell);
+    }
+    return cell_stress_average(cell);
+  }
+
+
+  std::array<double, 9> cell_stress_average(Index cell) const {
     const auto& sp = sim_->epoch().stratum(0).space();
     const auto& ms = sp.map(sp.index_of("s_0"));
     const auto& op = stress_.compact(cell);  // faces and orientation: no dense M
@@ -1333,10 +1354,8 @@ class CauchyMechanicsModel {
   // against the facet's canonical normal.
   //
   // In Hellinger-Reissner the facet traction moments are primary unknowns, so
-  // this is the value on the plane itself rather than a cell-centred stress
-  // sampled half a cell away -- which matters most exactly where it is read from
-  // a fault, since no amount of refinement along the plane fixes an error
-  // across it.
+  // this is the value on the plane itself, not a cell-centred stress sampled
+  // half a cell away.
   //
   // It takes no coface, and that is the difference from `normal_traction`: the
   // orientation asked for is the canonical one, which a facet owns by itself,
@@ -1535,8 +1554,8 @@ class CauchyMechanicsModel {
                                   : exokal::hodge::Coefficient::per_cell(lame_per_cell_);
   }
 
-  double degeneracy_percent_{-1.0};  // adaptive_vem's scan threshold; negative is unset
-  double cond_threshold_{-1.0};      // adaptive_vem's conditioning threshold; negative is unset
+  double degeneracy_percent_{-1.0};  // the blends' scan threshold; negative is unset
+  double cond_threshold_{-1.0};      // the blends' conditioning threshold; negative is unset
   double rotation_jump_{0.0};        // diagonal_afw's rotation-jump constant; 0 is off
   std::size_t n_ill_conditioned_{0};
   MechanicsBoundary mechanics_;

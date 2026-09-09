@@ -13,16 +13,16 @@ Governing equations (tension-positive, ``Sigma = C eps(u) - alpha p I``):
     ``div Sigma = f`` ,   ``d/dt ( alpha div u + p/M ) + div q = r`` ,
     ``q = -(k/mu_f) grad p`` .
 
-Why the mixed form is robust where a displacement formulation is not
----------------------------------------------------------------------
+Robustness of the mixed form
+----------------------------
 Inverting the constitutive law gives ``eps(u) = C^{-1}(Sigma + alpha p I)``, so
-the operator the scheme actually inverts is ``C^{-1}``, not ``C``.  Three
-consequences, in the three regimes that break naive schemes:
+the operator the scheme inverts is ``C^{-1}``, not ``C``.  Three consequences,
+in the three limiting regimes:
 
 * **Incompressible solid** (``nu -> 1/2``).  ``C^{-1}`` stays bounded -- it tends
-  to the deviatoric projector -- so there is no volumetric locking and nothing
-  to stabilise.  ``lambda`` never appears; the compliance coefficient is
-  ``a = nu/(1-2nu+d nu)``, which is ``1/d`` at ``nu = 1/2``.
+  to the deviatoric projector -- so there is no volumetric locking.  ``lambda``
+  never appears; the compliance coefficient is ``a = nu/(1-2nu+d nu)``, which is
+  ``1/d`` at ``nu = 1/2``.
 * **Incompressible fluid** (``1/M = 0``).  The storage coefficient
   ``S = alpha^2/K + 1/M`` merely vanishes, turning the pressure row into a
   constraint.  The system is still a well-posed saddle point.
@@ -42,13 +42,15 @@ and the pressure row by ``dt`` so the whole thing stays symmetric)::
 
     [  M      D^T   A^T    0        Tc^T   ] [sigma]   [ g_u  ]
     [  D       0     0     0         0     ] [ u   ]   [ f    ]
-    [  A       0     0     0         0     ] [ s   ] = [ 0    ]
+    [  A       0    S_s    0         0     ] [ s   ] = [ 0    ]
     [  0       0     0  -dt M_q   dt B^T   ] [ q   ]   [-dt g_p]
     [  Tc      0     0   dt B      S|E|    ] [ p   ]   [ rhs  ]
 
-with ``Tc = diag(alpha/(dK)) T``.  Setting ``dt = None`` drops the flow rows and
-treats the pressure as given data -- the quasi-steady regime the fault
-benchmarks use, where the pressure field is prescribed cell by cell.
+with ``Tc = diag(alpha/(dK)) T`` and ``S_s = -rotation_stabilization()`` of the
+stress space, absent unless the space provides that hook (the lumped one does).
+Setting ``dt = None`` drops the flow rows and treats the pressure as given data
+-- the quasi-steady regime the fault benchmarks use, where the pressure field is
+prescribed cell by cell.
 
 ``Tc`` couples each cell pressure to *every* facet DOF of that cell.  The
 four-field variant (:class:`.four_field.FourFieldPoroMechanics`) carries the
@@ -91,8 +93,8 @@ class PoroMechanics:
     material: Material
     contact: object = None  # optional FractureContact
     #: optional stress inner product (e.g. ``LumpedDeviatoricStress`` built with
-    #: the same ``material``); ``None`` means AFW.  The caller owns the
-    #: material consistency between the two.
+    #: the same ``material``); ``None`` means ``DeRhamDeviatoricStress`` built
+    #: from this ``material``.  The caller owns the material consistency.
     stress_inner: object = None
 
     #: optional flux inner product; ``None`` means the de Rham flow space
@@ -118,8 +120,8 @@ class PoroMechanics:
         self.mechanics = self.mechanics_class(
             self.mesh, contact=self.contact, inner=inner
         )
-        # the flow block must see the *per-cell* mobility k/mu_f, or a
-        # permeability contrast would silently vanish from the system
+        # the flow block must see the per-cell mobility k/mu_f, or a
+        # permeability contrast never reaches the system
         if self.flow_inner is None:
             from mimetika.operators.derham import DeRhamDiffusionInnerProduct
 
@@ -172,8 +174,8 @@ class PoroMechanics:
         Built exactly like ``as_h``, with the identity in place of the rigid
         rotations: ``tr_h(tau)_E = (1/|E|) sum_e int_e (tau n_e) . (x - x_E)``.
 
-        Cached: it depends only on the geometry, not on the material or the time
-        step, but ``assemble`` needs it every call and it loops over every cell.
+        Cached: ``diag(2 mu) W`` cancels the compliance in ``W``, so ``T``
+        depends on the geometry alone, while ``assemble`` requests it per call.
         """
         if getattr(self, "_trace", None) is not None:
             return self._trace
@@ -181,9 +183,9 @@ class PoroMechanics:
         return self._trace
 
     def _build_trace_operator(self) -> sp.csr_matrix:
-        # T = diag(2 mu) W: the volumetric coupling every stress space exposes
-        # *is* the trace, scaled by the compliance 1/2mu -- one builder, both
-        # spaces, and the four-field split reuses the same object.
+        # T = diag(2 mu) W: the volumetric coupling every stress space exposes is
+        # the trace scaled by the compliance 1/2mu, so one builder serves both
+        # spaces and the four-field split.
         ip = self.mechanics.inner
         W, _ = ip.volumetric_operator()
         return (sp.diags(2.0 * ip._mu) @ W).tocsr()
@@ -380,15 +382,12 @@ class PoroMechanics:
                 }
             )
         n4 = n3 + self.n_flux
-        # CPR split: everything against the pressure, which is the elliptic
-        # field and is last and contiguous in [sigma, u, s, q, p].  The Schur
-        # complement of this split is `B diag(M)^-1 B^T + S|E|` -- the cell-centred
-        # pressure operator -- so AMG on it is exactly the CPR idea.
-        #
-        # The first block runs to n4: q sits at offset n3, so a split at
-        # `n_stress + n_flux` would name displacement and rotation entries as
-        # flux and mis-target both the fieldsplit preconditioner and the block
-        # scaling.
+        # CPR split: everything against the pressure, the elliptic field, last
+        # and contiguous in [sigma, u, s, q, p].  The Schur complement of this
+        # split is `B diag(M)^-1 B^T + S|E|`, the cell-centred pressure operator,
+        # so AMG applies to it.  The first block runs to n4: q sits at offset n3,
+        # so a split at `n_stress + n_flux` would name displacement and rotation
+        # entries as flux and mis-target the fieldsplit and the block scaling.
         x = solve_saddle(A, rhs, (n4, self.n_cells), **solver)
         return MixedSolution(
             {
@@ -405,8 +404,8 @@ class PoroMechanics:
     def volumetric_strain(self, solution) -> np.ndarray:
         """``div u = inv_modulus * ( tr(Sigma) + d alpha p )``.
 
-        Read straight off ``eps(u) = C^{-1}(Sigma + alpha p I)``; it vanishes
-        identically at ``nu = 1/2``, which *is* the incompressibility constraint.
+        Read off ``eps(u) = C^{-1}(Sigma + alpha p I)``; at ``nu = 1/2`` it
+        vanishes identically -- the incompressibility constraint.
         """
         vol = self.mesh.geometry.measure(self.d)
         tr = (self.trace_operator() @ solution["stress"]) / vol

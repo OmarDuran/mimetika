@@ -15,9 +15,9 @@ with diffusivity ``c_f = k M (K + 4mu/3)/(K_u + 4mu/3)``, ``K_u = K + b^2 M``
 coefficient is ``lam/(2(lam + mu))``), so the 3D Lame parameters carry over
 unchanged.
 
-Discretization: quarter annulus meshed by **gmsh** (graded triangles), the
-six-field formulation with the de Rham defaults -- no stabilization in any
-block.  Rollers and sealed facets on the symmetry planes; tractions and
+Discretization: quarter annulus meshed by gmsh (graded triangles), the
+six-field formulation ``[sigma, p_s, u, s, q, p]`` with the de Rham
+defaults.  Rollers and sealed facets on the symmetry planes; tractions and
 pressures on the wall and the far boundary.
 
 Reference (APA)
@@ -300,7 +300,7 @@ def run(h_in, h_out, n_steps, T_end, report_at, vtk=None, dim=2,
 
     # the full poromechanics solver on its constant-dt fast path: the matrix
     # and every boundary datum are constant in time, so the first flow_step
-    # assembles and factorizes ONCE and every later step is a
+    # assembles and factorizes once and every later step is a
     # back-substitution plus the previous-state update of the pressure rows
     import time
 

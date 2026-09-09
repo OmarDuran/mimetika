@@ -2,7 +2,7 @@ r"""Fully mixed Biot poromechanics, and the three robustness limits.
 
 The benchmarks this solver exists for (Novikov et al., fault reactivation) run
 at parameter values that break a displacement-based scheme, so the three limits
-are checked here as first-class requirements rather than as afterthoughts:
+are checked here:
 
 ===========================  ===================================================
 requirement                  why the mixed form survives it
@@ -16,18 +16,16 @@ high contrast                moduli are per cell and enter only through local
                              inner products
 ===========================  ===================================================
 
-Each is checked in **2D and 3D**, on **simplices and polytopes**, against a
-closed-form answer -- not merely for "it ran".
+Each is checked in 2D and 3D, on simplices and polytopes, against a closed-form
+answer.
 """
 
 import numpy as np
 import pytest
 
 from mimetika.assembly.mixed import boundary_facets
-# The whole module runs the **standard** formulation -- the four-field split
-# with the solid pressure explicit.  The robustness limits below are therefore
-# statements about the formulation users actually get; the classic five-field
-# system keeps its coverage through the congruence tests in test_four_field.py.
+# The module runs the four-field split with the solid pressure explicit; the
+# five-field system is covered by the congruence tests in test_four_field.py.
 from mimetika.assembly.four_field import FourFieldPoroMechanics as PoroMechanics
 from mimetika.materials import Material, compliance_coefficient
 from mimetika.mesh import (
@@ -52,9 +50,9 @@ POISSON = [0.15, 0.45, 0.49999, 0.5]
 def uniform(name, nu, biot=0.9, pressure=-25.0, shear=1.0):
     """A uniform total-stress state and the displacement that produces it.
 
-    Returns ``(problem, stress_fn, displacement_fn, strain)`` where the stress is
-    constant, so the discrete solution must reproduce it exactly for *any*
-    Poisson ratio -- there is no discretisation error to hide a locking failure.
+    Returns ``(problem, stress_fn, displacement_fn, strain)``.  The stress is
+    constant, so the discrete solution reproduces it exactly at any Poisson ratio
+    and the measured error carries no discretisation component.
     """
     mk, d = MESHES[name]
     mesh = mk()
@@ -122,11 +120,10 @@ def test_trace_operator_annihilates_a_deviatoric_state():
 
 @pytest.mark.parametrize("name", ALL)
 def test_traction_moments_match_the_interpolant(name):
-    """Prescribed traction DOFs must equal what ``interpolate_stress`` produces.
+    """Prescribed traction DOFs equal what ``interpolate_stress`` produces.
 
-    Regression guard.  The two used different normal conventions -- one applied
-    the incidence sign on top of a caller-supplied ambient traction -- which
-    cancelled on facets with ``s = +1`` and silently flipped the sign elsewhere.
+    Both take the traction against the canonical facet normal, with no extra
+    incidence sign; applying one would flip the values on ``s = -1`` facets.
     """
     problem, stress, _, _ = uniform(name, 0.25)
     facets = face(problem)
@@ -138,9 +135,8 @@ def test_traction_moments_match_the_interpolant(name):
 def test_vector_and_tensor_traction_agree(name):
     """The ``(nq, 3)`` form must match the ``(nq, 3, 3)`` form on the same facets.
 
-    The vector form is taken against the *canonical* facet normal, so the two
-    agree only if that convention is honoured -- including on facets whose
-    incidence sign is negative.
+    The vector form is taken against the canonical facet normal, so the two agree
+    only if that convention holds, including on facets with incidence sign -1.
     """
     problem, stress, _, _ = uniform(name, 0.25)
     facets = face(problem)
@@ -162,7 +158,7 @@ def test_vector_and_tensor_traction_agree(name):
 @pytest.mark.parametrize("name", ALL)
 @pytest.mark.parametrize("nu", POISSON)
 def test_uniform_stress_is_exact_up_to_the_incompressible_limit(name, nu):
-    """No locking: the error must not grow as ``nu -> 1/2``, and must hold *at* 1/2."""
+    """No locking: relative stress error < 1e-11 at every ``nu``, 1/2 included."""
     problem, stress, displacement, strain = uniform(name, nu)
     solution = problem.solve(
         dt=None,
@@ -181,7 +177,7 @@ def test_uniform_stress_is_exact_up_to_the_incompressible_limit(name, nu):
 
 @pytest.mark.parametrize("name", ALL)
 def test_divergence_free_exactly_at_one_half(name):
-    """``div u`` is not merely small at ``nu = 1/2`` -- it is identically zero."""
+    """``div u`` is identically 0.0 at ``nu = 1/2``, not merely below a tolerance."""
     problem, stress, displacement, _ = uniform(name, 0.5)
     solution = problem.solve(
         dt=None,
@@ -195,12 +191,11 @@ def test_divergence_free_exactly_at_one_half(name):
 
 @pytest.mark.parametrize("name", ALL)
 def test_compliance_null_space_is_hydrostatic_at_one_half(name):
-    """``C^{-1}`` becomes the deviatoric projector, so ``M_E`` *must* be singular.
+    """``C^{-1}`` becomes the deviatoric projector, so ``M_E`` is singular.
 
-    A positive-definite local inner product at ``nu = 1/2`` would be wrong.  The
-    null space has one hydrostatic direction per scalar mode, ``d + 1`` of them,
-    on simplices and polytopes alike -- the stabilization acts on ``ker(N^T)``,
-    which is a different subspace, and does not fill it in.
+    The null space has one hydrostatic direction per scalar mode, ``d + 1`` of
+    them, on simplices and polytopes alike; the stabilization acts on ``ker(N^T)``,
+    a different subspace, and does not fill it in.
     """
     from mimetika.operators.elasticity import ElasticityInnerProduct
     from mimetika.operators.inner_product import assemble_local_inner_product
@@ -264,9 +259,8 @@ def test_compliance_coefficient_is_finite_at_one_half():
 def test_undrained_response_with_an_incompressible_fluid(name, nu):
     """``1/M = 0`` and sealed walls: ``div u = 0`` and ``p = -tr(Sigma)/(d alpha)``.
 
-    With no storage, the fluid content cannot change, so the load is carried by
-    the pore pressure alone -- Skempton ``B = 1``.  Both statements are exact,
-    which is a far sharper test than checking the solve merely completes.
+    With no storage the fluid content cannot change, so the load is carried by the
+    pore pressure alone: Skempton ``B = 1``.  Both statements hold to 1e-11.
     """
     mk, d = MESHES[name]
     mesh = mk()
@@ -305,21 +299,18 @@ def test_storage_vanishes_only_when_both_terms_do():
 
 # -- requirement 3: high material contrast --------------------------------------------
 #
-# Choosing the test problem matters here, because a *uniform* stress state is
-# not in general the solution of the continuous problem under a heterogeneous
+# A uniform stress state is not in general a solution under a heterogeneous
 # ``C``: the strain ``eps = C^{-1} sigma`` is then discontinuous in its in-plane
-# components, so no displacement produces it.  That is a statement about the
-# manufactured solution, not about the method -- and it is avoidable, because
-# ``C^{-1}`` splits cleanly:
+# components, so no displacement produces it.  The split
 #
 #     ``C^{-1} sigma = dev(sigma) / 2mu  +  tr(sigma) I / (d^2 K)``
 #
-# so each part sees only *one* modulus.  Contrast in ``mu`` alone under a
-# **hydrostatic** load, and contrast in ``K`` alone under a **deviatoric** load,
-# therefore both admit a uniform stress with a linear displacement -- an exact
-# patch test at arbitrary contrast, on a genuine **checkerboard**.  Contrast in
-# ``mu`` and ``K`` together is covered by the layered pure-shear problem below,
-# where compatibility is restored by the layering rather than by the load.
+# lets each part see one modulus only.  Contrast in ``mu`` alone under a
+# hydrostatic load, and contrast in ``K`` alone under a deviatoric load, therefore
+# admit a uniform stress with a linear displacement: an exact patch test at
+# arbitrary contrast on a checkerboard.  Contrast in ``mu`` and ``K`` together is
+# covered by the layered pure-shear problem below, where compatibility comes from
+# the layering rather than the load.
 
 
 def checkerboard(mesh, values, split=0.5):
@@ -344,8 +335,8 @@ def poisson_for(shear, inverse_modulus, dim):
 def uniform_state(problem, tensor):
     """``(stress_fn, displacement_fn)`` for a uniform stress with per-cell moduli.
 
-    Only valid when ``C^{-1} tensor`` is the *same* in every cell -- which is
-    what the two checkerboard tests below arrange.
+    Valid only when ``C^{-1} tensor`` is the same in every cell, which the two
+    checkerboard tests below arrange.
     """
     d = problem.d
     material = problem.material
@@ -365,9 +356,8 @@ def uniform_state(problem, tensor):
 def test_checkerboard_shear_contrast_under_a_hydrostatic_load(contrast):
     """``mu`` alternating cell by cell, ``K`` matched: uniform stress is exact.
 
-    A hydrostatic stress engages only the volumetric part of ``C^{-1}``, which
-    is identical in every cell, so the shear contrast cannot make the strain
-    incompatible -- any error is the solver's.
+    A hydrostatic stress engages only the volumetric part of ``C^{-1}``, identical
+    in every cell, so the shear contrast cannot make the strain incompatible.
     """
     mesh = structured_box(2, 2, 2)
     d, bulk = 3, 1.0
@@ -396,9 +386,8 @@ def test_checkerboard_bulk_contrast_under_a_deviatoric_load(name):
     """``K`` alternating cell by cell (up to the incompressible limit), ``mu`` uniform.
 
     A deviatoric stress engages only ``dev/2mu``, so the bulk contrast -- here
-    spanning ``nu = 0.15`` to ``nu = 1/2``, i.e. finite ``K`` next to infinite --
-    leaves the exact solution untouched.  This is the checkerboard analogue of
-    the incompressible-limit test, with both regimes present in one mesh.
+    spanning ``nu = 0.15`` to ``nu = 1/2``, finite ``K`` next to infinite --
+    leaves the exact solution untouched; both regimes sit in one mesh.
     """
     mk, d = MESHES[name]
     mesh = mk()
@@ -421,7 +410,7 @@ def test_checkerboard_bulk_contrast_under_a_deviatoric_load(name):
 
 
 def test_checkerboard_pattern_really_alternates():
-    """Guard the guard: neighbouring cells must actually differ."""
+    """The pattern takes both values, on equal cell counts."""
     mesh = structured_box(2, 2, 2)
     values = checkerboard(mesh, (1.0, 7.0))
     assert set(np.unique(values)) == {1.0, 7.0}
@@ -465,10 +454,10 @@ def layered_shear(mesh, shear, amplitude=0.5, split=0.5):
 def test_layered_shear_is_exact_under_a_shear_modulus_jump(contrast):
     """The stress stays exact to the accuracy the conditioning allows.
 
-    The attainable accuracy degrades like ``contrast * eps_machine`` -- that is
-    forced by solving in double precision at a condition number proportional to
-    the modulus jump, and it is the *optimal* rate, not a defect.  The bound
-    below encodes that rate, so an error growing like ``contrast^2`` would fail.
+    Attainable accuracy degrades like ``contrast * eps_machine``, the
+    double-precision rate at a condition number proportional to the modulus jump.
+    The bound ``1e-13 * contrast + 1e-12`` encodes that rate, so an error growing
+    like ``contrast^2`` fails.
     """
     mesh = structured_box(2, 2, 2)
     shear = (1.0, contrast)
@@ -486,9 +475,9 @@ def test_layered_shear_is_exact_under_a_shear_modulus_jump(contrast):
 def test_discrete_equilibrium_is_exact_at_every_contrast(contrast):
     """``div_h sigma = f`` is metric-free, so no contrast can perturb it.
 
-    This is the part of the answer that must stay at round-off however badly
-    conditioned the inner product becomes: the divergence block contains only
-    incidence signs and measures, no moduli at all.
+    ``D`` carries bare incidence signs and ``A`` only facet geometry; neither
+    block contains a modulus, so both residuals stay at round-off however badly
+    conditioned ``M`` becomes.
     """
     mesh = structured_box(2, 2, 2)
     shear = (1.0, contrast)
@@ -504,11 +493,7 @@ def test_discrete_equilibrium_is_exact_at_every_contrast(contrast):
 
 
 def test_contrast_error_grows_only_linearly():
-    """Pin the *rate*: a thousand-fold contrast jump costs a thousand-fold error.
-
-    An absolute tolerance loose enough to admit ``contrast = 1e9`` has little
-    teeth on its own; this compares the two directly instead.
-    """
+    """Pin the rate: ``err(1e9) / err(1e6) < 1e4``, linear growth being 1e3."""
     mesh = structured_box(2, 2, 2)
     errors = {}
     for contrast in (1e6, 1e9):
@@ -527,9 +512,8 @@ def test_contrast_error_grows_only_linearly():
 def test_contrast_together_with_the_incompressible_limit(contrast):
     """Compressible cells adjacent to exactly-incompressible ones, in one mesh.
 
-    Pure shear is traceless, so the answer is independent of ``nu`` -- which is
-    exactly what makes it a clean probe: any sensitivity to the ``nu = 1/2``
-    cells is numerical, not physical.
+    Pure shear is traceless, so the answer is independent of ``nu``: any
+    sensitivity to the ``nu = 1/2`` cells is numerical, not physical.
     """
     mesh = structured_box(2, 2, 2)
     shear = (1.0, contrast)
@@ -551,11 +535,8 @@ def test_contrast_together_with_the_incompressible_limit(contrast):
 
 
 def test_the_contrast_problem_actually_has_contrast():
-    """Guard the guard: the stiff layer must barely shear compared with the soft one.
-
-    Without this, a test that passed because the contrast never reached the
-    operator would look identical to one that passed on merit.
-    """
+    """The manufactured field really carries the contrast: ``stiff < 1e-5 * soft``,
+    the displacement gained across the two layers at ``mu`` ratio 1e6."""
     mesh = structured_box(2, 2, 2)
     _, displacement = layered_shear(mesh, (1.0, 1e6))
     at = lambda y: displacement(np.array([[0.0, y, 0.0]]))[0, 0]  # noqa: E731
@@ -568,9 +549,9 @@ def test_the_contrast_problem_actually_has_contrast():
 def test_permeability_contrast_sustains_a_pressure_jump():
     """A tight layer draining through a permeable one must hold the pressure back.
 
-    Sealed walls with a uniform source give a *uniform* pressure and no flow at
-    all, so the contrast would never be exercised; the top face is drained here,
-    and the step is long enough for the permeable layer to actually drain.
+    Sealed walls with a uniform source give a uniform pressure and no flow, so the
+    contrast would never be exercised; the top face is drained instead, at
+    ``dt = 1e3``, long enough for the permeable layer to drain.
     """
     mesh = structured_box(2, 2, 4)
     material = Material(
@@ -653,10 +634,9 @@ def test_no_flow_facets_are_genuinely_sealed():
 
 
 def test_draining_is_the_default_and_loses_mass():
-    """Guards the mixed BC convention: no ``no_flow`` means ``p = 0``, not sealed.
+    """The mixed BC convention: no ``no_flow`` means ``p = 0``, not sealed.
 
-    Getting this backwards is the natural mistake -- in a primal formulation
-    "prescribe nothing" *is* no-flow -- and it silently changes the physics.
+    The opposite of the primal convention, where prescribing nothing is no-flow.
     """
     mesh = structured_box(2, 2, 2)
     volume = mesh.geometry.measure(3)
@@ -746,10 +726,10 @@ def test_quasi_steady_returns_the_prescribed_pressure(name):
 def test_derham_flow_block_reproduces_a_linear_pressure_state():
     """One backward-Euler step from the exact linear-pressure state is exact.
 
-    With ``alpha = 0`` the flow decouples; a linear pressure with its constant
-    flux is a steady state of the de Rham flow block, so the step must return
-    it to machine precision -- this pins the sign and scaling of the
-    boundary-pressure pairing on the moment DOFs.
+    With ``alpha = 0`` the flow decouples; a linear pressure with its constant flux
+    is a steady state of the de Rham flow block, so the step returns it to 1e-9.
+    This pins the sign and scaling of the boundary-pressure pairing on the moment
+    DOFs.
     """
     mesh = structured_box(2, 2, 2)
     problem = PoroMechanics(

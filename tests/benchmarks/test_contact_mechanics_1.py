@@ -3,11 +3,12 @@ r"""Benchmark 1 of Novikov et al.: vertical displaced fault, frictionless.
 Two layers again, tested separately: the analytic solution (eqs 18-22, no
 solver involved) and the simulation that has to reproduce it.
 
-The analytic slip is derived for an **unbounded** medium while the simulation
-uses the paper's finite ``W = H = 4500`` m domain, so the comparison is on the
-peak and the profile shape with a tolerance that reflects that, plus a
-refinement trend.  What *is* required exactly is the frictionless condition
-itself: zero shear traction on every fault facet, to round-off.
+The analytic slip is derived for an unbounded medium while the simulation uses a
+finite domain -- ``W = 18000`` m, ``H = 4500`` m, from
+``benchmark_1.wide_parameters()`` -- so the comparison is on the peak and the
+profile shape with a tolerance that reflects that, plus a refinement trend.  The
+frictionless condition itself is required exactly: zero shear traction on every
+fault facet, to round-off.
 """
 
 import numpy as np
@@ -97,18 +98,18 @@ def test_the_coulomb_stress_decays_far_from_the_reservoir(parameters):
 def coarse():
     """A graded mesh, not a uniform one.
 
-    The domain is 18 km wide (see ``Parameters.width``) around features spanning
-    300 m, so a uniform grid coarse enough to run in a test has cells over a
-    kilometre across and the answer is meaningless.  Grading is what the benchmark
-    itself uses; the uniform path is kept only for the geometry checks.
+    The domain is 18 km wide (``benchmark_1.WIDE_DOMAIN``) around features
+    spanning 300 m, so a uniform grid coarse enough to run in a test has cells
+    over a kilometre across.  Grading is what the benchmark itself uses; the
+    uniform path is kept only for the geometry checks.
     """
     return bench.simulate(bench.wide_parameters(), spacing=25.0)
 
 
 def test_the_offset_reservoir_is_built_correctly(parameters):
     """The throw is what loads the fault, so the pressure field must be displaced."""
-    # graded, not uniform: the reservoir is 225 m thick inside a 9 km domain, so a
-    # uniform mesh coarse enough for a test cannot resolve it at all
+    # graded, not uniform: the reservoir is 225 m thick inside an 18 km domain,
+    # so a uniform mesh coarse enough for a test cannot resolve it
     mesh, fault, pressure = bench.build(parameters, spacing=25.0)
     centroids = mesh.geometry.centroids(2)
     depleted = pressure != 0.0
@@ -157,17 +158,15 @@ def test_the_slip_is_localised_at_the_reservoir(coarse):
 def test_the_slip_is_symmetric_about_the_reservoir(coarse):
     """``delta(-y) = delta(y)``, as the analytic profile is.
 
-    Compared against the **peak**, not against the local value: the offset
-    reservoir is symmetric only under the point reflection ``(x, y) -> (-x, -y)``,
-    and the boundary conditions (free top, roller base) are not ``y``-symmetric
-    at all, so the far field carries a small absolute asymmetry that is large in
-    relative terms precisely where the slip is near zero.
+    Compared against the peak, not against the local value: the offset reservoir
+    is symmetric only under the point reflection ``(x, y) -> (-x, -y)``, and the
+    boundary conditions (free top, roller base) are not ``y``-symmetric, so the
+    far field carries a small absolute asymmetry that is large in relative terms
+    where the slip is near zero.
 
-    Checked tightly on ``|y| <= b``, the support of the analytic tent, where the
-    slip is O(0.1 m) and symmetry has to hold.  Outside it the profile is the few
-    millimetre far-field lobe, whose own asymmetry is a fixed fraction of itself
-    and therefore unbounded relative to a tent-sized tolerance; that region gets a
-    separate, looser bound rather than being folded into the same number.
+    Tolerance 5e-3 of the peak on ``|y| <= b``, the support of the analytic tent
+    where the slip is O(0.1 m); 2e-2 of the peak on ``|y| <= 3b``, where the
+    profile is the few-millimetre far-field lobe.
     """
     parameters = bench.wide_parameters()
     y, slip = coarse["y"], np.abs(coarse["slip"])
@@ -190,14 +189,14 @@ def test_the_slip_is_symmetric_about_the_reservoir(coarse):
 
 
 def test_refinement_converges_and_stays_close_to_the_analytic_peak():
-    """Refinement must converge -- but not necessarily onto the analytic peak.
+    """Refinement must converge, but not necessarily onto the analytic peak.
 
-    On the paper's wide domain the peak overshoots by about 1.4% and *settles*
-    there: +0.87 / +1.25 / +1.37% at spacing 25 / 12.5 / 6.25.  That residual is
-    the fault compliance's own discretisation error, measured independently at
-    ~1% by feeding the discrete operator the exact eq. (18) load, so demanding the
-    peak error shrink would be demanding the wrong thing.  What must hold is that
-    the whole profile converges and the peak stays bounded.
+    On the wide domain the peak overshoots by about 1.4% and settles there:
+    +0.87 / +1.25 / +1.37% at spacing 25 / 12.5 / 6.25, of which the loop below
+    runs the first two.  That residual is the fault compliance's own
+    discretisation error, measured independently at ~1% by feeding the discrete
+    operator the exact eq. (18) load.  What is asserted is that the profile RMS
+    decreases and the peak error stays under 3%.
     """
     parameters = bench.wide_parameters()
     profile_errors, peak_errors = [], []
@@ -216,8 +215,8 @@ def test_the_narrow_domain_reproduces_the_published_discrepancy():
     """W = 4500 m is the Table 2 domain, and it is too narrow -- as the paper says.
 
     Section 4.1 reports the reference code deviating from the semi-analytical
-    solution on it, cured by widening to 18 km.  Pinning both ends here keeps the
-    default from being changed back by accident, and records *why* it is 18 km.
+    solution on it, cured by widening to 18 km.  Both ends are pinned here: the
+    narrow peak short by more than 2%, the wide one within 3% of ``C/A (a-b)``.
     """
     narrow = bench.simulate(Parameters(), spacing=12.5)      # Table 2's 4500 m box
     wide = bench.simulate(bench.wide_parameters(), spacing=12.5)
@@ -227,15 +226,13 @@ def test_the_narrow_domain_reproduces_the_published_discrepancy():
 
 
 def test_the_default_law_is_the_unilateral_one(coarse):
-    """Benchmark 1 runs ``SignoriniCoulomb(friction=0)`` -- the physical model.
-
-    A benchmark exists to test laws, so the law that represents the situation is
-    the one it should run, not a bonded stand-in chosen because it is easier.
+    """Benchmark 1 runs ``SignoriniCoulomb(friction=0)`` -- the physical model,
+    unilateral and frictionless.
 
     The incremental normal traction goes into tension over part of the fault.
     That is admissible here -- the in-situ normal stress is about ``-57`` MPa, so
-    the fault is still shut by a wide margin -- but a unilateral law applied to
-    the *increment* would read it as opening and clip it to zero.
+    the fault is still shut -- but a unilateral law applied to the increment alone
+    would read it as opening and clip it to zero.
     """
     from mimetika.contact import SignoriniCoulomb
 
@@ -244,17 +241,16 @@ def test_the_default_law_is_the_unilateral_one(coarse):
     driver_law = bench.simulate(parameters, nx=12, ny=30)["state"]
     assert driver_law.converged
     # the incremental normal traction is tensile, and the law keeps it: with the
-    # in-situ prestress the *total* traction is compressive, so the fault is shut
+    # in-situ prestress the total traction is compressive, so the fault is shut
     assert coarse["traction"][:, 0].max() > 1e6
     assert isinstance(SignoriniCoulomb(friction=0.0), SignoriniCoulomb)
 
 
 def test_without_the_prestress_the_unilateral_law_opens_the_fault():
-    """The failure the prestress prevents, kept visible.
+    """The failure the prestress prevents.
 
-    Deliberately runs ``prestress=False`` so the law sees only the increment.  It
-    then reads the ``+8.4`` MPa tensile increment as opening and clips it -- which
-    is a defect of the incremental formulation, not of Signorini.
+    Runs ``prestress=False`` so the law sees only the increment; it then reads
+    the ``+8.4`` MPa tensile increment as opening and clips it to zero.
     """
     parameters = bench.wide_parameters()
     with_prestress = bench.simulate(parameters, nx=12, ny=30, prestress=True)
@@ -287,9 +283,8 @@ def test_the_two_laws_agree_once_both_see_the_total_traction():
 def written_series(tmp_path_factory):
     """One depletion ramp shared by every output test.
 
-    Four steps at the coarse spacing covers all of them: the collection
-    structure, both parts, the field names, and the monotone slip.  Re-running
-    the ramp per test cost about 90 s and told us nothing extra.
+    Four steps at ``spacing = 25`` m cover the collection structure, both parts,
+    the field names and the monotone slip.
     """
     directory = tmp_path_factory.mktemp("series")
     series = bench.depletion_series(directory / "fault", bench.wide_parameters(),
@@ -328,9 +323,8 @@ def test_the_depletion_series_writes_a_readable_collection(written_series):
 def test_both_the_rock_and_the_fault_are_written(written_series):
     """Two parts, two dimensions: 2D rock cells and the 1D fault facets.
 
-    The fracture carries traction and jump -- a fault is a contact interface, so
-    that is its whole state -- while the rock carries the displacement and stress
-    driving it.  A fault plotted without its surroundings cannot be read.
+    The fracture carries traction and jump, a contact interface's whole state;
+    the rock carries the displacement and stress driving it.
     """
     VTK_LINE, VTK_POLYGON = 3, 7
     series, directory = written_series
@@ -364,7 +358,8 @@ def test_the_rock_part_shows_where_the_reservoir_is(written_series):
 
 
 def test_the_slip_grows_monotonically_with_depletion(written_series):
-    """Physics check on the series, not just that files appeared."""
+    """The peak slip rises with depletion, and proportionally: frictionless and
+    linear in the load, so the four-step ramp gives ``peaks[-1]/peaks[0] = 4``."""
     series, directory = written_series
     peaks = []
     for entry in datasets(series):

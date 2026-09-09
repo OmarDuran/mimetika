@@ -84,7 +84,7 @@ def solvers(rtol):
     }
 
 
-SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg", _hypre.NAME)
+SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg") + _hypre.HYPRE_NAMES
 DEFAULT_RTOL = 1e-9
 
 # ADS is a three-dimensional construction: its auxiliary spaces are built from
@@ -92,7 +92,7 @@ DEFAULT_RTOL = 1e-9
 # H(div) unknowns sit on edges rather than faces -- the maps do not address
 # them, and hypre has no ADS for that case.
 def require_three_dimensions(solver, dim):
-    if solver.startswith("ads") and dim != 3:
+    if (solver.startswith("ads") or solver == _hypre.NAME) and dim != 3:
         raise SystemExit(
             f"--solver {solver} is a 3D construction (it needs the discrete "
             f"gradient and curl of a 3-complex); this problem is {dim}D. "
@@ -180,9 +180,12 @@ def solve(nr, nt, dim, family, how, mat, form=None, solver="riesz", rtol=DEFAULT
     model.add_free_slip(symmetry)  # rollers: no normal displacement, no shear
     # The direct hypre route is not one of the PETSc option sets: it assembles
     # here and solves in the other module. A stress is d copies of the flux
-    # space, so ADS is given the same complex d times, one per row of sigma.
-    if solver == _hypre.NAME:
-        _hypre.solve(model, mesh, dim, _hypre.options(rtol, block_iterations=block_its, block_rtol=1e-2))
+    # space, so ADS is given the same complex d times, one per row of sigma;
+    # MGR reduces the assembled system instead and needs no complex at all.
+    if solver in _hypre.HYPRE_NAMES:
+        _hypre.solve(model, mesh, dim,
+                     _hypre.options(rtol, block_iterations=block_its, block_rtol=1e-2,
+                                    mgr=solver == _hypre.MGR_NAME))
     else:
         model.solve(options=solvers(rtol)[solver])
 

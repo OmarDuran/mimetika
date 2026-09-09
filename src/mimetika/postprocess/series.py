@@ -1,35 +1,24 @@
-r"""Time series output for **mixed-dimensional** problems: a ``.pvd`` over ``.vtu``.
+r"""Time series output for mixed-dimensional problems: a ``.pvd`` over ``.vtu``.
 
-A mixed-dimensional solution does not fit in one file.  The bulk lives on
-``d``-cells and the fracture on a tagged set of ``(d-1)``-facets, with their own
-unknowns -- fracture pressure and flux, or contact traction and displacement
-jump -- that have no bulk counterpart.  Flattening them into one grid would
-either drop the fracture fields or smear them over the cells beside it.
-
-VTK already has the right container.  A ``.pvd`` collection lists
-``(timestep, part, file)`` triples, so bulk and fracture are written as separate
-**parts** at the same timestep and ParaView loads them as two blocks of one
-dataset: colour the fracture by its own fields, glyph its own vectors, and step
-both through time together.
+The bulk lives on ``d``-cells, the fracture on a tagged set of ``(d-1)``-facets
+carrying unknowns with no bulk counterpart -- fracture pressure and flux, or
+contact traction and displacement jump -- so one grid cannot hold both.  A
+``.pvd`` collection lists ``(timestep, part, file)`` triples: bulk and fracture
+are written as separate parts at the same timestep and load as two blocks of one
+dataset.
 
     <Collection>
       <DataSet timestep="0" part="0" file="run_bulk_0000.vtu"/>
       <DataSet timestep="0" part="1" file="run_fracture_0000.vtu"/>
       ...
 
-What to plot
-------------
-The two physics ask for different things:
+Fields per physics:
 
-* **Darcy** (scalar).  Pressure and flux, in the bulk *and along the fracture* --
-  the fracture carries its own tangential flow, which is the reason for the
-  lower-dimensional unknowns.  :func:`darcy_fields`.
-* **Elasticity** (vector).  On the fracture, the **traction** and the
-  **displacement jump** and nothing else -- there is no fracture stress field to
-  plot, because a fault is a contact interface rather than a thin material, so
-  those two *are* its whole state (:func:`contact_fields`).  In the rock, the
-  displacement and stress that drive it (:func:`mechanics_fields`); a fault
-  plotted without its surroundings cannot be read.
+* Darcy (scalar): pressure and flux in the bulk and along the fracture, which
+  carries its own tangential flow (:func:`darcy_fields`).
+* Elasticity (vector): on the fracture the traction and the displacement jump,
+  the whole state of a contact interface (:func:`contact_fields`); in the rock
+  the displacement and stress (:func:`mechanics_fields`).
 """
 
 from __future__ import annotations
@@ -70,11 +59,10 @@ class MixedDimensionalSeries:
     def write(self, time: float, bulk=None, fracture=None) -> None:
         """Append one timestep.  Either part may be omitted.
 
-        Every cell is tagged with a ``dim`` field -- ``mesh.dim`` in the bulk and
-        ``mesh.dim - 1`` on the fracture.  Once the parts are merged in ParaView
-        the block structure is gone, so a ``Threshold`` on ``dim`` is the only
-        way left to isolate one dimension; carrying it in the data means that
-        works without knowing which block was which.
+        Every cell is tagged with a ``dim`` field: ``mesh.dim`` in the bulk,
+        ``mesh.dim - 1`` on the fracture.  Merging the parts in ParaView drops
+        the block structure, so a ``Threshold`` on ``dim`` is what isolates one
+        dimension afterwards.
         """
         step = len(self._entries)
         written = []
@@ -129,11 +117,9 @@ class MixedDimensionalSeries:
 def facet_vectors(mesh: Mesh, facets, values) -> np.ndarray:
     """Facet-frame components ``(n, dim)`` -> ambient ``(n, 3)`` vectors.
 
-    Contact quantities are computed in each facet's own frame ``(n, t_1, ...)``,
-    which is the right basis for the physics and the wrong one for a plot: a
-    glyph needs ambient components.  ``facet_frame`` returns those basis vectors
-    as ambient rows, so the conversion is one contraction and works in 2D and 3D
-    alike.
+    Contact quantities are computed in each facet's own frame ``(n, t_1, ...)``;
+    a glyph needs ambient components.  ``facet_frame`` returns that basis as
+    ambient rows, so the conversion is one contraction, in 2D and 3D alike.
     """
     facets = np.asarray(facets, dtype=np.int64)
     values = np.atleast_2d(np.asarray(values, dtype=float))
@@ -145,11 +131,11 @@ def facet_vectors(mesh: Mesh, facets, values) -> np.ndarray:
 
 
 def contact_fields(driver, state) -> dict[str, np.ndarray]:
-    """Fracture fields for elasticity: **traction and displacement jump only**.
+    """Fracture fields for elasticity: traction and displacement jump.
 
-    Both are given as ambient vectors (glyphable) and split into normal
-    and tangential parts, which is how they are actually read: ``t_n < 0`` is
-    compression, ``g_n > 0`` is opening, and the tangential magnitude is the slip.
+    Both as ambient vectors and split into normal and tangential parts:
+    ``t_n < 0`` is compression, ``g_n > 0`` is opening, and the tangential
+    magnitude is the slip.
     """
     facets = np.asarray(driver.facets, dtype=np.int64)
     traction = driver.per_facet(driver.tractions(state.solution["stress"]))
@@ -168,12 +154,11 @@ def contact_fields(driver, state) -> dict[str, np.ndarray]:
 def mechanics_fields(problem, solution, pressure=None) -> dict[str, np.ndarray]:
     """Bulk fields for elasticity: displacement and stress in the rock.
 
-    The companion to :func:`contact_fields`, which covers the fracture.
+    Companion to :func:`contact_fields`, which covers the fracture.
 
-    ``displacement`` is returned as an ambient 3-vector so ParaView can glyph or
-    warp by it -- the DOFs live in the mesh frame, which for a 2D mesh is not the
-    ambient basis.  ``pressure`` is optional and is the *load*, not a solution
-    field; it is carried so the depleted region is visible.
+    ``displacement`` is returned as an ambient 3-vector: the DOFs live in the
+    mesh frame, which for a 2D mesh is not the ambient basis.  ``pressure`` is
+    optional and is the load, not a solution field.
     """
     d = problem.d
     frame = problem.inner.frame  # (3, d)
@@ -201,10 +186,9 @@ def mechanics_fields(problem, solution, pressure=None) -> dict[str, np.ndarray]:
 def darcy_fields(problem, solution) -> tuple[dict, dict]:
     """``(bulk, fracture)`` fields for mixed-dimensional Darcy.
 
-    Pressure and a reconstructed Darcy velocity on both sides.  The fracture's
-    velocity is *tangential* by construction -- it is reconstructed on the
-    fracture's own mesh from its own flux unknowns, so it shows the flow running
-    **along** the fracture.
+    Pressure and a reconstructed Darcy velocity on both sides.  The fracture
+    velocity is tangential by construction: reconstructed on the fracture's own
+    mesh from its own flux unknowns.
     """
     from mimetika.postprocess.reconstruct import reconstruct_flux
 
@@ -225,8 +209,8 @@ def _bulk_velocity(problem, solution) -> np.ndarray:
     """Cell velocities from duplicated facet DOFs.
 
     With a duplicating dofmap a fracture facet carries one flux per side, so the
-    plain reconstruction -- which indexes the flux by facet id -- would read the
-    wrong unknown.  Each cell is given the DOF on *its own* side.
+    plain reconstruction, which indexes the flux by facet id, reads the wrong
+    unknown.  Each cell is given the DOF on its own side.
     """
     mesh, dofmap = problem.mesh, problem.dofmap
     d = mesh.dim

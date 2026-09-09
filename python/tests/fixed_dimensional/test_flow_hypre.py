@@ -2,16 +2,16 @@
 PETSc's PCHYPRE, on BOTH preconditioners the module offers.
 
     ADS   the Riesz map, with the flux block preconditioned by the auxiliary
-          space divergence solver -- sections 1 to 7 here
+          space divergence solver -- sections 1 to 5 and 9
     MGR   a multigrid reduction that ELIMINATES the flux instead, leaving the
           cell-centred Laplacian for BoomerAMG -- section 8
 
 test_flow_ads.py states the two properties and tests them on the PETSc route.
 This file tests the same two on the other route, because they are different
 code: `mimetika_hypre` links its own hypre, is handed the assembled system and
-the norm as plain arrays through `mk.ads_handoff`, and calls hypre itself.
-Nothing about the METHOD differs, so a disagreement between the two files is a
-defect in one of the bridges.
+the norm as plain arrays through `mk.ads_handoff`, and calls hypre itself. The
+method does not differ, so a disagreement between the two files is a defect in
+one of the bridges.
 
     h-ROBUST         the count does not grow as the mesh is refined
     CONTRAST-ROBUST  the count does not grow as the coefficient jumps
@@ -29,24 +29,23 @@ WHAT DIFFERS IS WHAT ADS IS TOLD FOR A BDM FACET.
                          through HYPRE_ADSSetInterpolations. `degree2` in the
                          handoff says so, and
                          test_the_degree_two_complex_is_used_on_every_cell_type
-                         is what pins it -- the facet-constant subspace it
-                         replaced converges at similar counts under the inner
-                         CG, so nothing else here would notice the wrong route
-                         being taken.
+                         pins it -- the facet-constant subspace it replaced
+                         converges at similar counts under the inner CG, so no
+                         other test here would notice the wrong route.
 
 WHY IT IS NOT SIMPLEX-ONLY. dec/mimetic_curl.hpp computes C per CELL from a
 reconstruction, which on a polytope is a least-squares fit (D_edge > m) that
 couples the whole cell, so the two cells sharing a facet disagree. But d^1 is
-facet-local by nature: on f the normal curl is the 2D surface curl of the
-tangential trace, so surface Stokes writes a facet's rows in that facet's own
-dofs alone, on a hexahedron as much as on a tetrahedron. C is built that way
-(bdm_complex.hpp), and Pi's vertex hats reproduce the linears exactly on a
-tetrahedron and in least squares beyond it.
+facet-local: on f the normal curl is the 2D surface curl of the tangential
+trace, so surface Stokes writes a facet's rows in that facet's own dofs alone,
+on a hexahedron as on a tetrahedron. C is built that way (bdm_complex.hpp), and
+Pi's vertex hats reproduce the linears exactly on a tetrahedron and in least
+squares beyond it.
 
 TWO ROUTES TO THE BLOCK, as in the PETSc file and for the same reason:
 
-    one cycle   `block_iterations = 0`. Cheap, and it APPROXIMATES the block.
-    inner CG    a short CG under that cycle, so the block is SOLVED.
+    one cycle   `block_iterations = 0`, which approximates the block.
+    inner CG    `block_iterations = 50`, `block_rtol = 1e-2`: the block SOLVED.
 
 Only the second is flat. The first is bounded and drifts, and the drift is the
 block solve rather than the norm.
@@ -112,10 +111,9 @@ def _linear(x):
 def patch(mesh, product=R.stabilized_rt, permeability=None):
     """A linear pressure on the whole boundary, with its gradient.
 
-    The gradient is not decoration: a facet holding d flux moments tests the
-    datum against d basis functions, and the centred ones see only the
-    VARIATION across the facet. Without it the BDM products lose the patch and
-    a count measured on a wrong answer is not a measurement.
+    A facet holding d flux moments tests the datum against d basis functions,
+    and the centred ones see only the variation across the facet. Without the
+    gradient the BDM products lose the patch.
     """
     model = mk.FlowModel(mesh, 3, 1.0, product)
     if permeability is not None:
@@ -163,8 +161,8 @@ def wedge(nr, family=mk.Family.simplex):
 #
 # CONVERGED IS NOT CORRECT. A preconditioner built on the wrong complex, or on
 # a permutation of the block's rows, still converges -- to something else. For
-# the degree-2 path this is the check that C's rows really are the model's flux
-# dofs, in its order and its basis.
+# the degree-2 path this checks that C's rows are the model's flux dofs, in its
+# order and its basis.
 @pytest.mark.parametrize("name", sorted({**ONE_PER_FACET, **BDM}))
 def test_the_hypre_answer_is_the_direct_answer(name):
     _hypre()
@@ -185,10 +183,10 @@ def test_the_hypre_answer_is_the_direct_answer(name):
 @pytest.mark.parametrize("name", sorted(BDM))
 def test_the_degree_two_complex_is_used_on_every_cell_type(name):
     """C is surface Stokes on a facet, so it needs no cell reconstruction and a
-    polytope has a global C after all; Pi's vertex hats reproduce the linears
-    exactly on a tetrahedron and in least squares beyond it. So a BDM block gets
-    the degree-2 complex whatever the cells are, and ADS sees the WHOLE row
-    rather than its facet constants -- three moments a facet instead of one."""
+    polytope has a global C; Pi's vertex hats reproduce the linears exactly on a
+    tetrahedron and in least squares beyond it. So a BDM block gets the degree-2
+    complex whatever the cells are, and ADS sees the whole row rather than its
+    facet constants -- three moments a facet instead of one."""
     _hypre()
     _, on_tets = solve(patch(wedge(4), BDM[name]), wedge(4))
     _, on_hexes = solve(patch(cube(3), BDM[name]), cube(3))
@@ -277,10 +275,9 @@ def test_one_cycle_is_bounded_but_not_flat():
 
 # ---- 4. contrast-robustness ------------------------------------------------
 #
-# The enclosure of Kolev & Vassilevski's Figure 6.1, so the two test files and
-# the paper read the same problem: two interior cubes of one material inside
-# another, K_in over fourteen orders of magnitude. Their Table 6.1 holds 13-18
-# ADS-CG iterations across the range.
+# The enclosure of Kolev & Vassilevski's Figure 6.1: two interior cubes of one
+# material inside another, K_in over fourteen orders of magnitude. Their
+# Table 6.1 holds 13-18 ADS-CG iterations across the range.
 JUMPS = (-7, -4, -2, 0, 2, 4, 7)
 
 
@@ -319,9 +316,9 @@ def test_the_bdm_count_does_not_track_the_contrast(name, kind):
     for p in JUMPS:
         counts.append(_count(patch(mesh, BDM[name], enclosure(mesh, p)), mesh, kind))
         print(f"  {name:15s} {kind:3s}  K_in = 1e{p:+03d}   {counts[-1]:4d} its")
-    # The solved block is flat; a single cycle only APPROXIMATES it, so it is
-    # bounded and drifts -- 16 at K = 1 against 25 at 1e-7, over fourteen orders
-    # of contrast. Held to separate bounds for that reason, not to make room.
+    # The solved block is flat; a single cycle approximates it, so it is bounded
+    # and drifts -- 16 at K = 1 against 25 at 1e-7, over fourteen orders of
+    # contrast. Hence the separate bounds, 8 for cg and 10 for one.
     assert max(counts) <= min(counts) + (8 if kind == "cg" else 10)
 
 
@@ -329,10 +326,10 @@ def test_the_bdm_count_does_not_track_the_contrast(name, kind):
 #
 # The enclosure above has ONE bounded interface. A checkerboard jumps across
 # EVERY facet, so the auxiliary spaces never see a patch on which the
-# coefficient is smooth, and it is the harder statement of the same property.
+# coefficient is smooth.
 #
 # The pattern is a function of position in the bounding box and not of the cell
-# numbering, so it is the SAME field on every mesh -- a pattern redrawn per mesh
+# numbering, so it is the same field on every mesh -- a pattern redrawn per mesh
 # makes an h-ladder meaningless.
 def checkerboard(mesh, exponent, cells_per_side=4):
     """K = 10^p on alternate blocks of a cells_per_side^3 partition of the box."""
@@ -354,10 +351,10 @@ def test_the_count_does_not_track_a_checkerboard(name, kind):
     for p in JUMPS:
         counts.append(_count(patch(mesh, product, checkerboard(mesh, p)), mesh, kind))
         print(f"  {name:15s} {kind:3s}  K = 1e{p:+03d}   {counts[-1]:4d} its")
-    # the two routes are held to different bounds for the reason
-    # test_one_cycle_is_bounded_but_not_flat states: a single cycle
-    # APPROXIMATES the block, so it is bounded and drifts -- derham_rt runs 13
-    # at K = 1 and 22 at either extreme -- while the solved block is flat.
+    # the two routes take different bounds for the reason
+    # test_one_cycle_is_bounded_but_not_flat states: a single cycle approximates
+    # the block, so it is bounded and drifts -- derham_rt runs 13 at K = 1 and
+    # 22 at either extreme -- while the solved block is flat.
     assert max(counts) <= min(counts) + (8 if kind == "cg" else 14)
 
 
@@ -373,14 +370,13 @@ def test_the_count_does_not_track_a_checkerboard(name, kind):
 #     stabilized_bdm    14     42   1163
 #
 # and the 1e+8 figure moves with refinement (608 on wedge(12)), so the sweep
-# stops at a 1e4 inclusion, which is the range the claim holds over. The rest
-# is recorded rather than asserted: a bound around a number that swings by an
-# order of magnitude guards nothing.
+# stops at a 1e4 inclusion, which is the range the claim holds over. The rest is
+# recorded rather than asserted.
 #
-# It is not this route's defect. The same problem through PETSc's PCHYPRE takes
-# 98 iterations at 1e+8 on wedge(6) and DIVERGES on wedge(12), where this one
-# converges in 608 -- both routes meet the same wall, and this one degrades
-# instead of failing.
+# Not this route's defect: the same problem through PETSc's PCHYPRE takes 98
+# iterations at 1e+8 on wedge(6) and diverges on wedge(12), where this one
+# converges in 608. Both routes meet the same wall; this one degrades instead
+# of failing.
 MISALIGNED_JUMPS = (-7, -4, -2, 0, 2, 4)
 
 
@@ -406,8 +402,8 @@ def test_a_misaligned_checkerboard_is_flat_to_a_1e4_inclusion(name):
 #
 # the cell-centred Laplacian -- one unknown a cell, which is BoomerAMG's ground
 # and is what the two-point family already is. The flux block here carries no
-# div term, so its F-relaxation is not facing the a_div near-nullspace that ADS
-# exists for, which is why this is available for flow and not for the stress.
+# div term, so its F-relaxation is not facing the a_div near-nullspace ADS
+# exists for. The stress route is in test_mechanics_hypre_mgr.py.
 #
 # TWO LEVELS WHEN A FACET CARRIES MORE THAN ONE MOMENT. div is topological and
 # reads only the constant moment, D = [0 | D_0], so the higher moments lie
@@ -484,16 +480,15 @@ def test_the_mgr_answer_is_the_direct_answer(name):
 #
 # adaptive_rt derives a binary eta per cell from the degeneracy scan: 1 where
 # the stabilized member is used, 0 on the cells the scan flags. At exokal's
-# DEFAULT threshold none of these meshes has a flagged cell, so every other
-# test in this file runs adaptive_rt as an alias of stabilized_rt and says
-# nothing about the adaptive path. The threshold here is chosen to flag a real
-# fraction of the annulus, and the first test refuses to let that go silently
-# vacuous.
+# default threshold none of these meshes has a flagged cell, so every other
+# test in this file runs adaptive_rt as an alias of stabilized_rt.
+# ADAPTIVE_PERCENT = 80 flags a nonzero fraction of the annulus, and
+# test_the_adaptive_selection_is_active_on_this_ladder asserts that.
 #
-# What ADS is told does NOT change with eta: the space is one moment a facet
+# What ADS is told does not change with eta: the space is one moment a facet
 # either way, so G, C and the coordinates are the same and only the entries of
-# A_h move, cell by cell. That is the same kind of variation as a jumping K,
-# which is why the count is expected to hold -- and does.
+# A_h move, cell by cell -- the same kind of variation as a jumping K, so the
+# count holds.
 ADAPTIVE_PERCENT = 80.0
 
 

@@ -3,13 +3,14 @@ r"""Benchmark 3 -- inclined displaced fault, slip-weakening friction (paper 4.2)
 The configuration of benchmark 2, with a linear slip-weakening friction law
 (paper Eq. 23): the coefficient falls from ``mu_s = 0.52`` to
 ``mu_d = 0.20`` over a critical slip distance ``delta_c = 0.02`` m.  Slip
-reduces the fault's carrying capacity, and below the *nucleation pressure*
+reduces the fault's carrying capacity, and below the nucleation pressure
 ``p*`` no quasi-static equilibrium exists -- a seismic event.  The paper's
 semi-analytical estimate (Uenishi & Rice 2003 as modified by Jansen &
 Meulenbroek 2022) is ``p* = -17.41`` MPa; its DARTS simulation arrives at
-``p* = -17.27`` MPa.  The benchmark continues the *coupled* slip-weakening
-solve down the depletion levels, each warm-started from the previous
-equilibrium, until the stable branch is lost -- that level brackets ``p*``.
+``p* = -17.27`` MPa.  The branch is tracked by an outer fixed point on a
+frozen friction coefficient (:func:`simulate`), with ``mu`` continued from
+one depletion level to the next until the stable branch is lost -- that level
+brackets ``p*``, and the bracket is then bisected to ``--refine`` MPa.
 
 Resolution.  The Uenishi--Rice critical nucleation length for these
 parameters is ``h* ~ 1.16 G delta_c / ((1 - nu)(mu_s - mu_d) |sigma_n'|)
@@ -20,8 +21,9 @@ patch growth until it runs away at ``p*``.  On coarse fault spacings
 (tens of metres) a slipping patch is supercritical as soon as it is
 resolvable and the computed ``p*`` collapses onto the mesh-dependent
 constant-friction slip onset instead -- expect that when raising
-``--spacing``.  The figure shows the runaway cascade of fixed-point
-iterates at nucleation.
+``--spacing``.  The default figure is Fig. 14, the last equilibrium;
+``--cascade`` adds the continuation diagnostic, one slip profile per
+depletion level up to and including the level with no equilibrium.
 
 Reference (APA): Novikov, A., Shokrollahzadeh Behbahani, S., Voskov, D.,
 Hajibeygi, H., & Jansen, J.-D. (2024). Benchmarking numerical simulation of
@@ -107,16 +109,15 @@ def simulate(parameters: Parameters, law: SlipWeakening,
              spacing: float = 2.0, built=None, mu0=None):
     """Quasi-static solve at ``parameters.depletion``; ``None`` past the fold.
 
-    Outer fixed point on a *frozen* friction coefficient: solve plain Coulomb
-    with ``mu`` from the previous iterate's slip, update, repeat.  This is
-    the physical branch tracker: the linearisation of the ``mu``-update map
-    is exactly the slip-weakening stability operator, so the iteration
-    contracts precisely while the quasi-static branch is stable and diverges
-    at the Uenishi--Rice fold.  For that equivalence to hold the iteration
-    must *enter* each level near the branch -- warm-start ``mu0`` from the
-    previous depletion level.  (Solving the coupled law directly with Newton
-    is not an alternative near the fold: the stable and fully-weakened
-    equilibria draw close and Newton hops basins.)
+    Outer fixed point on a frozen friction coefficient: solve plain Coulomb
+    with ``mu`` from the previous iterate's slip, update, repeat.  The
+    linearisation of the ``mu``-update map is the slip-weakening stability
+    operator, so the iteration contracts while the quasi-static branch is
+    stable and diverges at the Uenishi--Rice fold.  For that equivalence the
+    iteration must enter each level near the branch: ``mu0`` carries ``mu``
+    from the previous depletion level.  (Solving the coupled law directly
+    with Newton is not an alternative near the fold: the stable and
+    fully-weakened equilibria draw close and Newton hops basins.)
     """
     if built is None:
         mesh, fault, pressure = build(parameters, spacing)
@@ -135,10 +136,11 @@ def simulate(parameters: Parameters, law: SlipWeakening,
     )
     solver = poromechanics_solver(mesh, parameters, cache=cache,
                                   driver=driver)
-    # inner solves are deliberately cold (state=None): with a warm ``g_prev``
+    # inner solves are deliberately cold (no ``state``): with a warm ``g_prev``
     # the tangential driving becomes increment-based and near-threshold
     # facets flip slip direction on noise-scale increments, which loses the
-    # branch *earlier*.  Only ``mu`` is continued across levels.
+    # branch earlier.  Only ``mu`` is continued across levels.
+    #
     # near the fold the contraction factor approaches 1 and the iteration
     # creeps: an iteration cap cannot tell slow convergence from divergence,
     # but the mu-update magnitude can -- it shrinks on the stable side and
@@ -176,7 +178,7 @@ def simulate(parameters: Parameters, law: SlipWeakening,
     converged = converged and float(np.abs(slip).max()) < 50 * law.critical
 
     # resolved fault profile: the stress space carries BDM_1 facet moments,
-    # so traction and jump vary *linearly* along every facet -- twice the
+    # so traction and jump vary linearly along every facet -- twice the
     # information of a facet average (and of a collocated FV on the same
     # mesh).  Read both at the two facet Gauss points.
     pw = ContactDriver(mesh, fault, SignoriniCoulomb(friction=law.static),
@@ -264,7 +266,7 @@ def main() -> None:
 
     if nucleated is not None and last is not None and arguments.refine > 0:
         # bisect toward the fold: each probe rides the cached factorization,
-        # and the deepest converged state is the honest pre-nucleation one
+        # and the deepest converged state is the pre-nucleation one
         lo, hi = nucleated, last[0]
         mu0 = last[1]["mu"]
         while hi - lo > arguments.refine + 1e-12:
@@ -319,7 +321,7 @@ def main() -> None:
         level, res = last
         fig, (left_ax, right_ax) = plt.subplots(1, 2, figsize=(9.0, 6.0),
                                                 sharey=True)
-        # the law constrains the facet-*mean* Coulomb stress, so that is the
+        # the law constrains the facet-mean Coulomb stress, so that is the
         # enforced quantity to plot; the slip is a kinematic field whose
         # per-facet linear (BDM) variation is genuine resolution
         selc = (res["y"] >= 60.0) & (res["y"] <= 80.0)

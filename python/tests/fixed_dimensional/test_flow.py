@@ -2,8 +2,9 @@
 
 The Python-side mirror of tests/model/test_flow_model.cpp: the same column
 with a linear pressure it must reproduce exactly, the same Dupuit annulus it
-can only approximate, and the same three flux products -- including what each
-one does NOT claim, which is asserted as a refusal rather than skipped.
+can only approximate, and the same three flux products in PRODUCTS. Where a
+product's claim stops -- derham_rt past 13 facets -- the refusal is asserted
+rather than skipped. The two-point and adaptive members are exercised below.
 """
 
 import math
@@ -104,17 +105,15 @@ def annulus_case(nr, nt, dim, family, how=BDM, degeneracy=None) -> Outcome:
     )
 
 
-# WHAT EACH PRODUCT CLAIMS, stated once. A configuration outside a product's
-# claim is not a failure and not a silent skip -- it is reported as refused, and
-# a separate test checks that the refusal is an exception rather than a wrong
-# answer.
+# What each product claims. All three of PRODUCTS claim every structured family
+# in both dimensions, so this is now constant True; the facet-count bound it
+# used to encode is tested by
+# test_the_consistency_only_product_refuses_past_the_facet_limit.
 def supported(r, dim, family) -> bool:
-    # All three claim every structured family in both dimensions. RT_0's
-    # original argument was d+1 modes against d+1 facets -- a simplex, with a
-    # hexahedron a different case rather than a coarser one -- but the
-    # consistency-only families now enrich with curl-type divergence-free
+    # RT_0's original argument was d+1 modes against d+1 facets -- a simplex --
+    # but the consistency-only families enrich with curl-type divergence-free
     # fields until the facet moments are unisolvent, which reaches the tensor
-    # cells too. The claim is bounded by FACET COUNT, not by cell type.
+    # cells too. The claim is bounded by facet count, not by cell type.
     del r, dim, family
     return True
 
@@ -160,20 +159,14 @@ def test_the_annulus_reproduces_dupuit(how, dim, family):
     assert fine.rms_err < coarse.rms_err  # refinement helps, so it is resolution
 
 
-# THE SPACES ARE NOT THE SAME SIZE, which is the concrete content of "different
-# discretizations": d moments per facet against one, and all three exact on a
-# linear pressure.
 # ---- the two-point product --------------------------------------------------
 #
-# diagonal_tpfa is exokal's, and so is the question of where it is consistent:
-# it reconstructs nothing, its M is the diagonal primal-dual star, and it is
-# strongly consistent only where the mesh is K-ORTHOGONAL. exokal tests that.
-# What is tested here is that the PYTHON INTERFACE reaches it -- that the enum
-# maps to the realization it names and the model built from it lays out the
-# space it should.
-#
-# Its space is RT's -- one flux per facet -- so a binding that mixed the two up
-# would still assemble, still solve, and only the count would notice.
+# diagonal_tpfa is exokal's: it reconstructs nothing, its M is the diagonal
+# primal-dual star, and it is strongly consistent only where the mesh is
+# K-orthogonal. exokal tests that. Tested here is that the Python enum maps to
+# the realization it names and the model built from it lays out the space it
+# should -- RT's space, one flux per facet, so a binding that mixed the two up
+# would still assemble and still solve, and only the dof count would notice.
 @pytest.mark.parametrize("dim", [2, 3])
 @pytest.mark.parametrize("family", FAMILIES, ids=lambda f: str(f).split(".")[-1])
 def test_the_two_point_product_lays_out_one_flux_per_facet(dim, family):
@@ -203,12 +196,12 @@ def test_the_two_point_product_is_exact_where_the_column_is_orthogonal(dim, fami
 
 # ---- the adaptive product -------------------------------------------------
 #
-# adaptive_rt is exokal's per-cell SELECTION between the stabilized product
+# adaptive_rt is exokal's per-cell selection between the stabilized product
 # and the diagonal star, carried as eta in {0, 1}, and exokal tests its
-# algebra. What is tested here is the INTERFACE: that eta is DERIVED rather
-# than given -- ones by default, 0 on the cells the metric-degeneracy scan
-# flags at the threshold set_degeneracy_percent names -- and that the model
-# reports the selection as built.
+# algebra. Tested here is the interface: that eta is derived rather than given
+# -- ones by default, 0 on the cells the metric-degeneracy scan flags at the
+# threshold set_degeneracy_percent names -- and that the model reports the
+# selection as built.
 @pytest.mark.parametrize("dim", [2, 3])
 @pytest.mark.parametrize("family", FAMILIES, ids=lambda f: str(f).split(".")[-1])
 def test_the_default_selection_is_the_stabilized_product(dim, family):
@@ -236,11 +229,11 @@ def test_a_total_selection_is_the_two_point_star():
 
 
 # THE SCAN FLAGS THE COLLAPSED CELL AND NO OTHER: a unit cube with a slab
-# 10^-6 of its height glued on top. The slab is 10^-4 % of its node-star mean
-# -- under exokal's default 0.01% -- so with NO threshold given it takes the
-# diagonal star and the cube keeps the stabilized product. The selection the
-# model reports is the one the operator was built from, which is the eta cell
-# data to write next to the solution.
+# 10^-6 of its height glued on top. The slab scores order 10^-4 % of its
+# node-star mean -- under exokal's default_degeneracy_percent of 0.01 -- so with
+# no threshold given it takes the diagonal star and the cube keeps the
+# stabilized product. model.eta reports the selection the operator was built
+# from.
 def two_cells_one_collapsed(t=1e-6):
     pts = [[x, y, z] for z in (0.0, 1.0, 1.0 + t) for y in (0.0, 1.0) for x in (0.0, 1.0)]
     hexa = lambda b: [  # noqa: E731 -- the six quads of layer pair (b, b+4)
@@ -321,7 +314,7 @@ def test_the_conditioning_threshold_is_refused_off_the_adaptive_product():
 
 
 # THE THRESHOLD BELONGS TO adaptive_rt: named beside any other realization it
-# is refused at solve() rather than silently ignored.
+# raises at solve() rather than being ignored.
 def test_the_threshold_is_refused_off_the_adaptive_product():
     m = mk.column(4, 3, mk.Family.cartesian, 1.0)
     prob = mk.FlowModel(m, 3, 1.0, STABILIZED)
@@ -343,13 +336,11 @@ def test_the_products_lay_out_different_spaces():
     assert mfd.dofs == rt.dofs  # both are one flux per facet
 
 
-# RT AND THE STABILIZED PRODUCT RETURN THE SAME SOLVED FIELD ON A SIMPLEX -- and
-# they are NOT the same operator, which is the more interesting half. Their
-# matrices differ by about 3%, yet the pressures agree to round-off: both spaces
-# contain the constants, so both are consistent, and on this problem the
-# stabilization does not reach the cell pressures. It is also the reason a
-# model-level comparison must never be used to conclude two operators are the
-# same -- this test would have said so, and it would have been wrong.
+# RT AND THE STABILIZED PRODUCT RETURN THE SAME SOLVED FIELD ON A SIMPLEX, and
+# are not the same operator: their matrices differ by about 3% while the cell
+# pressures agree to round-off. Both spaces contain the constants, so both are
+# consistent, and on this problem the stabilization does not reach the cell
+# pressures -- so a model-level comparison cannot conclude two operators agree.
 @pytest.mark.parametrize("nr", [8, 16])
 def test_rt_and_the_stabilized_product_coincide_on_a_simplex(nr):
     rt = annulus_case(nr, nr // 2, 3, mk.Family.simplex, RT)
@@ -388,11 +379,10 @@ def builds(n, how):
 
 # WHERE THE CONSISTENCY-ONLY FAMILY STOPS, and that it stops by refusing.
 #
-# The enrichment is not unbounded: past a cap on the facet count the cell is
-# refused at once, before any search. The stabilized product stabilizes instead
-# of enriching and has no such limit, which is what makes the pair the test --
-# the refusal belongs to the consistency-only argument, not to the cell being
-# difficult. A silent wrong answer is the one thing that would not be correct.
+# The enrichment is capped by facet count: 13 facets is accepted, 14 is refused
+# at once, before any search. The stabilized product stabilizes instead of
+# enriching and has no such limit, so the pair separates the refusal from the
+# cell merely being difficult.
 @pytest.mark.parametrize("n,accepted", [(11, True), (12, False), (16, False)])
 def test_the_consistency_only_product_refuses_past_the_facet_limit(n, accepted):
     assert builds(n, RT) is accepted
@@ -410,9 +400,9 @@ def test_the_consistency_only_product_refuses_past_the_facet_limit(n, accepted):
 # constant, and seeing exactly the variation of p across the facet.
 #
 # So at lowest order one number per facet is the whole datum, and at BDM order
-# it is missing a term. The missing term is not small, and it is not a
-# discretization error: given the gradient the same operator reproduces the
-# linear patch to round-off on every family, curved and polytopal included.
+# it is missing a term. That term is not a discretization error: given the
+# gradient the same operator reproduces the linear patch to round-off on every
+# family, curved and polytopal included.
 STABILIZED_BDM = mk.FluxRealization.stabilized_bdm
 LINEAR = (1.0, 2.0, -1.0)
 
@@ -451,8 +441,8 @@ def test_the_affine_datum_makes_the_linear_patch_exact(how):
         assert err < 1e-10, label
 
 
-# and the other half: without the gradient the BDM products lose it, which is
-# the whole reason `add_pressure` takes one. A one-moment facet cannot tell the
+# and the other half: without the gradient the BDM products lose the patch,
+# which is why `add_pressure` takes one. A one-moment facet cannot tell the
 # difference -- its basis is the constant, and the facet average of a linear
 # field IS the centroid value -- so the RT products are exact either way.
 @pytest.mark.parametrize("how", [BDM, STABILIZED_BDM], ids=["derham_bdm", "stabilized_bdm"])
@@ -477,8 +467,8 @@ def test_the_lowest_order_datum_does_not_notice_the_gradient():
 # ---- a source, and the field that needs one ---------------------------------
 #
 # Every case above is a patch test: the exact field is affine, the exact flux
-# constant, and div q = 0. The source is what makes a DIFFERENT problem
-# possible, and the smallest one whose source is constant and nonzero is
+# constant, and div q = 0. The smallest field whose source is constant and
+# nonzero is
 #
 #     p = A|x|^2 / 2 ,   q = -lambda A x ,   f = div q = -lambda A d ,
 #
@@ -493,9 +483,9 @@ SOURCE_A = 0.7
 def _quadratic_case(n, how, mobility=1.0):
     mesh = mk.box([n, n, n], 3, mk.Family.cartesian, [1.0, 1.0, 1.0])
     model = mk.FlowModel(mesh, 3, mobility, how)
-    # div q = f, one density per cell. The count comes from the MESH: n_cells
-    # is filled by the build, which has not run, so the model would report 0
-    # here and the source would silently be empty.
+    # div q = f, one density per cell. The count comes from the mesh: n_cells
+    # is filled by build(), which has not run, so the model reports 0 here and
+    # the source would be empty.
     model.set_source([-mobility * SOURCE_A * 3] * mesh.count(3))
     for f in mk.boundary_facets(mesh, 3):
         x = mk.centroid(mesh, 2, f)
@@ -519,7 +509,7 @@ def test_a_constant_source_converges_at_second_order(how):
 
 
 def test_the_source_is_not_silently_dropped():
-    """The failure this guards is quiet: no source, still converged, wrong field."""
+    """The failure guarded: no source, still converged, wrong field."""
     mesh = mk.box([3, 3, 3], 3, mk.Family.cartesian, [1.0, 1.0, 1.0])
 
     def solved(with_source):

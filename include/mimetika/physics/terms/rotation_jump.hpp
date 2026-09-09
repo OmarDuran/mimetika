@@ -65,9 +65,9 @@ class RotationJumpFacet {
     const auto& gb = st.field(kG, 1);
     const std::size_t ng = ga.end - ga.begin;
     for (std::size_t k = 0; k < ng; ++k) {
-      // -(J gamma), componentwise and antisymmetric between the pair: gamma_f
-      // on each diagonal entry and -gamma_f on each off-diagonal one. Written
-      // as four axpy so it holds for the AD value types as well as for double.
+      // -(J gamma), componentwise. J is symmetric over the pair: gamma_f on
+      // each diagonal entry and -gamma_f on each off-diagonal one. Written as
+      // four axpy so it holds for the AD value types as well as for double.
       exokal::axpy(r[ga.begin + k], -gamma, a[ga.begin + k]);
       exokal::axpy(r[ga.begin + k], gamma, a[gb.begin + k]);
       exokal::axpy(r[gb.begin + k], -gamma, a[gb.begin + k]);

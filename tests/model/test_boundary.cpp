@@ -22,9 +22,8 @@ namespace {
 bool near(double a, double b, double tol) { return std::abs(a - b) <= tol; }
 }  // namespace
 
-// The boundary is a thin set, and it is identified once. A 3x3x3 box of
-// hexahedra has 6 * 9 = 54 boundary facets out of 108 — and only those are
-// sites for a boundary coupling.
+// A boundary facet is one with a single cofacet. A 3x3x3 box of hexahedra has
+// 6 * 9 = 54 of them out of 108 facets.
 MIMETIKA_TEST(the_boundary_facets_are_the_ones_with_a_single_cofacet) {
   const auto m = mimetika_test::hex_grid(3);
   const auto b = mimetika::boundary_facets(m.topology(), 3);
@@ -40,8 +39,8 @@ MIMETIKA_TEST(the_boundary_facets_are_the_ones_with_a_single_cofacet) {
   }
 }
 
-// Essential conditions pin degrees of freedom, and in a mixed form it is the
-// flux that is pinned — a sealed face, not a prescribed pressure.
+// In the mixed form the essential condition pins flux dofs, not pressure ones:
+// a sealed face.
 MIMETIKA_TEST(a_sealed_face_pins_the_flux_and_nothing_else) {
   const auto m = mimetika_test::hex_grid(3);
   const graphos::Complex& c = m.topology();
@@ -57,9 +56,8 @@ MIMETIKA_TEST(a_sealed_face_pins_the_flux_and_nothing_else) {
 
   const auto sides = FacetSelector::where(m, 3, FacetSelector::at(0, 0.0));
   mimetika::impose_normal_flux(sim.constraints(), sp, "q_0", 3, m, sides);
-  // d moments per facet in the de Rham flow space: sealing a face pins the
-  // net flow and the way it is distributed across the face, which is what
-  // "no flow through it" means when the flux is not constant on a facet
+  // d = 3 moments per facet in the de Rham/BDM flow space, so sealing a face
+  // pins every facet moment and not only the net flux
   CHECK(sim.constraints().size() == 3 * sides.size());
   sim.freeze_constraints();
 
@@ -76,9 +74,8 @@ MIMETIKA_TEST(a_sealed_face_pins_the_flux_and_nothing_else) {
   }
 }
 
-// The natural condition is free when it is homogeneous. A drained face at
-// zero pressure needs no term, and attaching one changes nothing — so a model
-// cannot be wrong by failing to mention its free boundaries.
+// The natural condition is free when it is homogeneous: a drained face at zero
+// pressure needs no term, and attaching one leaves the residual unchanged.
 MIMETIKA_TEST(a_homogeneous_natural_condition_costs_nothing) {
   const auto m = mimetika_test::hex_grid(3);
   const graphos::Complex& c = m.topology();
@@ -138,10 +135,9 @@ MIMETIKA_TEST(a_homogeneous_natural_condition_costs_nothing) {
   }
 }
 
-// The mirror, for mechanics. A prescribed displacement is natural in the
-// Hellinger-Reissner form exactly as a prescribed pressure is in the mixed
-// flow form — and both are homogeneous-for-free, so the two halves of a
-// poroelastic model behave the same way at their boundaries.
+// A prescribed displacement is natural in the Hellinger-Reissner form as a
+// prescribed pressure is in the mixed flow form, and both vanish when
+// homogeneous.
 MIMETIKA_TEST(a_prescribed_displacement_is_natural_and_free_when_homogeneous) {
   const auto m = mimetika_test::hex_grid(2);
   const graphos::Complex& c = m.topology();
@@ -196,10 +192,9 @@ MIMETIKA_TEST(a_prescribed_displacement_is_natural_and_free_when_homogeneous) {
   }
 }
 
-// An affine datum is exact, which is what a patch test needs. A linear
-// displacement pairs with the higher facet basis functions too, so it must
-// move more degrees of freedom than a constant one — a term that integrated
-// only the constant part would pass every test above and fail here.
+// A linear displacement pairs with the higher facet basis functions too, so it
+// moves strictly more dofs than a constant one. A term integrating only the
+// constant part passes every test above and fails here.
 MIMETIKA_TEST(an_affine_displacement_datum_reaches_the_higher_moments) {
   const auto m = mimetika_test::hex_grid(2);
   const graphos::Complex& c = m.topology();
@@ -223,7 +218,7 @@ MIMETIKA_TEST(an_affine_displacement_datum_reaches_the_higher_moments) {
 
   mimetika::BoundaryVectorData constant(n_facets), linear(n_facets);
   constant.set(top, {0.1, 0.0, 0.0});
-  // u_x = 0.1 + 0.3 (x - x_E)_x : a genuine shear-free stretch
+  // u_x = 0.1 + 0.3 (x - x_E)_x : uniaxial stretch, no shear
   linear.set_affine(top, {0.1, 0.0, 0.0}, {0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
 
   const auto rc = run(constant), rl = run(linear);

@@ -15,7 +15,7 @@ namespace {
 
 bool near(double a, double b, double tol) { return std::abs(a - b) <= tol; }
 
-// the measure of the whole mesh, which for a box is the product of its sides
+// sum of the measures of every dim-cell
 double total_measure(const exokal::Mesh& m, int dim) {
   double v = 0.0;
   for (Index e = 0; e < m.topology().count(dim); ++e) v += exokal::measure(m, dim, e);
@@ -24,12 +24,9 @@ double total_measure(const exokal::Mesh& m, int dim) {
 
 }  // namespace
 
-// A box is the mesh a scaling study refines, so refining it must change the size
-// and nothing else. These are the counts that follow from the subdivision, and
-// getting them from the generator rather than from a comment is what makes a
-// timing at two resolutions comparable.
+// Cells per grid cell of the subdivision:
 //
-//   cartesian   one hexahedron per grid cell
+//   cartesian   one hexahedron
 //   simplex     six tetrahedra, the Freudenthal cut of the cube
 //   prism       two, the triangulated square extruded
 MIMETIKA_TEST(the_subdivision_is_the_one_each_family_names) {
@@ -44,9 +41,9 @@ MIMETIKA_TEST(the_subdivision_is_the_one_each_family_names) {
   CHECK(box({n, n, 1}, 2, Family::simplex).topology().count(2) == 2 * n * n);
 }
 
-// The vertices are a grid and every family shares them: the subdivision cuts
-// cells, it does not add points. A generator that duplicated a vertex would
-// still produce the right cell count and a mesh that is not connected.
+// Every family shares the same (n+1)^3 grid of vertices: the subdivision cuts
+// cells and adds no points. A duplicated vertex keeps the cell count right and
+// disconnects the mesh.
 MIMETIKA_TEST(the_families_share_one_grid_of_vertices) {
   const int n = 4;
   const Index nodes = (n + 1) * (n + 1) * (n + 1);
@@ -55,9 +52,8 @@ MIMETIKA_TEST(the_families_share_one_grid_of_vertices) {
   }
 }
 
-// It tiles the box, which is the statement a cell count cannot make: six
-// tetrahedra per cube is the right count for a subdivision that leaves a gap
-// as well as for one that does not.
+// The cells tile the box: the measures sum to the product of the sides. A cell
+// count alone is also satisfied by a subdivision that leaves a gap.
 MIMETIKA_TEST(the_cells_fill_the_box_they_were_asked_for) {
   const std::array<double, 3> sides{2.0, 3.0, 0.5};
   const double volume = sides[0] * sides[1] * sides[2];
@@ -69,8 +65,7 @@ MIMETIKA_TEST(the_cells_fill_the_box_they_were_asked_for) {
              1e-12));
 }
 
-// The origin is where it is put. A benchmark stated in metres places its mesh;
-// a scaling study does not care, and would never catch this.
+// The vertex bounding box is [at, at + sides] componentwise.
 MIMETIKA_TEST(the_box_sits_at_its_origin) {
   const std::array<double, 3> sides{2.0, 3.0, 0.5};
   const std::array<double, 3> at{-1.0, 5.0, 0.25};
@@ -90,10 +85,8 @@ MIMETIKA_TEST(the_box_sits_at_its_origin) {
   }
 }
 
-// The complex itself must be sound, and exokal's preprocessor is what says so:
-// the boundary operators compose to zero, the orientations are coherent, no
-// cell is degenerate. A mesh that fails this produces a discretization that is
-// wrong rather than inaccurate, and every scaling number taken on it is noise.
+// exokal::diagnose checks the complex: dd = 0, coherent orientations, no
+// degenerate cell.
 MIMETIKA_TEST(the_complex_it_builds_has_no_violations) {
   for (const Family f : {Family::cartesian, Family::simplex, Family::prism}) {
     const exokal::Mesh m = box({3, 3, 3}, 3, f);
@@ -101,9 +94,8 @@ MIMETIKA_TEST(the_complex_it_builds_has_no_violations) {
   }
 }
 
-// The boundary is the surface of the box. Six faces of n^2 cells each for the
-// hexahedral mesh, and twice that where the square is cut in two -- a facet
-// count that only comes out right if the interior facets are shared.
+// Boundary facets of an n^3 box: 6n^2 quadrilaterals, 12n^2 triangles once each
+// square is cut in two. The count comes out only if interior facets are shared.
 MIMETIKA_TEST(the_boundary_is_the_surface_of_the_box) {
   const int n = 3;
   CHECK(mimetika::boundary_facets(box({n, n, n}, 3, Family::cartesian).topology(), 3).size() ==

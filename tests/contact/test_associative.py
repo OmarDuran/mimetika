@@ -1,15 +1,14 @@
 r"""The associative Mohr--Coulomb return mapping (closest-point projection).
 
 Same admissible set as :class:`SignoriniCoulomb`, different return mapping, and
-therefore different physics.  Three things are checked, each against something
-independent of the implementation:
+therefore different physics.  Three checks, each against a reference independent
+of the implementation:
 
-* the projection really is the **closest point** -- compared against a
-  constrained numerical minimisation, not against a stored answer;
-* the **consistent tangent** really is the derivative -- compared against
-  central finite differences;
-* it really is **different** from the partial return -- so that the two are not
-  quietly the same code path under another name.
+* the projection is the closest point, compared against a constrained numerical
+  minimisation (SLSQP);
+* the consistent tangent is the derivative, compared against central finite
+  differences;
+* it differs from the partial return on a measurable fraction of trials.
 """
 
 import numpy as np
@@ -67,7 +66,7 @@ def closest_point(trial, eps_n, eps_t, cohesion):
 
 @pytest.mark.parametrize("eps_n,eps_t,cohesion", METRICS)
 def test_the_projection_is_the_metric_closest_point(eps_n, eps_t, cohesion):
-    """Against a numerical optimiser: the tolerance is SLSQP's, not ours."""
+    """Against constrained minimisation: worst deviation < 1e-5 (SLSQP's accuracy)."""
     model = law(eps_n, eps_t, cohesion)
     rng = np.random.default_rng(1)
     worst, checked = 0.0, 0
@@ -95,7 +94,7 @@ def test_the_result_is_always_admissible(eps_n, eps_t, cohesion):
 
 
 def test_an_admissible_trial_is_left_alone():
-    """Inside the cone the projection must be the identity, not a near-identity."""
+    """Inside the cone the projection is the identity, to 1e-14."""
     model = law()
     inside = np.array([[-4.0, 1.0, 0.5], [-1.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
     got, _ = model.project(inside, None)
@@ -128,7 +127,7 @@ def test_the_shear_stays_collinear_with_the_trial():
 
 @pytest.mark.parametrize("eps_n,eps_t,cohesion", METRICS)
 def test_the_tangent_is_the_derivative(eps_n, eps_t, cohesion):
-    """Central differences -- the whole point of the law is quadratic convergence."""
+    """Central differences at step 1e-6: worst discrepancy < 1e-6 over 300 trials."""
     model = law(eps_n, eps_t, cohesion)
     rng = np.random.default_rng(5)
     worst, step = 0.0, 1e-6
@@ -173,7 +172,7 @@ def test_the_associative_coupling_block_is_present():
 
 
 def test_the_tangent_is_non_symmetric():
-    """Coulomb friction is not associated in the classical sense; the block is not symmetric."""
+    """Coulomb friction is non-associated: the tangent block is not symmetric."""
     model = law(eps_n=3.0, eps_t=0.5)
     tangent = model.tangent(np.array([[-1.0, 10.0, 0.0]]))[0]
     assert not np.allclose(tangent, tangent.T, atol=1e-8)
@@ -183,7 +182,7 @@ def test_the_tangent_is_non_symmetric():
 
 
 def test_it_is_not_the_same_as_the_partial_return():
-    """If these agreed everywhere, the new law would be dead code."""
+    """More than 50 of 400 random trials differ by more than 1e-8."""
     associative = law(1.0, 2.5, 0.4)
     partial = SignoriniCoulomb(friction=FRICTION, cohesion=0.4)
     rng = np.random.default_rng(6)
@@ -195,12 +194,12 @@ def test_it_is_not_the_same_as_the_partial_return():
 
 
 def test_sliding_changes_the_normal_traction_only_in_the_associative_law():
-    """The physical signature: the closest-point correction is not purely radial.
+    """The closest-point correction is not purely radial.
 
     The partial return updates ``t_N`` first and then projects the shear at that
     fixed ``t_N``, so sliding never alters the normal traction.  The associative
-    one moves along the cone normal, which has a component along the axis --
-    the traction-space image of dilatancy.
+    one moves along the cone normal, which has a component along the axis -- the
+    traction-space image of dilatancy.
     """
     trial = np.array([[-1.0, 5.0, 0.0]])  # compressive, shear well outside the cone
     associative, _ = law().project(trial, None)
@@ -218,7 +217,7 @@ def test_the_two_agree_when_the_trial_is_admissible():
 
 
 def test_the_metric_selects_the_projection():
-    """``eps_N``/``eps_T`` are not free knobs: they choose which point is closest."""
+    """``eps_n``/``eps_t`` set the metric, hence which point of ``S*`` is closest."""
     trial = np.array([[-1.0, 5.0, 0.0]])
     isotropic, _ = law(1.0, 1.0).project(trial, None)
     normal_stiff, _ = law(0.01, 1.0).project(trial, None)

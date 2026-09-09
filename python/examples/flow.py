@@ -65,14 +65,12 @@ def solvers(rtol):
             method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000,
             riesz_block_pc="ads",
         ),
-        # the block solved to a tolerance rather than approximated by one
-        # cycle: more work per iteration, and a count that stops drifting
-        # the same cycle with the inner CG stated explicitly. The budget is
-        # what MEASURES the map rather than the budget: at 50 steps to 1e-2 the
-        # outer count reads the cap instead of the preconditioner -- 29 against
-        # 23 on the h-ladder, 205 against 132 at nu = 0.4999 -- and on a mesh
-        # written in metres rather than in unit lengths it does not converge at
-        # all. Solved to 1e-6 the count is the Riesz map's.
+        # the block SOLVED to a tolerance rather than approximated by one
+        # cycle: 500 CG steps at rtol 1e-6, so the outer count is the Riesz
+        # map's. A short budget reports itself instead -- at 50 steps to 1e-2
+        # the outer count reads the cap, 29 against 23 on the h-ladder, and on
+        # a mesh written in metres rather than unit lengths it does not
+        # converge at all.
         "ads-cg": mk.SolverOptions(
             method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000,
             riesz_block_pc="ads", riesz_block_its=500, riesz_block_rtol=1e-6,
@@ -242,8 +240,8 @@ def main():
         p = np.array([model.cell_pressure(e) for e in range(n)])
         q = np.array([exact(mk.centroid(mesh, args.dim, e)) for e in range(n)])
         fields = {"pressure": p, "dupuit": q, "error": p - q}
-        # the blend as built -- with the forced zeros -- next to the solution
-        # it produced, so a wrong cell is attributable
+        # the selection as built -- eta in {0, 1} -- next to the solution it
+        # produced, so a wrong cell is attributable
         if args.product == "adaptive_rt":
             fields["eta"] = model.eta
         mk.write_vtu(mesh, args.vtu, fields)

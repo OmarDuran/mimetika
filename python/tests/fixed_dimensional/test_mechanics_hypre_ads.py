@@ -1,8 +1,9 @@
-"""ADS on the weak-symmetry stress, called directly rather than through PETSc.
+"""ADS on the stress, called directly rather than through PETSc.
 
-test_flow_hypre_ads.py tests the same two properties on a FLUX. A stress is d
-copies of that flux -- the rows of sigma -- so the question here is whether the
-d-copies construction inherits them, and it is a third property as well:
+test_flow_hypre.py tests the same two properties on a FLUX; MGR on this stress
+is in test_mechanics_hypre_mgr.py, which imports the fixtures below. A stress is
+d copies of that flux -- the rows of sigma -- so the question here is whether
+the d-copies construction inherits them, and a third property as well:
 
     h-ROBUST                the count does not grow as the mesh is refined
     CONTRAST-ROBUST         nor as lambda jumps between cells
@@ -23,8 +24,8 @@ and the norm of each space is fixed by the equation it belongs to:
     ||gamma||^2_Q     = 2 mu ||gamma||^2
 
 The stress norm has NO rotation term: skw is bounded L^2 -> L^2, so the
-symmetry constraint contributes to Q's norm and not to Sigma's. That is what
-makes the construction work. Restricted to one row of sigma,
+symmetry constraint contributes to Q's norm and not to Sigma's, which is what
+lets the rows separate. Restricted to one row of sigma,
 
     ||sigma_i||^2_Sigma = (beta_i sigma_i, sigma_i) + alpha ||div sigma_i||^2
        beta_i = (1/2mu) ( I - lambda/(2mu + d lambda) e_i (x) e_i )
@@ -42,11 +43,11 @@ from the contrast one rather than a special case of it.
 
 TWO ROUTES TO THE BLOCK, as in the flux file and for the same reason:
 
-    one cycle   `block_iterations = 0`, which APPROXIMATES the block
-    inner CG    a short CG under that cycle, which SOLVES it
+    one cycle   `block_iterations = 0`, which approximates the block
+    inner CG    `block_iterations = 50`, `block_rtol = 1e-2`, which solves it
 
 Only the second is flat in nu. One cycle is h- and contrast-flat and drifts as
-nu -> 1/2, which is the same ads / ads-cg distinction the flux has.
+nu -> 1/2, the same ads / ads-cg distinction the flux has.
 """
 
 import numpy as np
@@ -57,8 +58,8 @@ import mimetika_cxx as mk
 S = mk.StressRealization
 F = mk.StressFormulation
 
-# STRONG SYMMETRY IS THE SAME SOLVER ON A DIFFERENT SPACE, and it is worth the
-# same three questions. Its facet carries SIX moments -- one traction vector
+# STRONG SYMMETRY IS THE SAME SOLVER ON A DIFFERENT SPACE, asked the same three
+# questions. Its facet carries SIX moments -- one traction vector
 # against the facet's own frame -- rather than d copies of a scalar layout, so
 # build_norm reaches ADS through a FRAME-WEIGHTED injection instead of a matrix
 # of ones: the three mean slots {t1, t2, n} rotated into global components are
@@ -67,11 +68,11 @@ F = mk.StressFormulation
 # rotation multiplier at all, symmetry being imposed strongly.
 #
 # Only stabilized_vem takes strong_symmetry; diagonal_vem and adaptive_vem
-# require strong_symmetry_total, which adds a pressure field and is NOT robust
+# require strong_symmetry_total, which adds a pressure field and is not robust
 # on this preconditioner -- measured at n = 4 and 6, stabilized_vem runs 300
 # then 2000 (no convergence) on tetrahedra and 100 then 172 on hexahedra, and
-# diagonal_vem does not converge on tetrahedra at all. So it is left out rather
-# than asserted loosely, and named here so the omission is a decision.
+# diagonal_vem does not converge on tetrahedra at all. So strong_symmetry_total
+# is left out rather than asserted loosely.
 STRONG = {"stabilized_vem": S.stabilized_vem}
 
 # The weak-symmetry members whose stress is d copies of a BDM flux. On a
@@ -99,7 +100,8 @@ def _hypre():
 
 
 def _options(kind):
-    """`one` applies a single ADS cycle; `cg` solves the block under it."""
+    """`one` applies a single ADS cycle; `cg` solves the block under it; `mgr`
+    reduces the assembled system instead and builds no complex at all."""
     mh = _hypre()
     o = mh.AdsOptions()
     o.rtol = RTOL
@@ -107,6 +109,8 @@ def _options(kind):
     if kind == "cg":
         o.block_iterations = 50
         o.block_rtol = 1e-2
+    elif kind == "mgr":
+        o.mgr = True
     return o
 
 
@@ -123,14 +127,14 @@ def wedge(nr):
 # degree-2 complex, whatever the cells are. dec/mimetic_curl.hpp cannot supply
 # the C for that on a polytope -- there D_edge > m, the reconstruction is a
 # least-squares fit that couples the whole cell and the two cells sharing a
-# facet disagree -- but d^1 is facet-local by nature, and surface Stokes writes
-# a facet's rows in that facet's own dofs alone on any planar facet. So C is
-# built facet-wise (bdm_complex.hpp) and the route no longer forks.
+# facet disagree -- but d^1 is facet-local, and surface Stokes writes a facet's
+# rows in that facet's own dofs alone on any planar facet. So C is built
+# facet-wise (bdm_complex.hpp) and the route does not fork.
 #
 # The cells still differ in the OPERATOR -- the stabilization vanishes only on a
 # simplex -- so each property is measured on all three. `degree2` in the handoff
-# says the route was taken, and test_the_route_is_the_degree_two_complex_
-# everywhere is what pins it.
+# says the route was taken, pinned by
+# test_the_route_is_the_degree_two_complex_everywhere.
 CELLS = {
     "tetrahedra": (wedge, (3, 4, 6, 8), 4),
     "hexahedra": (lambda n: mk.box([n, n, n], 3, mk.Family.cartesian), (3, 4, 6), 4),
@@ -155,10 +159,9 @@ def patch(mesh, product=S.stabilized_bdm, lame=1.0, lame_field=None,
           formulation=F.weak_symmetry):
     """A linear displacement on the whole boundary, with its gradient.
 
-    The gradient is not decoration: a facet holding d traction moments tests the
-    datum against d basis functions, and the centred ones see only the
-    VARIATION across the facet. Without it the BDM members lose the patch, and a
-    count measured on a wrong answer is not a measurement.
+    A facet holding d traction moments tests the datum against d basis
+    functions, and the centred ones see only the variation across the facet.
+    Without the gradient the BDM members lose the patch.
     """
     model = mk.CauchyMechanicsModel(
         mesh, 3, mk.ElasticMaterial(MU, lame), product, formulation
@@ -195,7 +198,7 @@ def lame_checkerboard(mesh, lame, exponent, blocks=4):
     """lambda alternating between lame and lame * 10^p on a blocks^3 partition
     of the bounding box.
 
-    A function of POSITION and not of the cell numbering, so it is the same
+    A function of position and not of the cell numbering, so it is the same
     field on every refinement -- a pattern redrawn per mesh makes a ladder
     meaningless. mu stays uniform: the model carries lambda per cell and the
     shear as one number.
@@ -210,8 +213,8 @@ def lame_checkerboard(mesh, lame, exponent, blocks=4):
 #
 # CONVERGED IS NOT CORRECT. A preconditioner built on the wrong complex, or on
 # a permutation of the block's rows, still converges -- to something else. For
-# the d-copies path this is the check that each block really is one row of
-# sigma, in the model's own order and basis.
+# the d-copies path this checks that each block is one row of sigma, in the
+# model's own order and basis.
 @pytest.mark.parametrize("name", sorted(BDM))
 def test_the_hypre_answer_is_the_direct_answer(name):
     _hypre()
@@ -231,7 +234,7 @@ def test_the_hypre_answer_is_the_direct_answer(name):
 
 # ---- 2. which complex ADS was given ----------------------------------------
 #
-# EVERY cell type takes the degree-2 complex. C is surface Stokes on a facet, so
+# Every cell type takes the degree-2 complex. C is surface Stokes on a facet, so
 # it needs no cell reconstruction and a polytope has a global C; Pi's vertex
 # hats reproduce the linears exactly on a tetrahedron and in least squares
 # beyond it. So each row of the stress is handed to ADS whole -- three moments a
@@ -292,11 +295,10 @@ def test_the_stress_is_h_robust(name, kind, cells):
 #     1e+06   70    |
 #     1e+08   70   /
 #
-# "the count does not track the contrast" is the SECOND of those. There is one
-# step on introducing a jump at all, and then nothing; a single bound over both
-# halves conflates them, and a bound loose enough to swallow the step -- 13
-# here -- would no longer notice a drift of 70, 80, 90 across the orders, which
-# is the failure this test exists to catch.
+# "the count does not track the contrast" is the second of those. There is one
+# step on introducing a jump at all, and then nothing. A single bound over both
+# halves would have to be 13 here, which would no longer catch a drift of
+# 70, 80, 90 across the orders -- so the two halves take separate bounds.
 JUMPS = (0, 2, 4, 6, 8)
 
 
@@ -319,10 +321,10 @@ def test_the_count_does_not_track_the_contrast(kind, cells):
 
 # ---- 5. incompressibility --------------------------------------------------
 #
-# THE ONE THAT IS NOT A SPECIAL CASE OF THE CONTRAST. A jump in lambda between
-# cells is a coefficient the Galerkin products carry; nu -> 1/2 is beta_i's own
-# spectrum degenerating, 1/(2mu) across e_i against 1/(2mu + d lambda) along it,
-# and the ratio is unbounded.
+# NOT A SPECIAL CASE OF THE CONTRAST. A jump in lambda between cells is a
+# coefficient the Galerkin products carry; nu -> 1/2 is beta_i's own spectrum
+# degenerating, 1/(2mu) across e_i against 1/(2mu + d lambda) along it, and the
+# ratio is unbounded.
 #
 # Measured on wedge(4): one cycle drifts, 57, 70, 140, 351 and then no
 # convergence at nu = 0.4999; the block SOLVED is flat, 40, 40, 41, 44, 43. So
@@ -345,11 +347,9 @@ def test_the_count_does_not_track_the_incompressibility(cells):
 
 @pytest.mark.parametrize("cells", sorted(CELLS))
 def test_one_cycle_drifts_where_the_solved_block_does_not(cells):
-    """The two routes are a different statement, and this is what separates
-    them: at nu = 0.499 one cycle takes several times what the solved block
-    does, on the same problem and the same tolerance. It holds on every cell
-    type, tetrahedra and polytopes alike, which is why nu is the one property
-    only `cg` is asserted for."""
+    """At nu = 0.499 one cycle takes several times what the solved block does,
+    on the same problem and the same tolerance, on every cell type. That is why
+    nu is the one property only `cg` is asserted for."""
     _hypre()
     mesh = fixed(cells)
     lam = 2.0 * MU * 0.499 / (1.0 - 2.0 * 0.499)
@@ -382,9 +382,8 @@ def test_strong_symmetry_is_h_robust(kind, cells):
                       tetrahedra  hexahedra   prisms
 
     None of those grows with refinement -- the worst ratio is 1.14 -- but a
-    fixed +8 means 57% of the solved block's 14 and 3.5% of the single cycle's
-    230, so it would be slack for one and unmeetable for the other. What is
-    being asserted is that the count does not track h, and that is a ratio.
+    fixed +8 would be 57% of the solved block's 14 and 3.5% of the single
+    cycle's 230, slack for one and unmeetable for the other. The bound is 1.3x.
 
     The tetrahedral column is also the file's sharpest `one` against `cg`: 250
     against 14, an eighteenfold gap on the same problem and tolerance.
@@ -424,11 +423,10 @@ def test_strong_symmetry_does_not_track_the_incompressibility(cells):
         prisms       36 35 35 36 36
 
     Hexahedra and prisms are flat outright. Tetrahedra start at 14 -- half of
-    what the others need -- and reach 36, which is still the others' baseline
-    but is +22 in absolute terms. lambda moves through four orders of magnitude
-    across this sweep and the count at most doubles, which is the property; a
-    fixed +8 would read that as a failure only because the starting point was
-    so good.
+    what the others need -- and reach 36, still the others' baseline but +22 in
+    absolute terms. lambda moves through four orders of magnitude and the count
+    at most doubles; the bound is 3x rather than a fixed +8, which the good
+    tetrahedral starting point would fail.
     """
     _hypre()
     mesh = fixed(cells)

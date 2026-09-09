@@ -3,9 +3,8 @@
 
 #include "mimetika/model/compositions/flow.hpp"
 
-// THE DRIVER. It selects a compiled composition, reports what must be
-// supplied, and runs. Nothing here defines physics; nothing here appears in
-// an inner loop.
+// Driver: selects a compiled composition by name, validates it at dim 3, and
+// reports the closures to bind. No physics is defined here.
 int main(int argc, char** argv) {
   using namespace mimetika;
 

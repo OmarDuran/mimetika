@@ -25,14 +25,11 @@
 // Single-phase flow, stated as data -- the poroelastic problem with one physics
 // instead of two.
 //
-//     div q = 0,   q = -(K/mu) grad p
+//     div q = f,   q = -(K/mu) grad p
 //
-// It is the configuration a flow-only benchmark needs, and the smallest problem
-// that exercises the flux space, the natural pressure datum and the strong flux
-// condition without any mechanics in the way. When a poroelastic answer is
-// wrong, this is what says whether the flow half is.
-//
-// Both of its closed forms hold in any dimension:
+// It exercises the flux space, the natural pressure datum and the strong flux
+// condition with no mechanics attached. Both closed forms hold in any
+// dimension:
 //
 //     a column   p linear between the two ends          the Laplace solution
 //     an annulus p = p_a + (p_b - p_a) ln(r/a)/ln(b/a)  Dupuit
@@ -41,23 +38,27 @@ namespace mimetika {
 
 class FlowModel {
  public:
-  // Which discrete Hodge, chosen here rather than fixed. exokal offers two de
-  // Rham realizations of the flux star and one stabilized polytopal product,
-  // and they are different discretizations of the same equations:
+  // Which discrete Hodge, chosen here rather than fixed. exokal's six flux
+  // realizations are different discretizations of the same equations:
   //
-  //   derham      d moments per facet. On a simplex this is BDM_1 -- 3 edges
+  //   derham_bdm  d moments per facet. On a simplex this is BDM_1 -- 3 edges
   //               x 2 in the plane, 4 facets x 3 in space -- unisolvent with
   //               no enrichment. On a polytope the moments are completed with
   //               div-free curl modes. The space a coupled poroelastic model
   //               needs, because the stress space it pairs with carries d^2.
-  //   derham_rt   one flux per facet: RT_0, the minimal de Rham pair, whose
-  //               radial mode x - x_E is what lets div reach P_0 at all.
-  //               Simplices in space only today; it refuses anything else
-  //               rather than stabilizing it.
-  //   stabilized  one flux per facet on any polytope, consistency plus a
-  //               stabilization -- not a de Rham construction.
+  //   stabilized_bdm  the same d moments, reconstructed directly and
+  //               stabilized on ker(N^T) rather than enriched to unisolvence.
+  //               Equal to derham_bdm on a simplex.
+  //   derham_rt   one flux per facet: RT_0 = span{K e_i, x - x_E}, whose
+  //               radial mode is what lets div reach P_0 at all, with div-free
+  //               curl enrichment where a polytope leaves surplus facets.
+  //               d = 2 or 3.
+  //   stabilized_rt  one flux per facet on any polytope: reconstructs
+  //               span{K e_i} and penalizes the kernel the surplus facets
+  //               leave -- not a de Rham construction.
   //   diagonal_tpfa  one flux per facet and no reconstruction: the diagonal
-  //               primal-dual star, exact only where the mesh is K-orthogonal.
+  //               primal-dual star M_ff = (|sigma*|/|sigma|)/(n.K n), the
+  //               two-point flux, exact only where the mesh is K-orthogonal.
   //   adaptive_rt one flux per facet: the per-cell selection between the two
   //               above, carried as eta in {0, 1}. Ones everywhere -- the
   //               stabilized product -- and 0 on the cells the metric-
@@ -83,14 +84,12 @@ class FlowModel {
   //
   // The star is the metric of the flux (d-1)-cochains, so K enters it and
   // nothing else: d is incidence and does not see the coefficient. A jump in K
-  // is therefore a jump in one block of the Hodge star, which is what makes a
-  // contrast test a test of the star rather than of the complex.
+  // is a jump in one block of the Hodge star, not in the complex.
   // `components` is 1 for an isotropic K, 3 for a diagonal one and 6 for a
   // fully symmetric tensor (xx, yy, zz, xy, xz, yz) -- the layout a mesh file
-  // supplies and exokal's Coefficient::from_components reads. A TENSOR is not
-  // a convenience over three scalars: the anisotropy is what the auxiliary
-  // spaces of the H(div) preconditioner have to see, since it is the direction
-  // K conducts in that decides which gradients are near-null.
+  // supplies and exokal's Coefficient::from_components reads. The auxiliary
+  // spaces of the H(div) preconditioner see the anisotropy: the direction K
+  // conducts in decides which gradients are near-null.
   void set_permeability(std::vector<double> k, int components = 1) {
     const auto cells = static_cast<std::size_t>(mesh_->topology().count(dim_));
     if (components != 1 && components != 3 && components != 6) {
@@ -129,12 +128,26 @@ class FlowModel {
   const std::vector<double>& permeability() const { return permeability_; }
   int permeability_components() const { return permeability_components_; }
 
-  // THE SCALAR THE RIESZ NORM NEEDS, and it has two jobs.
+  // The override, one positive value per cell. Which scalar stands for K in
+  // the Riesz norm is a modelling choice; empty falls back to the rule in
+  // norm_permeability().
+  void set_norm_permeability(std::vector<double> k) {
+    if (!k.empty() && k.size() != static_cast<std::size_t>(mesh_->topology().count(dim_))) {
+      throw std::invalid_argument("FlowModel::set_norm_permeability: one value per cell");
+    }
+    for (const double v : k) {
+      if (!(v > 0.0)) {
+        throw std::invalid_argument("FlowModel::set_norm_permeability: must be positive");
+      }
+    }
+    norm_permeability_ = std::move(k);
+  }
+
+  // The scalar the Riesz norm needs, one per cell.
   //
   // W stands for the Schur complement B star_K^-1 B^T of the constraint, and
-  // the star's facet entry carries n.K n -- so the scalar has to say what a
-  // cell contributes to that scale. Two things reduce it, and they are not the
-  // same thing:
+  // the star's facet entry carries n.K n, so the scalar says what a cell
+  // contributes to that scale. Two effects reduce it:
   //
   //   DIRECTION   the cell's own tensor conducts differently along each facet
   //               normal. Those facets are PARALLEL paths for the divergence,
@@ -153,23 +166,7 @@ class FlowModel {
   // 1e-8 .. 1e+8 (512 cells, stabilized_rt, ADS-CG): this rule holds 14-16
   // iterations across all sixteen orders. The cell's own K alone gives 14 for
   // a soft inclusion and 72 for a hard one; ignoring K gives 49 for a soft
-  // inclusion and 14 for a hard one. Each of those is one of the two jobs
-  // done and the other dropped.
-  // THE SCALAR OVERRIDE. Which scalar represents a K in the divergence term is
-  // a modelling choice, so a caller who knows their medium can name it -- and
-  // the rule above can be measured against alternatives rather than argued.
-  void set_norm_permeability(std::vector<double> k) {
-    if (!k.empty() && k.size() != static_cast<std::size_t>(mesh_->topology().count(dim_))) {
-      throw std::invalid_argument("FlowModel::set_norm_permeability: one value per cell");
-    }
-    for (const double v : k) {
-      if (!(v > 0.0)) {
-        throw std::invalid_argument("FlowModel::set_norm_permeability: must be positive");
-      }
-    }
-    norm_permeability_ = std::move(k);
-  }
-
+  // inclusion and 14 for a hard one -- one effect kept, the other dropped.
   std::vector<double> norm_permeability() const {
     if (!norm_permeability_.empty()) return norm_permeability_;
     if (permeability_.empty()) return {};
@@ -231,15 +228,14 @@ class FlowModel {
   FlowBoundary& flow() { return flow_; }
   const FlowBoundary& flow() const { return flow_; }
 
-  // The adaptive_rt threshold: scan for metrically degenerate cells at this
-  // percentage of the node-star mean and give them the diagonal star, eta = 0.
-  // eta is derived -- ones with the flagged cells zeroed -- so what is set here
-  // is the one number the scan needs. Unset, exokal scans at its own
-  // default_degeneracy_percent.
   // A SOURCE PER CELL, as a density: div q = f. Cleared by an empty vector.
   void set_source(std::vector<double> f) { source_density_ = std::move(f); }
   const std::vector<double>& source() const { return source_density_; }
 
+  // The adaptive_rt threshold: scan for metrically degenerate cells at this
+  // percentage of the node-star mean and give them the diagonal star, eta = 0.
+  // eta is derived -- ones with the flagged cells zeroed. Unset, exokal scans
+  // at its own default_degeneracy_percent.
   void set_degeneracy_percent(double percent) { degeneracy_percent_ = percent; }
 
   // The second selector, by conditioning: a cell whose stabilized block has
@@ -262,12 +258,11 @@ class FlowModel {
     return flux_.eta();
   }
 
-  // The validity gate of the diagonal star, which exokal records and leaves to
-  // the consumer: a facet the cell centroid does not see squarely carries a
-  // non-positive two-point weight, M is not positive there, and whatever is
-  // built on it -- the Riesz map, a condensation -- is meaningless while still
-  // reporting CONVERGED. Populated by diagonal_tpfa, and by adaptive_rt on the
-  // cells its scan handed to the star.
+  // The validity gate of the diagonal star, recorded by exokal and left to the
+  // consumer: a facet the cell centroid does not see from inside carries a
+  // non-positive two-point weight, so M is not positive there and nothing built
+  // on it -- the Riesz map, a condensation -- is SPD. Populated by
+  // diagonal_tpfa, and by adaptive_rt on the cells its scan handed to the star.
   std::size_t n_not_star_shaped() const {
     if (sim_ == nullptr) {
       throw std::logic_error("FlowModel: not built yet; call build() or solve() first");
@@ -285,10 +280,10 @@ class FlowModel {
   const exokal::Mesh& mesh() const { return *mesh_; }
   bool built() const { return sim_ != nullptr; }
 
-  // Dereferencing an unbuilt model is a null read, and from Python that is an
-  // abort rather than an exception -- so it is refused by name instead.
-  // Non-const, for the one caller that configures the simulation rather than
-  // reading it: the partition, which tells it which sites to assemble.
+  // Refused before build(): dereferencing the null simulation aborts under the
+  // Python bindings rather than raising. Non-const, for the one caller that
+  // configures the simulation rather than reading it: the partition, which
+  // tells it which sites to assemble.
   Simulation& simulation() {
     if (!sim_) {
       throw std::logic_error("FlowModel: not built yet; call build() or solve() first");
@@ -324,7 +319,7 @@ class FlowModel {
     if (n_ranks_ > 1) distribution_ = partition_cells(*mesh_, dim_, n_ranks_, rank_);
     const std::vector<char>* only =
         distribution_.assembled_cells.empty() ? nullptr : &distribution_.assembled_cells;
-    // the K-independent mode selection, and only the P_1 realization needs it
+    // the K-independent mode selection; only derham_bdm reads it
     if (how_ == Realization::derham_bdm) {
       geometry_ = exokal::hodge::DeRhamGeometryCache::build(*mesh_, dim_);
     }

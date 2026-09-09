@@ -1,16 +1,15 @@
 """Geometry layer: coordinates and metric quantities.
 
 Given vertex coordinates and a :class:`~mimetika.topology.complex.CellComplex`,
-this computes the *metric* data the mimetic operators need: k-cell measures
-(lengths, areas, volumes), **true** centroids, facet normals and quadrature.
+this computes the metric data the mimetic operators need: k-cell measures
+(lengths, areas, volumes), centroids, facet normals and quadrature.
 
-Everything works for cells of any dimension (segment, polygon, polyhedron)
-embedded in ``R^3``, with the standing assumption -- shared with the mimetic
-convergence theory -- that facets are **planar** and cells are **star-shaped**.
+Cells of any dimension (segment, polygon, polyhedron) embedded in ``R^3``, under
+the standing assumption of the mimetic convergence theory: facets planar, cells
+star-shaped.
 
-Centroids are true (measure-weighted) centroids, not vertex averages: the
-mimetic consistency identities are exact only when the element reference point
-is the actual centroid, so this matters for the patch tests.
+Centroids are measure-weighted, not vertex averages: the mimetic consistency
+identities are exact only when the element reference point is the centroid.
 """
 
 from __future__ import annotations
@@ -199,11 +198,11 @@ class Geometry:
         return pts, np.full(2, length / 2.0)
 
     def _polygon_quadrature(self, fid: int) -> tuple[np.ndarray, np.ndarray]:
-        """Fan-triangulate from the vertex mean with **signed** areas.
+        """Fan-triangulate from the vertex mean with signed areas.
 
         Signed weights make the decomposition an exact algebraic identity for
-        any apex, so non-convex (star-shaped) polygons integrate correctly even
-        when the apex falls outside the polygon.
+        any apex, so a star-shaped polygon integrates correctly even when the
+        apex falls outside it.
         """
         loop = self.complex.polygon_loops[fid]
         fp = self.points[list(loop)]
@@ -225,7 +224,7 @@ class Geometry:
     def _polyhedron_quadrature(self, cid: int) -> tuple[np.ndarray, np.ndarray]:
         """Subdivide into tets (cell apex -> facet centroid -> facet edge).
 
-        Uses **signed** tet volumes over the outward-oriented boundary, so the
+        Signed tet volumes over the outward-oriented boundary, so the
         decomposition is exact for any apex and any simple polyhedron.
         """
         facets = self.complex.facets_of(3, cid)
@@ -290,13 +289,13 @@ class Geometry:
     def facet_second_moments(self) -> np.ndarray:
         """``(n_facets, 3, 3)`` with ``int_e (x - x_e) (x) (x - x_e)`` per facet.
 
-        Together with the area, centroid and tangent frame, this second moment
-        is *all* a facet contributes to the mimetic local matrices: the facet
-        Gram matrix and the coordinate expansions both follow from it in closed
-        form, so assembly needs no per-facet quadrature loop.
+        With the area, centroid and tangent frame this closes the facet's
+        contribution to the mimetic local matrices: facet Gram matrix and
+        coordinate expansions follow in closed form, so assembly runs no
+        per-facet quadrature loop.
 
-        Computed for all facets at once by grouping them by vertex count -- the
-        fan decomposition is then a single vectorised expression per group.
+        Facets are grouped by vertex count, one vectorised fan decomposition
+        per group.
         """
         if self._facet_moments is not None:
             return self._facet_moments
@@ -352,17 +351,16 @@ class Geometry:
     def facet_frame(self, facet: int) -> np.ndarray:
         """``(d, 3)`` orthonormal frame ``[n, t_1, ..., t_{d-1}]`` of a facet.
 
-        Ambient (``R^3``) rows, but exactly ``d`` of them: two for an edge of a
-        2D mesh, three for a face of a 3D mesh.  Derived from *globally*
-        determined data, so both cells sharing a facet agree on it.
+        Ambient (``R^3``) rows, exactly ``d`` of them: two for an edge of a 2D
+        mesh, three for a face of a 3D mesh.  Built from globally determined
+        data, so both cells sharing a facet agree on it.
 
-        **Orientation convention.**  The normal points *out of the cell whose
-        incidence sign is* ``+1``.  In 3D that holds by construction -- the
-        canonical loop is the one the ``+1`` cell traverses outward -- but the
-        2D rotation of an edge direction carries no such guarantee, so it is
-        enforced here.  The sign of the gap is tied to this convention, and
-        Signorini (``g_n >= 0``, ``t_n <= 0``) is *not* invariant under flipping
-        the normal.
+        Orientation: ``n`` points out of the cell of incidence sign ``+1``.  In
+        3D this holds by construction (the canonical loop is the one the ``+1``
+        cell traverses outward); in 2D the rotation of an edge direction gives
+        no such guarantee, so :meth:`_outward_sign` enforces it.  The gap sign
+        follows this convention; Signorini (``g_n >= 0``, ``t_n <= 0``) is not
+        invariant under a normal flip.
         """
         d = self.complex.dim
         if d == 3:
@@ -394,9 +392,9 @@ class Geometry:
     def second_moments(self, k: int) -> np.ndarray:
         """``(n_k, 3, 3)`` with ``int (x - x_c) (x) (x - x_c)`` over each k-cell.
 
-        Cached per dimension.  It is a whole-mesh quantity that callers ask for
-        one cell at a time -- the contact code wants it once per fracture facet --
-        so recomputing it per call is quadratic in the number of facets.
+        Cached per dimension: a whole-mesh quantity requested one cell at a time
+        (contact wants it once per fracture facet), so recomputing per call
+        would be quadratic in the facet count.
         """
         cache = self.__dict__.setdefault("_second_moments", {})
         if k in cache:

@@ -14,8 +14,8 @@ namespace {
 
 bool near(double a, double b, double tol = 1e-12) { return std::abs(a - b) <= tol; }
 
-// the state width here is p, h and the compositions: a handful of scalars,
-// so the dual is sized to that and not to the default capacity
+// the state is (p, h, z0, z1): four directions, so capacity 8 rather than the
+// default 32
 using D = exokal::ad::Dual<double, 8>;
 
 ImmiscibleFluid two_phase() {
@@ -90,11 +90,10 @@ MIMETIKA_TEST(temperature_follows_from_the_enthalpy) {
   CHECK(near(w2.temperature, 2.0 * w.temperature, 1e-9));
 }
 
-// An immobile phase contributes nothing. And the wholly immobile state is
-// Unreachable for a valid composition: the saturations sum to one while
-// the residuals sum to less than one, so s_a < s_ra for every phase would
-// give 1 < 1. At least one phase is always strictly mobile — the guard in
-// evaluate() is defence, not a case the physics reaches.
+// An immobile phase contributes nothing, and the wholly immobile state is
+// unreachable for a valid composition: the saturations sum to one while the
+// residuals sum to less than one, so s_a < s_ra for every phase would give
+// 1 < 1. At least one phase is strictly mobile.
 MIMETIKA_TEST(residual_saturation_and_the_unreachable_immobile_state) {
   PhaseModel a;
   a.residual_saturation = 0.2;
@@ -140,8 +139,8 @@ MIMETIKA_TEST(compressibility_makes_the_accumulation_state_dependent) {
   CHECK(near(hi, 1000.0 * (1.0 + 1.0e-8 * 1.0e7), 1e-9));
 }
 
-// The weights differentiate: evaluated at dual scalars they return exact
-// derivatives with respect to the state, which is what a term needs
+// The weights differentiate: at dual scalars they carry exact derivatives with
+// respect to the state (p, h, z)
 MIMETIKA_TEST(the_weights_carry_dual_scalars) {
   const ImmiscibleFluid f = two_phase();
   const double p = 5.0e6, h = 1.0e5;

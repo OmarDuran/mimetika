@@ -1,22 +1,17 @@
-// ASSEMBLY WALL TIME AGAINST CELL COUNT, on the consolidation column itself.
+// Assembly wall time against cell count, on the consolidation column: one cell
+// across, n tall, with the Terzaghi boundary conditions and the model the driver
+// builds. Every phase between a mesh and a system is timed:
 //
-// The column is the problem that will be run, so it is the problem to profile:
-// one cell across, n tall, with the four boundary conditions Terzaghi needs and
-// the same model the driver builds. What is timed is every phase that stands
-// between a mesh and a system:
+//     mesh        the polyhedral complex
+//     select      the de Rham mode selection, shared by both products
+//     stress      the per-cell mimetic stress operators
+//     flux        the per-cell mimetic flux operators
+//     number      the product space and the epoch
+//     constr      the strong imposition
+//     tangent     one assembly of the Jacobian
 //
-//     mesh          the polyhedral complex
-//     stress ops    the per-cell mimetic stress operators
-//     flux hodge    the per-cell mimetic flux operators
-//     numbering     the product space and the epoch
-//     constraints   the strong imposition, which now measures its own scales
-//     tangent       one assembly of the Jacobian
-//     residual      one assembly of the residual
-//
-// Reported per cell as well as in total, because a phase that is linear and a
-// phase that is not look identical in a table of totals and completely
-// different in a table of rates. Anything that grows per cell is the thing to
-// fix; anything flat is already paying only what the mesh costs it.
+// Reported per cell as well as in total: a flat per-cell column is linear in the
+// cell count.
 
 #include <array>
 #include <chrono>
@@ -84,10 +79,9 @@ int main(int argc, char** argv) {
   const double storage = 3.0 * alpha * alpha * inv_mod + inv_M;
   const double dt = 1.0e-4 * h * h / (perm / (inv_M + alpha * alpha / (lam + 2.0 * mu)));
 
-  // the subsystems, in the order the product space numbers them: the stress
-  // and flux blocks live on facets and the rest on cells, which is what makes
-  // the first two grow with the facet count and the last three with the cell
-  // count -- different slopes in the same table
+  // the subsystems, in the order the product space numbers them: s_0 and q_0 carry
+  // facet moments, u_0, g_0 and p_0 are cell-wise, so those two columns grow with
+  // the facet count and the other three with the cell count
   static const char* kFields[] = {"s_0", "u_0", "g_0", "q_0", "p_0"};
   std::printf("%7s %8s %8s %8s %8s %8s %9s %11s | %8s %8s %8s %8s %8s %8s %8s %9s\n", "cells", "s",
               "u", "g", "q", "p", "total", "nnz", "mesh", "select", "stress", "flux", "number",
@@ -103,10 +97,10 @@ int main(int argc, char** argv) {
     const graphos::Complex& c = m.topology();
     const double t_mesh = since(t);
 
-    // ONE de Rham SELECTION FOR BOTH PRODUCTS. The stress operators and the flux
+    // One de Rham selection for both products: the stress operators and the flux
     // Hodge each need a de Rham product on every cell, with different material
-    // tensors but the SAME reconstruction space; the selection is the expensive
-    // half and it does not depend on the material.
+    // tensors but the same reconstruction space. The selection is the expensive
+    // half and is independent of the material.
     const exokal::hodge::DeRhamGeometryCache geo = exokal::hodge::DeRhamGeometryCache::build(m);
     const double t_select = since(t);
 

@@ -8,20 +8,12 @@
 
 #include "exokal/forms/assemble.hpp"
 
-// The linear solve, behind an interface: the choice of solver is not a
-// property of the model.
+// The linear solve behind an interface: a solver takes an assembled system and
+// a right-hand side and returns a solution, and is handed neither the model,
+// the mesh nor the fields.
 //
-// A saddle point of this kind is solved one way while a method is being
-// validated and another way when it is being run: a direct factorization
-// answers "is the operator right" with no preconditioner in between, and an
-// iterative method is what makes a large problem finish. Neither is wired
-// into the physics; Simulation produces operators and stops.
-//
-// The interface is narrow. A solver is handed an assembled system and a
-// right-hand side and returns a solution; it is not handed the model, the
-// mesh, or the fields. That keeps a matrix-free operator and an assembled one
-// interchangeable behind it later, and lets a solver be tested against a
-// matrix that came from no physics at all.
+// A direct factorization validates the operator with no preconditioner in
+// between; an iterative method is what makes a large saddle point finish.
 
 namespace mimetika::solver {
 
@@ -47,11 +39,8 @@ struct SparseSystem {
     return out;
   }
 
-  // The same, without the second copy. The triplets of a large assembly are
-  // gigabytes -- a 22k-cell polyhedral mesh emits about 10^8 of them -- and
-  // copying them doubles the peak for the duration. The sink is spent
-  // afterwards either way, so a caller that will not reuse it hands over its
-  // storage instead.
+  // The same, moving the triplets rather than copying them: a 22k-cell
+  // polyhedral mesh emits about 10^8 of them, and a copy doubles the peak.
   static SparseSystem from(exokal::forms::TripletSink&& s) {
     SparseSystem out;
     out.n = s.residual.size();
@@ -62,14 +51,10 @@ struct SparseSystem {
     return out;
   }
 
-  // The diagonal, structurally present, zero or not.
-  //
-  // The multiplier block of a mixed form has no diagonal entry at all -- the
-  // (p, p) block is empty, not small -- and a factorization that indexes the
-  // diagonal refuses such a matrix outright, while a fieldsplit cannot address
-  // a block it cannot find. Carrying it as a triplet rather than inserting it
-  // into the assembled matrix lets the whole matrix be built in one bulk pass.
-  // One entry per row; it changes no product.
+  // The diagonal, structurally present, zero or not. The (p, p) block of a
+  // mixed form is empty, not small, and a factorization that indexes the
+  // diagonal refuses such a matrix outright while a fieldsplit cannot address
+  // a block it cannot find. One zero triplet per row; it changes no product.
   void add_structural_diagonal() {
     row.reserve(row.size() + n);
     col.reserve(col.size() + n);
@@ -88,11 +73,9 @@ struct SolveReport {
   double residual{0.0};  // ||Ax - b|| relative to ||b||
   std::string reason;
 
-  // Where the time went; the three are not interchangeable. Building the
-  // matrix is linear in the assembly; building the preconditioner decides
-  // whether a mesh is reachable at all; the iteration is what the
-  // preconditioner was chosen to shorten. One number for all three hides which
-  // of them to fix.
+  // Where the time went, kept apart: the matrix build is linear in the
+  // assembly, the preconditioner setup decides whether a mesh is reachable at
+  // all, and the iteration is what the preconditioner shortens.
   double assembly_seconds{0.0};  // the Jacobian: the model's own build
   double matrix_seconds{0.0};
   double preconditioner_seconds{0.0};
@@ -101,15 +84,14 @@ struct SolveReport {
   // process, and on several the price of the layout
   double off_rank_fraction{0.0};
   // Which solver the Riesz block got. It is chosen from the size of that
-  // block, so a sweep over mesh sizes crosses the threshold somewhere and two
-  // rows of the same table are then two different methods.
+  // block, so a sweep over mesh sizes crosses riesz_exact_limit somewhere and
+  // two rows of one table are then two methods.
   std::string block_solver;
 
   // Whether the first field was eliminated before the solve, and how much was
-  // left. A condensed run and a saddle-point run of the same model report the
-  // same answer but share nothing else -- different matrix, different method,
-  // different iteration count -- so which one happened should not be inferred
-  // from the timings.
+  // left. A condensed run and a saddle-point run of one model agree in the
+  // answer and in nothing else -- different matrix, method and iteration
+  // count -- so which ran is reported rather than inferred from the timings.
   bool condensed{false};
   std::size_t condensed_dofs{0};  // the size of S, when it was formed
 };
@@ -119,8 +101,8 @@ class LinearSolver {
   virtual ~LinearSolver() = default;
   virtual std::string name() const = 0;
 
-  // x is resized and filled; the return value says what happened, and a
-  // caller that ignores it gets a throw rather than a silent wrong answer.
+  // x is resized and filled; the report carries whether it converged, in how
+  // many iterations, and the relative residual it leaves.
   virtual SolveReport solve(const SparseSystem& A, const std::vector<double>& b,
                             std::vector<double>& x) = 0;
 };

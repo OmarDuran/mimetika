@@ -23,28 +23,26 @@
 // and with constant heat capacities T = h / Σ_k z_k c_k, the phase mass
 // fractions being the overall compositions under the bijection.
 //
-// The interface is what matters here, not the correlations behind it. A
-// weight is a pointwise map evaluated with whatever scalar the caller chose
-// — double for a residual, ad::Dual for a residual with its derivatives. An
-// operator-based linearization replaces the closed forms with a
-// multilinear interpolant over a tabulated state box; differentiating that
-// interpolant with the same dual numbers yields exactly what OBL requires,
-// the gradient of the interpolant rather than an interpolant of the
-// gradient. So the tables drop into this slot later without anything above
-// changing.
+// A weight is a pointwise map evaluated with whatever scalar the caller chose
+// — double for a residual, a dual number for a residual with its derivatives.
+// An operator-based linearization replaces the closed forms with a multilinear
+// interpolant over a tabulated state box; differentiating that interpolant with
+// the same dual numbers yields what OBL requires, the gradient of the
+// interpolant rather than an interpolant of the gradient. So the tables drop
+// into this slot without anything above changing.
 //
-// The dual width: the state here is p, h and the compositions — a handful
-// of scalars — so these evaluations want ad::Dual sized to that, not the
-// default capacity. StateDual below is the recommended alias; the
-// cell-system width belongs to ad::Local, never here.
+// The dual width: the state here is p, h and the compositions — a handful of
+// scalars — so these evaluations want a dual sized to that, not the cell-system
+// width of ad::Local.
 
 namespace mimetika::physics::constitutive {
 
 // raise if a mixture needs more; every array below is sized by it
 inline constexpr std::size_t max_phases = 4;
 
-// The primary state at one point. The composition carries all phases and
-// sums to one; close() applies the closure to the independent entries.
+// The primary state at one point. The composition carries all phases and sums
+// to one; close_composition() appends the dependent entry to the independent
+// ones.
 template <class T>
 struct State {
   T pressure{};
@@ -157,16 +155,14 @@ class ImmiscibleFluid {
           w.density[a] * relative_permeability(a, w.saturation[a]) / phases_[a].viscosity;
       w.total_mobility = w.total_mobility + w.mobility[a];
     }
-    // A defence, not a case the physics reaches: the saturations sum to one
-    // while the residuals sum to less than one, so s_a < s_ra for every
-    // phase would give 1 < 1. At least one phase is always strictly
-    // mobile, and the guard exists only so a malformed composition cannot
+    // The saturations sum to one while the residuals sum to less than one, so
+    // s_a < s_ra for every phase would give 1 < 1: at least one phase is always
+    // strictly mobile. The guard is only so a malformed composition cannot
     // divide by zero.
     const bool mobile = w.total_mobility > T{};
     w.mixture_enthalpy = T{};
     w.flow_density = T{};
     for (std::size_t a = 0; a < n; ++a) {
-      // every phase immobile is physically a dead cell, not a division
       w.fraction[a] = mobile ? w.mobility[a] / w.total_mobility : T{};
       w.mixture_enthalpy = w.mixture_enthalpy + w.fraction[a] * w.phase_enthalpy[a];
       w.flow_density = w.flow_density + w.fraction[a] * w.density[a];

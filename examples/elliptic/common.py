@@ -18,11 +18,9 @@ def observed_rates(
 ) -> list[float | None]:
     """Rates ``log(e_i/e_{i-1}) / log(h_i/h_{i-1})``; ``None`` for the first entry.
 
-    A rate measured against an error at round-off level carries no information
-    (the exact solution happened to be reproduced there), so it is reported as
-    ``None`` rather than as a spurious large number.  "Round-off level" is
-    judged *relative to the series*, since the absolute scale of an error
-    depends on the problem -- stresses grow with ``lambda``, for instance.
+    A rate measured against an error at round-off level carries no information, so
+    it is reported as ``None``.  The floor is relative to the series -- ``rel_floor``
+    times the largest error -- since the absolute scale depends on the problem.
     """
     floor = max(err, default=0.0) * rel_floor
     rates: list[float | None] = [None]

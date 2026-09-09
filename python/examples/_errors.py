@@ -42,10 +42,9 @@ def l2_norms(volume, e):
 def error_table(volume, rows, width=10):
     """One line per (name, e, scale); returns {name: the per-cell ||e||_{L2(E)}}.
 
-    THE RETURN IS THE LAST TWO COLUMNS, cell by cell. min_E and max_E are
-    extremes of that array, so a caller writing it to a .vtu next to the
-    solution puts the two ends of the table on the mesh -- which is the only
-    way to see WHERE the error is, a norm over the domain being one number.
+    min_E and max_E are extremes of the returned array, so a caller writing it
+    to a .vtu next to the solution puts the two ends of the table on the mesh,
+    which a norm over the domain cannot locate.
 
     S is printed, not only divided by. It is the norm of the field the row is
     measured against -- ||Pi_0 v||_{L2(D)}, or the fixed scale a vanishing

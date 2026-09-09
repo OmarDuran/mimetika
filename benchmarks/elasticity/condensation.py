@@ -1,7 +1,7 @@
 r"""Solver-efficiency benchmark: exact stress condensation on the lumped forms.
 
 Five formulations of the same elasticity problem on a structured box, one
-table.  The point being measured is structural, not incidental:
+table.  What is measured is structural:
 
 * the **AFW** inner product couples the facets of every cell, so the full
   saddle system must be factorised -- three- or four-field alike;
@@ -15,20 +15,19 @@ table.  The point being measured is structural, not incidental:
   ``1 + d + d(d-1)/2`` unknowns per cell is factorised.
 
 The two condensed rows close the rotation differently and condense
-identically -- which is the point: the speedup comes from the four-field
-diagonality, not from the rotation closure.  Their roles differ.  The
-**multiplier** form (``lumped 4-field``) enforces ``skw sigma = 0`` exactly
-and is congruent to the classic three-field system, which makes it the
-*verification anchor*; but its rotation multiplier carries an O(h^2)-decaying
-inf-sup -- harmless to ``sigma`` and ``u``, yet the multiplier conditioning
-grows like ``h^-2``, which iterative solvers feel.  The **kinematic-rotation**
-form (``two-point 4-field``) has no zero block and no inf-sup question in any
-field, and is the *recommended* scheme for production and for iterative
-solving at scale.
+identically: the speedup comes from the four-field diagonality, not from the
+rotation closure.  The multiplier form (``lumped 4-field``) enforces
+``skw sigma = 0`` exactly and is congruent to the classic three-field system,
+so it is the verification anchor; its rotation multiplier carries an
+O(h^2)-decaying inf-sup, harmless to ``sigma`` and ``u``, but the multiplier
+conditioning grows like ``h^-2``.  The kinematic-rotation form
+(``two-point 4-field``) has no zero block and no inf-sup question in any
+field.
 
-Timings are sparse-LU factor + solve (best of ``--repeats``); ``LU fill`` is
-the factor storage, which is also the memory story.  Assembly is excluded: it
-is comparable across formulations and amortised over time steps.
+Timings are the whole solve path, best of ``--repeats``: condensation where
+it applies, sparse-LU factor, solve, recovery.  ``LU fill`` is the factor
+storage.  Assembly is excluded: it is comparable across formulations and
+amortised over time steps.
 
 Run with ``python -m benchmarks.elasticity.condensation`` (default 5x5x5).
 """
@@ -78,7 +77,8 @@ def _time_condensed(S, rhs, n0, repeats):
 
 
 def measure(n: int = 5, repeats: int = 3):
-    """One row per formulation: ``(name, dofs, reduced, nnz, fill, time, x)``."""
+    """One dict per formulation, keyed ``name, dofs, reduced, nnz, fill,
+    time, solution, problem``; ``reduced`` is None for the full rows."""
     mesh = structured_box(n, n, n)
     lumped = lambda: LumpedDeviatoricStress(mesh, mu=MU, lam=LAM)  # noqa: E731
     cases = [

@@ -53,9 +53,9 @@ def test_poroelasticity_adds_no_field_of_its_own():
         bad.validate(3)
 
 
-# THE STRESS DEGREES OF FREEDOM ARE d^2 PER FACET, and the rotation carries the
-# d(d-1)/2 components weak symmetry needs. Getting either count wrong changes
-# the method rather than breaking it, so it is pinned.
+# THE STRESS DEGREES OF FREEDOM ARE d^2 PER FACET, and in 3D the rotation
+# carries the d(d-1)/2 = 3 components weak symmetry needs. Either count wrong
+# changes the method rather than breaking it, so both are pinned.
 def test_the_mixed_elasticity_space_has_the_afw_counts():
     m = hex_grid(2)
     s = mk.build_composition("linear_elasticity").space(m, 3)
@@ -76,11 +76,11 @@ def test_the_poroelastic_system_is_a_saddle_point_with_adjoint_couplings():
     m = hex_grid(2)
 
     # WHETHER A CELL STABILIZES IS A PROPERTY OF THE SPACE, not of the cell.
-    # The default de Rham realization reconstructs each stress row on the
-    # enriched scalar space, so its N is square and unisolvent and there is
-    # nothing left for a stabilization to see -- on hexahedra as on simplices.
-    # The AFW realization reconstructs on the full linear tensor space, whose
-    # moments a hexahedron does not determine, so there every cell stabilizes.
+    # derham_bdm reconstructs each stress row on the enriched scalar space, so
+    # its N is square and unisolvent and nothing is left for a stabilization to
+    # see -- on hexahedra as on simplices. stabilized_bdm reconstructs on the
+    # full linear tensor space, whose moments a hexahedron does not determine,
+    # so there every cell stabilizes.
     size, stabilized = mk.stress_operator_counts(m, 3, MU, LAM, mk.StressRealization.derham_bdm)
     assert size == m.count(3)
     assert stabilized == 0
@@ -103,12 +103,12 @@ def test_the_poroelastic_system_is_a_saddle_point_with_adjoint_couplings():
     p0, p1 = model.field_range("p_0")
     q0, q1 = model.field_range("q_0")
 
-    # ADJOINTNESS everywhere: |A_ij| = |A_ji|, because every coupling was
-    # written from one array of coefficients
+    # ADJOINTNESS everywhere: |A_ij| = |A_ji|, every coupling being written from
+    # one array of coefficients
     assert np.max(np.abs(np.abs(a) - np.abs(a.T))) < 1e-10
 
     # AND THE SIGNS, which adjointness-in-magnitude cannot see. The two
-    # couplings of a poroelastic system are not the same kind of object:
+    # couplings of a poroelastic system are different objects:
     #
     #   (s,p)  the BIOT coupling, a constitutive symmetry. Both blocks are
     #          second derivatives of one free energy, so A_ij = +A_ji.

@@ -76,9 +76,8 @@ std::vector<double> dense_of(const TripletSink& s, std::size_t n) {
 
 }  // namespace
 
-// The saddle-point structure comes out of the term, not out of a
-// declaration: the Hodge block, the two divergence blocks, and no
-// pressure-pressure coupling at all
+// The saddle-point structure the term assembles: the Hodge block (0,0), the two
+// divergence blocks (0,1) and (1,0), and no pressure-pressure block
 MIMETIKA_TEST(the_local_system_is_a_saddle_point) {
   const Mesh m = two_tets();
   const graphos::Complex& c = m.topology();
@@ -104,23 +103,20 @@ MIMETIKA_TEST(the_local_system_is_a_saddle_point) {
   for (std::size_t i = 0; i < 4; ++i) {
     for (std::size_t j = 0; j < 4; ++j) CHECK(near(sys.block(0, 0)(i, j), M(i, j)));
   }
-  // and the coupling blocks are exact transposes, written from one set of
-  // signs rather than two kernels
+  // the coupling blocks are exact transposes: block(0,1) = -block(1,0)^T
   for (std::size_t i = 0; i < 4; ++i) {
     CHECK(near(sys.block(0, 1)(i, 0), -sys.block(1, 0)(0, i)));
     CHECK(std::abs(sys.block(1, 0)(0, i)) == 1.0);  // the boundary coefficients
   }
 }
 
-// The two lowest-order realizations are interchangeable on a simplex: nothing
-// moves at all. Both are the conforming RT_0 element there -- derham_rt by
-// unisolvence, stabilized_rt because its stabilization is sized to reproduce it
-// -- so the constitutive blocks agree to round-off and the divergence blocks
-// agree because they are topology.
+// The two lowest-order realizations coincide on a simplex: both are the conforming
+// RT_0 element there -- derham_rt by unisolvence, stabilized_rt because its
+// stabilization is sized to reproduce it -- so the constitutive blocks agree to
+// round-off (worst difference < 1e-10) and the divergence blocks are topology.
 //
-// The equality depends on the stabilization being scaled by trace(M1)/(d+2)
-// rather than by the mean diagonal; the assertion is an equality rather than a
-// tolerance so a regression in that scale fails loudly.
+// The agreement depends on the stabilization being scaled by trace(M1)/(d+2)
+// rather than by the mean diagonal.
 MIMETIKA_TEST(the_two_lowest_order_realizations_assemble_the_same_system) {
   const Mesh m = two_tets();
   const Coefficient K = Coefficient::uniform(SymTensor<>::diagonal(2.0, 1.0, 3.0));
@@ -150,10 +146,9 @@ MIMETIKA_TEST(the_two_lowest_order_realizations_assemble_the_same_system) {
   for (std::size_t i = nq; i < n; ++i) CHECK(near(a.residual[i], b.residual[i], 1e-12));
 }
 
-// Discrete conservation: every interior facet appears in exactly two
-// divergence rows with opposite signs, so the column sums of the
-// divergence block vanish there. The flux through the mesh is conserved
-// because the topology says so.
+// Discrete conservation: every interior facet appears in exactly two divergence
+// rows with opposite signs, so the column sums of the divergence block vanish
+// there and equal +/-1 on a boundary facet.
 MIMETIKA_TEST(the_divergence_block_conserves_on_interior_facets) {
   const Mesh m = two_tets();
   const graphos::Complex& c = m.topology();
@@ -196,22 +191,19 @@ MIMETIKA_TEST(the_same_term_runs_on_a_polytope) {
   for (std::size_t f = 0; f < 6; ++f) s += std::abs(A[6 * n + f]);
   CHECK(near(s, 6.0));
 
-  // And the consistency-only realization takes it too, by enrichment.
-  //
-  // RT_0's argument is d+1 modes against d+1 facets, which a cube does not
-  // satisfy, so derham_rt enriches with curl-type divergence-free fields until
-  // the six facet moments are unisolvent. Six unknowns either way, reached by
-  // two different arguments, so the term is the same kernel over the same
-  // layout.
+  // And the consistency-only realization takes it too, by enrichment: RT_0's
+  // argument is d+1 modes against d+1 facets, which a cube does not satisfy, so
+  // derham_rt enriches with curl-type divergence-free fields until the six facet
+  // moments are unisolvent. Six unknowns either way, so the same kernel over the
+  // same layout.
   const FluxOperators rt =
       FluxOperators::build(m, Coefficient::uniform(1.5), FluxOperators::Realization::derham_rt);
   CHECK(rt.n_dofs(0) == 6);
 }
 
-// A state-dependent mobility makes the term nonlinear, and the AD produces
-// the tangent from the same source. With lambda(p, h) the flux row acquires
-// a block against the enthalpy that a constant mobility never touches — the
-// dependency inputs() declares in advance.
+// A state-dependent mobility makes the term nonlinear and the AD carries the
+// tangent: with lambda(p, h) the flux row acquires a block against the enthalpy
+// that a constant mobility never touches, the dependency inputs() declares.
 MIMETIKA_TEST(a_declared_dependency_becomes_a_jacobian_block) {
   const Mesh m = two_tets();
   const graphos::Complex& c = m.topology();
@@ -314,7 +306,7 @@ MIMETIKA_TEST(the_registry_reports_the_declared_fields) {
 }
 
 // A term carrying model data is composed by name, with no C++ construction at
-// the call site. This is the shape a scripting layer drives.
+// the call site.
 MIMETIKA_TEST(a_data_bearing_term_composes_by_name) {
   const Mesh m = two_tets();
   const FluxOperators h =
@@ -354,8 +346,8 @@ MIMETIKA_TEST(a_data_bearing_term_composes_by_name) {
   CHECK(exokal::forms::Registry::instance().info("mixed_darcy_cell").fields.size() == 2);
 }
 
-// Mistakes at the named boundary are reported, not segfaults — this is the
-// surface a script drives, so a missing or mistyped slot must say so
+// A missing context slot, or the right name holding the wrong type, throws
+// std::invalid_argument naming the slot and both types
 MIMETIKA_TEST(a_missing_or_mistyped_context_slot_is_reported) {
   const Mesh m = two_tets();
   const Coefficient perm = Coefficient::uniform(1.0);
@@ -428,10 +420,9 @@ MIMETIKA_TEST(the_context_selects_the_realization) {
   CHECK(worst < 1e-10);
 }
 
-// What ctx.provide("mobility", brine) does: the fluid is an object the caller
-// owns, handed to the term by name and type. Nothing is copied — the context
-// stores a pointer — and the term reads lambda from the whole state (p, h, z),
-// which no scalar parameter could express.
+// ctx.provide("mobility", brine): the fluid stays owned by the caller and the
+// context stores a pointer plus a type tag, no copy. The term then reads lambda
+// from the whole state (p, h, z) rather than from a scalar parameter.
 MIMETIKA_TEST(a_fluid_object_supplies_the_mobility) {
   using mimetika::physics::constitutive::ImmiscibleFluid;
   using mimetika::physics::constitutive::PhaseModel;
@@ -453,8 +444,7 @@ MIMETIKA_TEST(a_fluid_object_supplies_the_mobility) {
   ctx.provide("mobility", brine);  // a pointer plus a type tag, nothing copied
   CHECK(ctx.find<ImmiscibleFluid>("mobility") == &brine);
 
-  // the arity comes from the object: two phases give two composition
-  // fields, which a static declaration could never have known
+  // the arity comes from the object: two phases give two composition fields
   const FluidMobility mob({}, ctx);
   const auto in = mob.inputs();
   CHECK(in.size() == 4 && in[0] == "p" && in[1] == "h" && in[2] == "z0" && in[3] == "z1");
@@ -501,14 +491,11 @@ MIMETIKA_TEST(a_fluid_object_supplies_the_mobility) {
     }
   }
 
-  // Declaration is a superset of discovery, which is why the sparsity pattern
-  // must come from the declaration. The model declares it may read p, h and
-  // both compositions. The AD finds that lambda moves with the pressure
-  // (through the compressible density) and with the compositions (through the
-  // saturations), but not with the enthalpy — these phases carry no
-  // temperature-dependent viscosity. A pattern built from what was discovered
-  // would omit a block that another fluid, or the same fluid at another state,
-  // would fill.
+  // Declaration is a superset of discovery, so the sparsity pattern comes from the
+  // declaration {p, h, z0, z1}. The AD finds lambda moving with the pressure
+  // (compressible density) and with the compositions (saturations), but not with
+  // the enthalpy: these phases carry no temperature-dependent viscosity. A pattern
+  // built from discovery would omit a block another fluid, or another state, fills.
   CHECK(sys.has_block(0, 1));                         // pressure: through the compressibility
   CHECK(sys.has_block(0, 3) && sys.has_block(0, 4));  // compositions
   CHECK(!sys.has_block(0, 2));                        // enthalpy: declared, and legitimately unused
@@ -524,13 +511,10 @@ MIMETIKA_TEST(a_fluid_object_supplies_the_mobility) {
              1e-5 * std::abs(mq * dlam / (lam * lam)) + 1e-9));
 }
 
-// The reason the resolution exists. A composition that adds mechanics puts a
-// displacement in the space, and nothing says it must come last — here it comes
-// first, ahead of both fields the Darcy term reads. Positional indexing would
-// have the term read the displacement as its flux and the flux as its pressure:
-// same shapes, same arithmetic, silently different physics. Resolving by name
-// makes the assembled system bit-for-bit the one built without the extra
-// field.
+// Fields resolve by name, not by position. A composition adding mechanics puts the
+// displacement ahead of q and p, shifting the term's slots from (0,1) to (1,2);
+// positional indexing would read u as the flux and q as the pressure -- same
+// shapes, different physics. The assembled block is unchanged entry for entry.
 MIMETIKA_TEST(a_field_inserted_ahead_of_the_terms_own_does_not_move_it) {
   const Mesh m = two_tets();
   const graphos::Complex& c = m.topology();

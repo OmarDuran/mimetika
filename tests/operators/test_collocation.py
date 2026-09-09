@@ -13,10 +13,9 @@ Circumcentres are the simplicial special case via Delaunay duality -- exact in 2
 in 3D not merely inexact but sometimes worse than the centroid, see
 :func:`test_in_3d_the_circumcentre_is_not_enough`.
 
-Every test checks against something independent of the code under test: equidistance
+Each test checks against something independent of the code under test: equidistance
 is measured from the vertices, and wherever the circumcentre is asserted to succeed
-the centroid is asserted to *fail*, so a vacuously-true property cannot masquerade
-as a result.
+the centroid is asserted to fail.
 """
 
 import numpy as np
@@ -54,9 +53,8 @@ def tetrahedron() -> Mesh:
 def defects(mesh, collocation=None) -> np.ndarray:
     """Orthogonality defects with the guard disarmed.
 
-    The constructor calls ``check_orthogonality`` itself, so a non-orthogonal cell
-    raises before it can be measured.  Here we deliberately want to *measure* the
-    failure, so the tolerance is opened up.
+    The constructor calls ``check_orthogonality``, so a non-orthogonal cell raises
+    before it can be measured; ``orthogonality_tol = 1e9`` opens that guard.
     """
     return LumpedDeviatoricStress(
         mesh, mu=MU, collocation=collocation, orthogonality_tol=1e9
@@ -85,7 +83,7 @@ def test_circumcentres_refuse_a_non_simplex():
 
 
 def test_circumcentric_collocation_gives_orthogonality_in_2d():
-    """Both directions, so the test cannot pass by the property being trivial."""
+    """Circumcentre defect < 1e-12; centroid defect > 1e-3 on the same cell."""
     mesh = triangle(ACUTE)
     assert np.max(defects(mesh, circumcentres(mesh))) < 1e-12
     assert np.max(defects(mesh)) > 1e-3  # the centroid is genuinely not orthogonal
@@ -103,27 +101,25 @@ def test_the_guard_fires_for_centroids_on_a_triangle_and_not_for_circumcentres()
 
 
 def test_in_3d_the_circumcentre_is_not_enough():
-    r"""Recorded as a positive test because it is a real limitation, not a bug.
+    r"""The limitation of circumcentric collocation in 3D.
 
     The foot of the perpendicular from a simplex circumcentre to a face is that
-    **face's circumcentre**.  In 2D a facet is an edge, whose circumcentre is its
-    midpoint *is* its centroid, so ``d || n`` holds exactly.  In 3D a facet is a
-    triangle, whose circumcentre differs from its centroid -- and the facet points
-    used throughout the library are centroids.  So the offset misses the normal by a
-    few percent no matter how good the tetrahedralisation is.
+    face's circumcentre.  In 2D a facet is an edge, whose circumcentre is its
+    midpoint, hence its centroid, so ``d || n`` holds exactly.  In 3D a facet is a
+    triangle, whose circumcentre differs from its centroid, and the facet points
+    used throughout the library are centroids; the offset misses the normal by a
+    few percent for any tetrahedralisation.
 
-    Fixing it needs circumcentric *facet* points too -- the full circumcentric dual,
-    not merely a different cell point.  Until then the lumped operator is restricted
-    to 2D simplices and to Cartesian or Voronoi cells in 3D.
+    A fix needs circumcentric facet points too -- the full circumcentric dual, not
+    only a different cell point.  Until then the lumped operator is restricted to
+    2D simplices and to Cartesian or Voronoi cells in 3D.
     """
     mesh = tetrahedron()
     circum = np.max(defects(mesh, circumcentres(mesh)))
     centroid = np.max(defects(mesh))
     # far above round-off -- in 2D the same measurement is ~1e-16
     assert circum > 1e-8, "if this now passes, 3D circumcentric collocation works"
-    # and it is not even reliably an improvement: on a distorted tetrahedron the
-    # circumcentre is measurably WORSE than the centroid, which is the clearest
-    # evidence that simplex-circumcentre thinking is the wrong frame here
+    # on a distorted tetrahedron the circumcentre defect exceeds the centroid one
     assert circum > centroid, (circum, centroid)
 
 
@@ -132,9 +128,8 @@ def test_in_3d_the_circumcentre_is_not_enough():
 
 def test_an_obtuse_simplex_is_rejected_rather_than_silently_accepted():
     """The circumcentre leaves the cell, ``d_n`` goes non-positive and positive
-    definiteness is lost.  This is TPFA's negative-transmissibility failure; silently
-    accepting it is the worst outcome, since the operator would assemble and return a
-    plausible wrong answer."""
+    definiteness is lost -- the two-point flux negative-transmissibility failure.
+    Construction raises ValueError."""
     mesh = triangle(OBTUSE)
     centre = circumcentres(mesh)[0]
 

@@ -1,9 +1,8 @@
 """Global mixed (saddle-point) problems.
 
-The headline check is the **global patch test**: because the local inner
-products satisfy strong consistency ``M N = R``, a solution that lies in the
-reconstruction space -- a linear potential, or a linear displacement -- must be
-reproduced *exactly* by the global solve, on any mesh.
+The global patch test: the local inner products satisfy strong consistency
+``M N = R``, so a solution in the reconstruction space -- a linear potential or a
+linear displacement -- is reproduced exactly by the global solve, on any mesh.
 """
 
 import numpy as np
@@ -29,10 +28,9 @@ U_A = np.array([0.31, -0.42, 0.17])
 U_B = np.array([[0.5, -0.3, 0.2], [0.15, 0.4, -0.25], [-0.1, 0.35, 0.6]])
 
 
-# These tests measure *discretisation* error -- whether the scheme reproduces a
-# field exactly -- so they pin the solver to a direct factorisation.  Leaving
-# them on the default (CPR-preconditioned MINRES) would conflate discretisation
-# error with the iterative tolerance; see EXACT below.
+# These tests measure discretisation error, so they pin the solver to a direct
+# factorisation: the default (CPR-preconditioned MINRES at rtol 1e-12) would
+# conflate discretisation error with the iterative tolerance.
 EXACT = {"method": "direct"}
 
 MESHES = [
@@ -75,12 +73,10 @@ def flux_field(x):
 
 @pytest.mark.parametrize("mesh", ONLY, ids=IDS)
 def test_discrete_divergence_matches_incidence(mesh):
-    """``B`` is the bare signed incidence -- integer entries, no geometry.
+    """``B`` is the bare signed incidence -- entries in {-1, +1}, no geometry.
 
-    The flux DOF is the *integrated* normal flux, so Stokes makes this exact
-    without any measures.  Previously ``B`` carried a ``diag(|e|)``, which put
-    metric into the one operator that should have none; the measures now live in
-    the inner product with the rest of the metric.
+    The flux DOF is the integrated normal flux, so Stokes gives ``B = d^T`` with
+    no measures; the metric lives entirely in the inner product.
     """
     B = discrete_divergence(mesh)
     expected = mesh.complex.boundary_matrix(mesh.dim).T

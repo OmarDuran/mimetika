@@ -19,12 +19,10 @@
 //                       factorizes once and back-substitutes thereafter
 //   gap                 the model's trace, rotated into the facet frame
 //
-// The contact code above it names no model; the model below it names no
-// contact. Replacing CauchyMechanicsModel with PoroelasticModel is a second
-// file of this shape -- the fracture pressure enters the model's own trace
-// through the Biot coupling and its right-hand side is nonzero on the
-// prescribed rows, which is why `gap` must be the row residual rather than
-// J z -- and laws.hpp, map.hpp and driver.hpp do not change.
+// Replacing CauchyMechanicsModel with PoroelasticModel is a second file of this
+// shape: the fracture pressure enters the model's own trace through the Biot
+// coupling and its right-hand side is nonzero on the prescribed rows, which is
+// why `gap` must be the row residual rather than J z.
 
 namespace mimetika::contact {
 
@@ -71,7 +69,7 @@ class CauchyContactMechanics final : public ContactMechanics {
   // a traction taken constant over the facet -- which is what one enforcement
   // point per facet means -- lands entirely on the leading moment, t_k |f|, and
   // contributes nothing to the higher ones. The same statement TractionBC makes
-  // for a prescribed boundary traction, and for the same reason.
+  // for a prescribed boundary traction.
   void to_moments(const std::vector<Vec3>& x, std::vector<double>& moments) const override {
     if (x.size() != n_points()) throw std::invalid_argument("to_moments: one value per point");
     moments.assign(fracture_.size() * ndf_, 0.0);
@@ -95,8 +93,8 @@ class CauchyContactMechanics final : public ContactMechanics {
 
   // The gap, from the trace: the residual of the unfractured constitutive row,
   // rotated into the facet frame. It is a displacement in metres, and its
-  // leading moment is the facet mean -- the quantity one enforcement point per
-  // facet is about.
+  // leading moment is the facet mean, which is what the single enforcement
+  // point carries.
   void gap(const std::vector<double>& z, std::vector<Vec3>& g) const override {
     g.assign(n_points(), Vec3{});
     const int d = dim();

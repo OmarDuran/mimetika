@@ -1,13 +1,12 @@
 """Row-wise enriched stress space in the three- and four-field formulations.
 
-The load-bearing facts: constant stress states are reproduced exactly on
-polytopal meshes (patch test, both formulations); the three- and four-field
-solutions coincide (congruence with the volumetric pair); with the
-**constant** solid pressure the folded operator differs from AFW on
-simplices by the covariance of the linear trace (PSD, vanishing on constant
-stresses); and with the **linear** solid pressure (the P1 trace moments,
-``solid_pressure="linear"``) that gap closes exactly -- three copies of
-BDM_1 plus the algebraic rotation and volumetric couplings *is* the AFW
+Constant stress states are reproduced exactly on polytopal meshes (patch test,
+both formulations); the three- and four-field solutions coincide (congruence
+with the volumetric pair); with the constant solid pressure the folded operator
+differs from AFW on simplices by the covariance of the linear trace (PSD,
+vanishing on constant stresses); and with the linear solid pressure (the P1
+trace moments, ``solid_pressure="linear"``) that gap closes exactly -- ``d``
+copies of BDM_1 plus the algebraic rotation and volumetric couplings are the AFW
 element, degree of freedom for degree of freedom.
 """
 
@@ -151,7 +150,7 @@ def test_linear_solid_pressure_is_afw_on_simplices():
 
 
 def test_no_stabilization_anywhere():
-    """Every cell is unisolvent; the dimension of the stabilization is zero."""
+    """``N`` square and full rank per cell, so ``dim ker(N^T) = 0``."""
     mesh = structured_quads(2, 2)
     space = DeRhamDeviatoricStress(mesh, mu=MU, lam=LAM)
     for c in range(mesh.num_cells(2)):

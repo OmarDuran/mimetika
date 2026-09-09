@@ -1,24 +1,22 @@
 r"""Reconstruct cell-centred fields from facet degrees of freedom.
 
-Mimetic unknowns live *on facets*: a normal flux ``u_e`` per face for Darcy, and
-traction moments ``\int_e sigma n_e`` per face for elasticity.  Neither is
-directly plottable -- to visualise a velocity field or a stress tensor you first
-have to rebuild a cell-centred object from the facet data.
+Mimetic unknowns live on facets: a normal flux ``u_e`` per face for Darcy,
+traction moments ``\int_e sigma n_e`` per face for elasticity.  Plotting a
+velocity field or a stress tensor needs a cell-centred object rebuilt from them.
 
-Both reconstructions come from the same identity that underpins the whole
-method.  For a closed cell with planar faces,
+Both reconstructions follow from the divergence theorem applied to the linear
+field ``x - x_E``: for a closed cell with planar faces,
 
     ``sum_e |e| n_e (x_e - x_E)^T = |E| I`` ,
 
-which is the divergence theorem applied to the linear field ``x - x_E``.  It
-gives reconstructions that are **exact for constant fields**:
+hence reconstructions exact for constant fields:
 
 * velocity   ``u_E     = (1/|E|) sum_e (|e| u_e) (x_e - x_E)``
 * stress     ``sigma_E = (1/|E|) sum_e t_e (x) (x_e - x_E)``   (outer product)
 
-with ``t_e = \int_e sigma n_e`` the facet traction vector.  Because the schemes
-reproduce constant fluxes and constant stresses exactly, these are the natural
-partners of the discretisation rather than an ad-hoc smoothing.
+with ``t_e = \int_e sigma n_e`` the facet traction vector.  The schemes
+reproduce constant fluxes and stresses exactly, so these are consistent with the
+discretisation rather than a smoothing.
 
 All DOFs are taken in the global (canonical facet orientation) convention; the
 incidence sign converts them to the cell's outward convention internally.
@@ -36,9 +34,9 @@ def reconstruct_flux(mesh: Mesh, flux: np.ndarray) -> np.ndarray:
 
     Exact whenever the discrete flux is the interpolant of a constant field.
 
-    ``flux`` holds the **integrated** normal flux per facet, the convention that
-    lets the discrete divergence be the bare signed incidence, so the reconstruction
-    formula ``(1/|E|) sum_e s_e (int_e F.n) (x_e - x_E)`` needs no area factor.
+    ``flux`` holds the integrated normal flux per facet, the convention under
+    which the discrete divergence is the bare signed incidence, so
+    ``(1/|E|) sum_e s_e (int_e F.n) (x_e - x_E)`` carries no area factor.
     """
     d = mesh.dim
     flux = np.asarray(flux, dtype=float)

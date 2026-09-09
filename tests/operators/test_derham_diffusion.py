@@ -1,7 +1,7 @@
 """Consistency-only (BDM-type) scalar inner product.
 
-What must hold, cell by cell: the selected basis is unisolvent (square
-invertible ``N`` -- no stabilization has room to exist), ``M`` is SPD, and the
+What must hold, cell by cell: the selected basis is unisolvent (``N`` square and
+invertible, so ``dim ker(N^T) = 0``), ``M`` is SPD, and the
 (S2) identity ``M N e_c = R e_c`` holds for the constant modes.  On simplices
 the space is ``BDM_1`` with no enrichment; globally, a mixed solve reproduces
 linear pressure fields exactly (the patch test).
@@ -66,7 +66,7 @@ def test_galerkin_energy_identity(rc):
 
 
 def test_no_fallback_raises():
-    """Insufficient max_degree is an error, never a silently stabilized cell."""
+    """``max_degree`` too low raises RuntimeError; there is no stabilized fallback."""
     rc = next(c for c in CELLS if c.name == "cube-unit")
     ip = DeRhamDiffusionInnerProduct(rc.mesh, max_degree=2)
     with pytest.raises(RuntimeError, match="no stabilization"):

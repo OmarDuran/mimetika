@@ -19,10 +19,7 @@
 // integrated over.
 //
 // A facet the data says nothing about contributes nothing, which is the
-// homogeneous natural condition: a drained face at zero pressure needs no
-// term, and a model cannot be wrong by failing to mention its free
-// boundaries. The conditions that must be stated are the essential ones, and
-// those are refused when a degree of freedom is left unconstrained twice.
+// homogeneous natural condition: a drained face at zero pressure needs no term.
 
 namespace mimetika::physics::terms {
 
@@ -53,14 +50,14 @@ class PrescribedPressure {
     // indexing -- one flux per facet -- and on the de Rham space it addresses
     // an unrelated unknown.
     //
-    // EVERY MOMENT TAKES ITS OWN COEFFICIENT. The row is int_f p_D (tau.n),
+    // Every moment takes its own coefficient. The row is int_f p_D (tau.n),
     // and with the equilibrated chart the facet Gram is |f| I, so dof b wants
-    // (1/|f|) int_f p_D phi_b. A CONSTANT datum puts everything on the
-    // constant moment -- the other basis functions are centred, so their
-    // means vanish -- which is why one number per facet is the whole datum at
-    // lowest order. An AFFINE one does not: dropping its higher coefficients
-    // is a consistent O(h) perturbation, and it is what made the BDM products
-    // converge at first order on a linear patch they reproduce exactly.
+    // (1/|f|) int_f p_D phi_b. A constant datum puts everything on the constant
+    // moment -- the other basis functions are centred, so their means vanish --
+    // which is why one number per facet is the whole datum at lowest order. An
+    // affine one does not: dropping its higher coefficients is a consistent
+    // O(h) perturbation, and it held the BDM products to first order on a
+    // linear patch they reproduce exactly.
     const auto& q = st.field(kQ);
     const std::size_t slot = st.support_slot[0];
     const std::size_t i = q.begin + slot * static_cast<std::size_t>(moments_);
@@ -140,8 +137,7 @@ class PrescribedDisplacement {
     // stands opposite. The prescribed displacement is given as a function, so
     // what belongs here is Gram^{-1} int_f u chi_b and not the raw moment: the
     // two differ by |f|, and using the moment makes the boundary datum grow
-    // with the facet size -- a patch test then fails by an amount that looks
-    // like a discretization error and is not.
+    // with the facet size, failing the patch test.
     //
     // It is the mirror image of the trace, where no inverse belongs because the
     // residual already emerges in coefficient form. Same Gram, opposite
@@ -228,7 +224,7 @@ inline const exokal::forms::RegisterTerm<StrongPrescribedDisplacement>
 //     eps = C^{-1} sigma + (alpha / dK) p I ,
 //
 // contributed as alpha * T^T p with T the discrete trace; with p known, the
-// same product is a load and the pressure row does not exist at all. So the
+// same product is a load and the pressure row does not exist at all. The
 // coefficient, the operator and the sign are the ones BiotCouplingCell already
 // uses, so the benchmark cannot disagree with the coupled solver by a factor.
 //
@@ -268,19 +264,18 @@ class ReservoirPressurization {
 inline const exokal::forms::RegisterTerm<ReservoirPressurization> register_reservoir_pressurization{
     "reservoir_pressurization", exokal::forms::Coupling::closure, {"s"}};
 
-// A SOURCE ON THE BALANCE ROW.
+// A source on the balance row.
 //
 // The mixed balance is int_E div q = int_E f, and the flux row already carries
 // the datum, so the source is the only thing the pressure row takes besides
 // the divergence: the residual is int_E div q - int_E f. The data holds the
-// LOAD int_E f and not the density f, so this term multiplies by nothing and
+// load int_E f and not the density f, so this term multiplies by nothing and
 // the model, which knows the measure, is where the two meet.
 //
-// With f constant and p quadratic this is the first case in these examples
-// whose exact flux is not constant: q = -lambda K grad p is linear, which
-// RT_0 spans (constants and the radial mode) and P_0 pressure cannot follow,
-// so the pressure error is the projection error and the method converges
-// rather than reproducing.
+// With f constant and p quadratic the exact flux q = -lambda K grad p is
+// linear, which RT_0 spans (constants and the radial mode) and P_0 pressure
+// cannot follow, so the pressure error is the projection error and the method
+// converges rather than reproducing.
 class CellSource {
  public:
   CellSource() = default;
@@ -306,11 +301,11 @@ class CellSource {
 inline const exokal::forms::RegisterTerm<CellSource> register_cell_source{
     "cell_source", exokal::forms::Coupling::closure, {"p"}};
 
-// A BODY FORCE ON THE MOMENTUM ROW.
+// A body force on the momentum row.
 //
 // Equilibrium is div sigma + b = 0 and the row is r_u = Dv sigma, so the term
 // adds the load and the residual reads Dv sigma + b. Dv is the divergence
-// DIVIDED BY THE MEASURE -- exokal builds it that way -- so what belongs here
+// divided by the measure -- exokal builds it that way -- so what belongs here
 // is the mean body force over the cell, which is what the model stores.
 //
 // It touches the displacement alone. The rotation rows pair the asymmetry

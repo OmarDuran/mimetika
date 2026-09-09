@@ -15,23 +15,20 @@ pre-slip Coulomb stress and the resulting slip are
     ``delta(y)   = (C/A) x { 0, -(y+b), a-b, (y-b), 0 }``  on the five intervals
 
 with ``C = (1-2nu) alpha p / (2 pi (1-nu))`` and ``A = G / (2 pi (1-nu))``.  Both
-are derived for an unbounded medium; the simulation uses the paper's finite
-``W = H = 4500`` m domain, which is why the comparison below is on the profile
-shape and peak rather than pointwise.
+are derived for an unbounded medium; the simulation uses a finite domain --
+``W = 18000`` m, ``H = 4500`` m, see :data:`WIDE_DOMAIN` -- which is why the
+comparison below is on the profile shape and peak rather than pointwise.
 
 The contact law is :class:`SignoriniCoulomb` with ``friction = 0``: the physical
-model, unilateral and frictionless.  A benchmark exists to *test* laws, so the
-one that represents the situation is the one that should be run.
+model, unilateral and frictionless.
 
-Making it work requires giving the law the **total** traction.  Signorini
-constrains ``t_N <= 0`` on the total stress, and this is an *incremental* problem
--- only the depletion response is solved for.  The incremental normal traction
-reaches ``+8.4`` MPa in tension, but the fault sits on ``-57`` MPa of in-situ
-compression and is shut by a wide margin, so the law must be told what it is
-sitting on: that is what ``prestress`` carries.  With it, Signorini correctly
-finds the fault closed and agrees with :class:`FrictionlessBilateral` to
-round-off; without it, it reads the tensile increment as opening.  The deficiency
-was in the incremental formulation, not in the law.
+The law must be given the total traction.  Signorini constrains ``t_N <= 0`` on
+the total stress, while this is an incremental problem -- only the depletion
+response is solved for.  The incremental normal traction reaches ``+8.4`` MPa in
+tension over ``-57`` MPa of in-situ compression, and ``prestress`` carries that
+in-situ part.  With it, Signorini finds the fault closed and agrees with
+:class:`FrictionlessBilateral` to round-off; without it, it reads the tensile
+increment as opening.
 
 Run with ``python -m benchmarks.contact_mechanics.benchmark_1``.
 """
@@ -67,27 +64,24 @@ from mimetika.solver.saddle import solve_saddle
 from benchmarks.contact_mechanics.common import Parameters
 
 #: Benchmark 1 runs on a much larger domain than Table 2's 4500 m box, because
-#: eqs. (18)-(20) are posed for an **unbounded** medium and a box that small does
-#: not approximate one.  Two separate truncations bite, and both were measured:
+#: eqs. (18)-(20) are posed for an unbounded medium and a box that small does not
+#: approximate one.  Two truncations were measured:
 #:
-#: * **Width.**  The paper says this itself in Sect. 4.1 (p. 11) -- its own
-#:   results deviate from the semi-analytical ones and "this discrepancy
-#:   disappears if the width W of the simulation domain is increased", after
-#:   which it reruns at W = 18,000 m (Figs. 10, 11).  Peak slip here goes
-#:   -2.61% -> +1.25% on the same change, and is converged in W by 36 km.
-#: * **Height.**  The fault runs the *full* height (p. 9), so H is also the fault
+#: * Width.  Sect. 4.1 (p. 11) reports the paper's own results deviating from the
+#:   semi-analytical ones, "this discrepancy disappears if the width W of the
+#:   simulation domain is increased", after which it reruns at W = 18,000 m
+#:   (Figs. 10, 11).  Peak slip here goes -2.61% -> +1.25% on the same change,
+#:   and is converged in W by 36 km.
+#: * Height.  The fault runs the full height (p. 9), so H is also the fault
 #:   length, and a fault stopping at +-H/2 leaves an end effect the infinite-fault
 #:   solution has no counterpart for -- a spurious far-field slip tail.  It decays
 #:   as H grows: H = 4500 -> +1.25% peak / 5.6 mm tail; H = 9000 -> +0.10% / 2.2 mm;
-#:   H = 18000 -> -0.96% / 1.0 mm.  By 18 km the peak has converged onto the
-#:   scheme's own fault-compliance error, measured independently at -0.92%.
+#:   H = 18000 -> -0.96% / 1.0 mm, where the peak has converged onto the scheme's
+#:   own fault-compliance error, measured independently at -0.92%.
 #:
-#: H = 9000 m is used: the tail is small and the peak sits on the analytic value.
-#: The cost is nil -- the far field is meshed at ``boundary_spacing`` = 500 m and
-#: only has to be present, not resolved.
 #: Width only.  H stays at Table 2's 4500 m: the in-situ state is defined by
 #: depth = D0 - y with D0 = 3500 m, so H = 9000 would put the domain top 1000 m
-#: *above* the ground surface, where sigma_xx extrapolates to tension and a
+#: above the ground surface, where sigma_xx extrapolates to tension and a
 #: unilateral law opens the fault.  H = 7000 is the physical ceiling.
 WIDE_DOMAIN = dict(width=18000.0)
 
@@ -140,11 +134,12 @@ def peak_slip(parameters: Parameters) -> float:
 
 
 #: Half-width of the uniformly refined near field, in metres, and the factor by
-#: which it is refined relative to ``spacing``.  The analytic slip is supported on
-#: ``|y| <= b = 150`` m but the *numerical* solution carries a far-field tail well
-#: beyond it, so resolving only the reservoir edges leaves the region that sets
-#: that tail on stretched cells.  ``[-400, 400]`` in both directions at half the
-#: reservoir spacing covers it; outside, the mesh coarsens to ``boundary_spacing``.
+#: which it is refined relative to ``spacing``.  ``None`` and ``1.0`` disable the
+#: window: :func:`build` passes ``window=None`` and grades outwards from the
+#: reservoir edges alone.  The analytic slip is supported on ``|y| <= b = 150`` m
+#: while the numerical solution carries a far-field tail beyond it, so a window
+#: such as ``[-400, 400]`` at half the reservoir spacing is what resolves the
+#: region setting that tail; outside it the mesh coarsens to ``boundary_spacing``.
 NEAR_FIELD = None
 NEAR_FIELD_REFINEMENT = 1.0
 
@@ -163,7 +158,7 @@ def polyhedral_mesh(parameters: Parameters, nx: int = 40, ny: int = 120,
     geometrically in ``x``).  The two regions are glued conformingly by one
     column of general polygons per side: coarse cells whose inner edge carries
     the fine subdivision -- hanging nodes made admissible as polytopal cells,
-    which the de Rham operators support without stabilization.
+    which the de Rham operators admit directly.
     """
     from mimetika.mesh.mesh import Mesh
 
@@ -232,12 +227,14 @@ def build(parameters: Parameters, nx: int = 40, ny: int = 120, spacing=None,
           refine: int = 1):
     """Mesh, fault tags and the depletion pressure field of the offset reservoir.
 
-    With ``spacing`` given the mesh is **graded**: nodes are placed exactly on the
+    ``mesh_kind`` defaults to ``"graded"``: nodes are placed exactly on the
     reservoir edges ``y = +-a, +-b`` and on the fault ``x = 0``, uniform at
-    ``spacing`` across the reservoir, coarsening geometrically outwards.  That is
-    the right mesh for this problem -- the features span 300 m inside a 4500 m
-    domain, so a uniform grid spends almost all its cells where nothing happens.
-    Passing ``nx``/``ny`` instead gives the uniform mesh, kept for comparison.
+    ``spacing`` (6.25 m if not given) across the reservoir, coarsening
+    geometrically outwards to ``boundary_spacing``.  The features span 300 m
+    inside an 18 km domain, so a uniform grid spends almost all its cells where
+    nothing happens.  ``mesh_kind="uniform"`` gives the ``nx`` x ``ny``
+    structured grid, kept for comparison; ``mesh_kind="poly"`` gives
+    :func:`polyhedral_mesh`.
     """
     width, height = parameters.width, parameters.height
     kind = mesh_kind or "graded"
@@ -246,14 +243,13 @@ def build(parameters: Parameters, nx: int = 40, ny: int = 120, spacing=None,
     if kind == "graded":
         a, b = parameters.fault_a, parameters.fault_b
         # Table 3 gives 2 m at the refined region and 100 m at the domain
-        # boundary, for their 4500 m box.  The domain here is 18 km wide and 9 km
-        # tall (see ``Parameters``) because the analytic solution is posed on an
-        # unbounded medium, and 100 m cells over that extension would be 24k cells
-        # of pure filler.  They buy nothing: coarsening the *extension* from 100 m
-        # to 2 km moves the peak slip by 0.03% and leaves the far-field tail
-        # unchanged, while the mesh shrinks 10x and the solve runs 22x faster.
-        # The far field only has to be there, not resolved.  The reservoir itself
-        # is still meshed at ``spacing``.
+        # boundary, for their 4500 m box.  The domain here is 18 km wide
+        # (``WIDE_DOMAIN``) and 4500 m tall because the analytic solution is
+        # posed on an unbounded medium, and 100 m cells over that extension would
+        # be 24k cells of filler: coarsening the extension from 100 m to 2 km
+        # moves the peak slip by 0.03% and leaves the far-field tail unchanged,
+        # while the mesh shrinks 10x and the solve runs 22x faster.  The
+        # reservoir itself is still meshed at ``spacing``.
         fine = spacing / NEAR_FIELD_REFINEMENT
         near = None if near_field is None else (-near_field, near_field)
         # refine = 1 is the paper's mesh; --graded-refined runs refine = 4
@@ -269,8 +265,8 @@ def build(parameters: Parameters, nx: int = 40, ny: int = 120, spacing=None,
             nx, ny, lengths=(width, height), origin=(-width / 2, -height / 2)
         )
     else:
-        # "poly" (default): the full polytopal support -- fine band, coarse
-        # far field, polygonal glue columns
+        # "poly": the full polytopal support -- fine band, coarse far field,
+        # polygonal glue columns
         mesh = polyhedral_mesh(parameters, nx=nx, ny=ny,
                                boundary_spacing=boundary_spacing)
     fault = facets_on_plane(mesh, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0])
@@ -303,8 +299,8 @@ def mechanics_factory(mesh, parameters: Parameters, pressure, space: str = "derh
 
     def make_inner():
         # "derham" (default): the mimetic-AFW-BDM deviatoric member, d^2
-        # traction DOFs per facet, no stabilization; "afw": the stabilized
-        # extended product on the same layout; "lumped": the two-point space
+        # traction DOFs per facet; "afw": the stabilized extended product on
+        # the same layout; "lumped": the two-point space
         # (d per facet; the graded tensor grid is face-orthogonal, so the
         # lumped guard passes).  The contact driver must be built with the
         # matching dofs_per_facet.
@@ -354,7 +350,7 @@ def pre_slip_stress(parameters: Parameters, nx: int = 40, ny: int = 120,
                     spacing=None, boundary_spacing: float = 500.0,
                     triangles: bool = False, mesh_kind: str | None = None,
                     refine: int = 1):
-    """Coulomb stress on the **locked** fault -- Fig. 6 (left), eq. (18).
+    """Coulomb stress on the locked fault -- Fig. 6 (left), eq. (18).
 
     The other half of the benchmark, and a different computation: the fault is
     not allowed to slip at all, so this is the plain continuous medium under the
@@ -395,11 +391,11 @@ def pre_slip_stress(parameters: Parameters, nx: int = 40, ny: int = 120,
 def insitu_prestress(mesh, fault, parameters: Parameters) -> np.ndarray:
     """In-situ fault traction at the enforcement points, ``(n_facets, 2)``.
 
-    A contact law constrains the **total** traction, so an incremental solve has
-    to tell it what it is sitting on: on a vertical fault the in-situ normal
-    traction is ``sigma_xx(y) ~ -57`` MPa and the shear vanishes.  Without this
-    a unilateral law reads the tensile *increment* as opening; with it, the same
-    law correctly finds the fault shut.
+    A contact law constrains the total traction, so an incremental solve has to
+    tell it what it is sitting on: on a vertical fault the in-situ normal
+    traction is ``sigma_xx(y) ~ -57`` MPa and the shear vanishes.  Without it a
+    unilateral law reads the tensile increment as opening; with it, the same law
+    finds the fault shut.
     """
     y = mesh.geometry.centroids(1)[np.asarray(fault, dtype=int)][:, 1]
     prestress = np.zeros((len(y), 2))
@@ -426,8 +422,7 @@ def simulate(
     ``law`` defaults to ``SignoriniCoulomb(friction=0)`` -- the physical model.
     Pass :class:`FrictionlessBilateral` to run the bonded variant: with
     ``prestress=True`` the two agree to round-off because the fault really is
-    shut, and with ``prestress=False`` the unilateral one opens it, which is the
-    failure this benchmark is able to detect.
+    shut; with ``prestress=False`` the unilateral one opens it.
     """
     mesh, fault, pressure = build(parameters, nx=nx, ny=ny, spacing=spacing,
                                   boundary_spacing=boundary_spacing,
@@ -481,17 +476,15 @@ def depletion_series(
 ):
     """Write the fault's response to a depletion ramp as a ``.pvd`` time series.
 
-    Depletion **is** the time axis here: the problem is quasi-static, so nothing
-    depends on real time, but the paper tracks the slip-patch boundaries against
-    incremental pressure (Fig. 12) and that is the sweep worth watching.  Each
-    step re-solves from scratch -- the frictionless law is path independent, so
-    there is no history to carry, and pretending otherwise would be misleading.
+    Depletion is the time axis: the problem is quasi-static, and the paper tracks
+    the slip-patch boundaries against incremental pressure (Fig. 12).  Each step
+    re-solves from scratch -- the frictionless law is path independent, so there
+    is no history to carry.
 
     Both parts are written.  The fracture carries the traction and the
-    displacement jump -- a fault is a contact interface, not a thin material, so
-    that is its whole state.  The surrounding rock carries the displacement and
-    stress that drive it, plus the depletion pressure that is the load, and a
-    fault plotted without its surroundings cannot be read.
+    displacement jump, which is a contact interface's whole state; the
+    surrounding rock carries the displacement, the stress and the depletion
+    pressure that is the load.
     """
     mesh, fault, _ = build(parameters, spacing=spacing,
                            boundary_spacing=boundary_spacing,
@@ -530,7 +523,7 @@ def figure_6(parameters: Parameters | None = None, spacing: float = 6.25,
              mesh_kind: str | None = None, refine: int = 1) -> str:
     """Reproduce Fig. 6: pre-slip Coulomb stress (left) and the resulting slip (right).
 
-    Both panels are the frictionless fault.  The left one holds it **locked** --
+    Both panels are the frictionless fault.  The left one holds it locked --
     no slip permitted -- so the shear it carries is the driving stress
     ``Sigma_C`` of eq. (18); on a vertical fault with no in-situ shear the Coulomb
     stress is just ``sigma_xy``.  The right one lets it slip, the total shear then

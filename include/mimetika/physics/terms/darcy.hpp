@@ -28,8 +28,7 @@
 // The Hodge is opaque to the term. It arrives as a matrix per cell from
 // whichever realization the model chose, so the same kernel runs on the
 // stabilized product over polytopes and on the consistency-only RT_0
-// product over simplices. That interchangeability is why ⋆ and the space
-// are separated.
+// product over simplices.
 //
 // The state enters as one division. Every realization satisfies
 // M(lambda) = M(1)/lambda, so the geometry stays frozen in double while
@@ -37,10 +36,9 @@
 // is affine and its Jacobian is assembled once; with a state-dependent
 // one it is not, and the AD produces the tangent from the same source.
 //
-// The coupling blocks are adjoint by construction. div^T appears in the
-// flux row and div in the pressure row, written from the same signs, so
-// the assembled (q,p) and (p,q) blocks are exact transposes — never two
-// hand-written kernels that can drift.
+// The coupling blocks are adjoint by construction: div^T appears in the flux
+// row and div in the pressure row, written from the same signs, so the
+// assembled (q,p) and (p,q) blocks are exact transposes.
 
 namespace mimetika::physics::terms {
 
@@ -62,25 +60,18 @@ using exokal::forms::TermInfo;
 namespace hodge = exokal::hodge;
 namespace numerics = exokal::numerics;
 
-// A mobility model declares its inputs. That declaration is the whole
-// mechanism by which exokal learns a function dependency, and it exists
-// because two different things are going on:
-//
-//   Numerical dependency — the values and derivatives — is discovered. The
-//   AD fills whatever blocks the kernel actually reads, and nothing has to
-//   be told in advance.
-//
-//   Structural dependency — which fields — must be known before anything
-//   is assembled: the product space has to contain them, and the global
-//   sparsity pattern has to include those blocks. A pattern derived from
-//   what the AD happened to fill would change shape whenever a branch or a
-//   vanishing coefficient made a block go quiet. So it is declared.
+// A mobility model declares its inputs. Numerical dependency — the values and
+// derivatives — is discovered: the AD fills whatever blocks the kernel reads.
+// Structural dependency — which fields — must be known before assembly, since
+// the product space has to contain them and the global sparsity pattern has to
+// include those blocks; a pattern derived from what the AD happened to fill
+// would change shape whenever a branch or a vanishing coefficient made a block
+// go quiet.
 //
 // inputs() is that declaration. A term's field list is its own structural
-// fields followed by the model's, and the two can then be checked against
-// each other: the blocks the AD fills must be a subset of the blocks the
-// declaration allows. declared_fields() below composes the list, and the
-// tests assert the containment.
+// fields followed by the model's, and the blocks the AD fills must be a subset
+// of the blocks the declaration allows. declared_fields() below composes the
+// list, and the tests assert the containment.
 //
 // The field order is positional: the stencil's blocks follow the product
 // space's field order, so a term declaring {q, p, h} reads block 0 as the
@@ -271,10 +262,8 @@ class MixedDarcyCell {
 //     model.add("mixed_darcy_cell", On::all(), {{"mobility", 2.0}});
 //
 // An inline variable, so the registration happens once however many
-// translation units include this header.
-// Each instantiation is its own catalogue entry, declaring the fields its
-// mobility reads. Extending the physics stays a compile-time act; choosing
-// among what was compiled in stays a runtime one.
+// translation units include this header. Each instantiation is its own
+// catalogue entry, declaring the fields its mobility reads.
 inline const RegisterTerm<MixedDarcyCell<ConstantMobility>> register_mixed_darcy_cell{
     "mixed_darcy_cell", Coupling::closure, declared_fields<ConstantMobility>()};
 

@@ -1,5 +1,5 @@
-// Darcy flow, stabilized_bdm, preconditioned by ADS acting DIRECTLY on the BDM
-// flux block -- no facet-constant subspace, no two-level cycle.
+// Darcy flow, stabilized_bdm, ADS applied directly to the BDM flux block: no
+// facet-constant subspace, no two-level cycle.
 //
 // ADS is given the degree-2 complex instead of the lowest-order one:
 //
@@ -10,20 +10,20 @@
 // C, Pi_rt and Pi_nd come from exokal; G is built in bdm_complex.hpp and is
 // topological on the edges.
 //
-// B.C = 0 IS THE ALIGNMENT TEST. B is the model's own discrete divergence, so
-// it is stated in the model's flux dofs. If C's rows were in another order or
-// another basis, div.curl would not vanish. It is checked before the solve
-// because a misaligned C does not fail, it just preconditions badly.
+// B.C = 0 is the alignment check. B is the model's own discrete divergence,
+// stated in the model's flux dofs, so div.curl vanishes only if C's rows carry
+// the same order and basis. Checked before the solve: a misaligned C still
+// converges, only slowly.
 //
-// NOT A UNIT TEST. It solves a ladder of meshes -- seconds, not milliseconds --
-// so it is built on request and carries the `benchmark` label:
+// A ladder of meshes, seconds per run, so it is built on request and carries
+// the `benchmark` label:
 //
 //     cmake -B build-hypre -DMIMETIKA_USE_HYPRE=ON -DMIMETIKA_BUILD_BENCHMARKS=ON
 //     ctest --test-dir build-hypre -L benchmark
 //
-// With no arguments it runs the default ladder and ASSERTS the two properties
-// the direct path exists for: the count stays bounded under refinement, and
-// div.curl vanishes. With arguments it is a plain measurement --
+// With no arguments it runs the ladder {2, 3, 4, 6} and asserts two properties:
+// the iteration count stays bounded under refinement, and div.curl vanishes.
+// With arguments it only measures --
 //
 //     test_bdm_ads_direct 2 4 6 8 --contrast=1e6
 //     test_bdm_ads_direct --two-level 3 4 6
@@ -141,9 +141,9 @@ Run one(int n, const mimetika::solver::HypreSolver::Options& opts, double contra
       std::chrono::duration<double>(std::chrono::steady_clock::now() - t_cx).count();
   norm.space_dim = 3;
   if (two_level) {
-    // THE BASELINE: the lowest-order complex, and the BDM block reached through
-    // its facet-constant subspace. Same problem, same norm, same tolerance --
-    // the only difference is which complex ADS is given.
+    // Baseline: the lowest-order complex, the BDM block reached through its
+    // facet-constant subspace. Same problem, norm and tolerance; only the
+    // complex handed to ADS differs.
     const graphos::Complex& t = mesh.topology();
     const auto inc = [](auto b, int rows, int cols) {
       SpaceNorm::Incidence o;
@@ -177,7 +177,8 @@ Run one(int n, const mimetika::solver::HypreSolver::Options& opts, double contra
     norm.nd_interpolation = to_inc(cx.pi_nd);
   }
 
-  // coordinates of the P3 nodal dofs: vertices, edge midpoints, facet centroids
+  // coordinates of the nV + 2nE + nF P3 nodal dofs: vertices, both edge moments
+  // placed at the edge midpoint, facet centroids
   const graphos::Complex& top = mesh.topology();
   const int nV = int(top.count(0)), nE = int(top.count(1)), nF = int(top.count(2));
   const graphos::Adjacency e2v = graphos::incidence(top, 1, 0);
@@ -300,8 +301,8 @@ int main(int argc, char** argv) {
                 r.n_circ ? double(r.nnz_g) / double(r.n_circ) : 0.0);
     std::fflush(stdout);
     if (!checking) continue;
-    // div.curl = 0 against the model's OWN divergence: a C in the wrong order
-    // or the wrong basis does not fail, it merely preconditions badly
+    // |B.C| < 1e-8 relative to the row's absolute sum, against the model's own
+    // divergence
     if (!(r.bc < 1e-8 * std::max(r.bc_ref, 1.0))) {
       std::printf("  FAIL n=%d: |B.C| = %.3e against %.3e\n", n, r.bc, r.bc_ref);
       ++failures;
@@ -314,9 +315,8 @@ int main(int argc, char** argv) {
     last = r.iterations;
   }
   if (checking) {
-    // h-INDEPENDENCE, stated as a bound rather than a slope: over this ladder
-    // the count went 21 -> 30, so twice the coarsest is loose enough to be a
-    // regression guard and tight enough to catch the count starting to grow.
+    // h-independence as a bound rather than a slope: over this ladder the count
+    // went 21 -> 30, so twice the coarsest count is the regression guard.
     if (first && last > 2 * first) {
       std::printf("  FAIL: %d -> %d iterations over the ladder\n", first, last);
       ++failures;

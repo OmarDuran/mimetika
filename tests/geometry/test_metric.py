@@ -39,7 +39,7 @@ def test_edge_length_scaling():
 
 
 def test_quadrature_cache_returns_identical_results():
-    """Caching must not change any value (facets are shared by two cells)."""
+    """Recomputing after ``clear_quadrature_cache`` reproduces points and weights."""
     from mimetika.mesh.reference import reference_cells
 
     for rc in reference_cells():

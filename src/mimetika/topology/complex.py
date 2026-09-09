@@ -1,8 +1,7 @@
 """Combinatorial cell complex and signed incidence (boundary) operators.
 
-This layer is *purely combinatorial*: it knows nothing about coordinates,
-lengths, areas or volumes.  For a graded complex of dimension ``d`` it stores
-the signed boundary operators
+This layer is purely combinatorial: no coordinates, lengths, areas or volumes.
+For a graded complex of dimension ``d`` it stores the signed boundary operators
 
     ``d_k : C_k -> C_{k-1}``   (``boundary[k]``, shape ``(n_{k-1}, n_k)``)
 
@@ -23,7 +22,7 @@ consistent signs, so the fundamental mimetic identity
 
     ``boundary[k] @ boundary[k+1] == 0``
 
-holds *exactly*, by construction, for any well-formed mesh.
+holds exactly, by construction, for any well-formed mesh.
 """
 
 from __future__ import annotations
@@ -146,7 +145,7 @@ class CellComplex:
             ordered loop of vertex ids, oriented consistently for that cell
             (right-hand rule w.r.t. the outward normal).
         """
-        # 1) Facets: identify by vertex *set*; keep first-seen loop as canonical.
+        # 1) Facets: identify by vertex set; keep first-seen loop as canonical.
         facet_id: dict[frozenset[int], int] = {}
         facet_loops: list[tuple[int, ...]] = []
         cell_facets: list[list[tuple[int, int]]] = []

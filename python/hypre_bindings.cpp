@@ -1,20 +1,19 @@
-// The Python interface to the DIRECT hypre path.
+// The Python interface to the direct hypre path.
 //
-// A SEPARATE MODULE FROM mimetika_cxx, AND IT HAS TO BE. mimetika_cxx links
-// PETSc, PETSc links its own libHYPRE, and two hypre copies in one process
-// export the same HYPRE_* names -- which one a call reaches is then decided by
-// load order rather than by intent. This module links hypre and nothing else,
-// and its HYPRE symbols are hidden at link time (see python/CMakeLists.txt), so
-// importing both in one interpreter is safe.
+// A separate module from mimetika_cxx: mimetika_cxx links PETSc, PETSc links
+// its own libHYPRE, and two hypre copies in one process export the same
+// HYPRE_* names, so a call resolves by load order. This module links hypre
+// alone, with those symbols unexported (see python/CMakeLists.txt), so both
+// import safely.
 //
-// It is self-contained rather than sharing mimetika_cxx's mesh and model: a
-// pybind11 type registered in two modules is two types, so a mesh built there
-// could not be handed here. mimetika is header-only, so compiling the model
-// again costs build time and no dependency.
+// Self-contained rather than sharing mimetika_cxx's mesh and model: a pybind11
+// type registered in two modules is two types. mimetika is header-only, so the
+// second compilation costs build time and no dependency.
 //
-// The surface is deliberately small -- a mesh, a flow model, a solve -- because
-// what this exists to expose is ADS itself, including the two options PETSc
-// registers and never queries.
+// Surface: a mesh, a flow model, a solve, and solve_system for a system
+// assembled by mimetika_cxx.ads_handoff. What it reaches that PCHYPRE does not
+// forward is amg_theta and ams_theta, the strength thresholds of the auxiliary
+// hierarchies inside ADS.
 
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
@@ -43,11 +42,10 @@ using FluxRealization = FlowModel::Realization;
 namespace {
 
 // The norm the Riesz map is the Gram matrix of, for flow: the flux is the
-// first factor and the pressure carries plain L2 with W the Schur scale of the
-// divergence constraint, which for an unscaled incidence row is the cell
-// measure. This is the same norm mimetika_cxx builds for PETSc -- stated again
-// here rather than shared, because sharing it would mean importing the module
-// that links PETSc.
+// first factor, the pressure carries W, the Schur scale of the divergence
+// constraint. That row is the unscaled incidence, so W = mobility K |E| / D^2
+// with D the bounding diagonal -- the value bindings.cpp's build_norm gives
+// PETSc, restated here because sharing it would mean linking PETSc.
 SpaceNorm flow_norm(const FlowModel& model, const exokal::Mesh& mesh, int dim) {
   const auto blocks = mimetika::solver::field_blocks(model.simulation().epoch());
   if (blocks.size() < 2) throw std::runtime_error("flow: the space has fewer than two factors");
@@ -164,8 +162,10 @@ PYBIND11_MODULE(_hypre, m) {
       py::arg("mesh"), py::arg("k"), py::arg("entity"));
 
   // ADS is written for ONE unknown per facet in 3D. A facet carrying d moments
-  // reaches it only through the facet-constant subspace, which the direct path
-  // does not build, so those realizations are not offered here.
+  // reaches it through the facet-constant subspace, whose injection flow_norm
+  // does not build, so those realizations are not offered on this FlowModel.
+  // They reach the same solver through solve_system, which is handed the
+  // injection in `lowest_order`.
   py::enum_<FluxRealization>(m, "FluxRealization", py::module_local())
       .value("derham_rt", FluxRealization::derham_rt)
       .value("stabilized_rt", FluxRealization::stabilized_rt)
@@ -188,13 +188,18 @@ PYBIND11_MODULE(_hypre, m) {
       .def_readwrite("amg_interp_type", &HypreSolver::Options::amg_interp_type)
       .def_readwrite("amg_pmax", &HypreSolver::Options::amg_pmax)
       .def_readwrite("block_iterations", &HypreSolver::Options::block_iterations,
-                     "inner CG steps on the block; 0 applies one ADS cycle instead")
+                     "inner Krylov steps on the block -- FlexGMRES, or CG under "
+                     "MIMETIKA_ADS_SYMMETRIC_SWEEP; 0 applies the cycle directly")
       .def_readwrite("block_rtol", &HypreSolver::Options::block_rtol)
       .def_readwrite("mgr", &HypreSolver::Options::mgr)
       .def_readwrite("mgr_frelax", &HypreSolver::Options::mgr_frelax)
       .def_readwrite("mgr_relax_sweeps", &HypreSolver::Options::mgr_relax_sweeps)
+      .def_readwrite("mgr_interp_type", &HypreSolver::Options::mgr_interp_type)
+      .def_readwrite("mgr_vem_split", &HypreSolver::Options::mgr_vem_split)
+      .def_readwrite("mgr_coarse_iterations", &HypreSolver::Options::mgr_coarse_iterations)
+      .def_readwrite("mgr_hydrostatic_lift", &HypreSolver::Options::mgr_hydrostatic_lift)
       .def_readwrite("ads_iterations", &HypreSolver::Options::ads_iterations,
-                     "cycles per application of the block; 1 is the Riesz map itself");
+                     "ADS cycles per application of the block (HYPRE_ADSSetMaxIter)");
 
   py::class_<HypreSolver::Report>(m, "AdsReport", py::module_local())
       .def_readonly("converged", &HypreSolver::Report::converged)
@@ -209,10 +214,8 @@ PYBIND11_MODULE(_hypre, m) {
 
   // The solve, taking the system and its norm as arrays.
   //
-  // This is how mimetika_cxx reaches ADS: it assembles and calls ads_handoff,
-  // which returns exactly these fields, and the answer goes back through
-  // mimetika_cxx.accept. Nothing but plain data crosses, because the two
-  // modules cannot share a type.
+  // This is how mimetika_cxx reaches ADS: mimetika_cxx.ads_handoff returns
+  // exactly these fields, and the answer goes back through mimetika_cxx.accept.
   m.def(
       "solve_system",
       [](int n, py::array_t<int> row, py::array_t<int> col, py::array_t<double> value,

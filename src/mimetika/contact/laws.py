@@ -1,10 +1,10 @@
 r"""Contact laws on a fracture: the constitutive part, free of any DOF.
 
-Every law relates the **traction** on the fracture to the **displacement jump**.
-Both are presented in the facet frame ``(n, t1, t2)`` with one fixed convention:
+Every law relates the traction on the fracture to the displacement jump.  Both
+are presented in the facet frame ``(n, t1, t2)`` with one fixed convention:
 
-    ``g_n > 0``  the fracture is **open** (gap)
-    ``t_n < 0``  the fracture is in **compression**
+    ``g_n > 0``  the fracture is open (gap)
+    ``t_n < 0``  the fracture is in compression
 
 so Signorini reads ``g_n >= 0``, ``t_n <= 0``, ``g_n t_n = 0``.  A law never
 sees a degree of freedom, a mesh, or a basis: the driver owns the rotation into
@@ -12,43 +12,43 @@ this frame, the moment/point conversion, assembly and the solve.
 
 Taxonomy
 --------
-The general contract is an **implicit** relation ``C(t, g, state) = 0``, because
-that is the only form that covers unilateral contact -- a compliance ``g = A t``
-cannot express ``t_n <= 0``.  Laws differ along axes that each force something
-on the driver:
+The general contract is an implicit relation ``C(t, g, state) = 0``: a
+compliance ``g = A t`` cannot express ``t_n <= 0``.  Laws differ along axes that
+each force something on the driver:
 
 ======================  ==========================  ============================
 axis                    values                      consequence for the driver
 ======================  ==========================  ============================
 relation form           compliance / implicit       compliance => one linear solve
 smoothness              smooth / nonsmooth          nonsmooth => outer iteration
-tangent symmetry        symmetric / not             friction is **not** symmetric
+tangent symmetry        symmetric / not             friction is not symmetric
 path dependence         none / incremental / rate   load steps / time steps
 internal state          none / slip / slip + theta  state array, committed per step
 enforcement             averaged / pointwise        where the projection is applied
 ======================  ==========================  ============================
 
-============================  ===========  =========  ==========  =========  ============
-model                         form         smooth     symmetric   path       state
-============================  ===========  =========  ==========  =========  ============
-:class:`LinearContact`        compliance   yes        yes         none       none
-:class:`SignoriniCoulomb`     implicit     no         no          increment  slip
-:class:`RateAndStateFriction` implicit     stiff      no          rate       slip, theta
-============================  ===========  =========  ==========  =========  ============
+======================  ===========  ======  =========  =========  ===========
+model                   form         smooth  symmetric  path       state
+======================  ===========  ======  =========  =========  ===========
+LinearContact           compliance   yes     yes        none       none
+FrictionlessBilateral   implicit     yes     yes        none       none
+SignoriniCoulomb        implicit     no      no         increment  slip
+AssociativeMohrCoulomb  implicit     no      no         increment  slip
+RateAndStateFriction    implicit     stiff   no         rate       slip, theta
+======================  ===========  ======  =========  =========  ===========
 
 Solution strategy
 -----------------
-The driver uses an **augmented Lagrangian** (Uzawa) outer iteration in which the
-multiplier ``lambda`` *is* the physical contact traction: the mechanics is solved
-with the fracture traction constrained to ``lambda``, the gap ``g`` is recovered,
-and then
+The driver uses an augmented Lagrangian (Uzawa) outer iteration whose multiplier
+``lambda`` is the physical contact traction: the mechanics is solved with the
+fracture traction constrained to ``lambda``, the gap ``g`` is recovered, and then
 
-    ``lambda <- project(lambda + r g)`` .
+    ``lambda <- project(lambda + r g)`` ,
 
-So the only thing a nonsmooth law has to supply is its projection onto the
-admissible set -- that is what :meth:`ContactLaw.project` is.  The iteration
-contracts only for ``r < 2 / compliance``, so the driver derives the
-augmentation from the stiffness the fracture actually sees.
+so a nonsmooth law supplies only its projection onto the admissible set
+(:meth:`ContactLaw.project`).  The iteration contracts only for
+``r < 2 / compliance``, so the driver derives the augmentation from the
+stiffness the fracture sees.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ class ContactLaw(ABC):
     n_state: int = 0
     #: needs the jump of the previous step (slip history)
     path_dependent: bool = False
-    #: needs a time increment (slip *rate*)
+    #: needs a time increment (slip rate)
     rate_dependent: bool = False
     #: whether the exact tangent is symmetric (friction is not)
     symmetric_tangent: bool = True
@@ -78,7 +78,7 @@ class ContactLaw(ABC):
 
         Shape ``(dim, dim)``: the components are ``(n, t_1, ..., t_{dim-1})``, so
         a 2D fracture has one shear direction and a 3D one has two.  A law that
-        returns a matrix here is solved in **one** linear solve, with no outer
+        returns a matrix here is solved in one linear solve, with no outer
         iteration and no projection.
         """
         return None
@@ -144,18 +144,16 @@ class FrictionlessBilateral(ContactLaw):
     Bilateral in the normal direction -- the fault is held shut and may carry
     tension -- and free to slide tangentially.  The projection keeps the normal
     traction and zeroes the shear, so the converged state has no opening and no
-    shear stress, which is exactly the classical frictionless crack.
+    shear stress: the classical frictionless crack.
 
     Why not ``SignoriniCoulomb(friction=0)``
     ---------------------------------------
-    That law also clips the normal traction to compression, which is right for a
-    total-stress problem and **wrong for an incremental one**.  A fault sitting
-    under tens of MPa of in-situ compression stays firmly closed, so an
-    incremental solve -- where only the depletion response is computed -- must
-    not read an incremental normal tension as opening.  Using Signorini there
-    would open the fault spuriously wherever the increment happens to be
-    tensile.  The choice between the two is a modelling decision about *what the
-    unknown is*, not about the physics of the fault.
+    That law also clips the normal traction to compression, correct for a
+    total-stress problem and wrong for an incremental one.  A fault under tens
+    of MPa of in-situ compression stays closed, so an incremental solve, which
+    computes only the depletion response, must not read an incremental normal
+    tension as opening; Signorini would open the fault wherever the increment is
+    tensile.
     """
 
     n_state = 0
@@ -164,7 +162,7 @@ class FrictionlessBilateral(ContactLaw):
     def project(self, trial, state, g=None, g_prev=None, dt=None):
         trial = np.atleast_2d(np.asarray(trial, dtype=float))
         t = np.zeros_like(trial)
-        t[:, 0] = trial[:, 0]  # normal traction is whatever holds the fault shut
+        t[:, 0] = trial[:, 0]  # normal traction unconstrained: fault held shut
         return t, state
 
 
@@ -177,12 +175,11 @@ class SignoriniCoulomb(ContactLaw):
 
     The projection is the Alart--Curnier one: clip the normal traction to the
     compressive half-line, then project the tangential traction onto the
-    friction disk whose radius follows from the *projected* normal traction --
-    so an open point carries no shear, automatically.
+    friction disk of radius ``-mu t_n + c`` formed from the projected normal
+    traction, so an open point carries no shear.
 
-    State is the accumulated tangential slip, which the law itself does not use
-    but which makes the slip path available to callers and to rate-dependent
-    laws derived from this one.
+    State is the accumulated tangential slip; the law does not use it, it is
+    carried for callers and for rate-dependent laws derived from this one.
     """
 
     n_state = 1  # accumulated slip magnitude
@@ -241,9 +238,8 @@ class RateAndStateFriction(SignoriniCoulomb):
 
         ``theta_new = (theta + dt) / (1 + dt V / Dc)`` .
 
-    Everything else -- the unilateral normal condition and the projection onto
-    the friction disk -- is inherited, which is the point of the taxonomy: only
-    the *radius* of the disk changes.
+    The unilateral normal condition and the projection onto the friction disk
+    are inherited; only the radius of the disk changes.
     """
 
     n_state = 2  # accumulated slip, state variable theta
@@ -312,7 +308,7 @@ class RateAndStateFriction(SignoriniCoulomb):
 
 
 class AssociativeMohrCoulomb(SignoriniCoulomb):
-    r"""Mohr--Coulomb contact by **closest-point projection** in the full traction space.
+    r"""Mohr--Coulomb contact by closest-point projection in the traction space.
 
     Same admissible set as :class:`SignoriniCoulomb` -- the truncated cone
 
@@ -329,25 +325,23 @@ class AssociativeMohrCoulomb(SignoriniCoulomb):
 
     Associative versus non-associative
     ----------------------------------
-    :class:`SignoriniCoulomb` performs the *partial* return: ``t_N`` is clipped
-    first, and the shear is then projected **radially** in the ``t_T`` plane at
-    that fixed ``t_N``.  Sliding therefore never alters the normal traction --
-    non-associative friction, appropriate to a smooth fault.
+    :class:`SignoriniCoulomb` performs the partial return: ``t_N`` is clipped
+    first, and the shear is then projected radially in the ``t_T`` plane at that
+    fixed ``t_N``, so sliding never alters the normal traction -- non-associative
+    friction, appropriate to a smooth fault.
 
-    The closest-point projection moves along the cone's own normal, so
-    correcting an over-stressed shear state also **changes the normal
-    traction**: shear and normal response are energetically coupled, which is
-    the traction-space image of dilatancy on a rough fault.  The two agree only
-    where the projection happens to be radial; elsewhere they are different
-    constitutive assumptions, not two approximations of one.
+    The closest-point projection moves along the cone's own normal, so correcting
+    an over-stressed shear state also changes the normal traction: shear and
+    normal response are energetically coupled, the traction-space image of
+    dilatancy on a rough fault.  The two coincide only where the projection is
+    radial.
 
-    Why the metric matters
-    ----------------------
-    ``eps_N`` and ``eps_T`` weight the distance, so they select which point of
-    the cone is "closest".  With
-    ``eps_N = eps_T`` the projection is the plain Euclidean shortest path.  They
-    must be the same values the augmented-Lagrangian update uses, or the return
-    mapping and the iteration are minimising different things.
+    Role of the metric
+    ------------------
+    ``eps_N`` and ``eps_T`` weight the distance and so select the closest point
+    of the cone; ``eps_N = eps_T`` gives the Euclidean projection.  They must be
+    the values the augmented-Lagrangian update uses, or the return mapping and
+    the iteration minimise different functionals.
 
     Solution of the projection
     --------------------------
@@ -356,8 +350,7 @@ class AssociativeMohrCoulomb(SignoriniCoulomb):
     ``rho = ||t_T|| >= 0``.  The convex feasible set has three faces, giving four
     candidate active sets -- the trial itself, the lateral cone, the truncation
     disc ``t_N = 0``, and the axis ``rho = 0``.  Each has a closed form, so the
-    projection is found by evaluating all four and taking the nearest feasible
-    one: exact and branch-free.
+    projection evaluates all four and takes the nearest feasible one.
     """
 
     def __init__(
@@ -406,9 +399,9 @@ class AssociativeMohrCoulomb(SignoriniCoulomb):
         """``(tn, rho, direction, rho_trial, region)`` -- the projection and its branch.
 
         ``region`` records which active set won: ``0`` interior, ``1`` lateral
-        cone, ``2`` truncation disc, ``3`` axis.  Sharing it between the
-        projection and its derivative keeps the two consistent; a tangent that
-        re-derives the branch independently can drift out of step.
+        cone, ``2`` truncation disc, ``3`` axis.  :meth:`project` and
+        :meth:`tangent` share it, so the derivative is taken on the branch the
+        projection actually used.
         """
         trial = np.atleast_2d(np.asarray(trial, dtype=float))
         tn, shear = trial[:, 0], trial[:, 1:]
@@ -444,15 +437,16 @@ class AssociativeMohrCoulomb(SignoriniCoulomb):
         r"""``d t / d t_trial``, ``(n, dim, dim)`` -- the consistent linearisation.
 
         With the exact derivative of the (semi-smooth) projection a Newton
-        iteration on the contact map converges quadratically, against the
-        linear rate of a fixed-point Uzawa sweep.
+        iteration on the contact map converges quadratically, against the linear
+        rate of a fixed-point Uzawa sweep.
 
         Off the cone boundary the map is the identity (stick) or a projection
-        with a zero normal block (open).  On the boundary the derivative carries
-        the rank-deficient shear term ``I - m (x) m`` -- no stiffness along the
-        sliding direction, which is the statement that slip costs no traction --
-        together with the normal/shear coupling ``-eps_N tan(theta) m (x) n``
-        that the associative form introduces and the partial return lacks.
+        with a zero normal block (open).  On the lateral face the derivative
+        carries the rank-deficient shear term ``I - m (x) m`` (no stiffness
+        along the sliding direction) together with the normal/shear coupling the
+        associative form introduces and the partial return lacks:
+        ``-mu eps_N / (eps_T + mu^2 eps_N)`` on the normal row and
+        ``-mu eps_T / (eps_T + mu^2 eps_N)`` on the shear rows.
         """
         trial = np.atleast_2d(np.asarray(trial, dtype=float))
         n, dim = trial.shape

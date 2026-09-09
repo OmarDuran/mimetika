@@ -77,7 +77,7 @@ def test_dof_and_mode_counts(rc):
 
 
 def test_stabilization_vanishes_on_every_simplex():
-    """The design requirement, now across all dimensions."""
+    """``dim ker(N^T) = 0`` on simplices, in 1D, 2D and 3D."""
     for name in ("segment-unit", "triangle-unit", "triangle-irregular", "tet-reference", "tet-irregular"):
         rc = next(c for c in CELLS if c.name == name)
         assert ElasticityInnerProduct(rc.mesh).stabilization_dim(0) == 0, name

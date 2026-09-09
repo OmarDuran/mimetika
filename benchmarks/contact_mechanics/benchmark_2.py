@@ -10,16 +10,16 @@ and merge at ``p ~= -26.9`` MPa (paper Fig. 12).  The paper's own numerical
 results require the wide ``W = 18,000`` m domain to match the semi-analytical
 ones (its Sect. 4.1), which is the domain used here.
 
-The mesh is generated with **gmsh**: triangles conforming to the inclined
-fault line (embedded curve) and to the reservoir boundaries, graded from the
-fault outwards.  The mechanics is the de Rham (mimetic-AFW-BDM) four-field
-system; on triangles it coincides with the AFW element.
+The mesh is generated with gmsh: triangles conforming to the inclined fault
+line (embedded curve) and to the reservoir boundaries, graded from the fault
+outwards.  The mechanics is the de Rham (mimetic-AFW-BDM) four-field system;
+on triangles it coincides with the AFW element.
 
 The semi-analytical post-slip solution (Cauchy singular integral equations,
 Jansen & Meulenbroek 2022) is not closed-form; the pointwise comparison is
 against the paper's published dataset (4TU, doi 10.4121/d77f1a2c-29ea-4572-
 ad72-e33ed8dc8d22): the pre-slip stresses of Fig. 8 and the post-slip
-Coulomb stress function of Figs. 9-10.  The dataset's *slip* rows are
+Coulomb stress function of Figs. 9-10.  The dataset's slip rows are
 unusable -- the ``delta`` rows of Figs. 6, 9/10 and 14 are byte-identical
 copies of the Fig. 14 pre-nucleation profile (peak 3.74 mm) -- so the slip
 profiles are compared against the paper's reported observables instead: the
@@ -161,7 +161,7 @@ def reference_slip_exact(level_pa: float):
     return _slip_cache[key]
 
 # the paper widens the domain to W = 18,000 m (its Fig. 11) but keeps
-# H = 4500 m: the linear in-situ profiles extrapolate to a *tensile* fault
+# H = 4500 m: the linear in-situ profiles extrapolate to a tensile fault
 # above ~3.5 km, so a taller domain opens the fault top unphysically
 WIDE = dict(width=18000.0, height=4500.0, dip=70.0)
 
@@ -354,10 +354,10 @@ def insitu_prestress(mesh, fault, parameters: Parameters,
         n, t = frame[0][:2], frame[1][:2]
         y = mesh.geometry.centroids(1)[int(f)][1]
         sigma = parameters.stress_tensor(y)[0]
-        # the Coulomb threshold acts on the *effective* traction (paper
+        # the Coulomb threshold acts on the effective traction (paper
         # Eq. 29): add the Biot pore-pressure term to the normal.  Where only
         # one side of the fault is depleted (75 < |y| < 150) the fault takes
-        # the *depleted* side's pressure -- min(), not the two-side mean: the
+        # the depleted side's pressure -- min(), not the two-side mean: the
         # 4TU Sigma_slip curve (Fig. 8) matches min() to 0.55 MPa rms and is
         # off by mu alpha |dp|/2 ~ 5.9 MPa under the mean
         cells = bm[int(f)].indices
@@ -371,7 +371,7 @@ def simulate(parameters: Parameters, spacing: float = 2.0,
              warm_from_locked: bool = False):
     """Solve at ``parameters.depletion``; return slip and patch structure.
 
-    ``warm_from_locked`` starts the contact Newton at the **locked**
+    ``warm_from_locked`` starts the contact Newton at the locked
     (unfractured) solution's fault tractions instead of zero.  On the
     confined ``W = 4500`` m domain the cold start diverges: the first trial
     has the fault carrying nothing, the projection clips metre-scale
@@ -421,8 +421,8 @@ def simulate(parameters: Parameters, spacing: float = 2.0,
     yy, ss = y[order], slip[order]
     patches = slip_patches(yy, ss)
 
-    # resolved fault slip: the BDM facet moments carry a *linear* profile
-    # per facet -- read it at the two facet Gauss points (see benchmark_3)
+    # resolved fault slip: the BDM facet moments carry a linear profile per
+    # facet -- read it at the two facet Gauss points (see benchmark_3)
     pw = ContactDriver(mesh, fault, SignoriniCoulomb(friction=parameters.friction),
                        prestress=None, mu=parameters.shear_modulus, lam=lam,
                        enforcement="pointwise")
@@ -442,8 +442,8 @@ def simulate(parameters: Parameters, spacing: float = 2.0,
 
 def pre_slip_stress(parameters: Parameters, spacing: float = 2.0,
                     built=None):
-    """Fault stresses on the **locked** fault (Fig. 8): the plain continuum
-    under the depletion load, no contact block, one direct solve."""
+    """Fault stresses on the locked fault (Fig. 8): the plain continuum under
+    the depletion load, no contact block, one direct solve."""
     from mimetika.contact import FrictionlessBilateral
 
     if built is None:
@@ -478,9 +478,9 @@ def pre_slip_stress(parameters: Parameters, spacing: float = 2.0,
 def slip_patches(yy, ss, tol: float = 1e-6, interpolate: bool = False):
     """Contiguous slipping runs ``(y0, y1, peak)`` above ``tol``.
 
-    The default suits the paper's mm-scale observables; near the slip
-    *onset* the physical slip is sub-micron, so onset-sensitive uses (the
-    Fig. 12 boundary curves) pass a smaller ``tol``.  ``interpolate``
+    The default suits the paper's mm-scale observables; near the slip onset
+    the physical slip is sub-micron, so onset-sensitive uses (the Fig. 12
+    boundary curves) pass a smaller ``tol``.  ``interpolate``
     refines each boundary to the linear zero crossing between the last
     slipping sample and its locked neighbour -- sub-sample positions
     instead of sample-quantized ones.
@@ -631,7 +631,7 @@ def initial_state(parameters: Parameters, spacing: float = 2.0, built=None):
         out[:, 1] = rho_g
         return out
 
-    # the initial state is *poroelastic*: the total-stress field of Eq. 8 is
+    # the initial state is poroelastic: the total-stress field of Eq. 8 is
     # compatible only together with the Biot term of the hydrostatic initial
     # pressure -- without it the solve pivots to wrong stress gradients
     if "coupling" in cache:
@@ -644,11 +644,11 @@ def initial_state(parameters: Parameters, spacing: float = 2.0, built=None):
     p0 = np.array([parameters.pressure(yy)
                    for yy in mesh.geometry.centroids(2)[:, 1]])
 
-    # the paper's Fig. 1 configuration: normal loads on ALL four boundaries
+    # the paper's Fig. 1 configuration: normal loads on all four boundaries
     # (zero boundary shear), rigid modes removed by three discrete pins --
     # u_x at the bottom centre, u_y at one mid-height point per side.  A
-    # roller along the whole bottom is a different problem and develops the
-    # spurious boundary shear this configuration exists to avoid.
+    # roller along the whole bottom is a different problem and develops
+    # boundary shear this configuration has none of.
     problem = FourFieldElasticity(
         mesh, inner=DeRhamDeviatoricStress(mesh, material=material))
     matrix, rhs = problem.assemble_constrained(
@@ -1001,7 +1001,7 @@ def main() -> None:
             def probe(level):
                 stage = replace(parameters, depletion=level * 1e6)
                 res = simulate(stage, spacing=arguments.spacing, built=built)
-                # boundaries from the facet-MEAN slip: on stuck facets it is
+                # boundaries from the facet-mean slip: on stuck facets it is
                 # clean to 1e-12 m, so a 1e-8 threshold resolves the micron
                 # onset.  (The pointwise readback is unusable here: it
                 # carries the ~1e-5 m enforcement-truncation residual.)

@@ -17,8 +17,10 @@ contains exactly; the cell unknown is a cell average, and the average of a
 linear function is its value at the centroid. So the computed pressure should
 equal p(x_E) to round-off, on a good mesh and a bad one alike.
 
-    It holds for every product here, RT and BDM alike -- provided the
-    datum is given as a FIELD and not as a number.
+    It holds for every reconstructing product here, RT and BDM alike --
+    provided the datum is given as a FIELD and not as a number. The
+    diagonal star is exact only where the mesh is K-orthogonal; see
+    diagonal_tpfa below.
 
 A prescribed pressure is natural here: it enters the flux row as
 int_f p_D (tau.n), and a facet carrying d flux moments tests it against d basis
@@ -103,16 +105,13 @@ def solvers(rtol):
             method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000,
             riesz_block_pc="ads",
         ),
-        # a short CG under ADS rather than a single V-cycle: the block is then
-        # solved to a tolerance instead of approximated once, and the outer
-        # count stops drifting up with the mesh (60 -> 21 at 96k unknowns).
-        # Each iteration costs more, so which of the two wins is a measurement.
-        # the same cycle with the inner CG stated explicitly. The budget is
-        # what MEASURES the map rather than the budget: at 50 steps to 1e-2 the
-        # outer count reads the cap instead of the preconditioner -- 29 against
-        # 23 on the h-ladder, 205 against 132 at nu = 0.4999 -- and on a mesh
-        # written in metres rather than in unit lengths it does not converge at
-        # all. Solved to 1e-6 the count is the Riesz map's.
+        # a short CG under ADS rather than a single V-cycle: 500 steps to 1e-6,
+        # so the block is solved to a tolerance instead of approximated once
+        # and the outer count stops drifting up with the mesh (60 -> 21 at 96k
+        # unknowns). Each iteration costs more, so which of the two wins is a
+        # measurement. A shorter budget reports itself instead: at 50 steps to
+        # 1e-2 the outer count reads the cap, and on a mesh written in metres
+        # rather than in unit lengths it does not converge at all.
         "ads-cg": mk.SolverOptions(
             method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000,
             riesz_block_pc="ads", riesz_block_its=500, riesz_block_rtol=1e-6,
@@ -237,15 +236,13 @@ def report_error(volume, p_h, p, q_h, q, dim, moments):
 def prescribe_pressure(model, mesh, dim, lo, direction, length, quadratic=False):
     """p on every boundary facet: the centroid value AND the gradient.
 
-    THE GRADIENT IS NOT DECORATION. The flux row of a boundary facet carries
-    int_f p_D (tau.n), and a facet holding d flux moments tests that datum
-    against d basis functions, not one. The centroid value is the whole datum
-    only where the facet carries a single moment -- there the basis is the
-    constant and the facet average is exactly the centroid value of a linear
-    field. With d moments the higher basis functions are centred, so they see
-    only the VARIATION of p across the facet, which the gradient supplies and a
-    number cannot. Omit it and the BDM products lose the patch they reproduce
-    exactly: 2.9e-02 on the Kuhn box against 8.4e-15 with it.
+    The flux row of a boundary facet carries int_f p_D (tau.n), and a facet
+    holding d flux moments tests that datum against d basis functions. With one
+    moment the basis is the constant and the facet average -- the centroid
+    value of a linear field -- is the whole datum; with d the higher basis
+    functions are centred and see only the VARIATION of p across the facet,
+    which the gradient supplies. Omit it and the BDM products lose the patch
+    they reproduce exactly: 2.9e-02 on the Kuhn box against 8.4e-15 with it.
     """
     facets = mk.boundary_facets(mesh, dim)
     for f in facets:
@@ -279,15 +276,9 @@ def make_mesh(path):
     print(f"wrote {path}: {mesh.count(2)} cells, {mesh.count(0)} vertices")
 
 
-# One process speaks and writes. Under mpirun every rank runs this file and
-# solves the same problem -- the algebra is shared out, the script is not -- so
-# without this the report appears N times and N processes race to write the
-# same .vtu. The solve itself is unaffected: every rank takes part in it, and
-# every rank ends up with the whole answer.
-# What the run is shared out over, said once rather than inferred from N copies
-# of the output. The balance is the partition's own report: a bisection that
-# has gone wrong shows up here as a rank holding most of the mesh, long before
-# it shows up as a timing.
+# What the run is shared out over, and the balance of the partition: a
+# bisection that has gone wrong shows up here as a rank holding most of the
+# mesh, long before it shows up as a timing.
 def report_processes(mesh, dim):
     size = mk.mpi_size()
     if size < 2:
@@ -297,6 +288,11 @@ def report_processes(mesh, dim):
     print(f"  {size} processes, {counts.min()}..{counts.max()} cells each")
 
 
+# One process speaks and writes. Under mpirun every rank runs this file and
+# solves the same problem -- the algebra is shared out, the script is not -- so
+# without this the report appears N times and N processes race to write the
+# same .vtu. The solve itself is unaffected: every rank takes part in it, and
+# every rank ends up with the whole answer.
 def only_root():
     if mk.mpi_rank() == 0:
         return True
@@ -334,10 +330,10 @@ def main():
     )
     ap.add_argument("--vtu", help="write the solution to this .vtu")
     ap.add_argument("--solver", default="riesz", choices=sorted(SOLVER_NAMES))
-    # hypre-ads only. The default applies ONE ADS cycle per application, which
-    # is cheapest where K is smooth; a jumping coefficient needs the block
-    # solved instead -- one cycle stops converging past a contrast of ~1e4 --
-    # and this is how many CG steps to allow under the cycle.
+    # hypre-ads only: how many CG steps to allow under the ADS cycle. 0 applies
+    # one cycle per application, which is cheapest where K is smooth; a jumping
+    # coefficient needs the block solved instead -- one cycle stops converging
+    # past a contrast of ~1e4.
     ap.add_argument("--ads-block-its", type=int, default=50, metavar="N",
                     help="hypre-ads: CG steps on the flux block. The default "
                          "SOLVES the block under a short CG, which is what makes "
@@ -518,9 +514,8 @@ def main():
                            mgr=args.solver == _hypre.MGR_NAME))
     else:
         report = model.solve(progress=True, options=solvers(args.rtol)[args.solver])
-    # The two assemblies, always. They are what scales with the mesh, and they
-    # are separate costs: the Jacobian is the physics, the preconditioner is the
-    # price of being able to solve it iteratively.
+    # The two assemblies, always: the Jacobian and the preconditioner are
+    # separate costs and both scale with the mesh.
     print(
         f"\n  assembly: jacobian {report.assembly_seconds:.2f} s + matrix "
         f"{report.matrix_seconds:.2f} s, preconditioner "
@@ -596,9 +591,10 @@ def main():
             # `volume` is written so the pointwise error can be recovered by
             # dividing it out.
             #
-            # The exact flux is one constant vector, broadcast: written per
-            # cell so that flux and flux_exact are the same kind of field in
-            # ParaView and can be differenced or glyphed against each other.
+            # The exact flux is written per cell -- constant for the affine
+            # field, linear in x for the quadratic one -- so that flux and
+            # flux_exact are the same kind of field in ParaView and can be
+            # differenced or glyphed against each other.
             exact_rows = np.zeros((len(p_h), 3))
             exact_rows[:, :dim] = q_exact
             fields = {

@@ -76,7 +76,7 @@ def test_normal_projection_removes_tension():
 
 
 def test_open_point_carries_no_shear():
-    """The friction radius follows the *projected* normal traction."""
+    """The friction radius follows the projected normal traction."""
     law = SignoriniCoulomb(friction=0.6)
     t, _ = law.project(np.array([[5.0, 1.0, 2.0]]), law.initial_state(1))
     assert np.allclose(t, 0.0)

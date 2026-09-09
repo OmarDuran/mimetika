@@ -19,11 +19,9 @@
 // changes the method.
 //
 // The sign convention is the one the flux term already uses, [M, -B^T; +B, 0],
-// so an off-diagonal pair is the negative transpose of its partner. It is
-// fixed once a model composes several physics: flow, mechanics and their
-// coupling land in one system, and two conventions meeting there produce a
-// matrix that is neither symmetric nor antisymmetric and whose structure no
-// solver could exploit.
+// so an off-diagonal pair is the negative transpose of its partner. Flow,
+// mechanics and their coupling land in one system, and two conventions meeting
+// there give a matrix that is neither symmetric nor antisymmetric.
 //
 // Every off-diagonal pair is written from the same operator, so the relation
 // holds by construction rather than by two hand-written kernels agreeing.
@@ -72,9 +70,9 @@ class MixedElasticityCell {
     }
 
     // The operators arrive in the ProductSpace's own degree-of-freedom order:
-    // StressOperators permutes them once when it builds them, so the index
-    // here is the index, and the inner loop is a contiguous walk of one row of
-    // M rather than D gathers through a divide-and-modulus.
+    // StressOperators permutes them once when it builds them, so nothing is
+    // re-indexed here and the inner loop is a contiguous walk of one row of M
+    // rather than D gathers through a divide-and-modulus.
     // The dimension comes from the operators. A displacement has d components
     // and a rotation d(d-1)/2 -- three in three dimensions and one in two,
     // where skew(2) is a line.

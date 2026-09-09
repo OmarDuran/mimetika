@@ -6,11 +6,10 @@
 
 // The hybrid upwind operator, on the mobilities alone.
 //
-// It lives here rather than inside a term because three places use it and must
-// not drift apart: the mesh facets, the mixed-dimensional interfaces, and the
-// energy equation. It is defined on the mobility simplex and knows nothing of
-// where its arguments came from — no saturations, no phase equilibrium, no
-// geometry.
+// Free functions rather than members of a term: defined on the mobility simplex
+// and knowing nothing of where their arguments came from — no saturations, no
+// phase equilibrium, no geometry — so one definition serves every facet the
+// mobilities are upwinded across.
 //
 // For an active pair (a, b) advected along a signed direction ν,
 //
@@ -23,12 +22,10 @@
 // nearer in density.
 //
 // The density weight is frozen, and its type says so. w_g depends on the
-// densities alone, so it is constant under saturation variation and
-// carries no Jacobian — it is re-evaluated between nonlinear iterations,
-// never differentiated within one. That is why it takes and returns plain
-// doubles while the mobilities carry whatever scalar the caller chose:
-// the signature makes it impossible to let it into the derivative path by
-// accident.
+// densities alone, so it is constant under saturation variation and carries no
+// Jacobian: it is re-evaluated between nonlinear iterations, never
+// differentiated within one. Hence plain double in and out, while the
+// mobilities carry whatever scalar the caller chose.
 //
 // Properties this construction has, each of them tested:
 //   consistency        both cells sharing a state gives f_a f_b lambda
@@ -52,9 +49,6 @@ T upwind(const T& left, const T& right, double nu) {
 // contrast, taking the value 1/2 exactly at the tie so that the reduction
 // under coalescence is continuous. Unity on a's side of the arithmetic
 // mean separator, zero on b's; the pair members are fixed points.
-//
-// Deliberately double in and double out: this quantity must not be
-// differentiated.
 inline double density_weight(double rho_g, double rho_a, double rho_b) {
   const double s = (rho_a - rho_b) * (2.0 * rho_g - rho_a - rho_b);
   if (s > 0.0) return 1.0;
@@ -101,7 +95,7 @@ T hybrid_pair(std::span<const T> mob_left, std::span<const T> mob_right,
     tot_up = tot_up + up[i];
     tot_down = tot_down + down[i];
   }
-  // the barycentric coordinates of each upstream cell, so both lie in [0,1]
+  // the fractional flows, each from its own upstream cell, so both lie in [0,1]
   const T fa = up[static_cast<std::size_t>(a)] / tot_up;
   const T fb = down[static_cast<std::size_t>(b)] / tot_down;
   return fa * fb * face_total_mobility(mob_left, mob_right, rho, a, b, nu);

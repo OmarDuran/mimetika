@@ -10,10 +10,8 @@
 
 // The catalogue: named models, each a composition of packages.
 //
-// An entry is a declaration, not an implementation. If writing one takes
-// more than a few lines, a package is missing and the right response is to
-// write the package rather than the model — that is what keeps a
-// product-shaped catalogue on top of a sum-shaped codebase.
+// An entry is a declaration, not an implementation: if writing one takes more
+// than a few lines, a package is missing.
 //
 // Registration happens at static-init, so the models a build supports are
 // exactly the ones compiled into it, and a driver can list them without
@@ -28,8 +26,8 @@ struct ModelOptions {
   std::size_t components{1};
   bool thermal{false};
   std::string discretization{"mimetic"};
-  // the transient step, when there is one: the Darcy mobility and the
-  // inverse Biot modulus
+  // the transient step, when there is one: the Darcy mobility and the storage
+  // coefficient, which is the skeleton's storage plus 1/M and not 1/M alone
   double mobility{1.0};
   double storage{0.0};                // S in the mass balance
   double volumetric_compliance{1.0};  // (1-2nu)/(2mu(1-2nu+d nu))

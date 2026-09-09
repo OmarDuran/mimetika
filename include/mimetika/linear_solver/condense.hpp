@@ -19,22 +19,22 @@
 //
 // and what is handed to a solver is S, which for those two products is the
 // finite volume method itself: the pressure alone for TPFA, seven entries a row
-// in space; the displacement, rotation and total pressure for TPSA, which is
-// Nordbotten & Keilegavlen's Eq. (3.9). Both are symmetric, both have the
-// two-point stencil, and S is smaller than M alone -- 27 unknowns against 135
-// on a 3^3 mesh of hexahedra, 189 against 513.
+// in space; the displacement, rotation and total pressure for the two-point
+// stress scheme. Both are symmetric, both have the two-point stencil, and S is
+// smaller than M alone -- 27 unknowns against 135 on a 3^3 mesh of hexahedra,
+// 189 against 513.
 //
-// Why it is worth doing beyond the size. The saddle point is indefinite and its
-// first block is what a Riesz map spends its effort on; S has no such block.
-// The elimination is also rank-revealing where a factorization is not: handed
-// the Kuhn tetrahedra, on which diagonal_afw carries one spurious rotation per
-// interior cube face, MUMPS reports CONVERGED and returns 1e16, while the
-// condensation runs out of pivots and says so.
+// Beyond the size: the saddle point's first block is what a Riesz map spends
+// its effort on, and S has no such block. The elimination is also
+// rank-revealing where a factorization is not -- on the Kuhn tetrahedra, where
+// diagonal_afw carries one spurious rotation per interior cube face, MUMPS
+// reports CONVERGED and returns 1e16 while the condensation runs out of pivots.
 //
 // The cost is one pass. Each eliminated unknown contributes the outer product
 // of its own row with its own column, and that row has the entries of the two
-// cells sharing its facet -- fourteen of them for TPSA in space -- so the whole
-// term is a few hundred multiplications per facet and no fill anywhere else.
+// cells sharing its facet -- fourteen of them for the two-point stress scheme
+// in space -- so the term is a few hundred multiplications per facet and no
+// fill anywhere else.
 
 namespace mimetika::solver {
 
@@ -82,9 +82,8 @@ struct Condensation {
   }
 };
 
-// Is the block diagonal? The question the specialization turns on, asked of the
-// assembled matrix rather than of the product's name: a star that stops being
-// diagonal, for any reason, must stop being condensed here.
+// Is the block diagonal? Asked of the assembled matrix rather than of the
+// product's name, so a star that stops being diagonal stops being condensed.
 inline bool block_is_diagonal(const SparseSystem& A, const std::vector<int>& first) {
   std::vector<char> mine(A.n, 0);
   for (const int i : first) mine[static_cast<std::size_t>(i)] = 1;
@@ -197,8 +196,7 @@ inline Condensation condense(const SparseSystem& A, const std::vector<double>& b
   // whose true row holds a few dozen entries. So S is formed row by row
   // instead: a scratch the size of the reduced system, stamped per row,
   // accumulates every contribution in place and each row is emitted once,
-  // already merged. The peak is the merged matrix, not the algebra's
-  // intermediate.
+  // already merged.
   const std::size_t n_rest = c.rest.size();
   std::vector<Index> direct_begin(n_rest + 1, 0), to_g_begin(n_rest + 1, 0);
   for (std::size_t k = 0; k < A.nnz(); ++k) {

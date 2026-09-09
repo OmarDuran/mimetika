@@ -1,44 +1,35 @@
 r"""Solvers for the global mixed (saddle-point) systems.
 
-The mixed systems are **symmetric indefinite**::
+The mixed systems are symmetric indefinite::
 
     [ M   B^T ] [ x ]   [ f ]
     [ B    0  ] [ y ] = [ g ]
 
-so the usual SPD machinery (CG, plain AMG) does not apply.  Two strategies are
-provided:
+so CG and plain AMG do not apply.  Two strategies:
 
-* ``method="direct"`` -- a sparse LU factorisation.  Reliable, and the right
-  choice up to a few hundred thousand unknowns.
-* ``method="minres"`` -- MINRES with a block preconditioner.  With PETSc this
-  is a ``fieldsplit``/Schur preconditioner (the Schur complement approximated by
-  ``B diag(M)^{-1} B^T``, PETSc's ``selfp``); with scipy it is the equivalent
-  block-diagonal preconditioner built explicitly.  This is what scales to the
-  large stress systems, where a direct factorisation is out of reach.
+* ``method="direct"`` -- sparse LU, up to a few hundred thousand unknowns.
+* ``method="minres"`` -- MINRES with a block preconditioner.  With PETSc a
+  ``fieldsplit``/Schur preconditioner, the Schur complement approximated by
+  ``B diag(M)^{-1} B^T`` (PETSc's ``selfp``); with scipy the same block-diagonal
+  preconditioner built explicitly.
 
 Preconditioner variants (``preconditioner=``):
 
-* ``"cpr"`` (default) -- the mixed-formulation analogue of the **Constrained
-  Pressure Residual** preconditioner of reservoir simulation.  CPR's idea is to
-  solve the elliptic pressure subsystem with AMG and follow it with a cheap
-  global smoother.  Here the elliptic operator is not extracted by an IMPES-style
-  decoupling: in mixed form it *is* the Schur complement ``B diag(M)^{-1} B^T``,
-  the cell-centred pressure Laplacian, which ``selfp`` already assembles.  So the
-  configuration is AMG (hypre BoomerAMG) on the Schur block and a cheap
-  incomplete factorisation on the leading block, both applied **once**
-  (``preonly``).
-* ``"schur"`` -- PETSc's defaults for the sub-blocks: an inner GMRES solve to
-  ``rtol 1e-5`` with ILU on *each* block, every outer iteration.
+* ``"cpr"`` (default) -- the mixed-formulation analogue of the Constrained
+  Pressure Residual preconditioner of reservoir simulation.  The elliptic
+  operator needs no IMPES-style decoupling: in mixed form it is the Schur
+  complement ``B diag(M)^{-1} B^T``, the cell-centred pressure Laplacian that
+  ``selfp`` assembles.  Configuration: AMG (hypre BoomerAMG) on the Schur block,
+  ICC on the leading block, both applied once (``preonly``).
+* ``"schur"`` -- PETSc's sub-block defaults: an inner GMRES solve to ``rtol
+  1e-5`` with ILU on each block, every outer iteration.
 
-``cpr`` is both faster and more correct.  Faster because the default re-solves a
-large inner system per outer iteration (roughly 10x on the fault mesh).  More
-correct because MINRES requires a **fixed, symmetric positive-definite**
-preconditioner: a nested GMRES solve makes the preconditioner *variable*, which
-formally invalidates the MINRES recurrence, whereas ``preonly`` with ICC/AMG
-keeps it fixed and symmetric.
+``cpr`` is roughly 10x faster on the fault mesh, where ``schur`` re-solves a
+large inner system per outer iteration.  It is also the only admissible choice:
+MINRES requires a fixed SPD preconditioner, and a nested GMRES solve makes the
+preconditioner vary between iterations, invalidating the MINRES recurrence.
 
-PETSc is used when ``petsc4py`` is importable; otherwise everything falls back
-to scipy transparently.
+PETSc is used when ``petsc4py`` is importable, otherwise scipy.
 """
 
 from __future__ import annotations
@@ -104,21 +95,20 @@ def solve_saddle(
 def block_scaling(A: sp.spmatrix, block_sizes) -> np.ndarray | None:
     """Diagonal ``D`` making the two blocks of ``D A D`` commensurate.
 
-    In physical units the leading block is a compliance, of order ``1/G``, while
-    the constraint block is a discrete divergence of order one.  For rock
-    (``G ~ 1e10``) that is an eleven-order-of-magnitude spread, and the resulting
-    condition number is *intrinsic* to the choice of units, not an artefact --
-    which is why row-equilibration cannot touch it: row one already mixes both
-    scales, so its maximum is dominated by the constraint entries.
+    The leading block is a compliance, of order ``1/G``; the constraint block is
+    a discrete divergence, of order one.  For rock (``G ~ 1e10``) that is an
+    eleven-decade spread set by the choice of units, so row equilibration cannot
+    remove it: row one mixes both scales and its maximum is dominated by the
+    constraint entries.
 
-    Scaling the two fields against each other does fix it.  With
-    ``sigma = s tilde-sigma`` and ``u = tilde-u / s``, the transformed blocks are
-    ``s^2 M`` and ``B``, so ``s = sqrt(|B|/|M|)`` brings both to order one --
-    exactly nondimensionalising stress by the modulus.  In practice this takes
-    the fault-benchmark systems from ``cond ~ 2e11`` to ``~1e3``, which is the
-    difference between MUMPS reporting a zero pivot and factorising cleanly.
+    With ``sigma = s tilde-sigma`` and ``u = tilde-u / s`` the transformed blocks
+    are ``s^2 M`` and ``B``, so ``s = sqrt(|B|/|M|)`` brings both to order one --
+    stress nondimensionalised by the modulus.  On the fault-benchmark systems
+    this takes ``cond ~ 2e11`` to ``~1e3``; without it MUMPS reports a zero
+    pivot.
 
-    Returns ``None`` when the scaling would be a no-op or cannot be formed.
+    Returns ``None`` when ``0.1 < s < 10`` (already commensurate) or the blocks
+    are empty or identically zero.
     """
     n0 = int(block_sizes[0])
     total = A.shape[0]
@@ -189,10 +179,9 @@ def _solve_scipy(A, rhs, block_sizes, method, rtol, max_it, verbose):
 def _cpr_options() -> str:
     """Sub-block options for the CPR-style preconditioner.
 
-    ``hypre`` is required for the AMG stage: ``gamg`` was measured to produce an
-    *indefinite* preconditioner on the elasticity Schur block (PETSc reason -8,
-    with a visibly wrong answer), which MINRES cannot use.  Without hypre we
-    fall back to ICC, which is symmetric and safe if less scalable.
+    ``hypre`` is required for the AMG stage: ``gamg`` produced an indefinite
+    preconditioner on the elasticity Schur block (PETSc reason -8), which MINRES
+    cannot use.  Without hypre, ICC: symmetric, less scalable.
     """
     from petsc4py import PETSc
 
@@ -211,21 +200,17 @@ _MUMPS_OUT_OF_SPACE = (-8, -9, -14, -15, -17, -20)
 def _retry_if_out_of_workspace(ksp, b, x, verbose):
     """Grow MUMPS's working space and refactorise, if that is why it failed.
 
-    MUMPS sizes its workspace from a *symbolic* estimate of the fill-in.  When
-    the numerical factorisation needs more than predicted it aborts, and PETSc
-    surfaces that as ``KSP_DIVERGED_PC_FAILED`` -- the same code it reports for a
-    zero pivot.  The two are indistinguishable from the KSP alone, so this looks
-    exactly like an ill-conditioned matrix and invites the wrong fix.
+    MUMPS sizes its workspace from a symbolic estimate of the fill-in; when the
+    numeric factorisation exceeds it, PETSc reports ``KSP_DIVERGED_PC_FAILED``,
+    the same code as for a zero pivot.  ``INFOG(1)`` separates them: the codes in
+    :data:`_MUMPS_OUT_OF_SPACE` are a sizing failure over a well-posed system,
+    and the remedy is to raise ``ICNTL(14)``, the percentage by which the
+    estimate is inflated, and factorise again.  High cell aspect ratios generate
+    more fill-in than the estimate anticipates and trip this.
 
-    ``INFOG(1)`` tells them apart.  Anything in :data:`_MUMPS_OUT_OF_SPACE` is a
-    sizing problem with a well-posed system behind it, and MUMPS's own remedy is
-    to raise ``ICNTL(14)`` -- the percentage by which the estimate is inflated --
-    and factorise again.  Meshes with high cell aspect ratios trip this routinely,
-    because they generate far more fill-in than the estimate anticipates.
-
-    Escalating on demand rather than inflating ``ICNTL(14)`` up front means the
-    common case pays no extra memory.  Returns the final converged reason, or
-    ``None`` if no retry was warranted.
+    ``ICNTL(14)`` is escalated on demand through 100, 400, 1600, so the common
+    case pays no extra memory.  Returns the final converged reason, or ``None``
+    if no retry was warranted.
     """
     from petsc4py import PETSc
 
@@ -241,9 +226,9 @@ def _retry_if_out_of_workspace(ksp, b, x, verbose):
     if infog not in _MUMPS_OUT_OF_SPACE:
         return None  # a real numerical failure; let the caller raise
 
-    # A spent PC cannot simply be re-run: PETSc caches the failed factorisation,
-    # and ICNTL(14) has to be in place *before* the numeric phase.  So each
-    # attempt gets a fresh KSP over the same operator.
+    # A spent PC cannot be re-run: PETSc caches the failed factorisation, and
+    # ICNTL(14) must be set before the numeric phase, so each attempt gets a
+    # fresh KSP over the same operator.
     mat = ksp.getOperators()[0]
     options = PETSc.Options()
     try:

@@ -13,14 +13,15 @@
 // Nothing here decides anything about the partition: exokal's geometric
 // bisection cuts the mesh, and exokal's ownership rule -- an entity belongs to
 // the lowest-numbered rank in its star -- says who owns what. This translates
-// that answer into the three things the rest of mimetika asks for, which are
-// three different questions:
+// that answer into the masks the rest of mimetika asks for, which are
+// different questions:
 //
 //   owner_of_dof   for the solver: the layout of the algebra, one rank per
 //                  global unknown, which is what a renumbering is built from
-//   owned_cells    for the assembly: which sites a process evaluates terms on.
-//                  A term's contribution is a sum, so a row may be assembled
-//                  in pieces on several processes and added back together
+//   owned_cells    ownership of the top-dimensional sites, and the seed the
+//                  halo below is grown from
+//   assembled_*    for the assembly: the sites a process evaluates terms on,
+//                  owned plus halo
 //   owned_dofs     for the constraints: which rows a process writes. A
 //                  constraint is a replacement, not a contribution, so exactly
 //                  one process may write each of them
@@ -38,9 +39,9 @@ struct Distribution {
   std::vector<char> owned_cells;
   // A term is not always evaluated on a cell. A prescribed pressure is a form
   // on the boundary facets, an interface term on the interior ones; those
-  // sites are facets, and a mask indexed by cell number would select the wrong
-  // ones -- silently, since both are just indices. exokal names the
-  // distinction (`evaluated_on_facets`), so both masks are carried.
+  // sites are facets, and a mask indexed by cell number selects the wrong
+  // entities. exokal names the distinction (`evaluated_on_facets`), so both
+  // masks are carried.
   std::vector<char> owned_facets;
   std::vector<char> owned_dofs;
   // Owned plus halo: the cells whose terms this process evaluates.

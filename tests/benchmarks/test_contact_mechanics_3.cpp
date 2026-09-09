@@ -29,10 +29,9 @@
 // supercritical the moment it appears, and the computed p* collapses onto the
 // mesh-dependent constant-friction slip onset instead of the nucleation
 // pressure. The Python reference records this, and the paper's own grid is 2 m
-// on the fault. What is asserted below is therefore split: the law-and-branch
-// statements hold at any resolution, and p* is reported against the paper with
-// the mesh it was computed on named, rather than asserted at a resolution that
-// cannot support it.
+// on the fault. What is asserted below is therefore split: the law and branch
+// statements hold at any resolution, while p* is asserted only to within
+// 1.5 MPa of -17.41, and only on the paper's own 2 m fault mesh.
 
 using namespace novikov;  // the shared inclined-fault setup
 using mimetika::contact::SlipWeakening;
@@ -52,8 +51,8 @@ double nucleation_length(const Parameters& p, double effective_normal) {
 
 // -- the law ---------------------------------------------------------------------
 
-// The coefficient weakens and then saturates, which is the whole of Eq. 23 and
-// what makes the branch fold. Checked on the benchmark's own numbers so that a
+// The coefficient weakens linearly and then saturates at mu_d -- Eq. 23, and
+// what makes the branch fold. Checked on the benchmark's own numbers, so a
 // failure downstream cannot be blamed on the law.
 MIMETIKA_TEST(the_benchmark_three_law_is_the_published_one) {
   std::setvbuf(stdout, nullptr, _IONBF, 0);  // survive a crash mid-sweep
@@ -72,8 +71,8 @@ MIMETIKA_TEST(the_benchmark_three_law_is_the_published_one) {
   CHECK(std::abs(law.friction_at(past, nullptr, nullptr, 0.0, 2) - kMuDynamic) < 1e-14);
 }
 
-// And h* is a length the mesh must resolve. Reported rather than assumed,
-// because it decides whether a computed p* means anything.
+// h* is a length the mesh must resolve; it decides whether a computed p* means
+// anything, so it is reported rather than assumed.
 MIMETIKA_TEST(the_critical_nucleation_length_is_of_the_order_of_ten_metres) {
   const Parameters p = wide();
   // the effective normal traction the fault sits on at the reservoir edge
@@ -93,7 +92,7 @@ MIMETIKA_TEST(the_critical_nucleation_length_is_of_the_order_of_ten_metres) {
 // find from any start, and the failure to find one is the physics rather than a
 // solver defect.
 //
-// Two things must hold at any resolution, and they are what is asserted:
+// Two statements hold at any resolution:
 //
 //   An equilibrium exists well above p*. At shallow depletion the fault is
 //   barely loaded and the weakening law behaves like Coulomb at mu_s.
@@ -101,6 +100,7 @@ MIMETIKA_TEST(the_critical_nucleation_length_is_of_the_order_of_ten_metres) {
 //   The branch is eventually lost. Continue far enough and the solve stops
 //   converging, or the slip runs past every scale the law has -- 50 delta_c is
 //   the Python's own runaway test.
+
 // Plain Coulomb at a frozen, per-point friction coefficient.
 //
 // The outer iteration below feeds each enforcement point its own mu, taken from
@@ -216,10 +216,10 @@ MIMETIKA_TEST(the_stable_branch_is_followed_and_then_lost) {
     last_stable = level;
   }
 
-  // Bisect the bracket. The paper's p* sits in a window far narrower than any
-  // fixed step: 0.016 MPa. The fold is where the mu-update map stops
-  // contracting, a property of the level, so it is found by halving the interval
-  // between the deepest equilibrium and the first level without one.
+  // Bisect the bracket: four halvings take the 0.25 MPa sweep step down to
+  // 0.016 MPa. The fold is where the mu-update map stops contracting, a property
+  // of the level, so it is found by halving the interval between the deepest
+  // equilibrium and the first level without one.
   if (nucleated < 0.0 && last_stable < 0.0) {
     for (int k = 0; k < 4; ++k) {
       const double mid = 0.5 * (last_stable + nucleated);
@@ -244,9 +244,8 @@ MIMETIKA_TEST(the_stable_branch_is_followed_and_then_lost) {
   CHECK(nucleated < last_stable);
   CHECK(std::abs(last_stable / 1e6 + 17.4) < 1.5);
 
-  // NOTHING TO COMPARE IF NO LEVEL HELD. CHECK records and continues, so the
-  // comparison below would index an unassigned state -- guard it rather than
-  // segfault on the way to reporting the real failure.
+  // CHECK records and continues, so if no level held, `best` is still default
+  // constructed and the comparison below would index an empty slip vector.
   if (best.slip.size() != n) {
     std::printf("  Fig. 14: skipped -- no equilibrium was found on the sweep\n");
     return;
@@ -255,10 +254,9 @@ MIMETIKA_TEST(the_stable_branch_is_followed_and_then_lost) {
   // Fig. 14 is a comparison of the pre-nucleation state, not a pointwise one.
   //
   // The paper's curve is its own last equilibrium, at p* = -17.41 MPa; ours is
-  // at whatever level our fold lands on. Those are different pressures, so
-  // demanding pointwise equality would be demanding that two solutions of two
-  // different problems coincide. What is comparable is the state: how far the
-  // fault has slipped and the shape of the profile -- the peak and the rms.
+  // at whatever level our fold lands on. Different pressures, so what is
+  // comparable is the state rather than the point values: the peak slip and the
+  // rms of the profile difference.
   const auto ref = novikov::read_reference("14_right.csv");
   const std::vector<double>& ry = ref["y"];
   const std::vector<double>& rd = ref["delta"];

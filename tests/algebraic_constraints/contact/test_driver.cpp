@@ -9,8 +9,8 @@
 //
 // The pieces that need a mesh are here -- the augmentation parameter is derived
 // from the geometry the fracture sits in -- while everything that does not is in
-// test_map.cpp against a stub. That split is the design: the driver knows the
-// mesh, the map knows only algebra, and a law knows neither.
+// test_map.cpp against a stub: the driver knows the mesh, the map knows only
+// algebra, and a law knows neither.
 
 using graphos::Index;
 using mimetika::contact::ContactDriver;
@@ -47,12 +47,10 @@ std::vector<Index> facets_at(const exokal::Mesh& m, int dim, double z, double to
 // A one-point stub standing where a real mechanics will: a spring of the given
 // compliance, so the driver's loop can be exercised against a closed form.
 //
-// The sign is the one that makes contact stable, and it is not free. The map
-// CD(x) = P(x + r g(x)) has multiplier |1 + r dg/dx|, so it contracts only for
-// dg/dx < 0: the gap must decrease as the traction grows. With the opposite
-// sign no r converges, which is a statement about the physics being unstable
-// rather than about the solver -- the same convention test_map.cpp records for
-// its 2x2 system.
+// The sign is not free. The map CD(x) = P(x + r g(x)) has multiplier
+// |1 + r dg/dx|, so it contracts only for dg/dx < 0: the gap must decrease as
+// the traction grows. With the opposite sign no r converges -- the same
+// convention test_map.cpp records for its 2x2 system.
 class SpringMechanics final : public ContactMechanics {
  public:
   SpringMechanics(double compliance, Vec3 free_gap, int dim)
@@ -139,7 +137,7 @@ MIMETIKA_TEST(the_augmentation_uses_the_true_centroid_distance_on_tets) {
       length += std::abs(d);
     }
     CHECK(near(r[i], kOedometer / length));
-    // and it is not the volume/area shortcut, which would be smaller
+    // the volume/area shortcut would give h/6, smaller than the measured standoff
     CHECK(!near(length, 1.0 / 6.0, 1e-6) || true);
   }
 }
@@ -206,9 +204,8 @@ MIMETIKA_TEST(compression_closes_without_interpenetration) {
 // -- the caller owns the loop -------------------------------------------------
 
 // Slip accumulates across steps, because the driver commits the internal
-// variables at the end of each one and the caller feeds the state back. This is
-// the property a staggered poromechanics scheme needs: the pressure solve sits
-// between two calls and the fracture remembers.
+// variables at the end of each one and the caller feeds the state back. A
+// staggered poromechanics scheme puts its pressure solve between two calls.
 MIMETIKA_TEST(the_caller_drives_the_loop_and_slip_accumulates) {
   const SpringMechanics mech(0.5, free_gap(-0.2, 0.6), 2);  // normal + one shear
   const SignoriniCoulomb law(0.3);

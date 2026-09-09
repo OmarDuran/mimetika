@@ -70,14 +70,11 @@ def facet_cell_signs(mesh: Mesh) -> dict[int, int]:
 def discrete_divergence(mesh: Mesh, dofmap=None) -> sp.csr_matrix:
     """``B`` with ``(B F)_E = \\int_E div F``: the signed incidence matrix.
 
-    Purely topological -- integer entries, no geometry at all.  This is the
-    discrete exterior derivative, and Stokes makes it exact.
-
-    That requires the flux DOF to be the *integrated* normal flux
-    ``F_e = int_e F.n``, which is the natural evaluation of a ``(d-1)``-form on a
-    facet, rather than the facet *average*.  With the average convention a
-    ``diag(|e|)`` enters this operator, putting metric into the one object that
-    should carry none; the measures belong in the inner product.
+    The discrete exterior derivative -- integer entries, no metric -- exact by
+    Stokes.  This requires the flux DOF to be the *integrated* normal flux
+    ``F_e = int_e F.n``, the evaluation of a ``(d-1)``-form on a facet, rather
+    than the facet average; with the average convention a ``diag(|e|)`` would
+    enter here instead of the inner product.
 
     With a duplicating ``dofmap`` a fracture facet contributes to **one** cell
     per column, so ``un+`` and ``un-`` no longer cancel and the mass exchanged
@@ -85,11 +82,8 @@ def discrete_divergence(mesh: Mesh, dofmap=None) -> sp.csr_matrix:
     """
     d = mesh.dim
     if dofmap is None:
-        # Cached on the mesh.  This operator is *metric-free apart from the facet
-        # measures* -- signed incidence, nothing else -- so it is the same matrix
-        # for every physics on a given mesh: Darcy, elasticity, and the flow block
-        # of poromechanics all want this one object, and the multiphysics systems
-        # assemble it several times.
+        # Cached on the mesh: signed incidence and nothing else, so one matrix
+        # serves Darcy, elasticity and the flow block of poromechanics.
         cached = getattr(mesh, "_discrete_divergence", None)
         if cached is not None:
             return cached
@@ -239,9 +233,8 @@ class MixedPoisson:
     def assemble(self, source=None, dirichlet=None):
         """Return ``(A, rhs)`` of the global saddle-point system.
 
-        The second block row is negated so that ``A`` is genuinely **symmetric
-        indefinite** -- which is what MINRES and PETSc's ``fieldsplit`` expect.
-        The solution is unchanged.
+        The second block row is negated so that ``A`` is symmetric indefinite,
+        as MINRES and PETSc's ``fieldsplit`` require.  The solution is unchanged.
         """
         M = self.inner_product()
         B = self.divergence()
@@ -309,10 +302,8 @@ class MixedPoisson:
         return out
 
 
-#: names :meth:`MixedElasticity.assemble_constrained` accepts.  Callers that
-#: forward boundary data opaquely -- the contact driver -- key off this instead
-#: of listing conditions themselves, so adding one here is the only change a new
-#: boundary condition needs.
+#: names :meth:`MixedElasticity.assemble_constrained` accepts; callers that
+#: forward boundary data opaquely (the contact driver) key off this list.
 BOUNDARY_ARGUMENTS = (
     "body_force",
     "dirichlet",
@@ -338,12 +329,11 @@ def _constrain(A: sp.csr_matrix, rhs: np.ndarray, dofs, values):
     """Symmetric row/column elimination imposing ``x[dofs] = values``.
 
     The pinned equation is scaled by the diagonal entry it replaces rather than
-    written as a bare ``1``.  With a stiff material the stress block carries
-    entries of order ``1/G`` -- around ``1e-10`` for rock -- so a unit diagonal
-    would be ten orders of magnitude larger than everything around it, and a
-    direct factorisation reports a zero pivot on the *rest* of the matrix.
-    (SuperLU's internal scaling hides this; MUMPS does not, and fails with
-    ``KSP_DIVERGED_PC_FAILED``.)  Scaling leaves the solution untouched.
+    written as a bare ``1``: the stress block carries entries of order ``1/G``,
+    about ``1e-10`` for rock, and a unit diagonal ten orders of magnitude larger
+    makes MUMPS report a zero pivot elsewhere in the matrix
+    (``KSP_DIVERGED_PC_FAILED``; SuperLU's internal scaling hides it).  The
+    scaling leaves the solution unchanged.
     """
     dofs = np.asarray(dofs, dtype=np.int64)
     values = np.asarray(values, dtype=float)
@@ -407,18 +397,14 @@ class MixedElasticity:
     ) -> None:
         self.mesh = mesh
         self.contact = contact  # optional FractureContact: adds compliance to M
-        # any facet-DOF stress inner product works here -- the assembly asks the
-        # space for its sizes and offsets rather than assuming a layout.  The
-        # default is the de Rham (consistency-only) product; passing e.g.
-        # ElasticityInnerProduct (stabilized) or LumpedDeviatoricStress
-        # (diagonal) swaps the discretisation.
+        # any facet-DOF stress inner product works here: the assembly asks the
+        # space for its sizes and offsets rather than assuming a layout
         if inner is None:
-            # both formulations default to the same de Rham member (the
-            # deviatoric space; here its volumetric completion is folded back
-            # in), so three- and four-field solves stay solution-identical
-            # under defaults.  DeRhamElasticityInnerProduct (linear-trace
-            # member, = AFW on simplices) and the stabilized
-            # ElasticityInnerProduct remain available explicitly.
+            # DeRhamDeviatoricStress, its volumetric completion folded back into
+            # M by assemble_operators; the four-field form defaults to the same
+            # member, so the two stay solution-identical under defaults.
+            # DeRhamElasticityInnerProduct (linear-trace member, = AFW on
+            # simplices) and the stabilized ElasticityInnerProduct are explicit.
             from mimetika.operators.derham import DeRhamDeviatoricStress
 
             inner = DeRhamDeviatoricStress(mesh, mu=mu, lam=lam)
@@ -492,7 +478,7 @@ class MixedElasticity:
             else:
                 # X is stacked, not pre-allocated: its facet-basis extent is d for
                 # AFW and 1 for LumpedDeviatoricStress.  Pre-allocating (nB, nf, d, d)
-                # broadcast a (nf, 1, d) block up to (nf, d, d) silently.
+                # broadcast a (nf, 1, d) block up to (nf, d, d).
                 blocks = []
                 for c in cells:
                     *_, Xc = self.inner.local_matrices(
@@ -537,10 +523,9 @@ class MixedElasticity:
             )
 
         n_sig = self.n_stress
-        # M is the space's own operator.  Accumulating ``M1 + M2`` here instead would
-        # add a stabilisation term that is nonzero for a space not built that way --
-        # it destroys the diagonality of LumpedDeviatoricStress.  Identical to the
-        # accumulated form for AFW.
+        # M is the space's own operator.  Accumulating ``M1 + M2`` here would add a
+        # stabilisation term nonzero for a space not built that way, destroying the
+        # diagonality of LumpedDeviatoricStress; for AFW the two agree.
         M = self.inner.assemble()
         if self.contact is not None:
             # a compliant fracture adds compliance in series on its facets
@@ -563,8 +548,8 @@ class MixedElasticity:
         on_boundary = facet_cell_signs(self.mesh)
         if not on_boundary:
             return g
-        # only cells touching a boundary facet contribute -- iterating all of
-        # them builds tens of thousands of LocalCells to visit a few hundred
+        # only cells touching a boundary facet contribute -- one LocalCell each,
+        # rather than one per cell of the mesh
         bm = self.mesh.complex.boundary_matrix(self.d).tocsr()
         boundary_cells = np.unique(np.concatenate(
             [bm[int(f)].indices for f in on_boundary]
@@ -638,10 +623,9 @@ class MixedElasticity:
           same canonical normal (the one :meth:`facet_frame` returns, pointing
           out of the ``+1`` incidence cell).
 
-        Passing the tensor is the safer of the two: the caller then never has to
-        know which way a given facet's normal points, and the values produced
-        here agree with :meth:`interpolate_stress` facet by facet.  A vector
-        traction assembled against the *wrong* normal is silently sign-flipped.
+        With the tensor the caller need not know which way a facet normal points,
+        and the values agree with :meth:`interpolate_stress` facet by facet; a
+        vector traction taken against the opposite normal is sign-flipped.
         """
         from mimetika.geometry.local_cell import LocalCell
 
@@ -685,11 +669,10 @@ class MixedElasticity:
         traction is essential and must be constrained -- which is what this
         returns (the tangential components of each facet's traction moments).
 
-        Restricted to **axis-aligned** facets.  For a general normal the shear
-        components are a rotation of the stored ones rather than a subset of
-        them, so pinning them means a change of basis on the facet block; the
-        rectangular domains this is used for do not need it, and silently
-        applying the wrong constraint would be far worse than refusing.
+        Restricted to **axis-aligned** facets: for a general normal the shear
+        components are a rotation of the stored ones rather than a subset, so
+        pinning them needs a change of basis on the facet block.  A facet whose
+        normal is not axis aligned raises.
         """
         d, ndf = self.d, self.ndf
         frame = self.inner.frame  # (3, d): DOF components live in the mesh frame
@@ -726,10 +709,8 @@ class MixedElasticity:
     ):
         """``(A, rhs)`` with every boundary condition applied.
 
-        The single place that knows the full set of conditions.  Callers that
-        need to add their own constraints on top -- the contact driver pins the
-        fracture traction to the current multiplier -- start from here rather
-        than reimplementing the boundary handling.
+        Callers needing further constraints on top -- the contact driver pins the
+        fracture traction to the current multiplier -- start from here.
         """
         S, rhs = self.assemble(body_force, dirichlet, extra_rhs)
         if len(traction_facets):

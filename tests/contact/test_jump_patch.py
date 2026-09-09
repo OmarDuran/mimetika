@@ -1,20 +1,17 @@
 r"""A patch test for the jump operator ``g = -(M sigma + D^T u + A^T s)|_f``.
 
-The fracture row of the *unfractured* system is the traction residual on a facet.
-Feed it the degrees of freedom of a field that the discretization represents
-exactly -- piecewise linear displacement, piecewise constant stress, continuous
-traction -- and it must return that field's displacement jump at the facet, to
-round-off.  Anything less means the fracture terms carry a consistency error that
-no mesh refinement in a benchmark can distinguish from a modelling error.
+The fracture row of the unfractured system is the traction residual on a facet.
+Fed the degrees of freedom of a field the discretization represents exactly --
+piecewise linear displacement, piecewise constant stress, continuous traction --
+it returns that field's displacement jump at the facet, to round-off.
 
-The degrees of freedom are **constructed**, never sampled from a discontinuous
-function.  Interpolating a field that jumps across the fault would evaluate it at
-cell quadrature points, and on a structured mesh some of those sit exactly *on*
-the fault plane, where a ``x > x_f`` side test is ambiguous.  That excludes one
-quadrature point from the cell mean and scales the recovered jump by the weight
-of the rest -- a clean-looking rational factor that is an artefact of the test
-and not a property of the operator.  Cell means of a linear field are known in
-closed form, so they are written down directly instead.
+The degrees of freedom are constructed, never sampled from a discontinuous
+function: interpolating a field that jumps across the fault evaluates it at cell
+quadrature points, and on a structured mesh some of those sit on the fault plane,
+where a ``x > x_f`` side test is ambiguous.  That drops one quadrature point from
+the cell mean and rescales the recovered jump by the weight of the rest.  Cell
+means of a linear field are known in closed form, so they are written down
+directly instead.
 """
 
 import numpy as np
@@ -122,12 +119,8 @@ def test_the_two_superpose(nx, ny, height):
 
 
 def test_the_recovered_jump_follows_the_facet_and_is_not_a_constant():
-    """Guards the guard: a stuck operator returning one value would pass the above.
-
-    With a strain jump the exact answer depends on where the facet centroid sits,
-    so refining the mesh in ``y`` must move it.  If it does not, the comparison
-    above is matching a constant rather than tracking the field.
-    """
+    """With a strain jump the exact answer depends on the facet centroid, so
+    refining in ``y`` moves it: ``ny = 1, 2, 4`` give three distinct values."""
     values = [recovered_and_exact(2, n, 1.0, 1.3, np.zeros(3))[0][1] for n in (1, 2, 4)]
     assert len({round(v, 9) for v in values}) == 3
 

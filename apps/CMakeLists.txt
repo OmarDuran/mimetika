@@ -17,10 +17,6 @@ if(MIMETIKA_USE_HYPRE)
   target_link_libraries(mimetika-hypre-flow PRIVATE mimetika::mimetika mimetika_hypre)
 endif()
 
-# Does the conforming complex's Lambda^2 agree with the flow model's flux space?
-
-
-
 
 
 if(MIMETIKA_USE_HYPRE)

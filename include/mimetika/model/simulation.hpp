@@ -17,11 +17,10 @@
 // object.
 //
 // A benchmark, a driver and a solver want the same three things from a
-// discretized problem, otherwise assembled by hand out of an epoch, a model, a
-// context, a workspace and a state vector. Those are six objects whose
-// lifetimes and wiring order matter — the offsets must be set before the
-// carrier maps are completed, the context must outlive the model, the space
-// must outlive the epoch.
+// discretized problem, otherwise wired by hand out of five objects whose
+// lifetimes and order matter — an epoch, a model, a context, a workspace and a
+// state vector: the offsets must be set before the carrier maps are completed,
+// the context must outlive the model, the space must outlive the epoch.
 //
 // Simulation is that wiring, done once. What it exposes:
 //
@@ -30,12 +29,10 @@
 //     apply(v, y)          y = J(x) v, with no matrix
 //
 // all three from one form source, and all three respecting the essential
-// constraints, which is the part a hand-wired consumer most often forgets on
-// one path and not the others.
+// constraints.
 //
-// It does not solve. A linear solver is a dependency and a choice — direct or
-// iterative, and with which preconditioner — so Simulation produces the
-// operators and something else consumes them.
+// It does not solve: Simulation produces the operators, and the choice of
+// linear solver and preconditioner belongs to the consumer.
 
 namespace mimetika {
 
@@ -212,8 +209,8 @@ class Simulation {
   }
 
   // A residual or a tangent-action asked for before any tangent has nothing to
-  // read the scale from, so it assembles one. A consumer that assembles a
-  // tangent first — which is every solver — never reaches this.
+  // read the scale from, so it assembles one. A consumer that assembles the
+  // tangent first never reaches this.
   void ensure_scales() const {
     if (constraints_.scaled()) return;
     exokal::forms::TripletSink probe(state_.size());

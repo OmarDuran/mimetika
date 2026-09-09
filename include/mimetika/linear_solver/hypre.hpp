@@ -19,14 +19,15 @@
 #include "_hypre_parcsr_ls.h"
 #include "_hypre_parcsr_mv.h"
 #include "mimetika/linear_solver/linear.hpp"
+#include "exokal/numerics/dense.hpp"
 #include "mimetika/linear_solver/space_norm.hpp"
 
-// The Riesz map with its first block handed to hypre DIRECTLY.
+// The Riesz map with its first block handed to hypre directly.
 //
-// THIS HEADER MUST NOT MEET PETSc IN ONE BINARY. PETSc links its own libHYPRE
-// and both copies export HYPRE_ADSCreate and the rest; which one a call
-// reaches is then decided by load order. A target that includes this one links
-// mimetika_hypre and not mimetika_petsc.
+// This header must not meet PETSc in one binary: PETSc links its own libHYPRE,
+// both copies export HYPRE_ADSCreate and the rest, and load order decides which
+// a call reaches. A target that includes this one links mimetika_hypre and not
+// mimetika_petsc.
 //
 // What the direct path buys is the part of hypre PETSc does not forward. PETSc
 // registers -pc_hypre_ads_amg_theta, -pc_hypre_ads_ams_theta and
@@ -46,13 +47,13 @@
 // diagonal scaling. The outer method is FlexGMRES because an inner ADS cycle
 // makes P a varying operator, which plain GMRES may not use.
 //
-// ADS is written for ONE unknown per facet in 3D -- derham_rt, stabilized_rt,
+// ADS is written for one unknown per facet in 3D -- derham_rt, stabilized_rt,
 // and the eta = 1 cells of adaptive_rt -- and takes those directly. A facet
 // carrying d moments reaches it through the facet-constant subspace, and the
 // block is then a two-level cycle: the Galerkin operator P^T A0 P on the facet
-// constants, where ADS runs, under a symmetric SOR sweep.
+// constants, where ADS runs, under an l1-scaled Gauss-Seidel sweep.
 //
-// What it does not take is d COPIES of an H(div) space -- a weak-symmetry
+// What it does not take is d copies of an H(div) space -- a weak-symmetry
 // stress -- which needs the per-component split the PETSc path builds.
 
 #include <cstdlib>
@@ -90,9 +91,9 @@ class HypreSession {
   bool owns_mpi_{false};
 };
 
-// THE SWEEP OVER THE COPIES RUNS FORWARD ONLY.
+// The sweep over the copies runs forward only.
 //
-// The backward pass exists solely to make the cycle symmetric so that a CG may
+// The backward pass exists only to make the cycle symmetric so that a CG may
 // precondition with it. Dropped, the cycle costs half as much -- d applications
 // of ADS instead of 2d -- and the inner Krylov has to tolerate a non-symmetric
 // preconditioner, which FlexGMRES does; the outer method already is one for the
@@ -114,24 +115,137 @@ struct HypreOptions {
   // monolithic vector solve; 13 is the 5-level multiplicative (034515430)
   // that measured fastest per application on the hybrid mesh.
   int ads_cycle_type{13};
-  // MGR INSTEAD OF THE RIESZ MAP. Reduce the flux away rather than precondition
+  // MGR instead of the Riesz map. Reduce the flux away rather than precondition
   // it: F = the flux, C = the pressure, and the coarse operator is
   //
   //     S = -D M^-1 D^T ,
   //
   // the cell-centred Laplacian -- one unknown a cell, which is BoomerAMG's own
   // ground and is what the two-point family already is. The flux block here is
-  // a MASS matrix (no div term), so F-relaxation is not facing the a_div
+  // a mass matrix (no div term), so F-relaxation is not facing the a_div
   // near-nullspace ADS exists for.
   bool mgr{false};
-  // F-relaxation on the flux block: hypre's MGR relax methods (0 single-level,
-  // 1 V-cycle AMG, 2 AMG).
-  // 0 and 1: single-level relaxation, ONE sweep. Measured h-ladders at n = 4,
-  // 6, 8: stabilized_rt 9, 10, 10 and stabilized_bdm 12, 13, 14. A second sweep
-  // costs BDM its h-independence outright -- 15, 22, 28 -- and an AMG V-cycle
-  // on the F block (relax method 1) does not converge at all.
-  int mgr_frelax{0};
-  int mgr_relax_sweeps{1};
+  // F-relaxation on the flux block, and the default is read off the operator.
+  // hypre's methods: 0 Jacobi, 1 AMG V-cycle, 2 AMG, 9/99 direct.
+  //
+  // -1 picks it: Jacobi where a facet carries one moment, AMG where it carries
+  // more. A scalar flux block is a mass matrix and Jacobi damps it; a stress
+  // block is not. The compliance is diagonal on the Frobenius-orthonormal modes
+  // with five deviatoric eigenvalues at 1/2mu and one hydrostatic at
+  // 1/(2mu + d lam), and Jacobi cannot damp a mode that small -- the count then
+  // grows like sqrt(2mu + d lam), measured on tetrahedra as 74, 92, 204, 542,
+  // 1648 over nu = 1/4 .. 0.4999. It is the F block and not the coarse one:
+  // div(constant) = 0 puts the hydrostatic direction in ker B, hence orthogonal
+  // to range(B^T), so it never enters S = -B M^-1 B^T.
+  //
+  // AMG on that block gives 36, 38, 46, 52, 60 -- 1.7 times over four orders of
+  // lambda against 22 -- and h and the contrast improve with it. It costs about
+  // 43 percent more a solve at nu = 1/4 on a 1.2e5-cell mesh and repays that
+  // twenty-sevenfold at 0.4999. Direct is flat outright, 22 23 23 23 23, but
+  // scales badly.
+  int mgr_frelax{-1};
+  // What stands in for A_FF^-1 in Wp = -A_FF^-1 A_FC, hence in the Galerkin
+  // coarse operator A_CC + A_CF Wp. hypre reads all of these off A itself:
+  // 0 injection, 1 l1-Jacobi (the diagonal plus the off-diagonal row mass),
+  // 2 the plain diagonal (hypre's default), 3 classical modified, 4 approximate
+  // inverse.
+  int mgr_interp_type{2};
+  // The strong-VEM split, by the roles the dofs play.
+  //
+  // stabilized_vem carries q = d(d+1)/2 traction moments a facet and the whole
+  // of RM(E) a cell. Dv pairs them, and the pairing is block lower triangular:
+  // a translation is constant on a facet so it reads only the constant
+  // traction, while a rotation omega ^ (x - x_E) = omega ^ (x_f - x_E) +
+  // omega ^ (x - x_f) reads the constants and the linear moments. Read off the
+  // matrix on a tet: the three translation rows touch facet slots {0, 1, 3},
+  // the three rotation rows touch all six.
+  //
+  //   0  off, one reduction of the whole stress -- what MGR has always done
+  //   1  F = sigma, then u_r; C = u_t. The coarse block is then the cell
+  //      translations alone, a vector Laplacian, rather than translations and
+  //      rotations together as one scalar system.
+  //   5  the same cut, with the mean traction eliminated rather than kept.
+  //      F0 = ker Pi (the stabilization's own subspace, lambda-free), F1 = the
+  //      mean traction (the consistency term), C = all of u. The C block is
+  //      then displacement only and definite, which is what BoomerAMG needs;
+  //      every partition holding stress in C leaves a saddle and diverges.
+  //      Against split 0 this separates the stabilization from the consistency
+  //      instead of reducing the whole stress at once.
+  //   4  the mean / zero-mean cut, which is the one the pairing respects.
+  //      T_h(f) carries four groups: the mean tangential traction (2 dofs), the
+  //      in-plane torque n_f ^ (x - x_f) (1), the mean normal traction (1) and
+  //      the two linear normal moments (2). The last two have zero mean over
+  //      the face, and a translation is constant on a face, so Proposition
+  //      3.1's alpha_E reads only the mean pair. Dassi-Lovadina-Visinoni
+  //      unisolve the space in that order: the means first, then the torque,
+  //      then the bending. So
+  //
+  //        F0 = the zero-mean traction   invisible to the translations
+  //        F1 = u_r                      paired with the moment F0 carries
+  //        C  = the mean traction, u_t   one vector a face against one a cell
+  //
+  //      and the coarse block is the lowest-order mixed problem. Detected off
+  //      the matrix: the mean dofs are the ones a translation row touches.
+  //   2  F = sigma minus its constant normal slot, then u_r; C = sigma_n u u_t.
+  //      A uniform hydrostatic stress has traction p n, constant and purely
+  //      normal, so on an L^2-orthonormal facet basis its moments are p |f| on
+  //      the n chi_0 slot and exactly zero on the other five. The locking
+  //      direction therefore lives in one slot a facet, and holding that slot
+  //      in C keeps it out of every diagonal Wp.
+  //
+  // Level 1 divides by a diagonal level 0 created -- the (u, u) block is zero
+  // in the saddle point -- and not by one it gutted, which is what breaks the
+  // moment split on a BDM facet: there level 0's Galerkin update subtracts most
+  // of the constants' diagonal and level 1's prolongation reaches 6.4e+02.
+  int mgr_vem_split{0};
+  // Cycles of the coarse solver. One is a preconditioner; many approximate an
+  // exact coarse solve, which is how to tell a bad coarse operator from a bad
+  // coarse solver.
+  int mgr_coarse_iterations{1};
+  // Lift the cell block's smallest eigenvalue, for MGR only.
+  //
+  // The two-field compliance is diagonal on the Frobenius-orthonormal modes
+  // with five deviatoric eigenvalues at 1/2mu and one hydrostatic eigenvalue at
+  // 1/(2mu + d lam). As lam -> infinity that one vanishes and the cell block
+  // loses a rank, the lost direction being the hydrostatic constant stress --
+  // it lies in ker(P_dev P) and in ker(S) = range(N), so both surviving terms
+  // annihilate it. MGR interpolates with diag(A_FF)^-1, and a diagonal cannot
+  // represent an inverse blowing up along one vector, so that direction is left
+  // with condition number O(lam) and the count grows like its square root:
+  // measured on tetrahedra 74, 92, 204, 542, 1648 over nu = 1/4 .. 0.4999,
+  // whose ratios 2.66 and 3.04 track sqrt(lam)'s 3.19 and 3.17.
+  //
+  // So lift it diagonally, because a diagonal is what the interpolation reads.
+  // Read off the assembled matrix alone -- no geometry, no mu, no lam: take
+  // each cell's flux block, and where its smallest eigenvalue has fallen below
+  // the second smallest, add (lambda_2 - lambda_1) diag(v v^T) with v the
+  // corresponding eigenvector. Only the preconditioner's copy is touched; the
+  // Krylov keeps the true operator, so the answer does not move.
+  double mgr_hydrostatic_lift{0.0};
+  // The sweep count must be odd: an even number of sweeps returns the F block
+  // to where it started. Measured on the hybrid ladder, MGR converges at 1, 3,
+  // 5, 7, 9 sweeps and stalls at the iteration cap at 2, 4, 6, 8 -- on flow
+  // stabilized_rt (17, cap, 14, cap) and on the strong stress alike, the even
+  // runs burning time in proportion to the count. The constructor refuses an
+  // even value.
+  //
+  // 3 is the default, the wall-clock minimum. More relaxation costs about 70 ms
+  // an iteration on a 390 ms cycle -- F-relaxation is the small part of it, the
+  // coarse AMG solve the large -- and buys iterations until it stops paying.
+  // Measured on the strong stress at l_3, nu = 1/4, as (iterations, seconds):
+  //
+  //     1 sweep  (218, 100.3)    5 sweeps  (88, 66.1)
+  //     3 sweeps (107,  64.9)    7 sweeps  (78, 69.1)    9 sweeps (86, 84.6)
+  //
+  // so it is non-monotone and 3 to 7 is the basin. Against one sweep 3 is 35
+  // percent faster, which is why the default is not 1.
+  //
+  // 5 is the setting for an incompressible run, at about 2 percent more wall
+  // clock here. At l_1 over nu = 0.25, 0.4, 0.49, 0.499, 0.4999 one sweep gives
+  // 79, 110, 318, 304 and then does not converge; three give 46, 60, 96, 185,
+  // 209; five give 38, 47, 67, 105, 193. The gap widens with nu well before the
+  // limit, so the 2 percent inverts there.
+  int mgr_relax_sweeps{3};
   // The auxiliary hierarchies' strength thresholds -- what PETSc cannot set.
   // hypre's own defaults are 0.25 for both.
   double amg_theta{0.25};
@@ -151,7 +265,7 @@ struct HypreOptions {
   int amg_interp_type{0};
   int amg_pmax{0};
   int print_level{0};
-  // ONE CYCLE BY DEFAULT. An inner CG is the option, not the rule.
+  // One cycle by default; an inner Krylov is the option.
   //
   // One ADS cycle is what the Riesz theory asks for, and on a well-conditioned
   // problem it is also much the cheaper: on a 93k-cell industrial mesh at
@@ -163,7 +277,7 @@ struct HypreOptions {
   //     block 200  to 1e-6           8 iterations  116 s and worse
   //
   // so solving the block buys a tenth of the iterations at three times the
-  // cost. What it is FOR is a jumping coefficient: at 16^3 on a checkerboard
+  // cost. What it is for is a jumping coefficient: at 16^3 on a checkerboard
   // K one cycle takes 16, 78, and then fails to converge at 1e4 and 1e6, and
   // an inner CG returns it to 8, 8, 8, 9. PETSc's single cycle fails there
   // too, so that is the cycle's own limit rather than a defect of either
@@ -255,16 +369,13 @@ class HypreSolver {
     int ranks = 1, rank = 0;
     MPI_Comm_size(MPI_COMM_WORLD, &ranks);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    // EVERY SPACE IS RENUMBERED ONTO THE PARTITION.
-    //
-    // hypre's IJ interface gives each rank a contiguous run of global indices,
-    // and neither the unknowns nor the complex's entities are contiguous per
-    // rank in their own numbering. So the four spaces this needs -- the whole
-    // system, the faces the flux sits on, the edges and the vertices -- are
-    // each sorted by (owner, index) and every matrix is stated in the new
-    // numbering. A rank then inserts only its own rows, which is what the
-    // interface asks and what a run over more than one process was deadlocking
-    // on before.
+    // Every space is renumbered onto the partition. hypre's IJ interface gives
+    // each rank a contiguous run of global indices, and neither the unknowns
+    // nor the complex's entities are contiguous per rank in their own
+    // numbering. So the four spaces this needs -- the whole system, the faces
+    // the flux sits on, the edges and the vertices -- are each sorted by
+    // (owner, index), every matrix is stated in the new numbering, and a rank
+    // inserts only its own rows.
     if (ranks > 1 && owners_.size() != A.n) {
       throw std::invalid_argument(
           "HypreSolver: a distributed run needs the owner of every unknown; "
@@ -275,7 +386,12 @@ class HypreSolver {
           "HypreSolver: a distributed run needs the owner of every vertex, edge and face");
     }
     if (norm.empty()) throw std::invalid_argument("HypreSolver: the norm has no factors");
-    // MGR REDUCES A, NOT THE RIESZ MAP. It partitions the assembled system by
+    if (opts.mgr && opts.mgr_relax_sweeps % 2 == 0) {
+      throw std::invalid_argument(
+          "HypreSolver: mgr_relax_sweeps must be odd; an even count leaves the "
+          "F relaxation where it started and the reduction does not converge");
+    }
+    // MGR reduces A, not the Riesz map: it partitions the assembled system by
     // F/C markers and never forms A0, so A0's graph term, the complex and the
     // ADS hierarchies are unused under it.
     const bool need_ads = !opts.mgr;
@@ -285,14 +401,14 @@ class HypreSolver {
     const auto n = static_cast<HYPRE_BigInt>(A.n);
     const std::vector<int>& flux = norm.factors[0];
     const auto nf = static_cast<HYPRE_BigInt>(flux.size());
-    // ONE MOMENT PER FACET, OR THE SUBSPACE THAT IS.
+    // One moment per facet, or the subspace that is.
     //
     // ADS takes a scalar H(div) problem: one unknown per face, which is what
     // the curl's rows address. A facet carrying d moments -- derham_bdm,
     // stabilized_bdm -- reaches it through the facet-constant subspace, and
     // the block is then a two-level cycle whose coarse operator is where ADS
-    // runs. `lowest_order` is that injection, and it is a matrix of ones
-    // because the constant moment IS one of the unknowns.
+    // runs. `lowest_order` is that injection, a matrix of ones because the
+    // constant moment is one of the unknowns.
     const bool two_level = need_ads && !norm.lowest_order.empty();
     if (need_ads && !two_level && static_cast<HYPRE_BigInt>(norm.discrete_curl.rows) != nf) {
       throw std::invalid_argument("HypreSolver: the curl's rows are not the first factor");
@@ -301,12 +417,12 @@ class HypreSolver {
       throw std::invalid_argument(
           "HypreSolver: the coarse space is not the faces of the complex");
     }
-    // d COPIES OF THE COMPLEX, FOR A STRESS.
+    // d copies of the complex, for a stress.
     //
     // A flux is one H(div) field. A stress is d of them side by side -- the
     // rows of the tensor -- and they are coupled only through the material.
     // The coarse space is then d contiguous runs of the facet constants, and
-    // each run is a scalar H(div) problem on the SAME de Rham complex: one
+    // each run is a scalar H(div) problem on the same de Rham complex: one
     // curl, one gradient, one set of coordinates, d solvers built on them.
     //
     // What the split drops is the coupling between components -- the rotation,
@@ -330,7 +446,7 @@ class HypreSolver {
     const Layout faces = !need_ads ? serial_layout(0)
                          : ranks > 1 ? layout_of(norm.entity_owner[2], ranks, rank)
                                      : serial_layout(norm.discrete_curl.rows);
-    // The block's own numbering. With one moment a facet it IS the faces --
+    // The block's own numbering. With one moment a facet it is the faces --
     // the same owners in the same order, so the same permutation -- and with d
     // moments it is d times larger and the faces are its coarse space.
     std::vector<int> flux_owner(flux.size(), 0);
@@ -344,7 +460,7 @@ class HypreSolver {
 
     // Where each global unknown sits in the flux block, in HYPRE's numbering.
     //
-    // The flux block IS the face space -- one moment per facet, checked above --
+    // The flux block is the face space -- one moment per facet, checked above --
     // so a flux unknown's row in A0 is its face's row after renumbering, and
     // that is the same row the discrete curl has. Position in factors[0] is
     // the face index; the layout takes it to hypre's.
@@ -358,14 +474,13 @@ class HypreSolver {
     for (std::size_t f = 0; f < norm.factors.size(); ++f) {
       for (const int i : norm.factors[f]) factor_of[static_cast<std::size_t>(i)] = static_cast<int>(f);
     }
-    // A CONSTRAINED UNKNOWN IS NOT IN THE SPACE.
-    //
-    // Its row of A is the constraint, scale * e_i^T, and not a form. Leaving
-    // the norm's entries on it preconditions an equation that is not the one
-    // being solved; P carries the same row instead, so the unknown contributes
-    // the identity to P^-1 A and drops out of the Krylov space. Omitting this
-    // is what made the direct path lose contrast robustness -- 16, 75, 1570,
-    // diverged over K = 1 .. 1e6 against the PETSc path's 16, 14, 26, 29.
+    // A constrained unknown is not in the space. Its row of A is the
+    // constraint, scale * e_i^T, and not a form. Leaving the norm's entries on
+    // it preconditions an equation that is not the one being solved; P carries
+    // the same row instead, so the unknown contributes the identity to P^-1 A
+    // and drops out of the Krylov space. Omitted, this path loses contrast
+    // robustness -- 16, 75, 1570, diverged over K = 1 .. 1e6 against the PETSc
+    // path's 16, 14, 26, 29.
     std::vector<char> is_pinned(A.n, 0);
     for (const int i : norm.pinned) is_pinned[static_cast<std::size_t>(i)] = 1;
     // 1/W for every unpinned unknown outside the first factor
@@ -408,11 +523,11 @@ class HypreSolver {
         b_rows[r].emplace_back(fc, A.value[k]);
       }
     }
-    // WHICH FLUX DOFS THE CONSTRAINT TOUCHES. div is topological and reads only
-    // a facet's constant moment, so these ARE the constants -- identified from
+    // Which flux dofs the constraint touches. div is topological and reads only
+    // a facet's constant moment, so these are the constants -- identified from
     // the operator rather than from an assumed dof ordering.
     std::vector<char> in_constraint(A.n, 0);
-    // BY MAGNITUDE, NOT BY PRESENCE: a slot a row does not pair with is
+    // By magnitude, not by presence: a slot a row does not pair with is
     // structurally there and numerically zero -- measured at 3e-15 against 0.9
     // on the strong-symmetry stress -- so counting entries rather than weighing
     // them marks every dof.
@@ -423,7 +538,7 @@ class HypreSolver {
         if (std::abs(v2) <= 1e-10 * rmax) continue;
         (void)v2;
         (void)v2;
-        // c2 is the block numbering; old_of takes it to a POSITION in `flux`,
+        // c2 is the block numbering; old_of takes it to a position in `flux`,
         // and flux[] to the global unknown
         const auto pos = block_l.old_of.empty()
                              ? static_cast<std::size_t>(c2)
@@ -450,7 +565,7 @@ class HypreSolver {
     }
 
     Mat a_full = to_mat(A, dofs);
-    // DECLARED HERE, ASSIGNED UNDER THE GATE. block.a0 and the ADS hierarchies
+    // Declared here, assigned under the gate: block.a0 and the ADS hierarchies
     // hold raw handles into these and are read below the gate, so their scope
     // has to outlive it.
     Block block;
@@ -462,13 +577,11 @@ class HypreSolver {
     grad = to_mat(norm.discrete_gradient, edges, verts);
     curl = to_mat(norm.discrete_curl, faces, edges);
 
-    // THE INTERPOLATIONS, WHEN THE SPACE IS NOT LOWEST ORDER.
-    //
-    // With a BDM facet ADS cannot build Pi from the coordinates -- that
-    // construction assumes one unknown a facet -- so the caller supplies both.
-    // Their columns are the vector nodal space, 3 to a vertex, which is a
-    // fourth partition; serial for now, since a distributed run would need its
-    // owners as well.
+    // The interpolations, when the space is not lowest order. With a BDM facet
+    // ADS cannot build Pi from the coordinates -- that construction assumes one
+    // unknown a facet -- so the caller supplies both. Their columns are the
+    // vector nodal space, 3 to a vertex, which is a fourth partition and needs
+    // its own owners when distributed.
     const bool supplied_pi = !norm.rt_interpolation.empty() && !norm.nd_interpolation.empty();
     if (supplied_pi) {
       if (norm.rt_interpolation.rows != norm.discrete_curl.rows ||
@@ -483,10 +596,10 @@ class HypreSolver {
             "HypreSolver: the interpolations are distributed but their columns have no owners");
       }
     }
-    // The vector nodal space is a FOURTH partition. It is renumbered by the
-    // same (owner, index) sort as the other three, so every rank agrees on it
-    // without communicating, and its local run is what the rectangular Pi
-    // matrices take as their column range.
+    // The vector nodal space is a fourth partition, renumbered by the same
+    // (owner, index) sort as the other three, so every rank agrees on it
+    // without communicating; its local run is the column range of the
+    // rectangular Pi matrices.
     const Layout vnodes =
         (supplied_pi && ranks > 1) ? layout_of(norm.interpolation_owner, ranks, rank)
                                    : serial_layout(supplied_pi ? norm.rt_interpolation.cols : 1);
@@ -502,15 +615,13 @@ class HypreSolver {
         static_cast<std::size_t>(nv) * static_cast<std::size_t>(norm.space_dim)) {
       throw std::invalid_argument("HypreSolver: one coordinate per vertex is required");
     }
-    // THE COORDINATES ARE SHIFTED TO THE ORIGIN.
-    //
-    // ADS builds its vector interpolation from the coordinate functions, so
-    // what it needs from them is the LINEAR part. A mesh written in a projected
-    // coordinate system carries an offset that dwarfs the domain -- an
-    // industrial mesh here spans 1e4 metres about an origin 5.3e5 away, a ratio
-    // of 594 -- and the linear part is then a rounding error on the constant.
-    // Subtracting the minimum changes the span of {1, x, y, z} not at all and
-    // restores the precision.
+    // The coordinates are shifted to the origin. ADS builds its vector
+    // interpolation from the coordinate functions, so what it reads is their
+    // linear part. A mesh in a projected coordinate system carries an offset
+    // that dwarfs the domain -- an industrial mesh here spans 1e4 metres about
+    // an origin 5.3e5 away, a ratio of 594 -- and the linear part is then a
+    // rounding error on the constant. Subtracting the minimum leaves the span
+    // of {1, x, y, z} unchanged.
     std::vector<double> origin(3, 0.0);
     for (int d = 0; d < norm.space_dim && d < 3; ++d) {
       double lo = std::numeric_limits<double>::infinity();
@@ -535,25 +646,19 @@ class HypreSolver {
       xyz.push_back(to_vec(c, verts));
     }
 
-    // The preconditioner works on LOCAL data: hypre hands apply() this rank's
-    // rows of the outer vectors, and the block's vectors hold this rank's
-    // faces. A dof and the face it sits on are owned by the same rank -- both
-    // partitions come from the same exokal call -- so the gather is a local
-    // permutation and needs no communication.
-    // THE COARSE SPACE, WHERE ONE IS NEEDED.
+    // The coarse space, where one is needed.
     //
     // The injection's rows are global unknowns and its columns the faces; both
     // are renumbered onto the partition, and the coarse operator is the
-    // Galerkin product P^T A0 P -- so nothing about the physics is restated at
-    // the coarse level, it is the same operator seen on the subspace. ADS then
-    // runs there, on one unknown per face, which is what it is written for.
-    // ONE INJECTION PER COPY. The columns are copy-major -- c * n_facet + f --
+    // Galerkin product P^T A0 P -- the same operator seen on the subspace, with
+    // nothing about the physics restated there. ADS then runs on one unknown
+    // per face, which is what it is written for.
+    //
+    // One injection per copy. The columns are copy-major -- c * n_facet + f --
     // so copy c is the run [c*n_facet, (c+1)*n_facet) and splitting on the
-    // column index is the whole of the component split. Building d narrow
-    // injections rather than one wide one makes P_c^T A0 P_c the DIAGONAL
-    // sub-block directly, which is the operator ADS is written for; extracting
-    // it from a wide Galerkin product afterwards would be the same matrix by a
-    // longer road.
+    // column index is the whole of the component split. d narrow injections
+    // rather than one wide one make P_c^T A0 P_c the diagonal sub-block
+    // directly, which is the operator ADS takes.
     inject.resize(static_cast<std::size_t>(copies));
     if (two_level) {
       std::vector<std::vector<int>> ir(static_cast<std::size_t>(copies)), ic(
@@ -580,6 +685,11 @@ class HypreSolver {
       }
     }
 
+    // The preconditioner works on local data: hypre hands apply() this rank's
+    // rows of the outer vectors, and the block's vectors hold this rank's
+    // faces. A dof and the face it sits on are owned by the same rank -- both
+    // partitions come from the same exokal call -- so the gather flux_at
+    // records is a local permutation and needs no communication.
     block.two_level = two_level;
     block.n_flux = static_cast<int>(nf);
     block.inv_w_local.assign(static_cast<std::size_t>(dofs.local), 0.0);
@@ -597,12 +707,12 @@ class HypreSolver {
         block.flux_at[local] = in_flux[i] - block_l.begin;
       }
     }
-    // A MONOLITHIC Pi FORCES A CYCLE BELOW 10. hypre splits the cycle types at
+    // A monolithic Pi forces a cycle below 10. hypre splits the cycle types at
     // 10: above, it wants the scalar triple Pix/Piy/Piz and errors out on a
     // monolithic one. 13 is the default because it is the best of the scalar
     // cycles for RT; with interpolations supplied the choice is not available.
     const int ads_cycle = supplied_pi && opts.ads_cycle_type > 10 ? 1 : opts.ads_cycle_type;
-    // d SOLVERS, ONE COMPLEX. Each copy of the H(div) space is a different
+    // d solvers, one complex. Each copy of the H(div) space is a different
     // operator -- its own Galerkin product -- but the space is the same, so
     // the gradient, the curl, the coordinates and the interpolations are
     // handed to every one of them unchanged.
@@ -623,7 +733,7 @@ class HypreSolver {
       HYPRE_ADSSetPrintLevel(a, opts.print_level);
       HYPRE_ADSSetMaxIter(a, opts.ads_iterations);  // a preconditioner, not a solver
       HYPRE_ADSSetTol(a, 0.0);
-      // THE KNOBS PETSc DOES NOT FORWARD.
+      // the auxiliary hierarchies' parameters, which PETSc does not forward
       HYPRE_ADSSetAMGOptions(a, opts.amg_coarsen_type, opts.amg_agg_levels, opts.amg_relax_type,
                              opts.amg_theta, opts.amg_interp_type, opts.amg_pmax);
       HYPRE_ADSSetAMSOptions(a, supplied_pi ? 1 : 11, opts.amg_coarsen_type, opts.amg_agg_levels,
@@ -666,7 +776,7 @@ class HypreSolver {
       HYPRE_ADSSetup(block.ads[0], block.a0, vec_of(block.rhs), vec_of(block.sol));
     }
 
-    // THE INNER KRYLOV ON A0, FlexGMRES EVEN WHERE CG IS ADMISSIBLE.
+    // The inner Krylov on A0: FlexGMRES even where CG is admissible.
     //
     // A0 is SPD, and without two_level so is the preconditioner -- one ADS
     // cycle, cycle 13 = 01234543210, palindromic -- so CG applies. It is
@@ -731,24 +841,42 @@ class HypreSolver {
     HYPRE_Int mgr_ncpts[1] = {0};
     HYPRE_Int* mgr_lvl[1] = {nullptr};
     if (opts.mgr) {
-      // THE MARKERS, AND WHY THERE ARE TWO LEVELS WHEN A FACET CARRIES MORE
-      // THAN ONE MOMENT.
+      // The markers, and why there are two levels when a facet carries more
+      // than one moment.
       //
-      // div is topological, so it reads ONLY the constant moment of a facet:
-      // D = [0 | D_0]. The higher moments lie entirely in ker D, so a single
-      // reduction of the whole flux asks F-relaxation to invert M on a
-      // divergence-free subspace, which it cannot damp -- measured on
-      // stabilized_bdm as 71, 1736 and then no convergence over three
-      // refinements where RT held 9, 10, 11. Splitting them off first makes
-      // level 0 exact on the constraint: the eliminated block contributes
-      // nothing to it, so level 1 is the RT0 system and its Schur complement is
-      // the cell-centred Laplacian.
+      // div is topological, so it reads only the constant moment of a facet:
+      // D = [0 | D_0]. The higher moments lie in ker D, so a single reduction
+      // of the whole flux asks F-relaxation to invert M on a divergence-free
+      // subspace, which it cannot damp -- measured on stabilized_bdm as 71,
+      // 1736 and then no convergence over three refinements where RT held 9,
+      // 10, 11. Splitting them off first is meant to make level 0 exact on the
+      // constraint, leaving the RT0 system.
+      //
+      // The two-level path has never converged. Measured 2026-09: flow
+      // stabilized_bdm and derham_bdm both stall at the iteration cap, and so
+      // does every weak-symmetry stress, which carries d moments a facet and so
+      // always takes this branch. The RT products are one moment a facet and
+      // take the one-level branch, and are the only MGR cases under test.
+      //
+      // Not a tuning failure. F-relaxation 0, 1, 2, 9 and 99 -- the last two
+      // direct solves of the F block -- all stall, as do interpolation types 0
+      // through 4 and reduction depths of one, two and three levels (the third
+      // peeling the algebraic multiplier onto its own level). HYPRE_MGRSetup
+      // reports no error. The outer residual does not decrease at all,
+      // reduction factor 1.000000 a step against the strong stress's 0.987,
+      // 0.950, 0.912: inert rather than weak, which reads as a
+      // calling-convention mismatch and not a numerical one.
+      //
+      // To resume: hypre can print the dofmap it builds
+      // (HYPRE_MGR_PRINT_FINE_MATRIX); comparing it against mgr_marker below
+      // separates a wrong call from a wrong multi-level reduction. Until then a
+      // facet carrying more than one moment should use ADS.
       //
       //   marker 0   the higher facet moments      F at level 0
       //   marker 1   the facet constants           F at level 1
       //   marker 2   the multipliers               C throughout
       //
-      // The constants are read off norm.lowest_order, whose rows ARE them; with
+      // The constants are read off norm.lowest_order, whose rows are them; with
       // one moment a facet there is no such injection and one level suffices.
 
       std::size_t n_touch = 0, n_flux_dofs = 0;
@@ -760,6 +888,48 @@ class HypreSolver {
                      n_flux_dofs, n_touch, split_moments ? "two levels" : "one level");
         std::fflush(stderr);
       }
+      // By slot, not by row width. q = d(d+1)/2 dofs a facet in the order
+      // {t1, t2, n^(x-x_f), n chi_0, n chi_1, n chi_2} and the same count a
+      // cell in the order {alpha, omega}. Verified against known stress states:
+      // a dilation puts 7.97 on slot 3 and 6e-13 on slots 0, 1, and slots 2, 4
+      // and 5 vanish on any constant stress -- they are ker Pi_E.
+      //
+      //   mean traction {0, 1, 3}   what a translation reads
+      //   ker Pi        {2, 4, 5}   zero mean over the facet, the stabilizer's
+      //   u             {0,1,2}=alpha, {3,4,5}=omega
+      //
+      // A width heuristic got this wrong on warped hexahedral faces, where the
+      // normal varies over the face and a constant test vector picks up every
+      // slot.
+      std::vector<char> is_rotation(A.n, 0), is_normal(A.n, 0);
+      bool vem_split = false;
+      if (opts.mgr_vem_split >= 1 && norm.space_dim > 0) {
+        const auto d = static_cast<std::size_t>(norm.space_dim);
+        const std::size_t q = d * (d + 1) / 2;
+        if (flux.size() % q == 0 && norm.factors.size() > 1 &&
+            norm.factors[1].size() % q == 0) {
+          for (std::size_t k = 0; k < flux.size(); ++k) {
+            const auto slot = k % q;
+            const bool mean = slot < d - 1 || slot == d;  // {0,1} and {3} in 3D
+            if (mean) is_normal[static_cast<std::size_t>(flux[k])] = 1;
+          }
+          for (std::size_t k = 0; k < norm.factors[1].size(); ++k) {
+            if (k % q >= d) is_rotation[static_cast<std::size_t>(norm.factors[1][k])] = 1;
+          }
+          vem_split = true;
+        }
+        if (std::getenv("MIMETIKA_MGR_MARKERS") != nullptr && rank == 0) {
+          std::size_t n_c = 0, n_r = 0;
+          for (std::size_t k = 0; k < flux.size(); ++k) {
+            n_c += is_normal[static_cast<std::size_t>(flux[k])] ? 1 : 0;
+          }
+          for (std::size_t i2 = 0; i2 < A.n; ++i2) n_r += is_rotation[i2] ? 1 : 0;
+          std::fprintf(stderr,
+                       "[mgr] vem split: stress %zu = %zu mean + %zu ker Pi; %zu rotations -> %s\n",
+                       flux.size(), n_c, flux.size() - n_c, n_r, vem_split ? "two levels" : "off");
+          std::fflush(stderr);
+        }
+      }
       const std::vector<char>& is_const = in_constraint;
       mgr_marker.assign(static_cast<std::size_t>(dofs.local), 0);
       for (std::size_t i = 0; i < A.n; ++i) {
@@ -767,16 +937,27 @@ class HypreSolver {
         if (!dofs.owns(at)) continue;
         const int f = factor_of[i];
         HYPRE_Int mk2 = 0;
-        if (f >= 1) mk2 = split_moments ? 2 : 1;                 // a multiplier
-        else if (split_moments) mk2 = is_const[i] ? 1 : 0;        // constant or higher
+        if (vem_split && opts.mgr_vem_split == 5) {
+          // ker Pi first, then the mean traction, and all of u stays coarse:
+          // the C block is displacement only, hence definite, which is what
+          // BoomerAMG needs and what every stress-in-C partition failed
+          mk2 = f < 1 ? (is_normal[i] ? 1 : 0) : 2;
+        } else if (vem_split) {
+          if (f < 1) mk2 = is_normal[i] ? 2 : 0;       // sigma_n rides in C
+          else mk2 = is_rotation[i] ? 1 : 2;           // u_r | u_t
+        } else if (f >= 1) {
+          mk2 = split_moments ? 2 : 1;                 // a multiplier
+        } else if (split_moments) {
+          mk2 = is_const[i] ? 1 : 0;                   // constant or higher
+        }
         mgr_marker[static_cast<std::size_t>(at - dofs.begin)] = mk2;
       }
-      const HYPRE_Int nfac = split_moments ? 3 : 2;
-      const HYPRE_Int n_lvl = split_moments ? 2 : 1;
-      // NOT static: the one-level branch writes into these, and a static would
-      // carry that into the next solve in the same process.
+      const HYPRE_Int nfac = (split_moments || vem_split) ? 3 : 2;
+      const HYPRE_Int n_lvl = (split_moments || vem_split) ? 2 : 1;
+      // not static: the one-level branch writes into these, and a static would
+      // carry that into the next solve in the same process
       mgr_cidx.clear();
-      if (split_moments) { mgr_cidx.push_back(1); mgr_cidx.push_back(2); }
+      if (split_moments || vem_split) { mgr_cidx.push_back(1); mgr_cidx.push_back(2); }
       else { mgr_cidx.push_back(1); }
       std::vector<HYPRE_Int> lvl1_cidx{2};
       HYPRE_Int ncpts2[2] = {static_cast<HYPRE_Int>(mgr_cidx.size()), 1};
@@ -786,14 +967,20 @@ class HypreSolver {
       HYPRE_MGRSetCpointsByPointMarkerArray(mgr, nfac, n_lvl, ncpts2, lvl2,
                                             mgr_marker.data());
       HYPRE_MGRSetNonCpointsToFpoints(mgr, 1);
+      HYPRE_MGRSetInterpType(mgr, opts.mgr_interp_type);
       HYPRE_MGRSetMaxIter(mgr, 1);   // a preconditioner, not a solver
       HYPRE_MGRSetTol(mgr, 0.0);
       HYPRE_MGRSetPrintLevel(mgr, opts.print_level);
-      HYPRE_MGRSetFRelaxMethod(mgr, opts.mgr_frelax);
+      // one moment a facet is a scalar flux; more is a stress
+      const bool one_moment =
+          norm.discrete_curl.rows > 0 &&
+          flux.size() == static_cast<std::size_t>(norm.discrete_curl.rows);
+      const int frelax = opts.mgr_frelax >= 0 ? opts.mgr_frelax : (one_moment ? 0 : 2);
+      HYPRE_MGRSetFRelaxMethod(mgr, frelax);
       HYPRE_MGRSetNumRelaxSweeps(mgr, opts.mgr_relax_sweeps);
       HYPRE_BoomerAMGCreate(&mgr_amg);
-      HYPRE_BoomerAMGSetMaxIter(mgr_amg, 1);
-      HYPRE_BoomerAMGSetTol(mgr_amg, 0.0);
+      HYPRE_BoomerAMGSetMaxIter(mgr_amg, opts.mgr_coarse_iterations);
+      HYPRE_BoomerAMGSetTol(mgr_amg, opts.mgr_coarse_iterations > 1 ? 1e-10 : 0.0);
       HYPRE_BoomerAMGSetPrintLevel(mgr_amg, 0);
       HYPRE_BoomerAMGSetCoarsenType(mgr_amg, opts.amg_coarsen_type);
       HYPRE_BoomerAMGSetRelaxType(mgr_amg, opts.amg_relax_type);
@@ -801,7 +988,77 @@ class HypreSolver {
       HYPRE_BoomerAMGSetInterpType(mgr_amg, opts.amg_interp_type);
       HYPRE_BoomerAMGSetPMaxElmts(mgr_amg, opts.amg_pmax);
       HYPRE_MGRSetCoarseSolver(mgr, HYPRE_BoomerAMGSolve, HYPRE_BoomerAMGSetup, mgr_amg);
-      HYPRE_MGRSetup(mgr, mat_of(a_full), vec_of(rhs), vec_of(sol));
+      // The lift, read off A. Each constraint row's flux support is a cell, so
+      // the cell blocks come from the assembled matrix without asking the mesh.
+      // hypre_MGRSolve runs on the hierarchy its own setup built, not on the
+      // matrix the Krylov hands it, so setting MGR up on the lifted copy leaves
+      // the outer operator untouched.
+      Mat a_lift;
+      if (opts.mgr_hydrostatic_lift > 0.0) {
+        std::vector<double> bump(A.n, 0.0);
+        std::vector<int> foff(static_cast<std::size_t>(nf) + 1, 0);
+        for (std::size_t k = 0; k < A.nnz(); ++k) {
+          const int r = in_flux[static_cast<std::size_t>(A.row[k])];
+          if (r >= 0 && in_flux[static_cast<std::size_t>(A.col[k])] >= 0) ++foff[(std::size_t)r + 1];
+        }
+        for (HYPRE_BigInt i = 0; i < nf; ++i) foff[(std::size_t)i + 1] += foff[(std::size_t)i];
+        std::vector<int> mcol(static_cast<std::size_t>(foff[(std::size_t)nf]));
+        std::vector<double> mval(mcol.size());
+        {
+          std::vector<int> at = foff;
+          for (std::size_t k = 0; k < A.nnz(); ++k) {
+            const int r = in_flux[static_cast<std::size_t>(A.row[k])];
+            const int c = in_flux[static_cast<std::size_t>(A.col[k])];
+            if (r < 0 || c < 0) continue;
+            const auto sl = static_cast<std::size_t>(at[(std::size_t)r]++);
+            mcol[sl] = c;
+            mval[sl] = A.value[k];
+          }
+        }
+        std::vector<int> local(static_cast<std::size_t>(nf), -1);
+        std::size_t lifted = 0;
+        for (std::size_t r = 0; r < b_rows.size(); ++r) {
+          if (b_rows[r].empty()) continue;
+          std::vector<int> F;
+          for (const auto& [f2, v2] : b_rows[r]) {
+            (void)v2;
+            if (f2 >= 0 && f2 < nf) F.push_back(f2);
+          }
+          const std::size_t n2 = F.size();
+          if (n2 < 2) continue;
+          for (std::size_t a2 = 0; a2 < n2; ++a2) local[(std::size_t)F[a2]] = static_cast<int>(a2);
+          exokal::numerics::Dense Me(n2, n2);
+          for (std::size_t a2 = 0; a2 < n2; ++a2) {
+            for (int k = foff[(std::size_t)F[a2]]; k < foff[(std::size_t)F[a2] + 1]; ++k) {
+              const int lj = local[(std::size_t)mcol[(std::size_t)k]];
+              if (lj >= 0) Me(a2, static_cast<std::size_t>(lj)) += mval[(std::size_t)k];
+            }
+          }
+          for (std::size_t a2 = 0; a2 < n2; ++a2) local[(std::size_t)F[a2]] = -1;
+          const exokal::numerics::SymmetricEigen e2 = exokal::numerics::symmetric_eigen(Me);
+          const double l1 = e2.values.front(), l2 = e2.values[1];
+          if (!(l2 > 0.0) || l1 >= opts.mgr_hydrostatic_lift * l2) continue;
+          const double gap = l2 - l1;
+          for (std::size_t a2 = 0; a2 < n2; ++a2) {
+            const double vi = e2.vectors(a2, 0);
+            bump[static_cast<std::size_t>(flux[(std::size_t)F[a2]])] += gap * vi * vi;
+          }
+          ++lifted;
+        }
+        if (std::getenv("MIMETIKA_MGR_MARKERS") != nullptr && rank == 0) {
+          std::fprintf(stderr, "[mgr] hydrostatic lift on %zu of %zu cells\n", lifted,
+                       b_rows.size());
+          std::fflush(stderr);
+        }
+        Triplets t2;
+        for (std::size_t k = 0; k < A.nnz(); ++k) t2.add(A.row[k], A.col[k], A.value[k]);
+        for (std::size_t i = 0; i < A.n; ++i) {
+          if (bump[i] != 0.0) t2.add(static_cast<int>(i), static_cast<int>(i), bump[i]);
+        }
+        a_lift = to_mat(t2, dofs);
+      }
+      HYPRE_MGRSetup(mgr, opts.mgr_hydrostatic_lift > 0.0 ? mat_of(a_lift) : mat_of(a_full),
+                     vec_of(rhs), vec_of(sol));
       HYPRE_FlexGMRESSetPrecond(ksp,
                                 reinterpret_cast<HYPRE_PtrToSolverFcn>(HYPRE_MGRSolve),
                                 reinterpret_cast<HYPRE_PtrToSolverFcn>(HYPRE_MGRSetup), mgr);
@@ -891,13 +1148,13 @@ class HypreSolver {
     }
   };
 
-  // ONE CALL, NOT ONE PER ENTRY.
+  // One call per row, not one per entry: HYPRE_IJMatrixAddToValues per triplet
+  // is O(nnz) calls into the library and is what made a 93k-cell industrial
+  // mesh -- 3.3 million entries -- appear to hang. The triplets are summed by
+  // (row, col) here and handed over as whole rows, the shape SetValues takes.
   //
-  // HYPRE_IJMatrixAddToValues per triplet is O(nnz) calls into the library and
-  // is what made a 93k-cell industrial mesh -- 3.3 million entries -- appear to
-  // hang. The triplets are summed by (row, col) here and handed over as whole
-  // rows, which is the shape SetValues takes.
-  // rows/cols are ALREADY in hypre's numbering; `mine` is this rank's row run.
+  // rows/cols are already in hypre's numbering; [row_begin, row_end) is this
+  // rank's row run and [col_begin, col_end) its column run.
   static Mat build_mat(std::vector<int> row, std::vector<int> col, std::vector<double> val,
                        HYPRE_BigInt rows, HYPRE_BigInt cols, int row_begin, int row_end,
                        int col_begin, int col_end) {
@@ -968,11 +1225,10 @@ class HypreSolver {
       row[k] = r.new_of[static_cast<std::size_t>(inc.row[k])];
       col[k] = c.new_of[static_cast<std::size_t>(inc.col[k])];
     }
-    // The column range is the COLUMN space's own local run: hypre pairs a
+    // The column range is the column space's own local run: hypre pairs a
     // rectangular matrix's columns with the vector it multiplies, so the
     // gradient's columns are partitioned like the vertices and the curl's like
-    // the edges. Giving every rank all the columns is what a 2-rank run was
-    // dying on.
+    // the edges. Giving every rank all the columns fails on more than one rank.
     return build_mat(std::move(row), std::move(col), inc.value, r.total, c.total, r.begin, r.end,
                      c.begin, c.end);
   }
@@ -1061,7 +1317,7 @@ class HypreSolver {
     HYPRE_ParCSRMatrix a0{nullptr};
     Vec rhs, sol;
     int n_flux{0};
-    // per LOCAL row of the outer vector: 1/W, and where it sits in the block
+    // per local row of the outer vector: 1/W, and where it sits in the block
     std::vector<double> inv_w_local;
     std::vector<int> flux_at;
   };
@@ -1088,12 +1344,12 @@ class HypreSolver {
     return 0;
   }
 
-  // relax_type 8 is hypre's l1-scaled hybrid SYMMETRIC Gauss-Seidel: a forward
+  // relax_type 8 is hypre's l1-scaled hybrid symmetric Gauss-Seidel: a forward
   // sweep and a backward one, so the composition stays symmetric and a CG may
   // use it. It relaxes u toward solving A0 u = f rather than replacing u.
   //
-  // l1-SCALED, NOT PLAIN HYBRID (type 6). "Hybrid" is Gauss-Seidel inside a
-  // rank and Jacobi across ranks, so the smoother WEAKENS as ranks are added
+  // l1-scaled, not plain hybrid (type 6). "Hybrid" is Gauss-Seidel inside a
+  // rank and Jacobi across ranks, so the smoother weakens as ranks are added
   // and the cycle weakens with it. Measured on hybrid_mesh_l_2, the inner CG
   // needed 3.87 applications of the cycle at one rank, 5.5 at two and 6.1 at
   // four -- which ate the whole parallel gain: the time per ADS call fell 78
@@ -1105,22 +1361,24 @@ class HypreSolver {
                          vec_of(b.ztemp));
   }
 
-  // A TWO-LEVEL CYCLE, SYMMETRIC SO A CG MAY USE IT.
+  // A two-level cycle: pre-smooth, restrict the residual, correct on the
+  // coarse space, prolong, post-smooth.
   //
-  //   smoother  A SYMMETRIC SOR SWEEP, not a point method. What the coarse
-  //             space does not carry is the non-constant moments, and those
-  //             are the divergence-free directions -- only the constant moment
-  //             reaches div. Kolev and Vassilevski say that near-nullspace
-  //             "cannot be handled by simple relaxation on the fine grid", and
-  //             the measurement agrees: with damped Jacobi here the outer count
-  //             ran 18, 24, 30 over three refinements and failed at a contrast
-  //             of 1e4, where a sweep is flat. A point smoother splits facet
-  //             from facet and a div-free field is global.
+  //   smoother  a symmetric l1-scaled Gauss-Seidel sweep, not a point method
+  //             -- see smooth(). What the coarse space does not carry is the
+  //             non-constant moments, and those are the divergence-free
+  //             directions, only the constant moment reaching div. Kolev and
+  //             Vassilevski say that near-nullspace "cannot be handled by
+  //             simple relaxation on the fine grid", and the measurement
+  //             agrees: with damped Jacobi here the outer count ran 18, 24, 30
+  //             over three refinements and failed at a contrast of 1e4, where
+  //             a sweep is flat. A point smoother splits facet from facet and
+  //             a div-free field is global.
   //   coarse    the facet constants, one H(div) problem, and that is ADS.
   //
-  // Pre-smooth, restrict the residual, correct, prolong, post-smooth: the
-  // composition is symmetric, which the inner CG requires of its
-  // preconditioner.
+  // The composition is symmetric only when the sweep over the copies runs both
+  // ways. forward_only() is the default, so both the inner and the outer
+  // Krylov method are FlexGMRES.
   static HYPRE_Int cycle(HYPRE_Solver s, HYPRE_Matrix, HYPRE_Vector rv, HYPRE_Vector xv) {
     Block& b = *reinterpret_cast<Block*>(s);
     auto* r = reinterpret_cast<HYPRE_ParVector>(rv);
@@ -1130,35 +1388,33 @@ class HypreSolver {
     const std::size_t n = b.diag.size();
 
     for (std::size_t i = 0; i < n; ++i) xd[i] = 0.0;
-    // THE SMOOTHER IS NOT REDUNDANT ON AN EXACT SPLIT, which is worth stating
-    // because it looks as though it should be: a row split covers every
-    // unknown of the block, so there is nothing a sweep reaches that a row
-    // solve does not. But the split is a block Gauss-Seidel over three large
-    // blocks, and what it converges slowly on is the coupling BETWEEN them --
-    // the rotation and the trace. The point sweep is what damps the
-    // high-frequency part of that. Dropped, the mechanics ladder stops
-    // converging outright: 9.4e-02 then 2.7e-01, a rate of -1.8.
-    // ONE SWEEP, NOT TWO. The second pre- and post-sweep was carried over from
-    // the weak-symmetry cycle and buys nothing: measured on the hybrid meshes
-    // the outer count is UNCHANGED at one sweep -- stabilized_vem 16 and 17 at
-    // levels 1 and 2, stabilized_bdm 18 and 16 -- while the solve drops 2.18 s
-    // to 1.78 s and 20.76 s to 16.45 s for vem, 29.63 s to 26.19 s for bdm. On
-    // strong symmetry the reason is visible: the facet slots the injection does
-    // NOT carry are a mass matrix, cond 2.3 after diagonal scaling with no
-    // near-nullspace, so one sweep already resolves them.
+    // The smoother is not redundant even where the copy split covers every
+    // unknown of the block: that split is a block Gauss-Seidel over the copies,
+    // and what it converges slowly on is the coupling between them -- the
+    // rotation and the trace -- whose high-frequency part the sweep damps.
+    // Dropped, the mechanics ladder stops converging: 9.4e-02 then 2.7e-01, a
+    // rate of -1.8.
+    //
+    // One sweep, not two. Measured on the hybrid meshes the outer count is
+    // unchanged at one sweep -- stabilized_vem 16 and 17 at levels 1 and 2,
+    // stabilized_bdm 18 and 16 -- while the solve drops 2.18 s to 1.78 s and
+    // 20.76 s to 16.45 s for vem, 29.63 s to 26.19 s for bdm. On strong
+    // symmetry the facet slots the injection does not carry are a mass matrix,
+    // cond 2.3 after diagonal scaling with no near-nullspace, so one sweep
+    // already resolves them.
     const int sweeps = 1;
     for (int q = 0; q < sweeps; ++q) smooth(b, r, x);  // pre-smooth
 
-    // MULTIPLICATIVE OVER THE COPIES, SWEPT BOTH WAYS.
+    // Multiplicative over the copies. Additive -- every copy correcting the
+    // same residual -- is symmetric and far too weak: on a weak-symmetry
+    // stress it ran 44, 155, 1385 over three refinements where PETSc's
+    // multiplicative split held 27, 26, 29. The copies are coupled through the
+    // material, so a copy has to see what the ones before it did.
     //
-    // Additive -- every copy correcting the SAME residual -- is symmetric and
-    // far too weak: on a weak-symmetry stress it ran 44, 155, 1385 over three
-    // refinements where PETSc's multiplicative split held 27, 26, 29. The
-    // copies are coupled through the material, so a copy has to see what the
-    // ones before it did. A single forward sweep is not symmetric and the
-    // inner CG requires that its preconditioner is, so the sweep is run
-    // forward and then back; with one copy the second sweep is skipped and
-    // this is the plain two-level correction.
+    // A single forward sweep is not symmetric, and is the default all the
+    // same -- see forward_only(). The backward sweep runs only when
+    // MIMETIKA_ADS_SYMMETRIC_SWEEP restores it and there is more than one
+    // copy; with one copy this is the plain two-level correction.
     const auto correct = [&](std::size_t c) {
       double* rs = data_of(vec_of(b.resid));
       for (std::size_t i = 0; i < n; ++i) rs[i] = rd[i];
@@ -1177,7 +1433,7 @@ class HypreSolver {
       for (std::size_t c = copies; c-- > 0;) correct(c);
     }
 
-    for (int q = 0; q < sweeps; ++q) smooth(b, r, x);  // post-smooth; the composition stays SPD
+    for (int q = 0; q < sweeps; ++q) smooth(b, r, x);  // post-smooth
     (void)rd;
     (void)n;
     return 0;

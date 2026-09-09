@@ -7,7 +7,7 @@ Each row: figure label, variable name, units, then the values.
 Known defects in the published file (verified element-wise):
 
 * every ``delta`` row -- ``6 right``, ``9 & 10 right`` (both ``delta_25``
-  and ``delta_27``) and ``14 right`` -- holds the *same* 2048-point curve,
+  and ``delta_27``) and ``14 right`` -- holds one and the same 2048-point curve,
   the Fig. 14 pre-nucleation profile (two patches, peaks 1.86 / 3.74 mm);
   the slip curves of Figs. 6, 9 and 10 are therefore not in the dataset;
 * ``6 left`` ``Sigma_C_pre`` duplicates ``8 right`` (the inclined-fault

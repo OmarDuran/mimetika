@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
-"""THE ANSWER MUST NOT DEPEND ON HOW MANY PROCESSES SOLVED IT.
+"""Every number the model reports must be independent of the rank count.
 
-This is the first step of distributing the solver, and the only property worth
-testing at it: with the system distributed across MPI_COMM_WORLD, every number
-the model reports has to be what one process reports, to round-off.
+With the system distributed across MPI_COMM_WORLD, each case's output has to
+equal the one-process output to round-off.
 
-WHAT IS DISTRIBUTED HERE and what is not. PETSc chooses a contiguous range of
-rows per rank; the matrix, the preconditioner, the vectors, the Krylov method
-and the field split all live on that layout, and the solve is genuinely
-parallel. ASSEMBLY IS STILL REPLICATED -- every rank builds the whole triplet
-list and inserts only its own rows -- and the solution is gathered back to
-every rank at the end. So the mesh partition, the ghost exchange and the
-owned-cell assembly are NOT exercised, and are not meant to be: this isolates
-the layout, so a disagreement here can only be the layout.
+WHAT IS DISTRIBUTED. PETSc takes a contiguous range of rows per rank; the
+matrix, the preconditioner, the vectors, the Krylov method and the field split
+all live on that layout. Assembly is replicated -- every rank builds the whole
+triplet list and inserts only its own rows -- and the solution is gathered back
+to every rank. The mesh partition, the ghost exchange and the owned-cell
+assembly are not exercised: this isolates the row layout.
 
-The iteration count is checked as strictly as the answer. It is the sharper
-instrument of the two: a field split whose index sets are wrong on some rank
-still converges, to the right answer, in a different number of steps.
+The iteration count is checked as strictly as the answer: a field split whose
+index sets are wrong on some rank still converges, to the right answer, in a
+different number of steps.
 
     python mpi_layout.py --write ref.json      # one process, the reference
     mpirun -n 2 python mpi_layout.py --check ref.json
@@ -86,9 +83,8 @@ def patch(nr, dim=2):
     return model, mesh
 
 
-# Each case reports numbers that depend on EVERY unknown -- the two norms below
-# are sums over all cells -- so an unknown left unpreconditioned or counted
-# twice on some rank cannot hide behind a spot check.
+# Each case reports sums over all cells, so an unknown left unpreconditioned or
+# counted twice on some rank cannot hide behind a spot check.
 def flow_case(nr, solver):
     model, mesh = dupuit(nr)
     report = model.solve(options=solver)
@@ -103,11 +99,9 @@ def flow_case(nr, solver):
     }
 
 
-# THE STRESS IS THE ONE FIELD THAT CAN GO MISSING. It is reconstructed from a
-# cell's operators, and distributed assembly builds those only where the cell
-# is owned or in the halo -- everywhere else it reads zero, which is a wrong
-# answer wearing the shape of a right one. So the elasticity cases carry it,
-# and carry it gathered.
+# The stress is reconstructed from a cell's operators, and distributed assembly
+# builds those only where the cell is owned or in the halo; elsewhere it reads
+# zero. So the elasticity cases gather it before summing.
 def stress_of(model):
     sig = mk.gather_cells(model, np.array([model.cell_stress(e) for e in range(model.n_cells)]))
     return float(sig.sum()), float((sig * sig).sum())
@@ -175,17 +169,16 @@ CASES = {
     "elasticity-direct": lambda: elasticity_case(8, DIRECT),
     "elasticity-riesz": lambda: elasticity_case(8, RIESZ),
     "flow-3d-ads": lambda: flow_3d_case(8, ADS),
-    # the OTHER route to ADS: the AFW stress facet carries d^2 unknowns, so it
-    # reaches the solver through its facet-constant subspace, as a two-level
-    # cycle whose interpolation and coarse split are distributed with it
+    # the other route to ADS: a stabilized_bdm stress facet carries d^2
+    # unknowns, so it reaches the solver through its facet-constant subspace,
+    # as a two-level cycle whose interpolation and coarse split are distributed
     "elasticity-3d-ads": lambda: elasticity_3d_case(6, ADS),
 }
 
-# THE ONE CASE WHOSE COUNT MAY MOVE. ADS is hypre's, and the algebraic
-# multigrid inside it coarsens the auxiliary spaces from the matrix as it is
-# distributed -- so its hierarchy, and its iteration count, depend a little on
-# the number of ranks. That is the solver's own business; the ANSWER is not
-# allowed to move, and is compared as strictly as every other case.
+# The algebraic multigrid inside hypre's ADS coarsens the auxiliary spaces from
+# the matrix as it is distributed, so its hierarchy and its iteration count
+# depend on the rank count. Slack of 15 on those two counts only; the answer is
+# compared as strictly as in every other case.
 LOOSE_COUNTS = {"flow-3d-ads": 15, "elasticity-3d-ads": 15}
 
 
@@ -202,7 +195,7 @@ def run():
 
 
 def compare(got, want, tol=1e-9):
-    """Every number, on every case. The counts must match exactly."""
+    """Every number, on every case; counts exactly, apart from LOOSE_COUNTS."""
     bad = []
     for name, ref in want.items():
         if name not in got:
@@ -224,10 +217,9 @@ def compare(got, want, tol=1e-9):
     return bad
 
 
-# THE PARTITION IS A PROPERTY OF THE MATRIX, not of the clock. What it does is
-# put a rank's unknowns next to each other, and the measure of that is how much
-# of the matrix has columns another rank owns -- which a mat-vec must
-# communicate. Timing it on a laptop measures the laptop; this does not.
+# The partition puts a rank's unknowns next to each other; the measure is the
+# fraction of matrix entries whose column another rank owns, which a mat-vec
+# must communicate. Read off report.off_rank_fraction, not off a timing.
 def locality(nr=16):
     out = {}
     for name, on in (("index", False), ("partition", True)):
@@ -252,10 +244,10 @@ def main():
     )
     args = ap.parse_args()
 
-    # A LAUNCHER THAT DOES NOT MATCH THE RUNTIME GIVES SINGLETONS. Each process
-    # then believes it is alone, takes the sequential path, solves the whole
-    # problem and agrees with the reference perfectly -- a passing test that
-    # exercised nothing. So the rank count is asserted before anything else.
+    # A launcher that does not match the MPI the extension loaded gives
+    # singletons: each process takes the sequential path, solves the whole
+    # problem and agrees with the reference while exercising no layout. So the
+    # rank count is asserted before anything else.
     size = mk.mpi_size()
     if args.expect_ranks is not None and size != args.expect_ranks:
         print(

@@ -5,41 +5,39 @@ base; its upper surface is drained and loaded at ``t = 0`` by a step
 compressive traction ``sigma_0``.  Because the fluid cannot escape
 instantaneously it carries the whole load at first; it then drains through
 the surface and the load transfers to the skeleton.  The layer settles as it
-does so -- the celebrated consolidation problem of Terzaghi (1923), solved
-as Sect. 5.2.2 of Coussy, *Poromechanics* (Wiley, 2004).
+does so -- Terzaghi (1923), solved as Sect. 5.2.2 of Coussy,
+*Poromechanics* (Wiley, 2004).
 
-This benchmark reproduces **Coussy's Figure 5.3**: the normalized
-overpressure ``pbar`` against the normalized depth ``zbar = z/h`` measured
-from the drained surface, for ``tbar = c_f t / h^2`` in {0.001, 0.01, 0.1,
-0.25, 0.5, 1.0} (his Eq. 5.87), with the **early-time** similarity solution
+This benchmark reproduces Coussy's Figure 5.3: the normalized overpressure
+``pbar`` against the normalized depth ``zbar = z/h`` measured from the
+drained surface, for ``tbar = c_f t / h^2`` in {0.001, 0.01, 0.1, 0.25, 0.5,
+1.0} (his Eq. 5.87), with the early-time similarity solution
 ``pbar = erf(zbar / (2 sqrt(tbar)))`` (Eq. 5.83) dashed at ``tbar = 0.1``
 and ``0.25`` -- at 0.001 and 0.01 it cannot be distinguished from the exact
-series, exactly as the book notes.  The same figure is produced for both
-cell families (cartesian, simplex), each with the 2D and 3D columns overlaid
+series, as the book notes.  The same figure is produced for both cell
+families (cartesian, simplex), each with the 2D and 3D columns overlaid
 on the closed form.
 
-Why this problem and not a harder one
--------------------------------------
+What the column exercises
+-------------------------
 Every boundary condition the fault benchmarks rely on appears here exactly once,
-and the answer is known in closed form:
+against an answer known in closed form:
 
-* an **applied traction** on the loaded face,
-* **rollers** on the sides and base -- the uniaxial-strain constraint,
-* a **drained** face (pressure natural, ``p = 0``),
-* **sealed** faces (flux essential, pinned to zero).
+* an applied traction on the loaded face,
+* rollers on the sides and base -- the uniaxial-strain constraint,
+* a drained face (pressure natural, ``p = 0``),
+* sealed faces (flux essential, pinned to zero).
 
 Get one of them wrong and the column stops being one-dimensional: it bulges, or
 it drains from the wrong face, or it never reaches the right final settlement.
-None of those failures is subtle once the profile is plotted against the analytic
-curve, which is the point -- the fault benchmarks fail *quietly*.
 
-The 2D and 3D columns must produce the **same** curve.  A 3D box under uniaxial
-strain has no extra freedom to use, so any spread between them is a bug in the
+The 2D and 3D columns must produce the same curve.  A 3D box under uniaxial
+strain has no extra freedom, so any spread between them is a defect in the
 boundary conditions or the coupling rather than in the physics.
 
 The closed form
 ---------------
-With ``zeta`` measured from the drained surface and the **time factor**
+With ``zeta`` measured from the drained surface and the time factor
 ``T = c_v t / L^2``,
 
     ``p/p_0 = (4/pi) sum_m 1/(2m+1) sin[(2m+1) pi zeta/2] exp[-(2m+1)^2 pi^2 T/4]``
@@ -54,17 +52,15 @@ resting on five constants derived from the material:
     ``p_0  = alpha sigma_0 / (K_v S)``      the undrained pressure
     ``beta = alpha^2 / (K_v S)``            the fluid's share of the load
 
-The ``beta`` in ``U`` is not decoration.  Terzaghi's original column has
-``alpha = 1`` and an incompressible fluid, so ``beta = 1``, nothing settles until
-fluid leaves, and ``U`` starts at zero -- which is the form every textbook
-prints.  A general Biot column settles ``1 - beta`` of the way *instantly*, and
-comparing it against the ``beta = 1`` curve makes a correct solver look broken by
-a constant offset at early time.
+``beta`` matters in ``U``.  Terzaghi's original column has ``alpha = 1`` and an
+incompressible fluid, so ``beta = 1``, nothing settles until fluid leaves, and
+``U`` starts at zero -- the textbook form.  A general Biot column settles
+``1 - beta`` of the way instantaneously, and comparing it against the
+``beta = 1`` curve shows a constant offset at early time.
 
 ``S`` uses ``K_v``, not the bulk ``K``: the column cannot strain laterally, so
-the stiffness the fluid feels is the confined one.  Using ``K`` here is the
-classic slip, and it shows up as a consolidation rate that is wrong by a fixed
-factor while the profile *shape* still looks perfect.
+the stiffness the fluid feels is the confined one.  Using ``K`` gives a
+consolidation rate wrong by a fixed factor while the profile shape is unchanged.
 """
 
 from __future__ import annotations
@@ -136,7 +132,7 @@ class Column:
 
     @property
     def storage(self) -> float:
-        """``S = 1/M + alpha^2/K_v``, the *uniaxial* storage coefficient."""
+        """``S = 1/M + alpha^2/K_v``, the uniaxial storage coefficient."""
         return self.inverse_biot_modulus + self.biot**2 / self.oedometer_modulus
 
     @property
@@ -159,14 +155,13 @@ class Column:
         r"""``beta = alpha^2/(K_v S) = alpha p_0/sigma_0`` -- the fluid's share at ``t=0+``.
 
         The fraction of the applied load the fluid takes instantaneously, and so
-        the fraction of the settlement that is *delayed*.  The remaining
-        ``1 - beta`` happens at once, undrained, because a compressible fluid in
+        the fraction of the settlement that is delayed.  The remaining
+        ``1 - beta`` happens at once, undrained: a compressible fluid in
         compressible grains can be squeezed without draining.
 
         Terzaghi's original problem has ``beta = 1``: with ``alpha = 1`` and
         ``1/M = 0`` the storage is exactly ``1/K_v``, nothing moves until fluid
-        leaves, and the textbook ``U(T)`` starting from zero is recovered.  Any
-        other material settles before the clock starts.
+        leaves, and the textbook ``U(T)`` starting from zero is recovered.
         """
         return self.biot**2 / (self.oedometer_modulus * self.storage)
 
@@ -195,11 +190,11 @@ class Column:
 def _terms_for(factor: float, cap: int = 200_000) -> int:
     """Enough terms that the last one has decayed to nothing.
 
-    The mode ``m`` decays as ``exp[-(2m+1)^2 pi^2 T/4]``, so a fixed truncation is
-    a trap: at ``T = 1`` a dozen terms suffice, while at ``T = 1e-5`` the series is
-    still essentially the square wave of the initial condition and needs some
-    hundreds.  Truncating too early does not merely lose accuracy, it produces
-    Gibbs ripples that can move the location of the maximum.
+    The mode ``m`` decays as ``exp[-(2m+1)^2 pi^2 T/4]``, so a fixed truncation
+    will not do: at ``T = 1`` a dozen terms suffice, while at ``T = 1e-5`` the
+    series is still essentially the square wave of the initial condition and
+    needs some hundreds.  Truncating early produces Gibbs ripples that move the
+    location of the maximum.  Floor 50, cap ``cap``.
     """
     factor = max(float(factor), 1e-30)
     need = 0.5 * (2.0 / np.pi) * np.sqrt(40.0 / factor)
@@ -242,18 +237,17 @@ def analytic_consolidation(factor, partition: float = 1.0, terms: int = 400):
 
     ``partition`` is ``beta = alpha^2/(K_v S)``.  The textbook curve is
     ``beta = 1`` and starts at ``U = 0``; a general Biot column starts at
-    ``1 - beta``, having already settled undrained.  Leaving ``beta`` out is an
-    easy way to "find" an error in a solver that is in fact correct.
+    ``1 - beta``, having already settled undrained.
     """
     odd = 2 * np.arange(terms) + 1
     f = np.atleast_1d(np.asarray(factor, dtype=float))
     decay = np.exp(-np.outer(f, odd**2) * np.pi**2 / 4.0)
     total = (decay / odd**2).sum(axis=1)
     # The neglected tail is not negligible at small T, where every mode is still
-    # alive: sum_{m>=N} 1/(2m+1)^2 ~ 1/(4N), which at N = 400 is 6e-4 -- enough to
-    # shift U(0+) in the fourth digit and look like a solver error.  The whole
-    # series is pi^2/8, so the tail is known exactly; weighting it by the slowest
-    # surviving decay is exact as T -> 0 and vanishes when T is large.
+    # alive: sum_{m>=N} 1/(2m+1)^2 ~ 1/(4N), which at N = 400 is 6e-4 and shifts
+    # U(0+) in the fourth digit.  The whole series is pi^2/8, so the tail is
+    # known exactly; weighting it by the slowest surviving decay is exact as
+    # T -> 0 and vanishes when T is large.
     head = (1.0 / odd**2).sum()
     total = total + decay[:, -1] * (np.pi**2 / 8.0 - head)
     return 1.0 - partition * (8.0 / np.pi**2) * total
@@ -265,7 +259,7 @@ def analytic_consolidation(factor, partition: float = 1.0, terms: int = 400):
 def build(column: Column, dim: int, axial: int, lateral: int, family: str = "cart"):
     """Mesh plus the facet sets naming each boundary condition.
 
-    The column axis is the **last** coordinate in either dimension -- ``y`` in 2D,
+    The column axis is the last coordinate in either dimension -- ``y`` in 2D,
     ``z`` in 3D -- so one set of code drives both.  ``family`` picks quadrilaterals
     and hexahedra (``cart``) or triangles and tetrahedra (``simplex``).
     """
@@ -304,11 +298,10 @@ def simulate(
 ):
     """March the column through the time factors; sample ``p`` and the settlement.
 
-    Backward Euler from the **unloaded** state.  That is the right initial
-    condition and it needs no special case: with zero previous fluid content the
-    first step enforces ``alpha div u + p/M = 0``, which *is* the undrained
-    response, so the instantaneous pressure rise falls out of the scheme rather
-    than being imposed on it.
+    Backward Euler from the unloaded state, with no special case: with zero
+    previous fluid content the first step enforces ``alpha div u + p/M = 0``,
+    the undrained response, so the instantaneous pressure rise falls out of the
+    scheme rather than being imposed on it.
 
     Steps are geometric.  The solution decays like ``exp(-pi^2 T/4)``, so uniform
     steps would either crawl through the tail or miss the whole early transient.
@@ -377,9 +370,9 @@ def _schedule(targets, per_decade: int) -> list[float]:
 def _layers(elevation, pressure):
     """Collapse the cross-section: ``(z/L, mean p, lateral spread)`` per layer.
 
-    The spread is the diagnostic.  A correctly confined column is uniform across
-    its section, so anything above round-off means the lateral boundary is not
-    doing its job -- which is exactly the failure this benchmark exists to catch.
+    A correctly confined column is uniform across its section, so a spread above
+    round-off means the lateral boundary condition is not imposing uniaxial
+    strain.
     """
     keys = np.round(elevation, 9)
     out = []
@@ -393,7 +386,7 @@ def _settlement(poro, solution, column: Column, axis: int, volume) -> float:
     """Top-surface settlement from the mean axial strain, ``-<eps_zz> L``.
 
     ``eps = C^{-1}(sigma + alpha p I)``, so the axial strain comes off the stress
-    and pressure directly; under uniaxial strain the volumetric strain *is* the
+    and pressure directly; under uniaxial strain the volumetric strain equals the
     axial one, which is what ``volumetric_strain`` returns.
     """
     strain = poro.volumetric_strain(solution)

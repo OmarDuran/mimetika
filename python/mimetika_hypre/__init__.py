@@ -1,14 +1,15 @@
-"""mimetika through hypre's ADS, called directly.
+"""mimetika through hypre's ADS, called directly rather than through PCHYPRE.
 
-A SEPARATE module from ``mimetika_cxx`` on purpose. That one links PETSc, and
-PETSc links its own libHYPRE; two copies of hypre in one process export the
-same names and a call reaches whichever the loader saw first. This module links
-its own hypre with those symbols hidden, so importing both is safe -- but the
-two do not share types, so a mesh built in one cannot be passed to the other.
+A separate module from ``mimetika_cxx``: that one links PETSc, PETSc links its
+own libHYPRE, and two copies of hypre in one process export the same names, so
+a call resolves by load order. This module links its own hypre with those
+symbols unexported, so importing both is safe -- but the two do not share
+types, so a mesh built in one cannot be passed to the other.
 
-What it exists for is the part of hypre PETSc does not forward: the strength
-thresholds of the auxiliary hierarchies, ``amg_theta`` and ``ams_theta``, which
-PCHYPRE registers as options and never queries.
+It reaches what PCHYPRE does not forward: ``amg_theta`` and ``ams_theta``, the
+strength thresholds of the auxiliary hierarchies inside ADS, which PCHYPRE
+registers as options and never queries, and the MGR reduction. ``solve_system``
+takes a system assembled by ``mimetika_cxx.ads_handoff``.
 """
 
 from ._hypre import *  # noqa: F401,F403

@@ -1,8 +1,7 @@
 """Write results to the VTK XML unstructured-grid format (``.vtu``).
 
 Polyhedral cells are written as ``VTK_POLYHEDRON`` face streams, so the
-original polytopal geometry is preserved exactly -- ParaView shows the real
-cells, not a tetrahedralisation of them.
+polytopal geometry is preserved exactly rather than tetrahedralised.
 
 Field shapes are mapped to VTK component counts automatically:
 
@@ -32,10 +31,9 @@ def export_vtu(
 ) -> Path:
     """Write a mesh and its fields to an ASCII ``.vtu`` file.
 
-    Works for 3D (polyhedra, written as ``VTK_POLYHEDRON`` face streams so the
-    polytopal geometry survives intact) and for 2D (polygons).  A 2D mesh is not
-    a special case to be flattened -- it is what a fracture is, and what the
-    lower-dimensional half of a mixed-dimensional problem lives on.
+    3D cells are written as ``VTK_POLYHEDRON`` face streams, 2D cells as
+    ``VTK_POLYGON`` loops -- the form a fracture and the lower-dimensional half
+    of a mixed-dimensional problem take.
     """
     path = Path(path)
     cx, pts = mesh.complex, mesh.geometry.points
@@ -105,16 +103,12 @@ def export_facets(
     facets,
     cell_data: dict[str, np.ndarray] | None = None,
 ) -> Path:
-    """Write a **subset of facets** as a standalone lower-dimensional ``.vtu``.
+    """Write a subset of facets as a standalone lower-dimensional ``.vtu``.
 
-    This is how a fracture is plotted: it has no mesh of its own in the ambient
-    problem, it *is* a tagged set of ``(d-1)``-facets.  Facets of a 3D mesh become
-    ``VTK_POLYGON``, facets of a 2D mesh become ``VTK_LINE``.  ``cell_data`` is
-    indexed by position in ``facets``, not by global facet id, so callers pass the
-    per-fracture arrays they already have.
-
-    Only the vertices actually used are written, so a fracture file stays small
-    even when the ambient mesh is large.
+    How a fracture is plotted: it carries no mesh of its own, only a tagged set
+    of ``(d-1)``-facets.  Facets of a 3D mesh become ``VTK_POLYGON``, facets of a
+    2D mesh ``VTK_LINE``.  ``cell_data`` is indexed by position in ``facets``,
+    not by global facet id.  Only the vertices used are written.
     """
     path = Path(path)
     facets = np.asarray(facets, dtype=np.int64)

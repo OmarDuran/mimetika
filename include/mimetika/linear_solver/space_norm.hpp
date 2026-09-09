@@ -72,11 +72,6 @@ struct SpaceNorm {
   // with refinement; with W = 1/|E| it is 3.2, 3.4, 3.5 over the same three
   // meshes -- flat.
 
-  // A constrained unknown is not in the space. Its row of A is the constraint,
-  // scale * e_i^T, not a form; leaving the norm's entries there preconditions an
-  // equation that is not the one being solved, and the iteration count starts
-  // growing with h again. P carries the same row, so those unknowns contribute
-  // the identity to P^{-1}A and drop out of the Krylov space.
   // Which multipliers contribute a graph term: the differential constraint does
   // (factor 1), an algebraic one does not. AFW's inf-sup is proved with
   // ||sigma||^2 = (A sigma, sigma) + ||div sigma||^2 -- skw is bounded
@@ -84,6 +79,11 @@ struct SpaceNorm {
   std::size_t differential_factors{1};
   bool carries_graph_term(std::size_t f) const { return f >= 1 && f <= differential_factors; }
 
+  // A constrained unknown is not in the space. Its row of A is the constraint,
+  // scale * e_i^T, not a form; leaving the norm's entries there preconditions an
+  // equation that is not the one being solved, and the iteration count starts
+  // growing with h again. P carries the same row, so those unknowns contribute
+  // the identity to P^{-1}A and drop out of the Krylov space.
   std::vector<int> pinned;
   std::vector<double> pinned_diagonal;
 
@@ -156,13 +156,12 @@ struct SpaceNorm {
   Incidence lowest_order;
   int lowest_order_components{1};
 
-  // THE INTERPOLATIONS, FOR A SPACE ADS CANNOT BUILD THEM FOR.
+  // The interpolations, for a space ADS cannot build them for.
   //
   // ADS forms Pi -- the map from a vector nodal field into H(div) -- from the
-  // vertex coordinates, and that construction is the LOWEST-ORDER one: it
-  // assumes a facet carries a single unknown. Given a BDM facet, whose three
-  // moments the coordinates say nothing about, the two are supplied here
-  // instead and reach HYPRE_ADSSetInterpolations, the documented hook.
+  // vertex coordinates, and that construction assumes one unknown per facet.
+  // Given a BDM facet, whose three moments the coordinates say nothing about,
+  // both are supplied here and reach HYPRE_ADSSetInterpolations.
   //
   //   rt_interpolation  n_flux x 3 n_vertices, the BDM dofs of a vertex hat
   //   nd_interpolation  n_circ x 3 n_vertices, its circulation dofs

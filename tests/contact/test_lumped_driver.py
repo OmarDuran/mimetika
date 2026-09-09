@@ -3,10 +3,10 @@ r"""The contact driver on the lumped stress space (``d`` DOFs per facet).
 The driver reads and pins traction DOFs by the stride of the stress space; for
 the lumped space that is ``d`` per facet, with the constant as the only facet
 basis function.  These tests mirror the AFW driver tests on the lumped
-four-field mechanics and add the cross-formulation checks: the *physics* on
-the fault -- normal traction, the friction cap, closure under compression --
-must agree between AFW and lumped, because the fault states here are constant
-per facet and both spaces resolve constants exactly.
+four-field mechanics and add the cross-formulation checks: normal traction, the
+friction cap and closure under compression agree between AFW and lumped, because
+the fault states here are constant per facet and both spaces resolve constants
+exactly.
 """
 
 import numpy as np
@@ -93,14 +93,13 @@ def test_shear_traction_is_capped_at_the_friction_coefficient():
 
 
 def test_afw_and_lumped_agree_on_the_fault_physics():
-    """The determined fault quantities coincide; the artifact stays small.
+    """The determined fault quantities coincide to 1e-6 / 1e-4.
 
-    The normal traction and the in-plane shear are set by the confined load
-    and the friction cap -- constant states both spaces resolve exactly, so
-    they must agree tightly.  The out-of-plane tangential component is *not*
-    determined (the exact value is zero); the slipping return mapping leaves a
-    discretization-level residue there that legitimately differs between the
-    spaces, so it is only bounded, not compared.
+    The normal traction and the in-plane shear are set by the confined load and
+    the friction cap -- constant states both spaces resolve exactly.  The
+    out-of-plane tangential component is undetermined (exact value zero); the
+    slipping return mapping leaves a discretization-level residue there that
+    differs between the spaces, so it is bounded rather than compared.
     """
     mesh = structured_box(2, 2, 2)
     tags = facets_on_plane(mesh, [0.5, 0, 0], [1, 0, 0])

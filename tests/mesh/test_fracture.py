@@ -86,7 +86,7 @@ def test_file_without_tags_returns_empty(tmp_path):
 
 
 def test_unknown_tagged_face_is_rejected(tmp_path):
-    """A stored loop that is not a facet of the mesh must not pass silently."""
+    """A stored loop that is not a facet of the mesh raises ``KeyError``."""
     mesh = structured_box(1, 1, 1)
     path = export_vtu(tmp_path / "m.vtu", mesh)
     text = path.read_text().replace(

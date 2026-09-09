@@ -47,8 +47,8 @@ namespace novikov {
 // The semi-analytical post-slip solution is not a closed form -- it solves
 // Cauchy singular integral equations -- so the only way to compare pointwise is
 // against the authors' own numbers. The Python reference, which already knows
-// which rows are genuine and which are corrupt, exports them once to CSV and the
-// test reads that; the data crosses, not the code.
+// which rows are genuine and which are defective, exports them once to CSV and
+// the test reads that: the data crosses the language boundary, not the code.
 struct Reference {
   std::map<std::string, std::vector<double>> column;
 
@@ -118,7 +118,7 @@ struct Setup {
 
 // The domain, divided by the fault and by the reservoir interfaces.
 //
-// Five horizontal levels -- the domain floor and roof and the four reservoir
+// Six horizontal levels -- the domain floor and roof and the four reservoir
 // edges y = +-a, +-b -- cut both the fault and each side wall, giving five bands
 // per side and five fault pieces. The reservoir is bands [-b, a] on one side of
 // the fault and [-a, b] on the other: the throw, which is what loads the fault
@@ -179,8 +179,8 @@ Setup build(const Parameters& p, double fault_size, double far_size, double band
   // fault -- the loading jumps there -- and the paper's Fig. 8 shows it spiking
   // to 27 MPa at y = +-a against 18 MPa at the centre. That spike carries the
   // fault past the friction threshold, so a mesh that smears it over 25 m facets
-  // reports the fault slipping at its centre, where the paper has it firmly
-  // stuck, and stuck on the flanks, where the paper has it slipping.
+  // reports the fault slipping at its centre, where the paper has it stuck, and
+  // stuck on the flanks, where the paper has it slipping.
   //
   // They are points, so they cost almost nothing to resolve: a point field over
   // a few tens of metres, not a finer fault over five kilometres.
@@ -354,20 +354,19 @@ struct Slipped {
 
 // Warm-starting from the locked solution.
 //
-// A cold start diverges. Zero tractions with a zero jump is not a state the
-// mechanics could ever be in: it says the fault carries nothing while the rock
-// around it is fully loaded, so the first trial asks the projection to absorb
-// the entire in-situ imbalance and it clips metre-scale excursions. The
-// iteration then leaves the physical basin for a spurious whole-fault runaway --
-// thousands of millimetres of slip across the entire plane, at levels where the
-// fault is in fact fully stuck. No mesh fixes it: the fixed point has another,
-// unphysical attractor and the origin is in its basin on a confined domain.
+// A cold start diverges. Zero traction with a zero jump is not a state the
+// mechanics could be in -- the fault carries nothing while the rock around it is
+// fully loaded -- so the first projection absorbs the entire in-situ imbalance
+// and clips metre-scale excursions. The iteration then leaves the physical basin
+// for a whole-fault runaway of metres of slip across the whole plane, at levels
+// where the fault is fully stuck. Refinement does not fix it: the fixed point
+// has a second, unphysical attractor whose basin contains the origin on a
+// confined domain.
 //
-// The locked tractions are an equilibrated alternative -- a traction field the
-// continuum actually produces under this load -- one direct solve away, and they
-// sit next to the contact solution: their map residual is only the augmentation
-// times the enforcement truncation. Newton converges from there in a handful of
-// steps.
+// The locked tractions are an equilibrated alternative one direct solve away,
+// and they sit next to the contact solution: their map residual is only the
+// augmentation times the enforcement truncation. Newton converges from there in
+// a handful of steps.
 //
 // The internal state is carried, not reset, when the caller has one. A
 // slip-weakening law reads accumulated slip, so replacing the history with
@@ -552,22 +551,20 @@ inline Slipped simulate_ramped(const Setup& s, const Parameters& p, double deple
 //   the load depends on the depletion
 //   the contact iterate depends on neither
 //
-// So one construction, one assembly, one factorization, one condensation -- and
-// after that a depletion sweep is a right-hand side per level and a dense
-// projection per outer iteration. Rebuilding the model per solve re-runs all
-// four on every step of an outer loop that a slip-weakening branch tracker runs
-// hundreds of times.
+// So one construction, one assembly, one factorization -- after which a sweep
+// costs a right-hand side and one condensation per level, and a dense projection
+// per outer iteration. Rebuilding the model per solve re-runs all of it on every
+// step of an outer loop a slip-weakening branch tracker runs hundreds of times.
 struct Prepared {
   std::unique_ptr<CauchyMechanicsModel> model;
   std::unique_ptr<Fracture> fracture;
   std::unique_ptr<CauchyContactMechanics> mechanics;
   double mu{1.0}, lam{1.0};
 
-  // Ghat and g_0 depend on the mechanics, not on the law or the iterate, so an
-  // outer loop that only changes the friction coefficient reuses them. Building
-  // them costs n_points * dim + 1 global back-substitutions -- 751 here -- and
-  // doing that once per outer iteration rather than once per level is the
-  // difference between a sweep that finishes and one that does not.
+  // Ghat and g_0 depend on the mechanics and the load, not on the law or the
+  // iterate, so an outer loop that only changes the friction coefficient reuses
+  // them. Building them costs n_points * dim + 1 global back-substitutions --
+  // 751 here -- so they are rebuilt once per level, not once per iteration.
   std::unique_ptr<mimetika::contact::CondensedMap> condensed;
   double condensed_at{1.0};  // the depletion Ghat/g_0 were built at
 };

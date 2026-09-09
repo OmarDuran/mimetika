@@ -39,7 +39,7 @@ struct Pressure final : Package {
   void attach(exokal::forms::Model&, const exokal::forms::TermContext&) const override {}
 };
 
-// poromechanics is not a physics: it is the coupling between two that are
+// the coupling: it needs both capabilities and provides none
 struct PoroCoupling final : Package {
   std::string name() const override { return "PoroCoupling"; }
   Requirements requirements(int, int) const override {
@@ -53,9 +53,9 @@ struct PoroCoupling final : Package {
 
 }  // namespace
 
-// A composition is validated. Composing the coupling without the mechanics is
-// caught here, by name, rather than by a term reading past the end of a stencil
-// during assembly.
+// validate(dim) rejects a composition whose capabilities are unmet, naming the
+// package and the capability, rather than a term reading past a stencil at
+// assembly time.
 MIMETIKA_TEST(a_missing_capability_is_reported_by_name) {
   Composition c;
   c.emplace<Pressure>();
@@ -92,9 +92,8 @@ MIMETIKA_TEST(two_packages_may_not_provide_the_same_capability) {
   CHECK(threw);
 }
 
-// The space is the union of what the packages contribute, in the order they
-// were added — and no term depends on that order, because exokal resolves a
-// term's fields by name against whatever space it is handed.
+// The space is the union of the packages' fields, in the order they were added.
+// A term resolves its fields by name, so no term depends on that order.
 MIMETIKA_TEST(the_space_is_the_union_of_the_packages_fields) {
   Composition c;
   c.emplace<Pressure>();
@@ -112,9 +111,7 @@ MIMETIKA_TEST(the_space_is_the_union_of_the_packages_fields) {
   CHECK(s.map(s.index_of("u")).layout().components == 3);
 }
 
-// The configuration surface is reportable. Every closure every package needs,
-// with the scope it binds at — what a driver prints so a user need not read the
-// source to configure a model.
+// c.slots(dim) reports every closure the packages need, with the scope it binds at.
 MIMETIKA_TEST(the_closure_slots_are_reported_with_their_scope) {
   Composition c;
   c.emplace<Pressure>();
@@ -132,8 +129,8 @@ MIMETIKA_TEST(the_closure_slots_are_reported_with_their_scope) {
   }
   CHECK(fluid == 1 && rock == 3 && iface == 1);
 
-  // the out-of-plane permeability is bound to a stratum pair, which is why
-  // it cannot be a per-cell coefficient
+  // normal_permeability is bound to a stratum pair, so it cannot be a per-cell
+  // coefficient
   bool found = false;
   for (const auto& s : slots) {
     if (s.name == "normal_permeability") found = s.scope == Scope::interface;

@@ -9,12 +9,10 @@
 // Contact over Cauchy elasticity, end to end: the adapter, and the driver on top
 // of it.
 //
-// Everything below the adapter has been checked in isolation -- the laws
-// against their conditions, the map against a closed-form stub, the trace
-// against the bonded identity. What is checked here is the composition: that
-// the three operations of ContactMechanics agree with each other, and that the
-// Uzawa iteration built on them reproduces the conditions a contact law encodes
-// on a real mesh.
+// The laws, the map and the trace are checked in isolation elsewhere. What is
+// checked here is the composition: the three operations of ContactMechanics
+// agree with each other, and the Uzawa iteration built on them reproduces the
+// conditions a contact law encodes on a real mesh.
 
 using graphos::Index;
 using mimetika::CauchyMechanicsModel;
@@ -102,9 +100,8 @@ Problem build(int n, int dim, Family family, double strain) {
 }  // namespace
 
 // A uniform traction lands entirely on the leading moment, because the facet
-// chart has chi_0 = 1 and int_f chi_b = 0 for b >= 1. The higher moments being
-// exactly zero is what makes one enforcement point per facet a consistent
-// statement rather than an approximation.
+// chart has chi_0 = 1 and int_f chi_b = 0 for b >= 1. The higher moments vanish
+// to 1e-14, which is what makes one enforcement point per facet consistent.
 MIMETIKA_TEST(a_uniform_traction_lands_on_the_constant_moment_alone) {
   Problem p = build(4, 3, Family::cartesian, -0.5);
   const int nb = p.model->stress_operators().moments_per_facet();
@@ -142,9 +139,8 @@ ContactState run(Problem& p, const Law& law, int dim) {
 
 // -- Signorini ----------------------------------------------------------------
 
-// Tension opens the fracture with zero traction. Pulling the column apart, the
-// unilateral condition must let it separate and carry nothing -- the one thing
-// a bonded solve cannot do.
+// Tension opens the fracture with zero traction: pulling the column apart, the
+// unilateral condition lets it separate and carry nothing.
 MIMETIKA_TEST(tension_opens_the_fracture_with_zero_traction) {
   Problem p = build(4, 3, Family::cartesian, +0.01);
   const SignoriniCoulomb law(0.6);
@@ -158,9 +154,8 @@ MIMETIKA_TEST(tension_opens_the_fracture_with_zero_traction) {
   }
 }
 
-// Compression closes without interpenetration, and the traction it settles on
-// is the exact confined stress -K_oed * eps. That number is the test: a scheme
-// that merely closed the gap could still carry the wrong load.
+// Compression closes without interpenetration, and the traction it settles on is
+// the confined stress K_oed * eps = (lam + 2 mu) eps, to a relative 1e-6.
 MIMETIKA_TEST(compression_closes_at_the_exact_confined_stress) {
   const double strain = -0.01;
   Problem p = build(4, 3, Family::cartesian, strain);
@@ -218,8 +213,8 @@ MIMETIKA_TEST(the_bilateral_law_holds_a_tensioned_fault_shut) {
 }
 
 // A fracture must be prescribed before the model is built, because prescribing
-// changes which equations the system has. Catching the mismatch at construction
-// keeps a silently bonded solve from being reported as a contact one.
+// changes which equations the system has. CauchyContactMechanics throws
+// std::invalid_argument rather than running the bonded system.
 MIMETIKA_TEST(a_fracture_the_model_did_not_prescribe_is_refused) {
   const exokal::Mesh m = mimetika::mesh::column(4, 3, Family::cartesian, 1.0);
   const graphos::Complex& c = m.topology();

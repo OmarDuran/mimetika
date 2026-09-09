@@ -23,16 +23,14 @@
 // For diagonal_tpfa S is the pressure alone and is the two-point flux
 // approximation: seven entries a row on a Cartesian mesh in space. For
 // diagonal_afw it is the displacement, the rotation and the total pressure,
-// which is the FV-TPSA system of Nordbotten & Keilegavlen (their Eq. 3.9) --
-// the same three cell-centered unknowns, reached by eliminating a stress those
-// authors never introduce.
+// which is the cell-centered finite volume system of Nordbotten & Keilegavlen
+// (their Eq. 3.9) -- the same three unknowns, reached by eliminating a stress
+// those authors never introduce.
 //
 // exokal owns the inner product M and tests it: diagonal under condensation,
-// and positive. The premise below only confirms the block is diagonal, so that
-// the specialization is applied to the products it belongs to. What is measured
-// here is the global Schur complement, which is M together with the divergence,
-// the weak symmetry, the trace and the total-pressure row: a different matrix,
-// and the one a solver is actually handed.
+// and positive. The premise below only confirms the block is diagonal. What is
+// measured here is the global Schur complement, which is M together with the
+// divergence, the weak symmetry, the trace and the total-pressure row.
 //
 // This file asserts, on meshes small enough to take dense linear algebra to:
 //
@@ -47,14 +45,11 @@
 //   S solves the same problem     -- condensed answer against the saddle
 //                                    point's own, to round-off
 //
-// What kind of symmetric is not the same for the two products, and it is the
-// one thing a solver has to be told:
+// What kind of symmetric differs between the two products, which is what a
+// solver has to be told:
 //
-//   diagonal_tpfa   S is the pressure alone and is positive definite, as
-//                   assembled, with no sign to flip: conjugate gradients and
-//                   an algebraic multigrid, and the matrix is the two-point
-//                   flux approximation -- seven entries a row on a Cartesian
-//                   mesh in space.
+//   diagonal_tpfa   S is positive definite as assembled, with no sign to flip:
+//                   conjugate gradients and an algebraic multigrid.
 //
 //   diagonal_afw   S is displacement, rotation and total pressure, and is
 //                   symmetric quasi-definite: (u, r) positive definite, p
@@ -67,8 +62,9 @@
 //                   whose weak form (their 5.5) pairs +(p, div u') against
 //                   -(div u, p'). Both are asserted below.
 //
-//                   On tetrahedra it is invertible but not quasi-definite --
-//                   see Case below for the ratio that decides it.
+//                   On the prism and on tetrahedra it is invertible but not
+//                   quasi-definite -- the table in Case below, which is
+//                   measured rather than derived.
 //
 // Boundary data. The cases here prescribe the pressure and the displacement,
 // which are natural in a mixed form. An essential condition on the first field
@@ -115,8 +111,8 @@ Dense dense_of(const SparseSystem& A) {
   return out;
 }
 
-// in place, and false the moment a pivot is not positive: the factorization IS
-// the definiteness test, so no eigenvalue is asked for
+// in place, and false at the first nonpositive pivot: the factorization is the
+// definiteness test, so no eigenvalue is asked for
 bool cholesky(Dense& L) {
   const std::size_t m = L.rows();
   for (std::size_t i = 0; i < m; ++i) {
@@ -351,19 +347,17 @@ exokal::Mesh box_of(int n, int dim, Family family) {
   return mimetika::mesh::box({n, n, dim == 3 ? n : 1}, dim, family);
 }
 
-// The tetrahedra come from the annulus, not the box. box(simplex) is the Kuhn
-// subdivision -- six congruent tetrahedra a cube, every cell a translate of
-// every other -- and that pattern is degenerate for diagonal_afw: it carries
-// exactly one spurious rotation mode per interior cube face, which the last
-// test in this file measures. Tetrahedra as such are not the problem, and a
-// mesh whose cells differ from one another shows it.
+// The tetrahedra come from the annulus, not the box: box(simplex) is the Kuhn
+// subdivision -- six congruent tetrahedra a cube, every cell a translate or
+// reflection of every other -- and that pattern is taken on its own in the last
+// test of this file. Here the cells differ from one another.
 struct Case {
   const char* name;
   int dim;
   exokal::Mesh mesh;
   // Whether the reduced (u, gamma, p) system is quasi-definite, per mesh.
   //
-  // MEASURED, and not currently derivable from anything else here. Where it
+  // Measured, and not currently derivable from anything else here. Where it
   // holds, the displacement-rotation block and the negated pressure block are
   // each positive definite and an LDL^T applies; where it does not, the matrix
   // is still symmetric and invertible -- the solve below says so on every mesh
@@ -371,22 +365,21 @@ struct Case {
   //
   // Two candidate rules are ruled out by the table this prints:
   //
-  //   A DOF COUNT. The old mean-traction star carried d unknowns per facet
+  //   A dof count. The old mean-traction star carried d unknowns per facet
   //   against the d + d(d-1)/2 rows the divergence and the weak symmetry
   //   impose, and that ratio predicted the outcome. The star now carries d^2
   //   per facet, which leaves slack on every cell type here -- 6 against 3 on
   //   a triangle, 22.5 against 6 on a prism -- so the count no longer
   //   separates them.
   //
-  //   THE STAR'S OWN CONSISTENCY. afw_admissible reports the 2D simplex NOT
+  //   The star's own consistency. afw_admissible reports the 2D simplex not
   //   face-orthogonal and it is quasi-definite all the same, while the prism is
   //   neither. The two properties are independent, which is why both are
   //   printed side by side below.
   //
-  // What separates the prism from the 2D simplex is open. Until it is settled
-  // the expectation is tabulated from measurement rather than argued, and this
-  // note records that it is not yet understood; diagonal_afw is still in
-  // development and the table is expected to move.
+  // What separates the prism from the 2D simplex is open, so the expectation is
+  // tabulated from measurement: true on 2D cartesian, 2D simplex and 3D
+  // cartesian, false on the 3D prism and the 3D simplex annulus.
   bool quasi_definite;
 };
 
@@ -482,14 +475,11 @@ MIMETIKA_TEST(eliminating_the_flux_leaves_an_spd_two_point_pressure_system) {
   }
 }
 
-// Quasi-definite everywhere but on tetrahedra, and the exception is the space
-// rather than the condensation: on a tetrahedron the pairing has no slack (see
-// Case above), so the displacement block and the rotation block are each
-// positive definite and their union is not. That is the same marginality that
-// costs [Dv; As] its row rank once a traction is imposed. The system remains
-// symmetric and nonsingular -- the solve below says so on every cell type -- so
-// MINRES is what applies generally, and the LDL^T a quasi-definite matrix
-// admits is available on the rest.
+// Quasi-definite on the cartesian meshes and the 2D simplex, not on the prism
+// or the 3D simplex -- the per-mesh expectation is Case::quasi_definite above,
+// measured and not yet derived. The system is symmetric and nonsingular on
+// every cell type -- the solve below says so -- so MINRES applies generally and
+// the LDL^T a quasi-definite matrix admits is available on the rest.
 MIMETIKA_TEST(eliminating_the_stress_leaves_displacement_rotation_and_pressure) {
   for (const Case& c : cases()) {
     {
@@ -520,7 +510,7 @@ MIMETIKA_TEST(eliminating_the_stress_leaves_displacement_rotation_and_pressure) 
 
       Dense spd = S;
       const bool definite = cholesky(spd);
-      // printed beside the outcome: the two do not agree, which is the point
+      // printed beside the outcome: the two properties do not agree
       const std::vector<char> afw = exokal::hodge::afw_admissible(m, dim);
       const std::size_t stray =
           entries_beyond_the_neighbours(S, s, facet_neighbours(m, dim), 1e-12);
@@ -545,13 +535,11 @@ MIMETIKA_TEST(eliminating_the_stress_leaves_displacement_rotation_and_pressure) 
 
 // ---- and it is the same system ---------------------------------------------
 //
-// Definite and small is worth nothing if it is a different problem. The
-// condensed solve is compared against the saddle point's own, unknown by
-// unknown, and the eliminated field is recovered and compared too -- x0 =
-// M^-1 (b0 - A01 y) is the whole cost of getting the flux or the stress back.
+// The condensed solve against the saddle point's own, unknown by unknown, with
+// the eliminated field recovered by x0 = M^-1 (b0 - A01 y) and compared too.
 MIMETIKA_TEST(the_condensed_solve_is_the_saddle_point_solve) {
-  // `singular` marks the case where there is nothing to agree with -- see the
-  // header -- and the conditioning is asserted there instead.
+  // `singular` asserts pivot_ratio < 1e-12 and returns: there is nothing to
+  // agree with. Every case below passes singular = false.
   const auto compare = [&](const SparseSystem& A, const std::vector<double>& b, const Split& s,
                            const std::string& what, bool singular) {
     const Dense full = dense_of(A);
@@ -614,27 +602,27 @@ MIMETIKA_TEST(the_condensed_solve_is_the_saddle_point_solve) {
       CauchyMechanicsModel solid(m, dim, ElasticMaterial{kMu, kLam}, Stress::diagonal_afw,
                                   Formulation::weak_symmetry_total);
       build_elasticity(solid, m, dim);
-      // the tetrahedron is the ratio at which the rotation is not determined
       compare(solid.system(), solid.rhs(), split_of(solid), where + " tpsa", false);
     }
   }
 }
 
 
-// ---- one mesh the pattern of which diagonal_afw cannot carry ---------------
+// ---- the Kuhn pattern, which the mean-traction layout loses ----------------
 //
 // box(simplex) is the Kuhn subdivision: six congruent tetrahedra to a cube,
-// every cell a translate or reflection of every other. On the TPSA layout --
-// one mean traction per facet -- that pattern costs the condensed operator one
-// dimension per interior cube face, 3 n^2 (n - 1) of them: a cellwise-
-// alternating rotation the facet means cannot see, with the stress and the
-// pressure identically zero. The direct solver on the saddle point reports
-// CONVERGED and returns 1e16; the condensation runs out of pivots and says so.
+// every cell a translate or reflection of every other. On a mean-traction
+// layout -- one traction vector per facet -- that pattern costs the condensed
+// operator one dimension per interior cube face, 3 n^2 (n - 1) of them: a
+// cellwise-alternating rotation the facet means cannot see, with the stress and
+// the pressure identically zero. The inf-sup constant of the rotation
+// multiplier decays as 2 sin(pi/2n) there; see exokal's
+// diagonal_operators/afw_stress.hpp.
 //
-// The wrench layout closes it: with the d(d+1)/2 rigid-motion moments on each
-// facet the multiplier's kernel is the global rigid motion alone, so the
-// condensed operator on the same tetrahedra is nonsingular and no pivot is
-// lost. Both numbers are the ones exokal's afw_stress.hpp states.
+// diagonal_afw's d^2 P_1 facet moments close it: the asymmetry pairing is
+// unisolvent on rigid-motion traces, so the multiplier's kernel is the global
+// rigid motion alone and the condensed operator on the same tetrahedra loses no
+// pivot. Measured at n = 2 and n = 3.
 MIMETIKA_TEST(the_kuhn_tetrahedra_keep_every_rotation_on_the_wrench) {
   for (const int n : {2, 3}) {
     const exokal::Mesh m = box_of(n, 3, Family::simplex);
@@ -650,7 +638,7 @@ MIMETIKA_TEST(the_kuhn_tetrahedra_keep_every_rotation_on_the_wrench) {
                 "pivots lost %2zu   interior cube faces %2zu\n",
                 n, static_cast<std::size_t>(prob.n_cells()), S.rows(), S.rows(), pivot_ratio,
                 tiny_pivots, interior_cube_faces);
-    // on the wrench layout the condensed operator is nonsingular: no pivot lost
+    // on the P_1 moment layout the condensed operator is nonsingular
     CHECK(pivot_ratio > 1e-12);
     CHECK(tiny_pivots == 0);
   }
@@ -658,15 +646,13 @@ MIMETIKA_TEST(the_kuhn_tetrahedra_keep_every_rotation_on_the_wrench) {
 
 // ---- and the solver does it ------------------------------------------------
 //
-// Everything above is arithmetic done in the test. This is the solver's own
-// path: told which unknowns may be divided out, PetscSolver eliminates them,
-// solves S, and puts the eliminated field back -- and the answer has to be the
-// one the saddle point gives, on every unknown including the eliminated ones.
+// The solver's own path: told which unknowns may be divided out, PetscSolver
+// eliminates them, solves S, and puts the eliminated field back. The answer
+// must be the saddle point's on every unknown, the eliminated ones included.
 //
-// Naming the field is a permission, not an instruction. The same call on a de
-// Rham or stabilized product must leave the saddle point alone, because their
-// star couples a cell's facets and the block is not diagonal; the report says
-// which happened.
+// Naming the field is a permission, not an instruction: the same call on a de
+// Rham or stabilized product leaves the saddle point alone, their star coupling
+// a cell's facets. rep.condensed reports which happened.
 MIMETIKA_TEST(the_solver_condenses_when_it_is_allowed_to_and_only_then) {
   const exokal::Mesh m = box_of(3, 3, Family::cartesian);
 

@@ -1,18 +1,16 @@
 r"""Material properties, possibly varying from cell to cell.
 
-Parametrised by the **Poisson ratio** rather than by Lame's ``lambda``.  That is
-not cosmetic: ``lambda -> infinity`` as ``nu -> 1/2``, so a ``lambda``-based
-interface cannot express an incompressible solid at all, while every quantity
-the mixed formulation actually needs stays finite there.
+Parametrised by the Poisson ratio rather than by Lame's ``lambda``: ``lambda ->
+infinity`` as ``nu -> 1/2``, so a ``lambda``-based interface cannot represent an
+incompressible solid.
 
 The compliance used by the Hellinger--Reissner form is
 
     ``C^{-1} T = ( T - a tr(T) I ) / (2 mu)`` ,   ``a = nu / (1 - 2 nu + d nu)``
 
-which at ``nu = 1/2`` gives ``a = 1/d`` exactly -- the deviatoric projector.
-That is the reason the mixed stress formulation is locking free: the operator it
-inverts is ``C^{-1}``, which is *bounded* in the incompressible limit, whereas a
-displacement formulation would have to invert ``C``, which is not.
+with ``a = 1/d`` at ``nu = 1/2``, the deviatoric projector.  The mixed
+formulation inverts ``C^{-1}``, bounded in the incompressible limit, hence
+locking free; a displacement formulation would invert ``C``, which is not.
 """
 
 from __future__ import annotations
@@ -42,16 +40,15 @@ def poisson_from_lame(mu, lam, dim: int = 3) -> np.ndarray:
 class Material:
     """Poroelastic properties; scalars are broadcast to every cell.
 
-    ``bulk_modulus`` is the *drained* bulk modulus ``K``.  It is ``inf`` when the
-    skeleton is incompressible (``nu = 1/2``), which makes the two poroelastic
-    couplings ``alpha/(dK)`` and ``alpha^2/K`` vanish rather than blow up -- so
-    that limit needs no special-casing anywhere downstream.
+    ``bulk_modulus`` is the drained bulk modulus ``K``, ``inf`` at ``nu = 1/2``.
+    The couplings ``alpha/(dK)`` and ``alpha^2/K`` then vanish, so the
+    incompressible skeleton needs no special case downstream.
     """
 
     shear_modulus: np.ndarray = 1.0
     poisson: np.ndarray = 0.25
     biot: np.ndarray = 1.0
-    #: inverse Biot modulus ``1/M``; **zero** for an incompressible fluid
+    #: inverse Biot modulus ``1/M``; zero for an incompressible fluid
     inverse_biot_modulus: np.ndarray = 0.0
     permeability: np.ndarray = 1.0
     viscosity: float = 1.0
@@ -99,10 +96,8 @@ class Material:
     def inverse_modulus(self, dim: int) -> np.ndarray:
         """``tr(C^{-1} T) / tr(T) = (1-2nu) / (2 mu (1-2nu+d nu))``.
 
-        The volumetric compliance of the skeleton, and the single quantity both
-        poroelastic couplings are built from.  It is **zero** at ``nu = 1/2``, so
-        the incompressible limit is reached continuously rather than through a
-        division by an infinite bulk modulus.  In 3D it equals ``1/(3K)``; the
+        Volumetric compliance of the skeleton; both poroelastic couplings are
+        built from it.  Zero at ``nu = 1/2``.  Equals ``1/(3K)`` in 3D; the
         ``d``-dependence matters because the benchmarks are plane strain.
         """
         nu = self.poisson
@@ -115,10 +110,10 @@ class Material:
         return self.biot * self.inverse_modulus(dim)
 
     def storage(self, dim: int) -> np.ndarray:
-        """``S = d alpha^2 / (d K) + 1/M``; zero for an incompressible fluid *and* solid."""
+        """``S = d alpha^2 / (d K) + 1/M``; zero for incompressible fluid and solid."""
         return dim * self.biot**2 * self.inverse_modulus(dim) + self.inverse_biot_modulus
 
     @property
     def mobility(self) -> np.ndarray:
-        """``K / mu_f`` -- what the Darcy inner product actually needs."""
+        """``K / mu_f``, the coefficient entering the Darcy inner product."""
         return self.permeability / self.viscosity

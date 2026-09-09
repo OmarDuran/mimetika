@@ -4,72 +4,56 @@ Contact is a fixed-point problem in the contact traction, and nothing more::
 
     y = CD(x) ,    CD(x) = P( x + r g(x) ) ,    g(x) = J z ,    A(x) z = b(x)
 
-where ``A(x)`` is the mechanics system with the fracture traction DOFs *pinned*
-to ``x``.  One evaluation is: pin, solve, read the gap, project.  The solution of
+where ``A(x)`` is the mechanics system with the fracture traction DOFs pinned to
+``x``.  One evaluation is: pin, solve, read the gap, project.  The solution of
 ``x = CD(x)`` is the converged contact state.
 
-Why this is the right seam
---------------------------
-Everything here is algebra: a matrix, a right-hand side, an index set, two linear
-maps and a projection.  There is no mesh, no material, no boundary condition and
-no problem object.  That matters three ways:
-
-* **The mechanics is interchangeable.**  Whatever assembles ``(A, b)`` -- mixed
-  elasticity, poromechanics, a pressure-driven right-hand side, per-cell
-  materials -- is invisible here, so adding a boundary condition upstream needs
-  no change at all in the contact code.
-* **The iteration is interchangeable.**  ``CD`` is just a function, so the
-  relaxed Picard iteration in :func:`fixed_point` can be swapped for Newton or
-  Anderson acceleration without touching the map.
-* **It is testable without a mesh.**  Feed ``CD`` any ``x`` and check ``y``:
-  contraction, the fixed point, and the projection can each be checked on stub
-  operators, separately from the discretisation.
+The inputs are a matrix, a right-hand side, an index set, two linear maps and a
+projection -- no mesh, material, boundary condition or problem object.  So what
+assembles ``(A, b)`` and what iterates on ``CD`` are both interchangeable, and
+``CD`` can be exercised on stub operators.
 
 What ``x`` contains
 -------------------
-``x`` and ``y`` are always the same object: the **contact traction at the
-enforcement points, in the facet frame**, shape ``(n_points, dim)``.  The
-components are ordered normal first::
+``x`` and ``y`` are the same object: the contact traction at the enforcement
+points, in the facet frame, shape ``(n_points, dim)``, normal component first::
 
     dim = 2:   x[p] = (t_n, t_t)            one shear direction
     dim = 3:   x[p] = (t_n, t_t1, t_t2)     two shear directions
 
-with the sign convention ``t_n < 0`` in compression and ``g_n > 0`` open.  The
-*space* is therefore identical for every law -- what changes is the subset of it
-that ``CD`` can return, and what the law carries alongside:
+with ``t_n < 0`` in compression and ``g_n > 0`` open.  The space is the same for
+every law; what changes is the subset ``CD`` can return and the state carried:
 
-=========================  ==================  ==========================================  =====================  =======
-law                        ``x`` components    admissible set of ``y = CD(x)``             internal state         needs
-                                                                                                                  ``dt``
-=========================  ==================  ==========================================  =====================  =======
-:class:`FrictionlessBilateral`  ``(t_n, t_t..)``  ``t_t = 0``; ``t_n`` free, either sign     none                   no
-:class:`LinearContact`     ``(t_n, t_t..)``    all of ``R^dim`` (bonded, no constraint)    none                   no
-:class:`SignoriniCoulomb`  ``(t_n, t_t..)``    ``t_n <= 0``, ``|t_t| <= -mu t_n + c``      slip magnitude (1)     no
-:class:`RateAndStateFriction`  ``(t_n, t_t..)``  ``t_n <= 0``, ``|t_t| <= -mu(V, theta) t_n``  slip, ``theta`` (2)  yes
-=========================  ==================  ==========================================  =====================  =======
+======================  ======================================  ================  ===
+law                     admissible set of ``y = CD(x)``         internal state    dt
+======================  ======================================  ================  ===
+FrictionlessBilateral   ``t_t = 0``, ``t_n`` free               none              no
+LinearContact           all of ``R^dim`` (bonded)               none              no
+SignoriniCoulomb        ``t_n <= 0``, ``|t_t| <= -mu t_n + c``  slip (1)          no
+AssociativeMohrCoulomb  same set, closest-point return          slip (1)          no
+RateAndStateFriction    ``|t_t| <= -mu(V, theta) t_n``          slip, theta (2)   yes
+======================  ======================================  ================  ===
 
-Two consequences.  :class:`LinearContact` imposes no constraint at
-all, so its projection is the identity and its fixed point is reached in one
-evaluation -- which is why the driver short-circuits it through the compliance
-block instead and it never reaches ``CD`` in practice.  And the sets of
-:class:`FrictionlessBilateral` and :class:`SignoriniCoulomb` without cohesion
-are **cones through the origin**, so their projections commute with positive
+:class:`LinearContact` constrains nothing, so its projection is the identity and
+its fixed point is reached in one evaluation; the driver takes it through the
+compliance block instead, so it does not reach ``CD``.  The sets of
+:class:`FrictionlessBilateral` and of :class:`SignoriniCoulomb` without cohesion
+are cones through the origin, so their projections commute with positive
 scaling; cohesion shifts the set off the origin and breaks that.
 
-The conversion to the traction *moments* the linear system actually constrains
-is the linear map ``to_moments``; the gap comes back through the linear map
-``jump``.  Both are supplied as matrices by whoever knows the discretisation.
+The conversion to the traction moments the linear system constrains is the
+linear map ``to_moments``; the gap comes back through the linear map ``jump``.
+Both are supplied as matrices by the discretisation.
 
 Prestress
 ---------
-A contact law constrains the **total** traction: Signorini says the total normal
-traction is compressive, not that some increment is.  When only an increment is
-solved for -- a depletion response on top of an in-situ state -- the law must
-still be shown the total, or a unilateral condition will read a tensile
-*increment* on a firmly closed fault as opening.  ``prestress`` carries the
-in-situ traction at the enforcement points: it is added before the projection
-and removed after, so ``x`` stays the incremental unknown the mechanics
-constrains while the law sees physical reality.
+A contact law constrains the total traction: Signorini says the total normal
+traction is compressive, not the increment.  When only an increment is solved
+for -- a depletion response on top of an in-situ state -- a unilateral condition
+shown the increment alone reads a tensile increment on a closed fault as
+opening.  ``prestress`` carries the in-situ traction at the enforcement points,
+added before the projection and removed after, so ``x`` stays the incremental
+unknown while the law sees the total.
 """
 
 from __future__ import annotations
@@ -84,20 +68,19 @@ from mimetika.solver.saddle import solve_saddle
 
 
 def driving_gap(gap: np.ndarray, g_prev=None) -> np.ndarray:
-    """What the augmentation multiplies: total normal gap, tangential *increment*.
+    """What the augmentation multiplies: total normal gap, tangential increment.
 
-    The two components are not treated alike.
-    The normal condition ``g_n >= 0`` is a statement about the *absolute* gap, so
-    the normal term is driven by the total jump.  Coulomb friction instead
-    opposes the slip **rate**: eq. (2e) of Frigo et al. (2025) reads
-    ``g_T . t_T = tau_max |g_T|`` with ``g_T`` a rate, which a quasi-static scheme
-    discretises as the backward increment ``Delta_n g_T = g_T,n - g_T,n-1``.
+    The normal condition ``g_n >= 0`` constrains the absolute gap, so the normal
+    term is driven by the total jump.  Coulomb friction opposes the slip rate:
+    eq. (2e) of Frigo et al. (2025) reads ``g_T . t_T = tau_max |g_T|`` with
+    ``g_T`` a rate, which a quasi-static scheme discretises as the backward
+    increment ``Delta_n g_T = g_T,n - g_T,n-1``.
 
-    Driving the tangential part with the total jump instead is equivalent only
-    while the loading is monotone and proportional -- the first step from rest,
-    or any path along a fixed direction.  As soon as the slip direction rotates
-    or reverses, the total jump still points along the accumulated path and the
-    traction lags the direction it should oppose.
+    Driving the tangential part with the total jump is equivalent only under
+    monotone proportional loading (the first step from rest, or a path along a
+    fixed direction).  Once the slip direction rotates or reverses, the total
+    jump points along the accumulated path and the traction lags the direction
+    it should oppose.
     """
     gap = np.asarray(gap, dtype=float)
     if g_prev is None:
@@ -129,7 +112,7 @@ class ContactMap:
     Parameters
     ----------
     matrix, rhs
-        The assembled mechanics system, **all** boundary conditions applied.
+        The assembled mechanics system, all boundary conditions applied.
     dofs
         Indices of the fracture traction unknowns, in the order ``to_moments``
         produces them.
@@ -159,7 +142,7 @@ class ContactMap:
     #: in-situ traction at the enforcement points; the law sees ``x + prestress``
     prestress: np.ndarray | None = None
     #: gap contribution of the mechanics rhs on the replaced fault rows,
-    #: ``(n_points, dim)``.  The gap is the *residual* of those rows,
+    #: ``(n_points, dim)``.  The gap is the residual of those rows,
     #: ``-(row . z - b_f)``; reading ``J z`` alone imposes a spurious jump
     #: equal to ``b_f``'s coefficients (e.g. the Biot pore-coupling term).
     gap_shift: np.ndarray | None = None
@@ -215,29 +198,26 @@ class ContactMap:
                  ) -> "CondensedContactMap":
         """Reduce to the contact unknowns alone -- no linear solve per evaluation.
 
-        The nonlinear system is small: ``n_points * dim`` unknowns, a handful
-        per fracture facet.  Two facts remove the need for a global solve per
-        evaluation.
-
-        The constrained matrix does **not** depend on ``x``.  Pinning zeroes the
-        same rows and columns whatever the pinned values are; only the
-        right-hand side moves.  And that dependence is *affine*::
+        The nonlinear system has ``n_points * dim`` unknowns, a handful per
+        fracture facet.  The constrained matrix does not depend on ``x``:
+        pinning zeroes the same rows and columns whatever the pinned values are,
+        and the right-hand side depends on them affinely::
 
             ``b(x) = b_0 + B W x`` ,   ``z(x) = A^{-1} b(x)`` ,
             ``g(x) = g_0 + Ghat x`` ,  ``Ghat = J A^{-1} B W`` .
 
-        So one factorisation and ``n_points * dim + 1`` back-substitutions give a
-        small dense ``Ghat``, after which ``CD`` is a matvec and a projection.
-        The Uzawa iteration then touches the global system not at all.
+        One factorisation and ``n_points * dim + 1`` back-substitutions give the
+        small dense ``Ghat``, after which ``CD`` is a matvec and a projection,
+        with no global solve.
 
         Worth it whenever the iteration count exceeds the contact DOF count,
-        which is the usual case for friction; for a very large fracture and a
-        near-linear law the uncondensed form can still win.
+        the usual case for friction; for a very large fracture and a near-linear
+        law the uncondensed form can still win.
 
-        ``reuse`` skips the factorisation and ``Ghat`` entirely: pass the
-        condensed map of a *previous* system with the **same matrix** (a new
-        load level, a new law parameter) and only the affine offset is redone
-        -- one back-substitution instead of ``n + 1`` plus a factorisation.
+        ``reuse`` skips the factorisation and ``Ghat``: pass the condensed map
+        of a previous system with the same matrix (a new load level, a new law
+        parameter) and only the affine offset is redone -- one back-substitution
+        instead of ``n + 1`` plus a factorisation.
         """
         from mimetika.assembly.mixed import constraint_scales
 
@@ -282,9 +262,9 @@ class ContactMap:
 
         factor = spla.splu(sp.csc_matrix(A0))
         base = factor.solve(b0)
-        # contract J A^{-1} B W in column blocks: the full response matrix is
-        # (N, n) dense -- gigabytes at scale -- but only its projection onto
-        # the fault rows survives, so never materialise it
+        # contract J A^{-1} B W in column blocks of 64: only the projection of
+        # the (N, n) dense response matrix onto the fault rows is needed, so it
+        # is never materialised
         gap_matrix = np.empty((self.jump.shape[0], n))
         step = 64
         for j0 in range(0, n, step):
@@ -330,20 +310,16 @@ def fixed_point(
 ) -> FixedPointResult:
     """Solve ``x = CD(x)`` by relaxed Picard iteration.
 
-    While the fracture *sticks* the tangential update is a contraction and
-    ``relaxation = 1`` converges; while it *slides* it is not, and the plain
-    iteration settles into a limit cycle of constant amplitude rather than
-    converging.  Damping restores convergence.
-
-    Separate from :class:`ContactMap`: the map is the problem, and a Newton or
-    Anderson variant would replace only this function.
+    While the fracture sticks the tangential update is a contraction and
+    ``relaxation = 1`` converges; while it slides it is not, and the undamped
+    iteration settles into a limit cycle of constant amplitude.
     """
     def settled(x, change):
-        """Converged means *small*, which a non-finite iterate never is.
+        """``change <= tolerance * max(|x|, 1)``, with a finiteness guard.
 
-        Without the finiteness guard a diverging iteration reports success: once
-        ``x`` overflows, ``tolerance * max(|x|, 1)`` is ``inf`` and the test
-        ``change <= inf`` passes.
+        Without the guard a diverging iteration reports success: once ``x``
+        overflows, ``tolerance * max(|x|, 1)`` is ``inf`` and ``change <= inf``
+        passes.
         """
         if not (np.all(np.isfinite(x)) and np.isfinite(change)):
             return False
@@ -376,11 +352,10 @@ def fixed_point(
 class CondensedContactMap:
     """``CD`` with the mechanics eliminated: ``g(x) = g_0 + Ghat x``.
 
-    Same interface as :class:`ContactMap` -- :func:`fixed_point` cannot tell them
-    apart -- but every evaluation is a small dense matvec instead of a global
-    solve.  The solution vector is no longer available, which is the one thing
-    given up: recover it with a single final :class:`ContactMap` evaluation at
-    the converged ``x``.
+    Same interface as :class:`ContactMap`, so :func:`fixed_point` accepts
+    either, but every evaluation is a small dense matvec instead of a global
+    solve.  An evaluation returns no solution vector; :meth:`recover` rebuilds
+    it at the converged ``x`` with one back-substitution.
     """
 
     gap_offset: np.ndarray  # g_0, (n_points, dim)
@@ -411,16 +386,16 @@ class CondensedContactMap:
     def jacobi_augmentation(self, safety: float = 1.0) -> np.ndarray:
         """Per-point ``r`` read off the condensed compliance ``Ghat``.
 
-        The augmentation must match the stiffness the fracture actually sees, and
-        ``Ghat`` *is* that stiffness -- exactly, including the whole domain's
-        response, not a local estimate.  Taking ``r_p = 1 / max_j |Ghat_(pj,pj)|``
-        is the Jacobi choice, which makes the diagonal of ``I + r Ghat`` vanish.
+        The augmentation must match the stiffness the fracture sees, which is
+        ``Ghat`` itself, the whole domain's response rather than a local
+        estimate.  ``r_p = safety / max_j |Ghat_(pj,pj)|`` is the Jacobi choice,
+        making the diagonal of ``I + r Ghat`` vanish.
 
-        A geometric estimate based on the two cells adjacent to the facet
-        assumes the fracture is loaded through its immediate neighbours; for a
-        fault cutting the entire domain the compliance is that of the whole
-        block, and the estimate can be an order of magnitude too stiff --
-        enough to make the iteration diverge.
+        A geometric estimate from the two cells adjacent to the facet assumes
+        the fracture is loaded through its immediate neighbours; for a fault
+        cutting the entire domain the compliance is that of the whole block and
+        the estimate can be an order of magnitude too stiff, enough to make the
+        iteration diverge.
         """
         n_points, dim = self.shape
         diagonal = np.abs(np.diag(self.gap_matrix)).reshape(n_points, dim)
@@ -500,13 +475,13 @@ def projection_gap_tangent(law, trial, internal=None, g=None, g_prev=None,
                            dt=None, step: float = 1e-5) -> np.ndarray:
     """``dP/dg`` at fixed trial: ``(n_points, dim, dim)`` blocks.
 
-    Zero for plain Coulomb -- the projection reads the jump only through the
-    trial -- but not for a law whose *coefficients* depend on the jump (slip
-    weakening, rate and state).  There the term ``dP/dg . Ghat`` belongs in
-    the Newton Jacobian: it is exactly the destabilising feedback of the
-    weakening, and dropping it degrades Newton to a Picard-like alternation
-    that spirals near the nucleation fold while the equilibrium branch still
-    exists.  Central differences per gap component, pointwise blocks.
+    Zero for plain Coulomb, whose projection reads the jump only through the
+    trial; nonzero for a law whose coefficients depend on the jump (slip
+    weakening, rate and state).  There ``dP/dg . Ghat`` is the weakening
+    feedback and belongs in the Newton Jacobian; dropping it degrades Newton to
+    a Picard-like alternation that fails to converge near the nucleation fold
+    while the equilibrium branch still exists.  Central differences per gap
+    component, pointwise blocks.
     """
     g = np.atleast_2d(np.asarray(g, dtype=float))
     trial = np.atleast_2d(np.asarray(trial, dtype=float))
@@ -536,12 +511,12 @@ def newton(
 ) -> FixedPointResult:
     r"""Semismooth Newton on ``F(x) = CD(x) - x = 0``, for a condensed map.
 
-    Picard is only a good solver when ``CD`` is a contraction, which needs the
-    augmentation to match the fracture compliance *and* that compliance to be
-    close to diagonal.  Neither holds for a fault that cuts the domain: the
-    condensed operator ``Ghat`` is dense, every facet feels every other, and no
-    scalar ``r`` makes ``I + r Ghat`` a contraction.  Rescaling ``r`` cannot fix
-    a spectral radius problem caused by off-diagonal coupling.
+    Picard converges only when ``CD`` is a contraction, which needs the
+    augmentation to match the fracture compliance and that compliance to be
+    close to diagonal.  Neither holds for a fault cutting the domain: ``Ghat``
+    is dense, every facet feels every other, and no scalar ``r`` makes
+    ``I + r Ghat`` a contraction -- rescaling ``r`` cannot fix a spectral-radius
+    problem caused by off-diagonal coupling.
 
     With
 
@@ -580,7 +555,7 @@ def newton(
         jacobian = sp.block_diag(blocks, format="csr") @ trial_jacobian - np.eye(size)
         if getattr(condensed.law, "gap_dependent", False):
             # laws whose coefficients read the jump need the dP/dg . Ghat
-            # chain-rule term -- the weakening feedback itself
+            # chain-rule term, the weakening feedback
             gap_blocks = projection_gap_tangent(
                 condensed.law, trial, internal, evaluation.gap, g_prev, dt
             )

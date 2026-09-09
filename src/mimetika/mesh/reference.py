@@ -1,12 +1,12 @@
 """A catalogue of single reference cells of every topological dimension.
 
 Each entry is one cell -- a point, a segment, a polygon or a polyhedron --
-embedded in ``R^3``, together with its **analytically known** measure so the
-geometry layer can be checked against exact values rather than against itself.
+embedded in ``R^3``, with its measure known in closed form, so the geometry
+layer is checked against exact values rather than against itself.
 
 Following the standing assumptions of the mimetic convergence theory, all cells
-have **planar facets** and are **star-shaped**; the collection deliberately
-includes irregular, tilted and non-convex (but still star-shaped) shapes.
+have planar facets and are star-shaped; the collection includes irregular,
+tilted and non-convex (but star-shaped) shapes.
 """
 
 from __future__ import annotations
@@ -136,7 +136,7 @@ _PYRAMID = np.array(
     [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0.5, 0.5, 1.2]], dtype=float
 )
 
-# Unit cube whose top face is dented *inward* to an apex: non-convex, all facets
+# Unit cube whose top face is dented inward to an apex: non-convex, all facets
 # planar (the dent is four triangles), star-shaped about a point near the base.
 _DENT_DEPTH = 0.4
 _CUBE_DENTED = np.array(

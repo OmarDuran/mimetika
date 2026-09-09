@@ -18,32 +18,30 @@
 // the resolution of a curved boundary for the annulus.
 //
 // Six mesh configurations each -- two dimensions by three families -- against
-// all three of exokal's flux inner products. The prism is the cell that matters
-// most: neither a simplex nor a tensor-product cell, two triangles and three
-// quadrilaterals, so a construction that handles it is polytopal rather than
-// hex-and-tet with extra steps. In the plane a prism over an interval is a
-// quadrilateral, so that row coincides with cartesian and is reported rather
-// than skipped.
+// three of exokal's flux inner products. The prism is neither a simplex nor a
+// tensor-product cell: two triangles and three quadrilaterals. In the plane a
+// prism over an interval is a quadrilateral, so that row coincides with
+// cartesian and is reported rather than skipped.
 //
 // The three products are different discretizations, not a refinement ladder:
 //
-//   derham      d moments per facet. On a simplex it is BDM_1 -- 3 edges x 2
-//               in the plane, 4 facets x 3 in space -- unisolvent with no
-//               enrichment; on a polytope the moments are completed with
-//               div-free curl modes. Any cell, either dimension.
-//   derham_rt   one flux per facet: RT_0, the minimal de Rham pair, whose
-//               radial mode x - x_E is what lets div reach P_0 at all. d+1
-//               modes against d+1 fluxes is the whole argument, so it is
-//               simplices only -- triangle or tetrahedron -- and refuses the
-//               rest rather than stabilizing them.
-//   stabilized  one flux per facet on any polytope, in either dimension:
-//               consistency plus a stabilization sized to trace(M1)/(d+2),
-//               which is the scale at which it is the conforming RT_0 element
-//               on a simplex (exokal hodge.test_rt_equivalence, vs basix).
+//   derham_bdm     d moments per facet. On a simplex it is BDM_1 -- 3 edges x 2
+//                  in the plane, 4 facets x 3 in space -- unisolvent with no
+//                  enrichment; on a polytope the moments are completed with
+//                  div-free curl modes. Any cell, either dimension.
+//   derham_rt      one flux per facet: RT_0 = span{K e_i, x - x_E}, the radial
+//                  mode carrying div to P_0. Exact on a simplex, where RT_0
+//                  alone is unisolvent; on a polytope it too enriches div-free
+//                  until the facet fluxes determine it, and the bound is the
+//                  facet cap below, not the cell type.
+//   stabilized_rt  one flux per facet on any polytope, in either dimension:
+//                  consistency on span{K e_i} plus a stabilization sized to
+//                  trace(M1)/(d+2), the scale at which it is the conforming
+//                  RT_0 element on a simplex (exokal hodge.test_rt_equivalence,
+//                  against basix).
 //
-// What they share is consistency -- every one of them reproduces a constant
-// flux exactly -- and that is what the column asserts of all three. Where they
-// differ is everything else, which is what the annulus measures.
+// All three reproduce a constant flux exactly, which is what the column
+// asserts; the annulus measures where they differ.
 
 using graphos::Index;
 using mimetika::FlowModel;
@@ -150,10 +148,9 @@ const Family kFamilies[] = {Family::cartesian, Family::simplex, Family::prism};
 const Realization kProducts[] = {Realization::derham_bdm, Realization::derham_rt,
                                  Realization::stabilized_rt};
 
-// EVERY MEMBER, NOT ONLY THE ONES kProducts EXERCISES. The switch has no
-// default on purpose: -Wswitch is then what reports the next realization added
-// to the enum, and a default would silence it and let the new member print
-// someone else's name. The unreachable return is for a value outside the enum.
+// Every member of the enum, not only the ones kProducts exercises. No default
+// case: -Wswitch then reports the next realization added to the enum. The
+// trailing return is for a value outside the enum.
 const char* product_name(Realization r) {
   switch (r) {
     case Realization::derham_bdm: return "derham_bdm";
@@ -166,16 +163,12 @@ const char* product_name(Realization r) {
   return "?";
 }
 
-// What each product claims.
-//
-// All three claim every structured family in both dimensions. RT_0's argument is
-// d+1 modes against d+1 facets, a simplex, but the consistency-only families
-// enrich with curl-type divergence-free fields until the facet moments are
-// unisolvent, and that reaches the tensor cells too.
-//
-// The claim is therefore bounded by facet count, not by cell type: past exokal's
-// default_max_facets a cell is refused before any search is attempted, which is
-// what a_cell_past_the_facet_limit_is_refused pins down.
+// What each product claims: every structured family in both dimensions. The
+// consistency-only families enrich with curl-type divergence-free fields until
+// the facet moments are unisolvent, which reaches the tensor cells too, so the
+// claim is bounded by facet count rather than cell type -- past exokal's
+// default_max_facets a cell is refused before any search
+// (a_cell_past_the_facet_limit_is_refused).
 bool supported(Realization, int, Family) { return true; }
 
 // An n-gonal prism as a single cell: n side quads and two caps, so n + 2
@@ -200,10 +193,9 @@ exokal::Mesh drum(int n) {
 
 }  // namespace
 
-// A linear pressure is reproduced exactly. The flux space contains the constant
-// fields, so the gradient of a linear pressure is represented with no error, on
-// any cell type in any dimension. Anything above round-off here is a broken
-// space rather than a coarse mesh, and no refinement would fix it.
+// A linear pressure is reproduced exactly: the flux space contains the constant
+// fields, so -K grad p is represented with no error on any cell type in any
+// dimension. Anything above round-off is a broken space, not a coarse mesh.
 MIMETIKA_TEST(the_column_reproduces_the_linear_solution_exactly) {
   for (const Realization r : kProducts) {
     for (const int dim : {2, 3}) {
@@ -223,9 +215,8 @@ MIMETIKA_TEST(the_column_reproduces_the_linear_solution_exactly) {
   }
 }
 
-// And the Dupuit profile, which is not in the space: the radial harmonic is
-// approximated, so the error is a resolution and not a defect. It must fall
-// with refinement, which the second size checks.
+// The Dupuit profile is not in the space: the radial harmonic is approximated,
+// so the error is a resolution and must fall with refinement.
 MIMETIKA_TEST(the_annulus_reproduces_dupuit) {
   for (const Realization r : kProducts) {
     for (const int dim : {2, 3}) {
@@ -246,14 +237,13 @@ MIMETIKA_TEST(the_annulus_reproduces_dupuit) {
 
 // ---- the two-point product --------------------------------------------------
 //
-// diagonal_tpfa is exokal's, and so is the question of where it is consistent:
-// it reconstructs nothing, its M is the diagonal primal-dual star, and it is
-// strongly consistent only where the mesh is K-orthogonal. exokal tests that.
-// What is tested here is that mimetika reaches it -- that a model built with it
-// lays out the space it should and solves the problem it claims.
+// diagonal_tpfa reconstructs nothing: M is the diagonal primal-dual star,
+// M_ff = (|sigma*|/|sigma|)/(n.K n), strongly consistent only where the mesh is
+// K-orthogonal, which exokal tests. Here: that a model built with it lays out
+// the space it should and solves the problem it claims.
 //
-// Its space is RT's: one flux per facet, so a model that mixed the two up
-// would still assemble and still converge, and only the count would say so.
+// Its layout is derham_rt's, one flux per facet, so a model that mixed the two
+// up would still assemble and still converge.
 MIMETIKA_TEST(the_two_point_product_lays_out_one_flux_per_facet) {
   for (const int dim : {2, 3}) {
     for (const Family f : kFamilies) {
@@ -270,9 +260,8 @@ MIMETIKA_TEST(the_two_point_product_lays_out_one_flux_per_facet) {
 // And it reproduces a linear pressure where it claims to. The hexahedral and
 // prismatic columns are K-orthogonal -- the segment between two cell centroids
 // meets their shared facet squarely -- and there the two-point flux is exact.
-// The tetrahedral column is not, and is not asserted here: that boundary
-// belongs to exokal, which tests it against the geometry rather than against a
-// model.
+// The tetrahedral column is not K-orthogonal and is not asserted here; exokal
+// tests that boundary against the geometry.
 MIMETIKA_TEST(the_two_point_product_is_exact_where_the_column_is_orthogonal) {
   for (const int dim : {2, 3}) {
     for (const Family f : {Family::cartesian, Family::prism}) {
@@ -286,10 +275,9 @@ MIMETIKA_TEST(the_two_point_product_is_exact_where_the_column_is_orthogonal) {
 
 // ---- how the three products differ ----------------------------------------
 
-// The spaces are not the same size, which is the concrete content of "different
-// discretizations". d moments per facet against one: on the same tetrahedral
-// column the de Rham/BDM space carries 330 unknowns where the two lowest-order
-// products carry 134, and all three are exact on a linear pressure.
+// d moments per facet against one: on the same tetrahedral column the de
+// Rham/BDM space carries 330 unknowns where the two lowest-order products carry
+// 134, and all three are exact on a linear pressure.
 MIMETIKA_TEST(the_products_lay_out_different_spaces) {
   const Outcome bdm = column_case(6, 3, Family::simplex, Realization::derham_bdm);
   const Outcome rt = column_case(6, 3, Family::simplex, Realization::derham_rt);
@@ -311,9 +299,8 @@ MIMETIKA_TEST(the_products_lay_out_different_spaces) {
 //
 // Yet the pressures agree to round-off: both spaces contain the constants, so
 // both are consistent, and on this problem the stabilization does not reach the
-// cell pressures. A model-level comparison therefore cannot be used to conclude
-// two operators are the same; that conclusion belongs to the exokal test,
-// against a conforming element.
+// cell pressures. A model-level comparison cannot conclude that two operators
+// are the same; that belongs to the exokal test against a conforming element.
 MIMETIKA_TEST(rt_and_the_stabilized_product_coincide_on_a_simplex) {
   for (const int nr : {8, 16}) {
     const Outcome rt = annulus_case(nr, nr / 2, 3, Family::simplex, Realization::derham_rt);
@@ -327,15 +314,12 @@ MIMETIKA_TEST(rt_and_the_stabilized_product_coincide_on_a_simplex) {
 
 // Where the consistency-only family stops, and that it stops by refusing.
 //
-// The enrichment is not unbounded: a cell with more facets than the search is
-// willing to chase is refused at once, before any search, because F is known
-// and discovering the refusal the slow way costs tens of milliseconds a cell.
-// An n-gonal prism walks the boundary one facet at a time -- n sides and two
-// caps -- so the limit is located rather than assumed.
+// F is known before any assembly, so a cell past max_facets is refused without
+// a search. An n-gonal prism walks the limit one facet at a time -- n sides and
+// two caps -- so it is located rather than assumed.
 //
-// The stabilized construction has a fallback and takes every one of them, which
-// is what makes the pair the test: the refusal is a property of the
-// consistency-only argument and not of the cell being difficult.
+// stabilized_rt enriches nothing and takes every one of them: the refusal is a
+// property of the consistency-only argument, not of the cell.
 MIMETIKA_TEST(a_cell_past_the_facet_limit_is_refused) {
   const auto builds = [](int n, Realization r) {
     try {

@@ -3,9 +3,9 @@ r"""Benchmark 0 of Novikov et al.: in-situ state and depletion response, no faul
 Two independent claims, tested separately:
 
 * the in-situ profiles printed in the paper follow from the Table 2 parameters
-  (a check on the *setup*, needing no solver);
+  (a check on the setup, needing no solver);
 * the mixed poromechanics solver reproduces the uniaxial depletion response
-  exactly (a check on the *solver*, against a closed form).
+  exactly (a check on the solver, against a closed form).
 
 Tolerances are set by what the paper prints -- three or four significant
 figures -- for the published comparisons, and by round-off for the closed
@@ -47,8 +47,7 @@ def test_in_situ_profiles_match_the_paper(parameters, field):
     the fault tangent is taken, and the paper's choice is opposite to ours.
 
     The tolerance is set by the paper's own precision -- it prints three
-    significant figures, so ``2.35`` against a computed ``2.340`` is agreement,
-    not disagreement.
+    significant figures, so ``2.35`` against a computed ``2.340`` is agreement.
     """
     intercept, gradient = in_situ_report(parameters)[field]
     want_intercept, want_gradient = PUBLISHED[field]
@@ -77,7 +76,8 @@ def test_the_in_situ_state_is_genuinely_linear_in_depth(parameters):
 
 
 def test_effective_stress_ratio_is_the_earth_pressure_coefficient(parameters):
-    """``K0`` acts on *effective* stress -- using total stress would be a classic slip."""
+    """``K0`` acts on effective stress; both profiles are linear in ``y``, so
+    using the total stress instead is invisible in the profile shape."""
     y = np.linspace(-1000.0, 1000.0, 9)
     effective_vertical = parameters.vertical_stress(y) + parameters.biot * (
         parameters.pressure(y)
@@ -170,11 +170,10 @@ def test_the_response_is_mesh_independent(n):
 def test_rollers_are_what_make_it_uniaxial():
     """Guard the premise: free lateral slip is what produces the closed form.
 
-    Compared against the same problem with the sides **fully clamped** rather
-    than free to slide.  A genuinely unconfined block would be the more obvious
-    contrast, but prescribing traction all round leaves the rigid-body modes
-    undetermined and the system singular -- clamping is the well-posed
-    alternative, and it gives a visibly different answer.
+    Compared against the same problem with the sides fully clamped rather than
+    free to slide.  Prescribing traction all round would leave the rigid-body
+    modes undetermined and the system singular, so clamping is the well-posed
+    alternative.
     """
     from mimetika.assembly.mixed import boundary_facets
     from mimetika.assembly.poromechanics import PoroMechanics
@@ -241,10 +240,10 @@ def test_roller_dofs_reject_a_non_axis_aligned_facet():
 # -- Fig. 4: combined stresses across the finite reservoir ------------------------------
 #
 # A different computation from the uniform-depletion check above: the reservoir
-# is 225 m thick inside a 4500 m domain.  Because it spans the **full width** and
-# the sides are rollers, the problem is one-dimensional -- so the increment is
-# exactly uniaxial inside the reservoir and exactly zero outside it, which is the
-# two-plateau step the figure shows.  Both plateaus are therefore checked exactly.
+# is 225 m thick inside a 4500 m domain.  Because it spans the full width and the
+# sides are rollers, the problem is one-dimensional, so the increment is exactly
+# uniaxial inside the reservoir and exactly zero outside it -- the two-plateau
+# step the figure shows.  Both plateaus are checked exactly.
 
 
 @pytest.fixture(scope="module")
@@ -343,10 +342,9 @@ def test_a_grid_that_bisects_the_reservoir_boundary_is_rejected(ny):
     """The depletion is per cell, so the boundary must land on a cell face.
 
     With ``ny = 180`` the boundary at ``+-112.5`` m falls exactly on a cell
-    *centre*: that cell is half inside the reservoir, the centroid test excludes
-    it, and the stress step lands half a cell away from where it belongs.  The
-    figure looked plausible and was wrong by 16 MPa over one cell, so this is
-    refused rather than silently approximated.
+    centre: that cell is half inside the reservoir, the centroid test excludes
+    it, and the stress step lands half a cell away, wrong by 16 MPa over that
+    cell.  Refused rather than approximated.
     """
     from benchmarks.contact_mechanics.benchmark_0 import finite_reservoir
 

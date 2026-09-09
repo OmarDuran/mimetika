@@ -11,8 +11,7 @@ else, so a jump in K is a jump in the metric and not in the complex.
 The datum is affine.  Then dp is constant, q = -K dp is constant, and the field
 lies in the lowest-order space exactly, so the direct answer is its interpolant
 wherever the star reproduces it.  Both solvers see the SAME discrete system, so a
-disagreement between them is the iterative method and never the discretization --
-which is what makes the direct solve usable as the reference.
+disagreement between them is the iterative method and never the discretization.
 
 The Riesz map is the Gram matrix of the norm in which the operator is an
 isomorphism,
@@ -156,9 +155,9 @@ def test_the_riesz_answer_is_the_direct_answer(product, family):
 def test_the_count_does_not_grow_under_refinement(product, family):
     """h-independence: the bound is the inf-sup constant, which does not see h.
 
-    The ladders span a factor of 16 in cell count, so growth in h would show as
-    hundreds of iterations and a small absolute cap is the sharp statement. The
-    diagonal star starts lower than the rest, hence the drift bound beside it.
+    The ladders span up to a factor of 16 in cell count, so growth in h would
+    show as hundreds of iterations; the cap is 15, with a separate drift bound
+    of 6 because the diagonal star starts lower than the rest.
     """
     dim, meshes = LADDERS[family]
     counts = [solved(mesh, dim, product)[0] for mesh in meshes]
@@ -171,8 +170,8 @@ def test_the_count_does_not_grow_under_refinement(product, family):
 def test_the_patch_is_reproduced_where_the_product_claims_it(product, family):
     """Both directions, so a claim cannot pass by being vacuous.
 
-    Where the product reproduces the affine field the discrete answer IS its
-    interpolant; where it does not, the departure is O(1) in h and must show.
+    On EXACT_ON the discrete answer IS the interpolant, below 1e-12; elsewhere
+    the departure is O(1) in h and must exceed 1e-4.
     """
     dim, meshes = LADDERS[family]
     departures = [solved(mesh, dim, product)[2] for mesh in meshes]
@@ -196,11 +195,11 @@ CONTRAST_CASES = [(p, f) for p in ("stabilized_rt", "diagonal_tpfa")
 def test_the_contrast_is_carried_by_the_norm(product, family):
     """K over six orders of magnitude, on the dense-mass and lumped-mass products.
 
-    Face-orthogonal cells stay flat. The simplex families still grow: there
-    K_E |E| is a poorer stand-in for the facet transmissibility the Schur
-    complement sums, harmonic across the jump. The accuracy assertion is the one
-    that must hold everywhere -- a degraded preconditioner may cost iterations
-    and must not cost correctness.
+    Face-orthogonal cells stay flat, capped at 60. The simplex families grow --
+    there K_E |E| is a poorer stand-in for the facet transmissibility the Schur
+    complement sums, harmonic across the jump -- and are capped at 600. The
+    accuracy assertion holds everywhere: a degraded preconditioner may cost
+    iterations and must not cost correctness.
     """
     dim, meshes = LADDERS[family]
     mesh = meshes[len(meshes) // 2]
@@ -227,8 +226,8 @@ ETA_SELECTIONS = ((50.0, 0), (88.0, 25), (92.0, 50), (99.0, 74), (150.0, 100))
 def test_adaptive_rt_over_five_eta_distributions(threshold, on_the_star):
     """Five selections on 100 cells: 0, 25, 50, 74 and 100 of them on the star.
 
-    The fraction is asserted first, so the five cases cannot silently collapse
-    onto one eta and report five passes for a single distribution.
+    The fraction is asserted first, so the five cases cannot collapse onto one
+    eta and report five passes for a single distribution.
     """
     model, *_ = linear_patch(ETA_MESH, 2, "adaptive_rt", degeneracy=threshold)
     model.build()
@@ -267,9 +266,9 @@ def test_the_patch_error_follows_the_selection():
 
     Measured: 4.2e-16, 1.88e-02, 1.87e-02, 2.88e-02, 3.50e-02 over the five
     selections. Not monotone -- 25 and 50 cells tie and cross by 0.3% -- because
-    the error depends on WHICH cells were handed over and not only how many: a
-    cell the scan flags contributes according to how far from K-orthogonal it is.
-    So the claim here is the envelope, not an ordering.
+    the error depends on which cells were handed over and not only how many: a
+    flagged cell contributes according to how far from K-orthogonal it is. The
+    claim is the envelope, not an ordering.
     """
     errors = [solved(ETA_MESH, 2, "adaptive_rt", degeneracy=t)[2]
               for t, _ in ETA_SELECTIONS]

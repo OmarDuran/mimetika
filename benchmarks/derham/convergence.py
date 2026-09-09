@@ -5,7 +5,9 @@ Methods
 * mimetic-BDM (Darcy):    DeRhamDiffusionInnerProduct, mixed solve.
 * mimetic-AFW 3F:         MixedElasticity(inner=DeRhamElasticityInnerProduct).
 * mimetic-AFW 4F:         FourFieldElasticity(inner=DeRhamDeviatoricStress).
-* AFW (extended product): MixedElasticity default -- the reference member.
+* AFW (extended product): MixedElasticity(inner=ElasticityInnerProduct) --
+  the reference member; the class's own default inner is
+  DeRhamDeviatoricStress.
 
 Meshes: structured triangles (the coincidence regime: BDM_1 / AFW exactly)
 and structured quads (the enriched regime: constants-only strong

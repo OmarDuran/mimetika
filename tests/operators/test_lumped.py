@@ -1,27 +1,21 @@
 """The lumped (diagonal) deviatoric stress inner product.
 
-Two claims carry this operator, and this file exists to hold them apart.
+On an orthogonal cell -- one where the offset ``d = x_facet - x_collocation`` is
+parallel to the facet normal -- the diagonal matrix ``d_n/(2 mu |e|) I`` is the
+exact consistent inner product for constant stresses: ``M N = R`` to round-off.
+It is checked against the continuum identity ``M (sigma n) = sigma d/(2 mu |e|)``
+and against the closed-form compliance.
 
-The first is that on an **orthogonal** cell -- one where the offset
-``d = x_facet - x_collocation`` is parallel to the facet normal -- the diagonal
-matrix ``d_n/(2 mu |e|) I`` is not an approximation but the *exact* consistent
-inner product for constant stresses: ``M N = R`` to round-off.  That is the
-whole point, so it is checked directly against the continuum identity
-``M (sigma n) = sigma d / (2 mu |e|)`` and against the closed-form compliance,
-never against a stored number.
+Elsewhere no consistent lumped operator exists, so the guard is tested too: it
+fires on skewed cells, names the offending cell and its measured defect, and stays
+quiet on rectangles, on a regular hexagon (orthogonal but not Cartesian) and on a
+triangle collocated at its circumcentre.  In the ``(n, t)`` basis the unique
+consistent facet block is ``[[d_n, d_t], [-d_t, d_n]]``, whose off-diagonal is the
+defect the guard measures.
 
-The second is that this fails everywhere else, irrecoverably.  So the guard is
-tested as a feature: it must fire on skewed cells, must name the offender, and
-must stay quiet on rectangles, on a regular hexagon (orthogonal but not
-Cartesian) and on a triangle collocated at its circumcentre.  The ``(n, t)``
-block test pins *why*: the unique consistent facet block is
-``[[d_n, d_t], [-d_t, d_n]]``, whose off-diagonal is exactly the defect the
-guard measures.
-
-Finally, the Poisson ratio must be invisible to ``M``.  Splitting the trace off
-removed the material condition; all of the ``nu`` dependence has to live in the
-rank-one volumetric term, and the two are checked to recombine into the exact
-compliance.
+``M`` is independent of the Poisson ratio: splitting the trace off removes the
+material condition from the consistency derivation, so all ``nu`` dependence sits
+in the rank-one volumetric term, and the two recombine into the exact compliance.
 """
 
 import numpy as np
@@ -47,8 +41,7 @@ from mimetika.operators.lumped import LumpedDeviatoricStress
 MU, LAM = 1.3, 2.7
 
 # Cells on which ``x_facet - x_centroid`` is parallel to the facet normal.  The
-# hexagon and the tilted square are in deliberately: an operator that only
-# worked on axis-aligned boxes would still pass a Cartesian-only list.
+# hexagon and the tilted square are orthogonal but not axis-aligned.
 ORTHOGONAL = [
     "segment-unit",
     "segment-oblique",
@@ -84,15 +77,15 @@ def _mesh(name: str) -> Mesh:
 
 
 def _skewed(name: str) -> LumpedDeviatoricStress:
-    """The operator on a cell it is *not* valid for -- the guard turned off.
+    """The operator on a cell it is not valid for, with the guard disabled.
 
-    ``1.0`` disables it because the defect is a sine and cannot exceed one.
+    The defect is a sine, so ``orthogonality_tol = 1.0`` can never fire.
     """
     return LumpedDeviatoricStress(_mesh(name), mu=MU, lam=LAM, orthogonality_tol=1.0)
 
 
 def _deviatoric(rng, d: int) -> np.ndarray:
-    """A random symmetric trace-free tensor -- the stresses the operator owns."""
+    """A random symmetric trace-free tensor."""
     A = rng.standard_normal((d, d))
     S = A + A.T
     return S - np.trace(S) * np.eye(d) / d
@@ -131,8 +124,8 @@ def test_the_facet_space_is_one_traction_vector_not_the_afw_block():
 def test_the_gram_identity_holds_whether_or_not_the_cell_is_orthogonal(name):
     """``N^T R = |E| Kbar`` is the divergence theorem, so geometry cannot break it.
 
-    Separating this from ``M N = R`` is the point: the energy identity survives
-    on every cell, and orthogonality is needed for *strong* consistency alone.
+    The energy identity holds on every cell; orthogonality is needed only for
+    strong consistency ``M N = R``.
     """
     ip = _skewed(name)
     N, R, Kbar, vol, _ = ip.local_matrices(0)
@@ -140,12 +133,11 @@ def test_the_gram_identity_holds_whether_or_not_the_cell_is_orthogonal(name):
 
 
 def test_the_outward_normals_agree_with_the_local_cell_frame():
-    """The guard reads geometry its own way; it must not drift from LocalCell.
+    """Outward normals from incidence signs match ``LocalCell.facet_normals``.
 
     ``LocalCell`` orients facets by star-shapedness about the centroid, which is
     unusable once the collocation point may be a circumcentre, so this class
-    derives outward normals from the incidence signs instead.  The two routes
-    have to agree wherever both are valid.
+    derives outward normals from the incidence signs instead.
     """
     for name in ORTHOGONAL + SKEWED:
         ip = _skewed(name)
@@ -156,7 +148,7 @@ def test_the_outward_normals_agree_with_the_local_cell_frame():
         assert np.abs(n_out[0] @ ip.frame - lc.facet_normals).max() < 1e-14, name
 
 
-# -- consistency: the whole point ---------------------------------------------
+# -- consistency ---------------------------------------------------------------
 
 
 @pytest.mark.parametrize("mesh", CARTESIAN_MESHES, ids=CARTESIAN_IDS)
@@ -195,11 +187,10 @@ def test_strong_consistency_holds_on_every_orthogonal_cell(name):
 def test_the_consistent_facet_block_is_diagonal_exactly_when_d_is_parallel_to_n():
     """In the ``(n, t)`` basis the unique block is ``[[d_n, d_t], [-d_t, d_n]]``.
 
-    Solved here from the deviatoric modes alone, with no diagonality assumed, so
-    it says what the derivation says: the off-diagonal *is* ``d_t``.  On a
-    rectangle it vanishes and the block collapses onto the operator's; on a
-    skewed quad it does not, and the block is not even symmetric -- which is the
-    part the rotation multiplier cannot absorb.
+    Solved from the two deviatoric modes with no diagonality assumed: the
+    off-diagonal is ``d_t``.  On a rectangle it vanishes and the block equals the
+    operator's; on a skewed quad it does not, and the block is not symmetric --
+    the part the rotation multiplier cannot absorb.
     """
     dev = [np.array([[1.0, 0.0], [0.0, -1.0]]), np.array([[0.0, 1.0], [1.0, 0.0]])]
 
@@ -235,12 +226,8 @@ def test_the_consistent_facet_block_is_diagonal_exactly_when_d_is_parallel_to_n(
 
 
 def test_a_skewed_cell_admits_no_consistent_lumped_operator_at_all():
-    """Pins *why* the guard is an error and not a knob.
-
-    The diagonal the formula produces is the least-squares solution of ``M N =
-    R`` -- there is no better diagonal -- and its residual is a finite fraction
-    of ``R`` on a skewed cell.  Refusing to assemble is the only sound response.
-    """
+    """The diagonal is the least-squares solution of ``M N = R``, so no diagonal
+    does better; on a skewed cell its residual exceeds ``0.1 max|R|``."""
     for name in ("quad-irregular", "hex-sheared", "tet-reference"):
         ip = _skewed(name)
         N, R, _, _, _ = ip.local_matrices(0)
@@ -297,11 +284,8 @@ def test_the_guard_stays_quiet_on_orthogonal_cells(name):
 
 
 def test_the_guard_stays_quiet_on_rectangles_and_fires_when_one_node_moves():
-    """The same mesh, one interior node displaced: quiet before, loud after.
-
-    Comparing two meshes that differ in a single vertex is what makes this a
-    test of the geometric condition rather than of the mesh generator.
-    """
+    """One interior node displaced: the guard is quiet before and raises after,
+    naming the worst cell and its measured defect."""
     mesh = structured_quads(2, 2)
     LumpedDeviatoricStress(mesh, mu=MU, lam=LAM)  # rectangles: no complaint
 
@@ -335,11 +319,10 @@ def test_the_guard_rejects_a_collocation_point_lying_on_a_facet():
 
 
 def test_moving_the_collocation_point_to_the_circumcentre_admits_a_simplex():
-    """The collocation point is free, and using it recovers a whole mesh family.
+    """The triangle is inadmissible at its centroid and exact at its circumcentre.
 
-    An acute triangle is inadmissible at its centroid and exact at its
-    circumcentre -- the Delaunay half of TPFA's admissible family, and the
-    reason ``collocation`` exists at all.
+    The collocation point is a free parameter of the consistency derivation, so
+    choosing it makes the cell part of an orthogonal complex.
     """
     mesh = _mesh("triangle-irregular")
     with pytest.raises(ValueError, match="not orthogonal"):
@@ -359,13 +342,11 @@ def test_moving_the_collocation_point_to_the_circumcentre_admits_a_simplex():
 
 @pytest.mark.parametrize("mesh", CARTESIAN_MESHES, ids=CARTESIAN_IDS)
 def test_the_lumped_matrix_does_not_depend_on_the_poisson_ratio(mesh):
-    """Identical for ``nu = 0`` and ``nu = 0.3`` -- bit for bit, not merely close.
+    """Bit-identical for ``nu = 0`` and ``nu = 0.3``.
 
-    Splitting the trace off removed the material condition from the consistency
-    derivation, leaving only the geometric one.  The anti-triviality half of the
-    test is that the *volumetric* coefficient does move: at ``nu = 0`` there is
-    no volumetric coupling at all, at ``nu = 0.3`` there is, so the operator is
-    not simply ignoring the material.
+    Splitting the trace off leaves only the geometric condition in the consistency
+    derivation.  The volumetric coefficient does move: ``c = 0`` at ``nu = 0``,
+    ``c < 0`` at ``nu = 0.3``.
     """
     incompressible = Material(shear_modulus=MU, poisson=0.0)
     poisson = Material(shear_modulus=MU, poisson=0.3)
@@ -406,8 +387,8 @@ def test_the_volumetric_update_is_rank_one_on_every_cell(mesh):
 def test_the_volumetric_vector_is_the_discrete_trace(name):
     """``w . g = |E| tr(sigma) / (2 mu)`` -- the functional the pressure pairs with.
 
-    Another divergence-theorem identity, so it holds on skewed cells too: it is
-    the *lumping*, not the trace, that needs orthogonality.
+    Another divergence-theorem identity, so it holds on skewed cells too: the
+    lumping, not the trace, is what needs orthogonality.
     """
     ip = _skewed(name)
     d = ip.mesh.dim
@@ -425,10 +406,8 @@ def test_the_volumetric_vector_is_the_discrete_trace(name):
 def test_the_lumped_matrix_plus_the_rank_one_term_is_the_exact_compliance(name):
     """``g^T (M + c w w^T) g = int C^{-1} T : T`` for constant ``T``.
 
-    The two halves have to add back up to the continuum energy, and the
-    reference is the closed-form contraction, not a stored value.  Restricted to
-    constant fields because that is the reconstruction space -- see
-    :meth:`n_modes`.
+    The reference is the closed-form contraction.  Restricted to constant fields
+    because that is the reconstruction space -- see :meth:`n_modes`.
     """
     ip = LumpedDeviatoricStress(_mesh(name), mu=MU, lam=LAM)
     d = ip.mesh.dim
@@ -449,7 +428,7 @@ def test_the_lumped_matrix_plus_the_rank_one_term_is_the_exact_compliance(name):
 
 @pytest.mark.parametrize("mesh", CARTESIAN_MESHES, ids=CARTESIAN_IDS)
 def test_an_interior_facet_receives_both_half_compliances(mesh):
-    """The TPFA structure: two half-compliances in series across a facet."""
+    """Two-point flux structure: two half-compliances in series across a facet."""
     d = mesh.dim
     ip = LumpedDeviatoricStress(mesh, mu=MU, lam=LAM)
     contributions: dict[int, list[float]] = {}
@@ -493,17 +472,13 @@ def test_the_batched_path_reproduces_the_per_cell_one(name):
 
 @pytest.mark.parametrize("name", ["quads", "hexes", "graded"])
 def test_the_assembled_global_matrix_is_exactly_diagonal(name):
-    r"""Diagonal *after assembly*, which does not follow from the local blocks.
+    r"""Diagonal after assembly, which does not follow from the local blocks.
 
     An interior facet is shared, so its DOFs receive a contribution from each
-    adjacent cell.  Two diagonal local blocks only sum to a diagonal global one if
+    adjacent cell.  Two diagonal local blocks sum to a diagonal global one only if
     they land on the same DOFs with consistent signs and a consistent component
-    frame; a mismatch there would couple components across the facet and leave
-    off-diagonal entries, while every per-cell test still passed.
-
-    That is the whole point of the operator -- a non-diagonal ``M`` cannot be
-    inverted facet-by-facet and there is nothing left to recommend it -- so it is
-    asserted exactly, not to a tolerance.
+    frame; a mismatch couples components across the facet.  Asserted exactly, not
+    to a tolerance.
     """
     from mimetika.mesh import graded_quads, structured_box, structured_quads
 
@@ -515,8 +490,7 @@ def test_the_assembled_global_matrix_is_exactly_diagonal(name):
         ),
     }[name]()
 
-    # Guard the guard: with no shared facet the property is trivially true, so a
-    # single-cell mesh would pass while testing nothing.  A row of the cell-facet
+    # With no shared facet the property is trivially true.  A row of the cell-facet
     # boundary matrix has two entries exactly when that facet is interior.
     touching = np.diff(mesh.complex.boundary_matrix(mesh.dim).indptr)
     interior = int((touching == 2).sum())

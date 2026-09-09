@@ -1,9 +1,8 @@
 r"""The condensation benchmark: the structural claims behind the table.
 
-Timing exactness is a property of the machine, so the assertions here are the
-ones that cannot legitimately vary: the sizes, the reduction, and a *loose*
-ordering of the timings (the measured gap is ~50x; asserting 3x leaves room
-for any amount of CI noise without ever passing a broken condensation).
+Timing is a property of the machine, so the assertions are the ones that
+cannot legitimately vary: the dof counts, the reduced size, and a loose
+ordering -- 5x on LU fill and 3x on time, against a measured gap of ~50x.
 """
 
 import numpy as np

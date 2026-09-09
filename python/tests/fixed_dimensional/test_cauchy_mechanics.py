@@ -1,9 +1,9 @@
 """Cauchy elasticity through the Python interface.
 
-The Python-side mirror of tests/model/test_cauchy_mechanics_model.cpp: the same two
-problems (a confined column with a closed form, and Lame's thick-walled tube
-without one), the same three cell families, the same two products, the same
-tolerances.
+The Python-side mirror of tests/model/test_cauchy_mechanics_model.cpp: the same
+two problems (a confined column with a closed form, and Lame's thick-walled tube
+without one), the same three cell families, the same two weak-symmetry products,
+the same tolerances. The strongly-symmetric vem family is Python-side only.
 """
 
 import math
@@ -202,9 +202,9 @@ def test_the_annulus_reproduces_lame(how, dim, family):
     assert fine.rms_err < coarse.rms_err  # refinement helps, so it is resolution
 
 
-# ON A SIMPLEX MESH THE TWO PRODUCTS ARE ONE ELEMENT, and this carries it from a
-# single cell up to a solved problem. On a polytope they are genuinely different
-# discretizations, which the second half measures rather than glosses.
+# ON A SIMPLEX MESH THE TWO PRODUCTS ARE ONE ELEMENT, carried from a single cell
+# up to a solved problem. On a polytope they are different discretizations,
+# which the second half measures.
 @pytest.mark.parametrize("dim", [2, 3])
 def test_the_two_products_are_one_element_on_a_simplex_mesh(dim):
     # the material must not be trivial: at lam = 0 the volumetric term is
@@ -243,10 +243,10 @@ def test_the_model_refuses_the_realization_that_is_not_an_element():
         mk.CauchyMechanicsModel(m, 3, _material(), DERHAM_RT)
 
 
-# NEITHER PRODUCT LOCKS. As nu -> 1/2 the volumetric term dominates the
-# compliance, which is where one would expect an approximation to tell. It does
-# not: this is a MIXED method, and locking is a pathology of displacement-based
-# formulations. So the test is a comparison rather than a threshold.
+# NEITHER PRODUCT LOCKS at nu = 0.4999, where the volumetric term dominates the
+# compliance: locking is a pathology of displacement-based formulations and this
+# is mixed. The check is the rms against the compressible case and the rate, not
+# a threshold.
 @pytest.mark.parametrize("how", PRODUCTS, ids=lambda r: str(r).split(".")[-1])
 @pytest.mark.parametrize("dim", [2, 3])
 @pytest.mark.parametrize(
@@ -274,8 +274,8 @@ def test_neither_product_locks_as_the_material_becomes_incompressible(how, dim, 
 # exokal's rigid-motion ansatz (Dassi-Lovadina-Visinoni): six traction moments
 # per facet carried whole, the displacement as the six rigid-motion
 # coefficients per cell, no rotation multiplier -- symmetry lives in the
-# reconstruction space. exokal tests the operators; what is tested here is the
-# INTERFACE: the layout, the boundary conditions written in the six-slot facet
+# reconstruction space. exokal tests the operators; tested here is the
+# interface: the layout, the boundary conditions written in the six-slot facet
 # basis, the readbacks, and adaptive_vem's derived selection.
 
 STRONG_FAMILIES = [mk.Family.cartesian, mk.Family.simplex, mk.Family.prism]
@@ -368,8 +368,8 @@ def test_the_adaptive_vem_conditioning_selector_reaches_both_members():
 
 
 # THE REFUSALS: the symmetry axis is one decision, the diagonal members demand
-# the total pressure, the ansatz is three-dimensional, and the threshold
-# belongs to adaptive_vem. Each is an exception where the choice was made.
+# the total pressure, and the ansatz is three-dimensional. Each raises at
+# construction.
 @pytest.mark.parametrize(
     "how,form,dim",
     [
@@ -402,18 +402,17 @@ def test_the_threshold_is_refused_off_the_adaptive_vem_product():
 #     u_i = A x_i^2 / 2 ,   eps = diag(A x) ,   sigma = 2 mu eps + lam tr(eps) I ,
 #     (div sigma)_i = A(2 mu + lam)   ->   b_i = -A(2 mu + lam) ,
 #
-# and grad u is diagonal, so the rotation is identically zero and this asks the
-# stress rows a question the affine field cannot. sigma is linear and the cell
-# fields are constant, so it is converged to rather than reproduced -- second
-# order, which is the check: a force scaled wrongly converges to another field,
-# and a force dropped does not converge.
+# and grad u is diagonal, so the rotation is identically zero. sigma is linear
+# and the cell fields are constant, so this is converged to rather than
+# reproduced -- second order, which is the check: a force scaled wrongly
+# converges to another field, and a force dropped does not converge.
 FORCE_A = 0.7
 
 
 def _quadratic_case(n, how, form):
     mesh = mk.box([n, n, n], 3, mk.Family.cartesian, [1.0, 1.0, 1.0])
     model = mk.CauchyMechanicsModel(mesh, 3, _material(), how, form)
-    # The count comes from the MESH: n_cells is filled by the build.
+    # the count comes from the mesh: n_cells is 0 until build() runs
     model.set_body_force([-FORCE_A * (2.0 * MU + LAM)] * 3 * mesh.count(3))
     facets = mk.boundary_facets(mesh, 3)
     for f, cell in zip(facets, mk.cofacets_of(mesh, 3, facets)):

@@ -32,10 +32,8 @@
 // tension. Constraining it keeps t = lambda exactly, and an open point is then
 // traction free.
 //
-// AN EXACTLY LINEAR LAW NEEDS NO OUTER ITERATION AT ALL. The driver detects it
-// through ContactLaw::has_linear_compliance and does one solve with the
-// compliance block instead -- which is why LinearContact never reaches the
-// fixed-point map in practice.
+// An exactly linear law is not iterated: when ContactLaw::has_linear_compliance
+// is true the driver caps the outer loop at one evaluation.
 //
 // Stepping. solve_step advances one step; the caller owns the loop, so the
 // driver can be embedded in a staggered poromechanics scheme: the same object
@@ -75,8 +73,9 @@ struct DriverOptions {
   //            tangent. Needed whenever the second condition fails -- a fault
   //            that cuts the domain has a dense Ghat, every facet feels every
   //            other, and no scalar r makes I + r Ghat a contraction. It costs
-  //            n_points * dim + 1 back-substitutions once, and then touches the
-  //            global system not at all.
+  //            n_points * dim + 1 back-substitutions to condense, after which
+  //            the iteration is dense and small and touches the global system
+  //            only once more, to recover z at the converged traction.
   enum class Solver { picard, newton };
   Solver solver{Solver::picard};
 };
@@ -138,9 +137,8 @@ class ContactDriver {
   // pore-pressure right-hand side reach the contact problem -- the driver never
   // names one. `law` supplies the projection. Neither is owned.
   //
-  // The driver holds the law by pointer and does not own it, because a law is
-  // configuration that outlives any one step, so binding a temporary leaves it
-  // dangling when the constructor returns. A temporary law is refused at
+  // The law is held by pointer and not owned, so a temporary would dangle when
+  // the constructor returns; the rvalue overload is deleted to refuse one at
   // compile time.
   ContactDriver(const ContactMechanics&, ContactLaw&&, std::vector<double>,
                 DriverOptions = {}) = delete;
@@ -187,9 +185,7 @@ class ContactDriver {
     ContactMap map(*mechanics_, *law_, augmentation_);
     if (!prestress_.empty()) map.set_prestress(prestress_);
 
-    // AN EXACTLY LINEAR LAW IS ONE SOLVE. Its projection is the identity, so
-    // the fixed point is reached in a single evaluation and iterating would
-    // only re-derive it.
+    // an exactly linear law is capped at a single evaluation
     FixedPointOptions fp;
     fp.relaxation = options_.relaxation;
     fp.tolerance = options_.tolerance;
@@ -227,13 +223,10 @@ class ContactDriver {
       const CondensedMap built = cond == nullptr ? condense(*mechanics_) : CondensedMap{};
       res = newton(map, cond != nullptr ? *cond : built, fp, &state.traction, &state.internal,
                    &state.jump, dt);
-      // THE RECOVERY SOLVE ONLY RUNS ON A FINITE ITERATE.
-      //
-      // `newton` stops on a non-finite iterate but leaves it in `res.x` -- that
-      // IS the report of divergence. Feeding it onward puts a NaN right-hand
-      // side into the factorization, and a direct solver does not return an
-      // error for that: MUMPS segfaults, and PETSc's signal handler reports a
-      // crash where the real event was a diverged contact iteration.
+      // The recovery solve only runs on a finite iterate. `newton` stops on a
+      // non-finite iterate and leaves it in `res.x`; feeding that onward puts a
+      // NaN right-hand side into the factorization, where MUMPS segfaults and
+      // PETSc reports a crash rather than a diverged contact iteration.
       bool finite_x = true;
       for (const Vec3& v : res.x) {
         for (int k = 0; k < dim(); ++k) {

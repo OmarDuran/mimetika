@@ -17,9 +17,8 @@
 // Two independent claims, checked separately:
 //
 //   The in-situ profiles the paper prints follow from the Table 2 parameters.
-//   That is a statement about the setup and needs no solver, so it is checked
-//   first; a benchmark whose initial state is wrong will disagree with the
-//   reference for reasons unrelated to the discretization.
+//   Analytic, so it is checked first: a wrong initial state shifts every
+//   reference comparison for reasons unrelated to the discretization.
 //
 //   The depletion response is reproduced by the mixed solver. A uniformly
 //   depleted, laterally confined domain compacts uniaxially, and the closed
@@ -77,14 +76,13 @@ struct Response {
 // free to slide the problem is no longer uniaxial and the closed form fails.
 //
 // Stress is measured in units of the shear modulus. The mixed system is the
-// saddle point [M, -D^T; D, 0] with M ~ h^d/G and D ~ h^{d-1}; stated in pascals
-// with G = 6.5 GPa the two blocks sit 10^10 apart at h = 1/6 and the gap widens
-// as h^{-1}, so the direct factorization breaks down -- at n = 6 in pascals, at
-// n = 24 in megapascals. Dividing every stress-dimensioned quantity by G makes
-// M ~ h^d against D ~ h^{d-1}, a ratio of h, and the same solve is exact to
-// eleven digits at n = 96. Strain is dimensionless and comes back unchanged; the
-// stresses are multiplied by G on the way out, so the caller sees pascals
-// throughout.
+// saddle point [M, -D^T; D, 0] with M ~ h^d/G and D ~ h^{d-1}; in pascals with
+// G = 6.5 GPa the two blocks sit 10^10 apart at h = 1/6 and the gap widens as
+// h^{-1}, so the direct factorization breaks down at n = 6 in pascals and at
+// n = 24 in megapascals. Dividing every stress-dimensioned quantity by G leaves
+// M ~ h^d against D ~ h^{d-1}, a ratio of h, exact to eleven digits at n = 96.
+// Strain is dimensionless; the stresses are multiplied by G on the way out, so
+// the caller sees pascals throughout.
 Response depletion_response(const Parameters& p, int n, Realization how, bool clamp_sides = false) {
   const int dim = 2;
   const double unit = p.shear_modulus;
@@ -320,8 +318,8 @@ MIMETIKA_TEST(the_bulk_density_and_uniaxial_modulus_are_the_published_ones) {
   CHECK(close(p.uniaxial_modulus(), 15.79e9, 1e-3));
 }
 
-// The paper states these as linear profiles, so a fit must be exact rather than
-// close -- if any of them curved, the coefficients it prints would not describe it.
+// The paper states these as linear profiles, so the fit must be exact rather
+// than close: a curved profile is not described by an intercept and a gradient.
 MIMETIKA_TEST(the_in_situ_state_is_genuinely_linear_in_depth) {
   const Parameters p;
   const std::vector<double> y = samples(-2000.0, 2000.0, 17);
@@ -394,8 +392,7 @@ MIMETIKA_TEST(a_vertical_fault_sees_the_horizontal_stress_and_no_shear) {
 // -- the depletion response is reproduced by the solver -------------------------
 
 // The uniaxial closed forms, to round-off, on both stress products. The state is
-// uniform, so this is not a convergence statement: either the discretization
-// reproduces it exactly or not at all.
+// uniform, so this is exactness rather than a convergence rate.
 MIMETIKA_TEST(the_depletion_response_is_the_uniaxial_closed_form) {
   const Parameters p;
   for (const Realization how : {Realization::derham_bdm, Realization::stabilized_bdm}) {
@@ -418,9 +415,8 @@ MIMETIKA_TEST(the_depletion_response_is_the_uniaxial_closed_form) {
   }
 }
 
-// A uniform state: refinement must change nothing. Any drift would be the
-// discretization failing to represent a constant, which no amount of resolution
-// repairs.
+// A uniform state: refinement must change nothing. Drift is the discretization
+// failing to represent a constant.
 MIMETIKA_TEST(the_response_is_mesh_independent) {
   const Parameters p;
   for (const int n : {3, 6, 12}) {

@@ -1,6 +1,6 @@
 r"""Linear elasticity on the polyhedral fault mesh (Mimetic-AFW).
 
-Solves the Hellinger--Reissner mixed form with **weakly imposed symmetry**
+Solves the Hellinger--Reissner mixed form with weakly imposed symmetry
 
     div sigma = f ,   sigma = 2 mu eps(u) + lambda tr(eps(u)) I ,   u = u_D  on
     the boundary,
@@ -24,11 +24,10 @@ compaction toward the top surface, so the response is fully three-dimensional:
              A_s (z/Z) sin(pi x) / 2,
             -A_c (1 - z/Z)          ).
 
-**Size.**  The full mesh gives 822 825 unknowns and ~83 M nonzeros.  That is too
-large for a direct factorisation, but the default CPR-preconditioned MINRES
-handles it comfortably (~20 s assembly, ~22 s solve).  The example still runs on
-a subregion by default so a first run is quick; pass ``--full`` for the whole
-mesh.
+**Size.**  The full mesh gives 822 825 unknowns and ~83 M nonzeros -- too large
+for a direct factorisation; the default CPR-preconditioned MINRES runs it in
+~20 s assembly and ~22 s solve.  A 1000-cell subregion is solved by default;
+pass ``--full`` for the whole mesh.
 
 Run with::
 
@@ -52,7 +51,7 @@ from common import (  # noqa: E402  (path bootstrap lives in common)
     summarise,
 )
 
-# the *classic* three-field AFW formulation, kept as the reference example;
+# the classic three-field AFW formulation, kept as the reference example;
 # the standard four-field split lives in mimetika.assembly.four_field
 from mimetika.assembly.mixed import MixedElasticity  # noqa: E402
 

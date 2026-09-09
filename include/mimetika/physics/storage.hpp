@@ -7,38 +7,32 @@
 #include "exokal/hodge/stress_operators.hpp"
 #include "mimetika/physics/package.hpp"
 
-// Fluid storage: the pressure's own contribution to the mass balance, and the
-// last piece the consolidation problem needs.
+// Fluid storage: the pressure's own contribution to the mass balance.
 //
 // The mass balance of a poroelastic medium is
 //
 //     d/dt ( alpha tr(eps) + S p ) + div q = 0
 //
 // The first term is the Biot coupling, already carried by PoroCoupling; the
-// second is here, and its coefficient is NOT the fluid compressibility alone:
+// second is here, and its coefficient is not the fluid compressibility alone:
 //
 //     S = d alpha^2 (1 - 2nu) / (2 mu (1 - 2nu + d nu))  +  1/M
 //
-// The first part is the SKELETON's storage, and it survives an incompressible
+// The first part is the skeleton's storage and survives an incompressible
 // fluid. Dropping it — taking S = 1/M and setting 1/M to zero for Terzaghi's
-// incompressible constituents — leaves the pressure with no time derivative
-// at all, so the column solves at every step and consolidates at none: a
-// static answer dressed as a transient one, which is the failure mode this
-// benchmark exists to catch. Together with the divergence they make the balance
-// TRANSIENT, which is what makes consolidation a process rather than a state.
+// incompressible constituents — leaves the pressure with no time derivative,
+// so the column solves at every step and consolidates at none.
 //
-// THE TIME DISCRETIZATION NEEDS NO TERM OF ITS OWN. Backward Euler over a
-// step is
+// The time discretization needs no term of its own. Backward Euler over a step
+// is
 //
-//     alpha T sigma + (|E|/M) p + dt div q = (the same at the old state)
+//     alpha T sigma + S |E| p + dt div q = (the same at the old state)
 //
 // and dt appears only against the divergence. Rescaling the flux to the
-// quantity that actually crosses a facet during the step, q~ = dt q, absorbs
-// it: the constitutive row becomes (M_q/dt) q~ = div^T p, which is exactly
-// the Darcy term with its mobility set to dt. So the step system is assembled
-// from the steady terms plus this one, with no time-stepping machinery at
-// all — and the flux that comes out is a volume rather than a rate, which is
-// what a balance over a step is written in anyway.
+// quantity that crosses a facet during the step, q~ = dt q, absorbs it: the
+// constitutive row becomes (M_q/dt) q~ = div^T p, which is the Darcy term with
+// its mobility set to dt. So the step system is the steady terms plus this one,
+// and the flux it returns is a volume rather than a rate.
 
 namespace mimetika::physics {
 

@@ -8,15 +8,13 @@ Comput. 34 (2012), A3079, on the Hiptmair-Xu auxiliary-space framework --
 inverts it by splitting along the de Rham complex instead: no fill, and linear
 in the unknowns.
 
-WHAT ADS IS TOLD, and it is the whole of section 5.3 of that paper: the block
-itself, the discrete gradient G, the discrete curl C, and the vertex
-coordinates. From C, G and the coordinates hypre builds the Raviart-Thomas
-interpolation Pi (Proposition 5.1) and the Nedelec interpolation Pi^V, and the
-auxiliary operators are the VARIATIONAL ones of variant (B), Pi^T A Pi and
-C^T A C. Nothing else is supplied and nothing else is needed -- which is the
-paper's central practical claim, and the reason the MATERIAL COEFFICIENT needs
-no separate treatment in the solver: it is in A, so it is in every Galerkin
-product built from A.
+WHAT ADS IS TOLD (section 5.3 of that paper): the block itself, the discrete
+gradient G, the discrete curl C, and the vertex coordinates. From C, G and the
+coordinates hypre builds the Raviart-Thomas interpolation Pi (Proposition 5.1)
+and the Nedelec interpolation Pi^V, and the auxiliary operators are the
+variational ones of variant (B), Pi^T A Pi and C^T A C. Nothing else is
+supplied, so the material coefficient needs no separate treatment: it is in A,
+hence in every Galerkin product built from A.
 
 The two properties tested here are the two the theory promises, and they are
 different claims:
@@ -37,13 +35,12 @@ a honeycomb of hexagonal prisms as well as on simplices and hexahedra.
 
 TWO ROUTES TO THE BLOCK, and they are not the same method:
 
-    ads     one ADS V-cycle as the preconditioner of the block. Cheap, and it
-            APPROXIMATES the block rather than solving it.
-    ads-cg  a short CG under that cycle, so the block is solved to a tolerance.
+    ads     one ADS V-cycle as the preconditioner of the block: it approximates
+            the block rather than solving it.
+    ads-cg  CG(50) to rtol 1e-2 under that cycle, so the block is solved.
 
 Only the second is h-flat. The first is bounded but drifts, and the drift is
-the block solve rather than the norm -- which is exactly what these two
-together measure.
+the block solve rather than the norm.
 """
 
 import numpy as np
@@ -98,10 +95,9 @@ def patch(mesh, product=R.stabilized_rt, permeability=None):
     """A linear pressure prescribed on the whole boundary: no constraint rows,
     and for the mimetic products an answer known in closed form.
 
-    The datum carries its GRADIENT as well as its value, which is what a facet
+    The datum carries its gradient as well as its value, which is what a facet
     holding d flux moments needs -- the centred basis functions of the facet see
-    only the variation across it. Without it the BDM products lose the patch,
-    and an iteration count measured on a wrong answer is not a measurement.
+    only the variation across it. Without it the BDM products lose the patch.
     """
     model = mk.FlowModel(mesh, 3, 1.0, product)
     if permeability is not None:
@@ -116,10 +112,9 @@ def cube(n):
 
 
 # THE SIMPLICIAL MESH IS THE ANNULUS, NOT THE KUHN BOX. hypre's ADS setup
-# fails outright on box(n, simplex) for some n -- n = 2 and 4 refuse with HYPRE
-# error 12 while 3, 5 and 6 solve -- so the simplicial sweeps here run on the
-# annulus, which ADS accepts at every refinement. The box failure is hypre's
-# own and is reported as such; it is not exercised from this file, because a
+# fails on box(n, simplex) for some n -- n = 2 and 4 refuse with HYPRE error 12
+# while 3, 5 and 6 solve -- so the simplicial sweeps run on the annulus, which
+# ADS accepts at every refinement. The box failure is not exercised here: a
 # failed hypre setup leaves the library unusable for the rest of the process.
 def wedge(nr, family=mk.Family.simplex):
     return mk.annulus(nr, nr // 2, 3, family, 1.0, 10.0, 1.0)
@@ -140,8 +135,7 @@ def _count(model, kind):
 
 # ---- 1. the answer ----------------------------------------------------------
 #
-# CONVERGED IS NOT CORRECT. An auxiliary space is a preconditioner, so it may
-# not move the answer at all: a cycle built on the wrong complex, or on a
+# CONVERGED IS NOT CORRECT. A cycle built on the wrong complex, or on a
 # permutation of the block's own rows, still converges -- to something else.
 @pytest.mark.parametrize("name", sorted(ONE_PER_FACET))
 @pytest.mark.parametrize("kind", ["ads", "ads-cg"])
@@ -161,9 +155,9 @@ def test_the_auxiliary_space_answer_is_the_direct_answer(name, kind):
 
 # ---- 2. h-robustness -------------------------------------------------------
 #
-# Four meshes over a fiftyfold in unknowns. ads-cg must be FLAT, which is the
-# theorem; a single V-cycle need only stay BOUNDED, and the gap between those
-# two statements is the block solve.
+# Four meshes, n = 3 to 8: a factor of 19 in cells. ads-cg must be FLAT, which
+# is the theorem; a single V-cycle need only stay BOUNDED, and the gap between
+# those two statements is the block solve.
 @pytest.mark.parametrize("name", sorted(ONE_PER_FACET))
 def test_ads_cg_is_h_robust(name):
     _needs_hypre()
@@ -175,16 +169,15 @@ def test_ads_cg_is_h_robust(name):
     assert counts[-1] <= counts[0] + 6
 
 
-# THE STABILIZATION VANISHES ON A SIMPLEX, and this compares the OPERATORS
-# rather than the solutions to say so. On a simplex D = d(d+1) = m: N is
-# square and invertible, ker(N^T) is empty, M_2 = s(I - QQ^T) = 0, and
-# stabilized_bdm IS derham_bdm -- both the conforming BDM_1 element. On a
-# polytope the kernel is real (18 - 12 = 6 on a hexahedron) and the two are
-# different operators.
+# THE STABILIZATION VANISHES ON A SIMPLEX, compared on the OPERATORS rather
+# than the solutions. On a simplex D = d(d+1) = m: N is square and invertible,
+# ker(N^T) is empty, M_2 = s(I - QQ^T) = 0, and stabilized_bdm IS derham_bdm --
+# both the conforming BDM_1 element. On a polytope the kernel is nontrivial
+# (18 - 12 = 6 on a hexahedron) and the two are different operators.
 #
-# Solutions would be the weaker instrument: the linear patch does not excite
-# the kernel, so the two AGREE on a cartesian box to round-off while their
-# blocks differ by 35%. The eigenvalues of the cell blocks cannot hide that.
+# Solutions are the weaker instrument: the linear patch does not excite the
+# kernel, so the two agree on a cartesian box to round-off while their cell
+# blocks differ by 35% in spectrum.
 def test_the_stabilization_vanishes_on_a_simplex_and_not_on_a_polytope():
     for label, mesh, coincide in (
         ("simplex", wedge(4), True),
@@ -205,11 +198,10 @@ def test_the_stabilization_vanishes_on_a_simplex_and_not_on_a_polytope():
             assert worst > 1e-2
 
 
-# THE SAME TWO PROPERTIES AT BDM ORDER, which is the whole question the
-# stabilized_bdm flux was added to answer: its block is three times wider per
-# facet and its coarse space is the same facet-constant one, so h-robustness
-# here is a statement about the CYCLE -- smoother plus coarse correction --
-# rather than about ADS alone.
+# THE SAME TWO PROPERTIES AT BDM ORDER: the block is three times wider per facet
+# and its coarse space is the same facet-constant one, so h-robustness is a
+# statement about the CYCLE -- smoother plus coarse correction -- rather than
+# about ADS alone.
 @pytest.mark.parametrize("name", sorted(BDM))
 def test_the_bdm_cycle_is_h_robust(name):
     _needs_hypre()
@@ -273,10 +265,10 @@ def test_one_ads_cycle_is_bounded_but_not_flat():
 # allowed to track it -- their Table 6.1 holds 13-18 ADS-CG iterations across
 # the same range.
 #
-# BOTH DIRECTIONS MATTER, and they fail differently: a soft inclusion is where
-# the norm has to carry K and a hard one is where it must not carry the cell's
-# own K alone. FlowModel::norm_permeability is the scalar that does both, and
-# test_the_norm_has_to_carry_the_permeability below is what says so.
+# Both directions are swept: a soft inclusion is where the norm has to carry K
+# and a hard one is where it must not carry the cell's own K alone.
+# FlowModel::norm_permeability is the scalar that does both, measured by
+# test_the_norm_has_to_carry_the_permeability below.
 JUMPS = (-8, -4, -2, 0, 2, 4, 8)
 
 
@@ -322,12 +314,11 @@ def test_the_bdm_count_does_not_track_the_contrast(name):
     assert max(counts) <= min(counts) + 8
 
 
-# THE NORM IS PART OF THE PRECONDITIONER, and this is the measurement that says
-# the permeability has to be in it. A is the block ADS is handed, so the
+# THE PERMEABILITY HAS TO BE IN THE NORM. A is the block ADS is handed, so the
 # coefficient reaches the auxiliary spaces through Pi^T A Pi whatever the norm
 # does -- but W, the pressure factor, stands for the Schur complement
 # B star_K^-1 B^T, and a W that ignores K is the Gram matrix of a norm the
-# operator does not have. The soft inclusion is where that shows.
+# operator does not have. The soft inclusion, K_in = 1e-8, is where that shows.
 def test_the_norm_has_to_carry_the_permeability():
     _needs_hypre()
     mesh = cube(8)
@@ -346,11 +337,10 @@ def test_the_norm_has_to_carry_the_permeability():
 
 # ---- 4. the polytope -------------------------------------------------------
 #
-# stabilized_rt is the generalization of RT to polytopes, so the honeycomb is
-# where that claim is tested: eight facets a cell against RT_0's four modes.
-# Both properties are asked for again, because neither follows from the
-# simplicial case -- the auxiliary spaces are built from a complex whose faces
-# are hexagons here.
+# stabilized_rt generalizes RT to polytopes, so the honeycomb is where that
+# claim is tested: eight facets a cell against RT_0's four modes. Both
+# properties are asked for again -- the auxiliary spaces are built from a
+# complex whose faces are hexagons here.
 def test_the_polytope_is_h_robust():
     _needs_hypre()
     counts, errors = [], []
@@ -368,9 +358,8 @@ def test_the_polytope_is_h_robust():
         print(f"  honeycomb {model.n_cells:5d} cells {model.n_dofs:6d} dofs   "
               f"{counts[-1]:3d} its   max |p - p_exact| {errors[-1]:.1e}")
     assert counts[-1] <= counts[0] + 6
-    # and the product reproduces a linear pressure on hexagonal prisms, which
-    # is the consistency the polytopal claim is about -- to the solver's own
-    # tolerance, not to discretization
+    # and the product reproduces a linear pressure on hexagonal prisms, to the
+    # solver's own tolerance rather than to discretization
     assert max(errors) < 1e-6
 
 
@@ -393,16 +382,15 @@ def test_the_polytope_is_contrast_robust():
 
 
 # WHERE IT STOPS BEING FLAT, and it is not the cell type. A hard region filling
-# HALF the domain and touching the boundary the pressure is prescribed on costs
+# half the domain and touching the boundary the pressure is prescribed on costs
 # roughly three times the uniform count at 1e+8 -- 52 iterations on the
 # cartesian box and 48 on the honeycomb, against 14 and 14 for the interior
-# inclusion of the same contrast. The paper's own benchmark is the interior
-# inclusion (Fig. 6.1), and its Table 6.1 reports the deterioration it does see
-# for one extreme of alpha as a property of the coefficient-independent
-# stopping norm rather than of the cycle.
+# inclusion of the same contrast. The paper's benchmark is the interior
+# inclusion (Fig. 6.1), and its Table 6.1 attributes the deterioration it does
+# see at one extreme of alpha to the coefficient-independent stopping norm
+# rather than to the cycle.
 #
-# The bound here is loose on purpose: it is the measured behaviour, pinned so a
-# regression would show, not a claim of robustness.
+# The bound is loose: it pins the measured behaviour, not a robustness claim.
 @pytest.mark.parametrize(
     "mesh_of,tag", [(lambda: cube(8), "cartesian"),
                     (lambda: honeycomb(6, 6, 3, s=1.0 / 3.0, h=1.0 / 3.0), "honeycomb")],
@@ -422,10 +410,9 @@ def test_a_hard_region_against_the_boundary_costs_a_factor_not_an_order(mesh_of,
 # ---- 5. the tensor ---------------------------------------------------------
 #
 # The paper's section 6.2 takes beta to be the SPE10 permeability matrix, so a
-# tensor is not an extension of the theory but a case of it. What the model has
-# to do is put the tensor where it belongs: in the star, hence in A, hence in
-# every auxiliary operator; and reduced to the one scalar the divergence term
-# can carry, in the norm.
+# tensor is a case of the theory rather than an extension. The model puts the
+# tensor in the star, hence in A, hence in every auxiliary operator; and in the
+# norm reduced to the one scalar the divergence term can carry.
 def test_the_tensor_reduces_the_way_the_star_reads_it():
     mesh = cube(3)
     n = mesh.count(3)
@@ -469,11 +456,10 @@ def test_an_anisotropic_tensor_is_solved_and_is_the_direct_answer(kind):
 # ---- 6. the products ADS is not for ----------------------------------------
 #
 # ADS is a statement about the lowest-order space: one unknown per facet, in
-# 3D. A BDM block carries d moments on each facet, which is NOT the space ADS
-# is written for -- and the solver does not refuse it, nor misapply ADS to it:
-# it builds the TWO-LEVEL cycle, whose coarse space is the facet constants (one
+# 3D. A BDM block carries d moments on each facet, so the solver builds the
+# TWO-LEVEL cycle instead, whose coarse space is the facet constants (one
 # scalar per facet, injected per component) and whose smoother is facet-local.
-# ADS then runs where it is defined, on the coarse operator, and the answer is
+# ADS then runs on the coarse operator, where it is defined, and the answer is
 # still the direct answer.
 @pytest.mark.parametrize("name", sorted(BDM))
 @pytest.mark.parametrize("kind", ["ads", "ads-cg"])
@@ -496,9 +482,9 @@ def test_the_bdm_block_reaches_ads_through_the_coarse_space(name, kind):
 # ITSELF; on a BDM block the cycle is two-level, and a two-level cycle whose
 # coarse correction is inexact is not a preconditioner of fixed quality, so the
 # solver wraps it in the inner CG either way -- 500 steps against ads-cg's 50,
-# a cap neither run reaches. So the block is solved to tolerance in both, and
-# the outer count is the Riesz map's in both. Pinned because a future change to
-# the budget would otherwise silently turn `ads` into a sampled cycle here.
+# a cap neither run reaches. So the block is solved to tolerance in both and the
+# outer count is the Riesz map's in both. Pinned so that a change to the budget
+# turning `ads` into a sampled cycle here would show.
 @pytest.mark.parametrize("name", sorted(BDM))
 def test_the_two_variants_agree_on_a_bdm_block(name):
     _needs_hypre()

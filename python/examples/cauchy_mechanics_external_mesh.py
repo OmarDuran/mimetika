@@ -21,8 +21,8 @@ round-off and not discretization, on a good mesh and a bad one alike.
 
 That holds for the products that reconstruct. It does not hold for the diagonal
 stars, and for diagonal_afw it fails on every mesh: its linear moment slots are
-inconsistent everywhere, by construction. Reading its error as a mesh defect
-would be reading the wrong thing -- see the note beside it below.
+inconsistent everywhere, by construction, so its error column measures the
+product and not the mesh.
 
 The stress that goes with it is uniform,
 
@@ -93,14 +93,12 @@ def solvers(rtol):
             method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000,
             riesz_block_pc="ads",
         ),
-        # the same cycle with the inner CG stated explicitly rather than left
-        # to the default the two-level path chooses (50 iterations to 1e-2)
-        # the same cycle with the inner CG stated explicitly. The budget is
-        # what MEASURES the map rather than the budget: at 50 steps to 1e-2 the
-        # outer count reads the cap instead of the preconditioner -- 29 against
-        # 23 on the h-ladder, 205 against 132 at nu = 0.4999 -- and on a mesh
-        # written in metres rather than in unit lengths it does not converge at
-        # all. Solved to 1e-6 the count is the Riesz map's.
+        # the same cycle with the inner CG stated explicitly: 500 steps to
+        # 1e-6, at which the outer count is the Riesz map's. A short budget
+        # reports itself instead -- at 50 steps to 1e-2 the outer count reads
+        # the cap, 29 against 23 on the h-ladder and 205 against 132 at
+        # nu = 0.4999, and on a mesh written in metres rather than in unit
+        # lengths it does not converge at all.
         "ads-cg": mk.SolverOptions(
             method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000,
             riesz_block_pc="ads", riesz_block_its=500, riesz_block_rtol=1e-6,
@@ -109,7 +107,7 @@ def solvers(rtol):
     }
 
 
-SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg", _hypre.NAME)
+SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg") + _hypre.HYPRE_NAMES
 DEFAULT_RTOL = 1e-9
 
 
@@ -246,15 +244,9 @@ def make_mesh(path):
     print(f"wrote {path}: {mesh.count(2)} cells, {mesh.count(0)} vertices")
 
 
-# One process speaks and writes. Under mpirun every rank runs this file and
-# solves the same problem -- the algebra is shared out, the script is not -- so
-# without this the report appears N times and N processes race to write the
-# same .vtu. The solve itself is unaffected: every rank takes part in it, and
-# every rank ends up with the whole answer.
-# What the run is shared out over, said once rather than inferred from N copies
-# of the output. The balance is the partition's own report: a bisection that
-# has gone wrong shows up here as a rank holding most of the mesh, long before
-# it shows up as a timing.
+# What the run is shared out over, and the balance of the partition: a
+# bisection that has gone wrong shows up here as a rank holding most of the
+# mesh, long before it shows up as a timing.
 def report_processes(mesh, dim):
     size = mk.mpi_size()
     if size < 2:
@@ -264,6 +256,11 @@ def report_processes(mesh, dim):
     print(f"  {size} processes, {counts.min()}..{counts.max()} cells each")
 
 
+# One process speaks and writes. Under mpirun every rank runs this file and
+# solves the same problem -- the algebra is shared out, the script is not -- so
+# without this the report appears N times and N processes race to write the
+# same .vtu. The solve itself is unaffected: every rank takes part in it, and
+# every rank ends up with the whole answer.
 def only_root():
     if mk.mpi_rank() == 0:
         return True
@@ -393,11 +390,13 @@ def main():
         raise SystemExit(
             f"{args.mesh}: top cells are {dim}-dimensional, expected 2 or 3"
         )
+    # ADS's gate, not MGR's: MGR reduces the assembled system by F/C markers and
+    # never forms the complex, so it runs in the plane.
     if (args.solver.startswith("ads") or args.solver == _hypre.NAME) and dim != 3:
         raise SystemExit(
             f"--solver {args.solver} is a 3D construction (it needs the discrete "
             f"gradient and curl of a 3-complex); {args.mesh} is {dim}D. "
-            "Use --solver riesz."
+            f"Use --solver riesz or {_hypre.MGR_NAME}."
         )
 
     if args.output and root:
@@ -470,10 +469,9 @@ def main():
         if quadratic:
             model.set_body_force(quadratic_body_force(mat, length, dim) * mesh.count(dim))
     if args.assemble_only:
-        # The two builds alone. They are what scales with the mesh, and a caller
-        # measuring them should not have to wait for a Krylov method to
-        # converge -- nor be told a time without being told they finished.
-        if args.solver == _hypre.NAME:
+        # The two builds alone, reported apart: A and b, then the
+        # preconditioner. No Krylov iteration runs.
+        if args.solver in _hypre.HYPRE_NAMES:
             report = _hypre.assemble(model, mesh, dim)
         else:
             report = model.assemble(progress=True, options=solvers(args.rtol)[args.solver])
@@ -498,16 +496,16 @@ def main():
             ),
         )
     else:
-        if args.solver == _hypre.NAME:
+        if args.solver in _hypre.HYPRE_NAMES:
             report = _hypre.solve(
                 model, mesh, dim,
                 _hypre.options(args.rtol, block_iterations=args.ads_block_its,
-                               block_rtol=1e-2))
+                               block_rtol=1e-2,
+                               mgr=args.solver == _hypre.MGR_NAME))
         else:
             report = model.solve(progress=True, options=solvers(args.rtol)[args.solver])
-    # The two assemblies, always. They are what scales with the mesh, and they
-    # are separate costs: the Jacobian is the physics, the preconditioner is the
-    # price of being able to solve it iteratively.
+    # The two assemblies, always: the Jacobian and the preconditioner are
+    # separate costs and both scale with the mesh.
     print(
         f"\n  assembly: jacobian {report.assembly_seconds:.2f} s + matrix "
         f"{report.matrix_seconds:.2f} s, preconditioner "
@@ -563,9 +561,8 @@ def main():
     # THE VALIDITY GATE OF THE DIAGONAL STAR, which exokal leaves to the
     # consumer: a facet the cell centroid does not see squarely carries a
     # non-positive weight, M is not positive there, and the elimination
-    # divides by it -- the answer then collapses toward zero while the
-    # residual still CONVERGES. That is worse than a wrong answer, so it is
-    # shouted rather than footnoted.
+    # divides by it -- the answer collapses toward zero while the residual
+    # still converges.
     if args.product in rz.TWO_POINT + rz.ADAPTIVE:
         bad = model.n_invalid_star
         if bad:
@@ -597,12 +594,10 @@ def main():
     # affine field they are the same in every cell and the arrays below are a
     # broadcast; for the quadratic one sigma is linear in x and the rotation
     # vanishes identically, and only an array can say either.
-    # The split the material sees: the volumetric stress is the mean of the
-    # diagonal, tr(sigma)/d, and the deviator is what is left. The split is a
-    # linear read of the same reconstruction, so each part inherits exactly
-    # the accuracy of the full tensor -- reported separately because a defect
-    # that lives in one part alone (a missing trace, a spurious deviator) is
-    # invisible in a single max-error number.
+    #
+    # The volumetric and deviatoric rows are reported apart because a defect in
+    # one part alone -- a missing trace, a spurious deviator -- is invisible in
+    # the norm of the full tensor.
     n_rot = model.n_rotations
 
     with stage("reconstructing u, gamma and sigma"):
@@ -611,6 +606,9 @@ def main():
         # The displacement and the rotation are read from the solution, which
         # every process has in full, so only this one is gathered.
         n = model.n_cells
+        # cell_stress is the projection Pi_E sigma_h onto P_0(E;S) where the
+        # cell carries the stabilized vem product, and the divergence-theorem
+        # average otherwise.
         stress = mk.gather_cells(
             model, np.array([model.cell_stress(e) for e in range(n)])
         )
@@ -669,13 +667,18 @@ def main():
     else:
         grad_f = np.full(len(volume), float(np.linalg.norm(np.array(gradient))))
     scale_g, _ = l2_norms(volume, grad_f)
-    error_table(volume, [
+    rows = [
         ("u", u - u_exact, scale_u),
         ("gamma", rot - rot_exact, scale_g),
         ("sigma", sigma - sigma_hat, scale_s),
         ("sigma vol", vol - vol_hat, scale_s),
         ("sigma dev", dev - dev_hat, scale_s),
-    ])
+    ]
+    # THE LAST TWO COLUMNS, CELL BY CELL. ||e||_{L2(E)} = |E|^{1/2} |e_E|, which
+    # is NOT the componentwise "*_error" fields below: those are e_E itself. The
+    # weight is why the table's min_E and max_E cannot be read off them, and
+    # writing these puts the two ends of the table on the mesh.
+    cell_error = error_table(volume, rows)
 
     if args.vtu and root:
         with stage(f"writing {args.vtu}"):
@@ -705,22 +708,32 @@ def main():
             dev9_hat = s_cell.copy()
             for k in range(dim):
                 dev9_hat[:, k * 3 + k] -= vol_hat
+            # "_error" IS THE TABLE'S ROW, ||e||_{L2(E)} = |E|^{1/2} |e_E|, one
+            # scalar a cell -- so min_E and max_E above are that field's own
+            # extremes, and the same convention flow_external_mesh.py uses. The
+            # signed componentwise difference is "_residual": the two differ by
+            # the weight |E|^{1/2} and by taking a norm.
             fields = {
                     "displacement": u3,
                     "displacement_exact": padded(u_exact, dim),
-                    "displacement_error": u3 - padded(u_exact, dim),
+                    "displacement_residual": u3 - padded(u_exact, dim),
+                    "displacement_error": cell_error["u"],
                     "rotation": rot3,
                     "rotation_exact": padded(rot_exact, n_rot),
-                    "rotation_error": rot3 - padded(rot_exact, n_rot),
+                    "rotation_residual": rot3 - padded(rot_exact, n_rot),
+                    "rotation_error": cell_error["gamma"],
                     "stress": stress,
                     "stress_exact": s_cell,
-                    "stress_error": stress - s_cell,
+                    "stress_residual": stress - s_cell,
+                    "stress_error": cell_error["sigma"],
                     "stress_volumetric": vol,
                     "stress_volumetric_exact": vol_hat,
-                    "stress_volumetric_error": vol - vol_hat,
+                    "stress_volumetric_residual": vol - vol_hat,
+                    "stress_volumetric_error": cell_error["sigma vol"],
                     "stress_deviatoric": dev9,
                     "stress_deviatoric_exact": dev9_hat,
-                    "stress_deviatoric_error": dev9 - dev9_hat,
+                    "stress_deviatoric_residual": dev9 - dev9_hat,
+                    "stress_deviatoric_error": cell_error["sigma dev"],
             }
             if args.product in rz.ADAPTIVE:
                 fields["eta"] = model.eta

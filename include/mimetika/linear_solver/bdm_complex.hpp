@@ -18,15 +18,17 @@
 #include "graphos/core/incidence.hpp"
 
 // The four matrices hypre's ADS needs to precondition a stabilized_bdm flux
-// block on a TETRAHEDRAL mesh:
+// block:
 //
 //     P3 nodal --G--> N2E2 circulation --C--> BDM flux
 //     [P1]^3 vector nodal --Pi_nd--> circulation ,  --Pi_rt--> flux
 //
-// C, Pi_nd and Pi_rt come from exokal (dec/mimetic_curl.hpp kind=full, and
-// hodge/.../flux_bdm.hpp). G does not exist there and is built here.
+// G and C are built here, edge- and facet-locally, for any cell shape. Pi_nd is
+// written here in closed form; Pi_rt reads exokal's BDM flux product
+// (hodge/.../flux_bdm.hpp). Both interpolations are exact on a tetrahedron and
+// least squares beyond it.
 //
-// G IS TOPOLOGICAL ON THE EDGES. A circulation dof is int_0^1 u.tau chi_b ds
+// G is topological on the edges. A circulation dof is int_0^1 u.tau chi_b ds
 // with tau = p_h - p_a, so for u = grad phi the integrand is d/ds phi(x(s)) and
 // integration by parts removes the metric entirely:
 //
@@ -47,16 +49,15 @@
 //
 // so C.G = 0 holds by Stokes rather than to the accuracy of a fit.
 //
-// TWO PER-CELL SCALINGS ARE REMOVED so the per-cell blocks assemble.
-// dec/mimetic_curl.hpp nondimensionalizes by h_E = cbrt|E|:
-//   columns  the facet-radial circulation dof carries 1/h_E; rescaled to the
-//            facet-intrinsic h_f = sqrt|f| by the factor h_f/h_E
-//   rows     the flux moments go to exokal's stabilized_bdm dofs through
-//            T_f = N pinv(Pi_rt), which is exact (the two span the same
-//            functionals) and absorbs h_E because that basis is facet-intrinsic
+// One per-cell scaling is removed so the per-cell blocks assemble. exokal
+// nondimensionalizes the facet-radial circulation dof by the cell length
+// h_E = cbrt|E|, while G states the global one over the facet's h_f = sqrt|f|,
+// so the local value is carried into G's convention by h_E/h_f. Nothing else
+// moves: C's rows are already in exokal's facet chart and Pi_rt in exokal's dof
+// basis is the flux product's N.
 //
 // A facet's curl rows depend only on that facet's own dofs -- Stokes again --
-// so contributions from the two incident cells AGREE rather than add, and are
+// so contributions from the two incident cells agree rather than add, and are
 // averaged. The same holds for Pi, whose columns are global continuous P1 hats.
 
 namespace mimetika::solver {
@@ -89,18 +90,16 @@ namespace bdm_detail {
 
 using P = exokal::Mesh::Point;
 
-// rows AGREE between cells rather than add: accumulate and divide by the count.
+// Rows agree between cells rather than add: accumulate and divide by the count.
 //
-// Triples then one sort, not an ordered map: assembly was the dominant cost of
-// the whole preconditioner -- 10 s against 1.4 s of setup and solve at 65k flux
-// unknowns -- and most of it was the map's per-entry allocation and pointer
-// chasing, which also made it superlinear.
+// Triples then one sort, not an ordered map: at 65k flux unknowns the map's
+// per-entry allocation made assembly 10 s against 1.4 s of setup and solve, and
+// superlinear.
 struct Accum {
-  // ONE PACKED KEY, NOT A PERMUTATION. Sorting an index array with a
-  // comparator that dereferences two parallel vectors costs a cache miss per
-  // comparison; (row << 32) | col is a scalar, so the sort is contiguous and
-  // the compare is one instruction. Once exokal hoisted its adjacencies out of
-  // the per-cell curl this was the largest single term in assembly.
+  // One packed key, not a permutation. Sorting an index array with a comparator
+  // that dereferences two parallel vectors costs a cache miss per comparison;
+  // (row << 32) | col is a scalar, so the sort is contiguous and the compare is
+  // one instruction.
   std::vector<std::uint64_t> key;
   std::vector<double> x;
   std::vector<int> hits;
@@ -115,14 +114,14 @@ struct Accum {
   }
   void touched(int rr) { ++hits[(std::size_t)rr]; }
 
-  // DROP RELATIVE TO THE ROW, NOT ABSOLUTELY.
+  // Drop relative to the row's own peak, not against a fixed floor.
   //
   // A facet's curl row is facet-local -- Stokes -- so it has at most 12 entries:
   // its three edges' three circulations, and its own three interior moments.
   // Everything else is the reconstruction's round-off, around 1e-12 of the row
-  // but well above any fixed floor, and keeping it tripled the row count and
-  // with it the density of C^T A C, which is where ADS actually spends: the
-  // per-iteration cost fell 12-fold when it went.
+  // but well above any fixed floor; keeping it tripled the row count and with
+  // it the density of C^T A C, and the per-iteration cost fell 12-fold when it
+  // went.
   Sparse finish(int rows, int cols, double rel = 1e-9) const {
     std::vector<std::pair<std::uint64_t, double>> e(key.size());
     for (std::size_t i = 0; i < key.size(); ++i) e[i] = {key[i], x[i]};
@@ -280,14 +279,14 @@ inline BdmOwners bdm_complex_owners(const exokal::Mesh& mesh,
 struct BdmComplexCost {
   double curl{0.0};      // gathering the cell's entity lists
   double flux{0.0};      // exokal's BDM flux product, per cell -- the Pi_rt basis
-  double fit{0.0};       // T_f and the vertex-hat coefficients
+  double fit{0.0};       // Lambda, the vertex-hat coefficients
   double scatter{0.0};   // writing the per-cell blocks into the accumulators
   double reduce{0.0};    // sort, sum duplicates, drop
   double grad{0.0};      // G, which is closed-form and touches no cell
   double total{0.0};
 };
 
-// The two differentials, for ANY cell shape.
+// The two differentials, for any cell shape.
 //
 // G and C are facet- and edge-local: neither reads a cell, so neither needs the
 // degree-2 reconstruction and neither cares whether the mesh is simplicial.
@@ -368,22 +367,21 @@ inline BdmComplex bdm_complex_differentials(const exokal::Mesh& mesh, int cell_d
 
   // ---------------- C : facet-wise, by surface Stokes -----------------------
   // d^1 is facet-local. On f the normal curl is the 2D surface curl of u's
-  // TANGENTIAL TRACE, so against the facet chart chi_a
+  // tangential trace, so against the facet chart chi_a
   //
   //     int_f (curl u).n chi_a = oint_df (u.tau) chi_a dl - int_f u . rot_s chi_a
   //
   // chi_a is affine, so the boundary term is each edge's chi_0 and chi_1
-  // circulations, and rot_s chi_a = (-c_2, c_1) is a CONSTANT in-plane vector,
+  // circulations, and rot_s chi_a = (-c_2, c_1) is a constant in-plane vector,
   // tested against the facet's own two tangential circulations. Every column is
   // a dof of f itself: no cell, no reconstruction, no shape assumption past a
   // planar facet with straight edges, and the two cells sharing f build the
   // same row because neither appears in the formula.
   //
-  // dec/mimetic_curl.hpp computes the same operator per CELL from a
+  // dec/mimetic_curl.hpp computes the same operator per cell from a
   // reconstruction. On a simplex D_edge = m and the fit is exact; on a polytope
   // D_edge > m, it is least squares, it couples the whole cell and the two
-  // cells disagree. That is a property of the device, not of d^1 -- the earlier
-  // claim here that no global C exists on a polytope was wrong.
+  // cells disagree. That is a property of the device, not of d^1.
   //
   // chi_a is exokal's own facet chart (facet_orthonormalization.hpp), so these
   // rows are already in the stabilized_bdm dof basis and need no change of
@@ -473,13 +471,10 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
     return std::pair<Index, Index>{e2v.indices[b], e2v.indices[b + 1]};
   };
 
-  // ---------------- C, Pi_rt, Pi_nd : per cell, averaged over the cells -----
+  // ---------------- Pi_rt, Pi_nd : per cell, averaged over the cells --------
   Accum Prt(out.n_flux), Pnd(out.n_circ);
   double t_curl = 0.0, t_flux = 0.0, t_fit = 0.0, t_scatter = 0.0;
-  // THE MESH-WIDE ADJACENCIES, ONCE. graphos::incidence builds a fresh CSR over
-  // the whole complex and does not cache, so taking the mesh-only overload per
-  // cell is O(cells x mesh); the cache makes the loop O(mesh).
-  // THE FACET GEOMETRY Pi_nd NEEDS, once. area, centroid, the frame the
+  // The facet geometry Pi_nd needs, once: area, centroid, the frame the
   // circulation dofs are stated in, and the ambient second moment
   // S = int_f (x - x_f) (x - x_f)^T, which is what the radial dof of an affine
   // field integrates to.
@@ -508,6 +503,9 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
               q.weights[p2] * r[(std::size_t)i2] * r[(std::size_t)j2];
     }
   }
+  // The mesh-wide adjacencies, once: graphos::incidence builds a fresh CSR over
+  // the whole complex and does not cache, so taking the mesh-only overload per
+  // cell would be O(cells x mesh) where hoisting makes the loop O(mesh).
   const graphos::Adjacency c2e = graphos::incidence(top, 3, 1);
   const graphos::Adjacency c2f = graphos::incidence(top, 3, 2);
   for (Index c = 0; c < mesh.count(cell_dim); ++c) {
@@ -516,20 +514,15 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
     const int nv = int(ve - vb);
     if (nv < 4) throw std::invalid_argument("bdm_complex: cell has fewer than four vertices");
 
-    // PI_ND IN CLOSED FORM, so the degree-2 reconstruction is not built here.
-    //
-    // dec/mimetic_curl.hpp computes C, Pi_rt and Pi_nd together, and Pi_nd is
-    // populated only for kind=full -- so asking for it used to drag in the
-    // whole least-squares fit whose C this file no longer uses (it builds C
-    // facet-wise). Measured at 125.9k cells that was 4.01 s of the complex's
-    // 8.16 s. But Pi_nd is only the circulation dofs of the AFFINE modes, and
-    // every one of those integrals is elementary -- the same argument that
-    // writes C and G directly.
+    // Pi_nd in closed form, so the degree-2 reconstruction is not built here.
+    // dec/mimetic_curl.hpp populates Pi_nd only for kind=full, which drags in
+    // the whole least-squares fit whose C this file no longer uses -- 4.01 s of
+    // the complex's 8.16 s at 125.9k cells. Pi_nd is the circulation dofs of
+    // the affine modes only, and each of those integrals is elementary.
     const auto t0 = Clock::now();
-    // THE FACET ORDER IS exokal's, NOT graphos'. fx.N is indexed by 3*f + b
-    // with f the LOCAL facet position the flux product used, so the local order
-    // has to be fx.faces -- taking graphos' incidence order instead misaligns
-    // every Pi_rt row, which is what the linear-field assertion caught.
+    // The facet order is exokal's, not graphos'. fx.N is indexed by 3*f + b
+    // with f the local facet position the flux product used, so the local order
+    // is fx.faces; graphos' incidence order would misalign every Pi_rt row.
     std::vector<Index> ge;
     for (auto k = c2e.offsets[(std::size_t)c]; k < c2e.offsets[(std::size_t)c + 1]; ++k)
       ge.push_back(c2e.indices[(std::size_t)k]);
@@ -554,10 +547,10 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
       const double hf = std::sqrt(std::sqrt(av[0] * av[0] + av[1] * av[1] + av[2] * av[2]));
       for (int b = 0; b < 3; ++b) {
         col[(std::size_t)(3 * cE + 3 * f + b)] = 3 * nE + 3 * int(fid) + b;
-        // THE RADIAL DOF ALONE IS SCALED. exokal states it as int_f u.(x - x_f)
-        // / h_E, the cell's length; G states the global one over the FACET's,
-        // 1 / h_f, and Pi_nd has to land in G's convention -- so the local value
-        // is carried over by h_E / h_f. Everything else agrees already.
+        // The radial dof alone is scaled. exokal states it as
+        // int_f u.(x - x_f) / h_E, the cell's length; G states the global one
+        // over the facet's 1/h_f, and Pi_nd has to land in G's convention, so
+        // the local value is carried over by h_E/h_f. Everything else agrees.
         if (b == 2) cscale[(std::size_t)(3 * cE + 3 * f + b)] = hE / hf;
       }
     }
@@ -569,7 +562,7 @@ inline BdmComplex bdm_complex(const exokal::Mesh& mesh, int cell_dim,
     // barycentric coordinates, interpolatory by construction. On a polytope
     // nv > 4 and no nv interpolatory functions fit inside P1, so Lambda is the
     // pseudoinverse (V^T V)^-1 V^T. The hats stop being interpolatory, but
-    // Lambda V = I still holds EXACTLY, so they reproduce every linear function
+    // Lambda V = I still holds exactly, so they reproduce every linear function
     // and in particular sum to one. That is what Pi has to carry: the coarse
     // space ADS hands BoomerAMG is the vector nodal one, and its near-nullspace
     // is the constants.
