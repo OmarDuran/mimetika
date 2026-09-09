@@ -283,8 +283,9 @@ def test_the_two_laws_agree_once_both_see_the_total_traction():
 def written_series(tmp_path_factory):
     """One depletion ramp shared by every output test.
 
-    Four steps at ``spacing = 25`` m cover the collection structure, both parts,
-    the field names and the monotone slip.
+    Module-scoped: re-running the ramp per test costs ~90 s. Four steps at
+    ``spacing = 25`` m cover the collection structure, both parts, the field
+    names and the monotone slip.
     """
     directory = tmp_path_factory.mktemp("series")
     series = bench.depletion_series(directory / "fault", bench.wide_parameters(),

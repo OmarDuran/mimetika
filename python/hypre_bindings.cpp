@@ -164,8 +164,9 @@ PYBIND11_MODULE(_hypre, m) {
   // ADS is written for ONE unknown per facet in 3D. A facet carrying d moments
   // reaches it through the facet-constant subspace, whose injection flow_norm
   // does not build, so those realizations are not offered on this FlowModel.
-  // They reach the same solver through solve_system, which is handed the
-  // injection in `lowest_order`.
+  // They reach the same solver through solve_system, which is handed either the
+  // degree-2 interpolations (degree2, the default in ads_handoff) or, with
+  // degree2 off, the facet-constant injection in `lowest_order`.
   py::enum_<FluxRealization>(m, "FluxRealization", py::module_local())
       .value("derham_rt", FluxRealization::derham_rt)
       .value("stabilized_rt", FluxRealization::stabilized_rt)

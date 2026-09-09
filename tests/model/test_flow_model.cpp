@@ -257,9 +257,10 @@ MIMETIKA_TEST(the_two_point_product_lays_out_one_flux_per_facet) {
   }
 }
 
-// And it reproduces a linear pressure where it claims to. The hexahedral and
-// prismatic columns are K-orthogonal -- the segment between two cell centroids
-// meets their shared facet squarely -- and there the two-point flux is exact.
+// And it reproduces a linear pressure where it claims to. The cartesian and
+// prismatic columns are K-orthogonal in both dimensions -- the segment between
+// two cell centroids meets their shared facet squarely -- and there the
+// two-point flux is exact.
 // The tetrahedral column is not K-orthogonal and is not asserted here; exokal
 // tests that boundary against the geometry.
 MIMETIKA_TEST(the_two_point_product_is_exact_where_the_column_is_orthogonal) {
@@ -299,8 +300,8 @@ MIMETIKA_TEST(the_products_lay_out_different_spaces) {
 //
 // Yet the pressures agree to round-off: both spaces contain the constants, so
 // both are consistent, and on this problem the stabilization does not reach the
-// cell pressures. A model-level comparison cannot conclude that two operators
-// are the same; that belongs to the exokal test against a conforming element.
+// cell pressures. Operator equality is the exokal test's statement, not this
+// one's.
 MIMETIKA_TEST(rt_and_the_stabilized_product_coincide_on_a_simplex) {
   for (const int nr : {8, 16}) {
     const Outcome rt = annulus_case(nr, nr / 2, 3, Family::simplex, Realization::derham_rt);

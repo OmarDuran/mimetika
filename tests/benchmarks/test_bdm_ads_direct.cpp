@@ -301,7 +301,7 @@ int main(int argc, char** argv) {
                 r.n_circ ? double(r.nnz_g) / double(r.n_circ) : 0.0);
     std::fflush(stdout);
     if (!checking) continue;
-    // |B.C| < 1e-8 relative to the row's absolute sum, against the model's own
+    // max_rj |B.C| < 1e-8 * max(sum_c |B_rc C_cj|, 1), against the model's own
     // divergence
     if (!(r.bc < 1e-8 * std::max(r.bc_ref, 1.0))) {
       std::printf("  FAIL n=%d: |B.C| = %.3e against %.3e\n", n, r.bc, r.bc_ref);

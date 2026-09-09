@@ -17,9 +17,8 @@
 //
 // One clause of the contract is what the sparsity is: two multiplier blocks
 // couple iff their facets share a cell. A sparse assembly that visited anything
-// else would still be symmetric, still be positive semidefinite, and wrong in a
-// way no norm of the answer reveals, which is why the comparison is against the
-// oracle rather than against a solution.
+// else stays symmetric and positive semidefinite, so the comparison is against
+// the oracle rather than against a solution.
 //
 // And the property the second elimination is for: S is symmetric positive
 // semidefinite with the cell rigid motions in its kernel, and pinning the
@@ -314,8 +313,8 @@ MIMETIKA_TEST(the_hybridized_model_agrees_with_the_monolithic_one) {
       scale_s = std::max(scale_s, std::abs(a[k]));
     }
   }
-  // Is it a scale? A ratio that is the same everywhere is a chart or a constant,
-  // and one that scatters is neither.
+  // sigma_hybrid / sigma_mixed over the entries above 1e-6: a ratio constant
+  // over the mesh is a chart or a material factor, one that scatters is neither
   double rlo = 1e300, rhi = -1e300;
   for (Index e = 0; e < static_cast<Index>(cells); ++e) {
     const std::array<double, 9> a = monolithic->cell_stress(e);
@@ -356,16 +355,16 @@ MIMETIKA_TEST(the_hybridized_model_agrees_with_the_monolithic_one) {
   }
 }
 
-// Does the diagonal member hybridize? exokal says any StressOperators cell
-// does -- "the stabilized families included -- this is the SPD route for the
+// The diagonal member hybridizes too. exokal takes any StressOperators cell --
+// "the stabilized families included -- this is the SPD route for the
 // realizations whose sigma-block the two-point condensation refuses" -- and
 // diagonal_vem is the one that condenses instead. Both routes exist for the same
-// product: the condensed system is quasi-definite and wanted MINRES, the
-// hybridized one should be SPD and take a conjugate gradient.
+// product: the condensed system is quasi-definite and wants MINRES, the
+// hybridized one is SPD and takes a conjugate gradient.
 //
-// Held to the same three things as stabilized_vem: the sparse assembly against
-// exokal's dense oracle, the interface SPD, and the model's hybrid answer
-// against its own monolithic one on the linear patch.
+// Held to two of the checks stabilized_vem gets: the sparse assembly against
+// exokal's dense oracle here, and in the next test the model's hybrid answer
+// against its own monolithic one on the linear patch, solved by CG.
 MIMETIKA_TEST(the_diagonal_member_hybridizes_too) {
   for (const Family family : {Family::cartesian, Family::simplex}) {
     const exokal::Mesh m = mimetika::mesh::box({2, 2, 2}, 3, family);
@@ -475,14 +474,16 @@ MIMETIKA_TEST(the_diagonal_member_solves_and_recovers) {
 
 // One cell, two local saddles, side by side.
 //
-// The ratio sigma_hybrid / sigma_mixed is mu/(mu + 3 lambda) -- measured at
-// three (mu, lambda) pairs, invariant under mesh and cell family. A ratio says
-// that two things differ, not where. This builds the local matrix both ways from
-// the same StressOperators cell and compares it entry by entry.
+// The mixed and hybridized assemblies now share one convention, so `sym` and
+// `anti` are written from the same expressions and the entry-by-entry counts
+// in_sigma/in_coupling/in_field are zero by construction. The residual check is
+// the reconstruction against the inverse exokal returns --
+// A_reconstructed * Ainv == I -- so the comparison rests on exokal's real
+// matrix rather than on a reading of it.
 //
-// exokal's is reconstructed from its documented assembly and then checked
-// against the inverse it actually returns -- A_reconstructed * Ainv == I -- so
-// the comparison rests on exokal's real matrix rather than on a reading of it.
+// Before the conventions were unified the two differed by
+// sigma_hybrid/sigma_mixed = mu/(mu + 3 lam), measured at three (mu, lam) pairs
+// and invariant under mesh and cell family.
 MIMETIKA_TEST(one_cell_the_two_local_saddles_side_by_side) {
   const exokal::Mesh m = mimetika::mesh::box({1, 1, 1}, 3, Family::cartesian);
   const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(
@@ -557,7 +558,7 @@ MIMETIKA_TEST(one_cell_the_two_local_saddles_side_by_side) {
               "%zu in the sigma block, %zu in the coupling, %zu in the field block\n",
               worst, scale, in_sigma, in_coupling, in_field);
   CHECK(off < 1e-8);          // otherwise the comparison is against a guess
-  CHECK(in_sigma == 0);       // the compliance is shared, and this proves it
+  CHECK(in_sigma == 0);       // the compliance is shared
   CHECK(in_field == 0);       // as is everything below the coupling
   CHECK(in_coupling == 0);    // and the coupling, now that the convention is one
 }

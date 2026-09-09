@@ -180,10 +180,11 @@ def mesh_frame(geometry: Geometry) -> np.ndarray:
 
     The SVD fixes the span but not the basis within it: for a square in the
     ``xy`` plane the two in-plane singular values are equal, so the returned axes
-    are an arbitrary rotation.  Aligning them with the ambient axes is a change
-    of basis (everything downstream is frame-covariant) and keeps axis-aligned
-    facets axis-aligned in the frame, which component-wise conditions such as
-    rollers require.
+    are an arbitrary rotation.  Aligning them with the ambient axes is free
+    (everything downstream is frame-covariant): DOF components of a planar mesh
+    then read directly in global coordinates, and axis-aligned facets stay
+    axis-aligned in the frame, which component-wise conditions such as rollers
+    require.
     """
 
     cached = getattr(geometry, "_mesh_frame", None)

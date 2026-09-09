@@ -40,8 +40,8 @@ FLUX = {
     "derham_bdm": mk.FluxRealization.derham_bdm,
     "stabilized_bdm": mk.FluxRealization.stabilized_bdm,
 }
-# product -> formulation. The diagonal members are left out while they are being
-# developed; their hybrid behaviour is not pinned here.
+# product -> formulation. The diagonal members are left out: mathematically
+# incomplete and under development, so their hybrid behaviour is not pinned here.
 STRESS = {
     "derham_bdm": (mk.StressRealization.derham_bdm, mk.StressFormulation.weak_symmetry),
     "stabilized_bdm": (mk.StressRealization.stabilized_bdm, mk.StressFormulation.weak_symmetry),

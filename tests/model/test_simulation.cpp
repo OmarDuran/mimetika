@@ -22,10 +22,9 @@ bool near(double a, double b, double tol) { return std::abs(a - b) <= tol; }
 
 }  // namespace
 
-// One object, three operators. A solver asks a discretized problem for a
-// residual, a tangent and the tangent's action; those take six objects wired in
-// a particular order. Simulation is that wiring done once, and the test is that
-// all three come out of it consistently.
+// One object, three operators. Simulation wires the composition, the space and
+// the term context once and serves the residual, the assembled tangent and the
+// tangent's action from it; the three must agree.
 MIMETIKA_TEST(the_simulation_produces_residual_jacobian_and_action) {
   const auto m = mimetika_test::hex_grid(3);
   const graphos::Complex& c = m.topology();
@@ -73,10 +72,10 @@ MIMETIKA_TEST(the_simulation_produces_residual_jacobian_and_action) {
   CHECK(nonzero);
 }
 
-// The constraints must hold on all three paths. A consumer that wires this by
-// hand typically remembers the Jacobian and forgets the action, and the symptom
-// is a Krylov method that solves a different problem. Here the same Constraints
-// object serves every path, and the test checks each.
+// The constraints must hold on all three paths: residual, assembled Jacobian
+// and matrix-free action. Applying them to the Jacobian alone leaves the Krylov
+// method solving a different operator. One Constraints object serves all three,
+// and each is checked.
 MIMETIKA_TEST(essential_constraints_hold_on_every_path) {
   const auto m = mimetika_test::hex_grid(3);
   const graphos::Complex& c = m.topology();
@@ -138,8 +137,7 @@ MIMETIKA_TEST(essential_constraints_hold_on_every_path) {
     CHECK(diag > 0.0);
   }
 
-  // and the action agrees with that Jacobian, constrained rows included —
-  // the path most easily left inconsistent
+  // and the action agrees with that Jacobian, constrained rows included
   std::vector<double> v(sim.n_dofs()), y;
   for (std::size_t i = 0; i < v.size(); ++i) v[i] = 0.5 + 0.11 * static_cast<double>(i % 7);
   sim.apply(v, y);

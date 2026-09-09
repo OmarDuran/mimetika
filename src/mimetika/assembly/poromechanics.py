@@ -47,8 +47,9 @@ and the pressure row by ``dt`` so the whole thing stays symmetric)::
     [  Tc      0     0   dt B      S|E|    ] [ p   ]   [ rhs  ]
 
 with ``Tc = diag(alpha/(dK)) T`` and ``S_s = -rotation_stabilization()`` of the
-stress space, absent unless the space provides that hook (the lumped one does).
-Setting ``dt = None`` drops the flow rows and treats the pressure as given data
+stress space, present only in this transient assembly and only when the space
+provides that hook (the lumped one does).  Setting ``dt = None`` drops the flow
+rows and the ``(s, s)`` block with them, and treats the pressure as given data
 -- the quasi-steady regime the fault benchmarks use, where the pressure field is
 prescribed cell by cell.
 

@@ -22,9 +22,8 @@ namespace {
 bool near(double a, double b, double tol) { return std::abs(a - b) <= tol; }
 }  // namespace
 
-// A solver is tested on a matrix nobody assembled from physics. If the first
-// thing it sees is a saddle point from a mixed method, a wrong answer has two
-// possible causes and the test cannot separate them.
+// A hand-written matrix first: on an assembled saddle point a wrong answer has
+// two possible causes and the test cannot separate them.
 MIMETIKA_TEST(the_direct_solver_solves_a_known_system) {
   SparseSystem A;
   A.n = 3;
@@ -53,9 +52,9 @@ MIMETIKA_TEST(the_direct_solver_solves_a_known_system) {
   CHECK(rep.residual < 1e-13);
 }
 
-// An indefinite system is the point. A saddle point has zero diagonal
-// entries, which a factorization without symmetric pivoting will divide by.
-// This one is small enough to check by hand and has exactly that structure.
+// Then an indefinite one. A saddle point has zero diagonal entries, which a
+// factorization without symmetric pivoting divides by. This 3x3 has exactly
+// that structure.
 MIMETIKA_TEST(the_direct_solver_handles_a_saddle_point) {
   SparseSystem A;
   A.n = 3;
@@ -76,10 +75,8 @@ MIMETIKA_TEST(the_direct_solver_handles_a_saddle_point) {
   CHECK(rep.residual < 1e-12);
 }
 
-// And then the real thing: the assembled poroelastic system, solved directly.
-// A direct factorization answers "is the operator right" with no preconditioner
-// standing between the question and the answer, which is what is wanted while a
-// discretization is being validated.
+// And then the assembled poroelastic system, solved directly: a factorization
+// puts no preconditioner between the operator and the answer.
 MIMETIKA_TEST(the_assembled_poroelastic_system_solves) {
   const auto m = mimetika_test::hex_grid(2);
   const graphos::Complex& c = m.topology();

@@ -290,7 +290,8 @@ def test_undrained_response_with_an_incompressible_fluid(name, nu):
 
 
 def test_storage_vanishes_only_when_both_terms_do():
-    """``S = d alpha^2 / K + 1/M``: the two limits are independent."""
+    """``S = d alpha^2 inv_modulus + 1/M``, ``inv_modulus = (1-2nu) / (2 mu
+    (1-2nu+d nu))``: the two limits are independent."""
     fluid = Material(poisson=0.25, biot=0.9, inverse_biot_modulus=0.0)
     both = Material(poisson=0.5, biot=0.9, inverse_biot_modulus=0.0)
     assert fluid.storage(3) > 0.0  # compressible skeleton still stores

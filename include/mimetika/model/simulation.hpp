@@ -17,10 +17,11 @@
 // object.
 //
 // A benchmark, a driver and a solver want the same three things from a
-// discretized problem, otherwise wired by hand out of five objects whose
-// lifetimes and order matter — an epoch, a model, a context, a workspace and a
-// state vector: the offsets must be set before the carrier maps are completed,
-// the context must outlive the model, the space must outlive the epoch.
+// discretized problem, otherwise wired by hand out of six objects whose
+// lifetimes and order matter — an epoch, a model, a context, a constraint set,
+// a workspace and a state vector: the offsets must be set before the carrier
+// maps are completed, the context must outlive the model, the space must
+// outlive the epoch.
 //
 // Simulation is that wiring, done once. What it exposes:
 //

@@ -5,7 +5,8 @@
 // the auxiliary hierarchies' strength thresholds PETSc registers and never queries.
 //
 // The datum is affine, so the field lies in the lowest-order space exactly and
-// max|p - p_h| over the cells is the solver's error: a converged run returns ~1e-10.
+// max|p - p_h| over the cells is the solver's error: a converged run returns ~1e-10; a run
+// that only met the stopping test does not.
 //
 // Usage: mimetika-hypre-flow [n ...]
 

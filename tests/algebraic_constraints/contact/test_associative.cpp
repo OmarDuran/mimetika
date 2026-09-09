@@ -246,8 +246,11 @@ MIMETIKA_TEST(the_associative_coupling_block_is_present) {
   CHECK(std::max(std::abs(J(0, 1)), std::abs(J(0, 2))) > 1e-6);  // and normal to shear
 }
 
-// And it is not symmetric. Coulomb friction is not associated in the classical
-// sense, so the tangent a Newton step must solve with is unsymmetric.
+// And it is not symmetric. The projection is self-adjoint in the (eps_n, eps_t)
+// metric, not in the Euclidean one: on the lateral face the coupling entries are
+// -mu eps_N / (eps_T + mu^2 eps_N) on the normal row against
+// -mu eps_T / (eps_T + mu^2 eps_N) on the shear rows, so eps_n != eps_t leaves a
+// Newton step with an unsymmetric tangent.
 MIMETIKA_TEST(the_tangent_is_not_symmetric) {
   const AssociativeMohrCoulomb l = law({3.0, 0.5, 0.0});
   const State s;

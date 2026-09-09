@@ -303,7 +303,7 @@ def test_the_guard_stays_quiet_on_rectangles_and_fires_when_one_node_moves():
 
 
 def test_the_guard_rejects_a_collocation_point_lying_on_a_facet():
-    """A right triangle circumscribes about its hypotenuse midpoint: ``d_n = 0``.
+    """The circumcentre of a right triangle is its hypotenuse midpoint: ``d_n = 0``.
 
     Parallel to ``n`` but at zero distance, so the block vanishes and ``M`` is
     only semi-definite -- a different failure from skewness, and it needs its

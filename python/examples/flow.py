@@ -67,9 +67,9 @@ def solvers(rtol):
         ),
         # the block SOLVED to a tolerance rather than approximated by one
         # cycle: 500 CG steps at rtol 1e-6, so the outer count is the Riesz
-        # map's. A short budget reports itself instead -- at 50 steps to 1e-2
-        # the outer count reads the cap, 29 against 23 on the h-ladder, and on
-        # a mesh written in metres rather than unit lengths it does not
+        # map's and stops drifting up with the mesh. A short budget reports
+        # itself instead -- at 50 steps to 1e-2 the outer count reads the cap,
+        # and on a mesh written in metres rather than unit lengths it does not
         # converge at all.
         "ads-cg": mk.SolverOptions(
             method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000,

@@ -17,11 +17,13 @@ reconstructing products reproduce exactly. For those the error column is a
 check, not a convergence study -- it must stay at the solver tolerance as the
 mesh grows, and anything else means the scaling was measured on a wrong answer.
 
-One case does not reproduce it: diagonal_afw, whose linear moment slots are
-inconsistent on every mesh, so there the error column is not that check. Every
-flux product here reproduces it, because the flow datum is affine -- value and
-gradient -- which is what a facet carrying d moments needs, the same shape the
-mechanics displacement datum has.
+The products whose star is diagonal do not reproduce it away from a
+face-orthogonal mesh: diagonal_tpfa is exact on cartesian (and on simplex in
+2D) only, diagonal_vem on cartesian in 3D, and diagonal_afw's linear moment
+slots are inconsistent on every mesh; derham_rt loses the patch on prisms. On
+those the error column is not that check. For the rest the flow datum is affine
+-- value and gradient -- which is what a facet carrying d moments needs, the
+same shape the mechanics displacement datum has.
 
 Defaults are deliberately small: a scaling curve is read from its shape, which
 is visible long before a mesh becomes inconvenient. Raise --n when the times

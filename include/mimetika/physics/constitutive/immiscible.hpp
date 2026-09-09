@@ -32,8 +32,8 @@
 // into this slot without anything above changing.
 //
 // The dual width: the state here is p, h and the compositions — a handful of
-// scalars — so these evaluations want a dual sized to that, not the cell-system
-// width of ad::Local.
+// scalars — so these evaluations want an ad::Dual sized to that state width,
+// not the default capacity of 32.
 
 namespace mimetika::physics::constitutive {
 

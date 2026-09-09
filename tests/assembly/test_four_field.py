@@ -90,7 +90,7 @@ def solid_pressure_from_trace(inner, stress):
     return 2.0 * inner._mu * (W @ stress) / (d * vol)
 
 
-# -- elasticity: congruence and the honest unknown ------------------------------
+# -- elasticity: congruence and the solid-pressure row --------------------------
 
 
 @pytest.mark.parametrize("name", list(CASES))
@@ -183,7 +183,7 @@ def material_for(nu):
 def poromech_pair(name, nu):
     make, space = CASES[name]
     material = material_for(nu)
-    # each problem gets its own mesh instance; the inner must see *that* mesh
+    # each problem gets its own mesh instance; the inner must see that mesh
     mesh5 = make()
     five = PoroMechanics(
         mesh5, material, stress_inner=make_inner(mesh5, space, material)
@@ -228,7 +228,7 @@ def test_four_field_poromechanics_matches_five_field(name, nu):
     for field in ("stress", "displacement", "rotation", "flux", "pressure"):
         assert np.allclose(sol4b[field], sol5b[field], rtol=1e-7, atol=1e-9), field
 
-    # and the reported solid pressure is the honest trace throughout
+    # and the reported solid pressure is tr_h(sigma)/d after the second step too
     expected = solid_pressure_from_trace(four.mechanics.inner, sol4b["stress"])
     assert np.allclose(sol4b["solid_pressure"], expected, rtol=1e-7, atol=1e-9)
 
@@ -364,7 +364,7 @@ def test_checkerboard_shear_contrast_puts_the_hydrostatic_load_on_p_s(
     mesh = make()
     d = mesh.dim
     shear = checkerboard(mesh, (1.0, contrast))
-    # the matched bulk compliance must keep every nu inside (-1, 1/2) *and*
+    # the matched bulk compliance must keep every nu inside (-1, 1/2) and
     # away from the degenerate nu = 0; in 2D (where inv_modulus = (1-2nu)/2mu)
     # that means scaling it with the contrast -- the stiff cell then sits at
     # nu = -1/2 and the soft one just under 1/2

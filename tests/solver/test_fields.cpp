@@ -9,11 +9,10 @@
 
 // The factors of the product space, as index sets.
 //
-// A block preconditioner is only a preconditioner for the whole operator if its
+// A block preconditioner is a preconditioner for the whole operator only if its
 // blocks partition the unknowns: one left out of every block is never
-// corrected, one in two blocks is corrected twice, and neither shows up as
-// anything but a convergence rate nobody can explain. So the property under
-// test is the partition itself, on the spaces the models actually build.
+// corrected, one in two blocks is corrected twice. The property under test is
+// the partition itself, on the spaces the models build.
 
 using mimetika::solver::blocks_partition;
 using mimetika::solver::field_blocks;
@@ -22,8 +21,8 @@ using mimetika::solver::stratum_field_blocks;
 
 namespace {
 
-// the sizes a block split must reproduce: the flux carries `moments` per facet
-// per component, the cell unknown one per cell
+// the sizes a block split must reproduce, summing to n_dofs: the flux carries
+// `moments` per facet per component, the cell unknown one per cell
 std::size_t total(const std::vector<FieldBlock>& b) {
   std::size_t n = 0;
   for (const FieldBlock& f : b) n += f.size();
@@ -119,8 +118,8 @@ MIMETIKA_TEST(the_runs_are_contiguous_and_ordered) {
   CHECK(static_cast<std::size_t>(idx.back()) == atoms.front().ranges[0].end - 1);
 }
 
-// A doubly-claimed or unclaimed unknown is refused, which is the whole value of
-// the check: it is what a hand-written split gets wrong.
+// A doubly-claimed or unclaimed unknown is refused: overlap, gap, short of n
+// and past n.
 MIMETIKA_TEST(a_split_that_is_not_a_partition_is_refused) {
   CHECK(blocks_partition({FieldBlock{"a", {{0, 4}}}, FieldBlock{"b", {{4, 10}}}}, 10));
   CHECK(!blocks_partition({FieldBlock{"a", {{0, 4}}}, FieldBlock{"b", {{3, 10}}}}, 10));  // overlap

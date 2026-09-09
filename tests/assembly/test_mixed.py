@@ -75,8 +75,9 @@ def flux_field(x):
 def test_discrete_divergence_matches_incidence(mesh):
     """``B`` is the bare signed incidence -- entries in {-1, +1}, no geometry.
 
-    The flux DOF is the integrated normal flux, so Stokes gives ``B = d^T`` with
-    no measures; the metric lives entirely in the inner product.
+    The flux DOF is the integrated normal flux, so Stokes gives ``B = d``, the
+    coboundary ``partial^T``, with no measures; the metric lives entirely in the
+    inner product.
     """
     B = discrete_divergence(mesh)
     expected = mesh.complex.boundary_matrix(mesh.dim).T

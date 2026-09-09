@@ -57,10 +57,10 @@
 // over the scalar type, and `differentiate` re-runs that same body on exokal's
 // local AD type: the branch is chosen by the values, the derivative is carried
 // by the arithmetic, so the two cannot disagree. The tangent dt/dt_trial turns
-// the fixed-point sweep into a semismooth Newton iteration. So
-// AssociativeMohrCoulomb -- whose closest-point return map has four active
-// sets, each with its own closed form -- costs no more to differentiate than
-// the identity.
+// the fixed-point sweep into a semismooth Newton iteration -- linear
+// convergence into quadratic. So AssociativeMohrCoulomb -- whose closest-point
+// return map has four active sets, each with its own closed form -- costs no
+// more to differentiate than the identity.
 
 namespace mimetika::contact {
 

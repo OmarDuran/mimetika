@@ -1,8 +1,7 @@
 """Cell-centred reconstruction of facet-based flux and stress unknowns.
 
-The reconstructions must be **exact for constant fields**: that is what makes
-them the natural partners of a scheme that reproduces constant fluxes and
-stresses exactly, rather than an ad-hoc smoothing.
+The reconstructions are exact on constant fields, matching a scheme that
+reproduces constant fluxes and stresses exactly.
 """
 
 import numpy as np

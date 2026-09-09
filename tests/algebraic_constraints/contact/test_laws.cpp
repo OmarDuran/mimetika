@@ -10,8 +10,10 @@
 // A law is a pure function of (traction, jump, state) in the facet frame, so it
 // is checked directly against the conditions it is supposed to encode. The
 // LinearContact, SignoriniCoulomb and RateAndStateFriction tests port
-// tests/contact/test_laws.py, which is the authority on that behaviour;
-// SlipWeakening and FrictionlessBilateral have no Python counterpart.
+// tests/contact/test_laws.py, which is the authority on that behaviour.
+// FrictionlessBilateral has a Python class but no entry there; it is driven from
+// tests/contact/test_map_sweep.py and tests/benchmarks/test_contact_mechanics_1.py.
+// SlipWeakening has no Python class at all.
 
 using mimetika::contact::ContactLaw;
 using mimetika::contact::FrictionlessBilateral;

@@ -1,11 +1,13 @@
 r"""De Rham (consistency-only) mimetic inner products.
 
 The scalar flux product and its elasticity descendants (three- and
-four-field).  Each field (a flux, a stress row) is an H(div) unknown, and the
-divergence-free fields completing the local space to unisolvence are images
-of the curl, supplied by exactness of the de Rham complex.  The operators
-written in ``M1 + M2`` form (:mod:`mimetika.operators.diffusion`,
-:mod:`mimetika.operators.elasticity`) are the stabilized family.
+four-field), the default, fully supported operators of the library: the
+assemblies build them when ``inner=None``.  Each field (a flux, a stress row)
+is an H(div) unknown, and the divergence-free fields completing the local space
+to unisolvence are images of the curl, supplied by exactness of the de Rham
+complex.  The operators written in ``M1 + M2`` form
+(:mod:`mimetika.operators.diffusion`, :mod:`mimetika.operators.elasticity`) are
+retained as examples of the stabilized family.
 
 Scalar member (the BDM equivalent):
 

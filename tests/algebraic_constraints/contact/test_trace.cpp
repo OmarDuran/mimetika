@@ -7,16 +7,10 @@
 
 // The fracture and its frames: the addressing the trace operator stands on.
 //
-// The trace itself -- the jump as the adjoint of D and A -- is exercised
-// against a solved problem in test_contact_elasticity.cpp, where a known
-// displacement field can be imposed and the recovered jump compared to it.
-// What is checked here is everything that must hold before a solve: that a
-// fracture is interior, that both cofaces read one frame, and that the rotation
-// into and out of that frame is an isometry.
-//
-// The traction and the jump are rotated by the same frame in opposite
-// directions, so an error there cancels in any round trip and shows up only as
-// a wrong friction cone.
+// The trace itself -- the jump as the adjoint of D and A -- is exercised against
+// a solved problem in test_jump.cpp. What is checked here is everything that must
+// hold before a solve: that a fracture is interior, that both cofaces read one
+// frame, and that the rotation into and out of that frame is an isometry.
 
 using graphos::Index;
 using mimetika::contact::Fracture;
@@ -41,8 +35,7 @@ std::vector<Index> facets_at(const exokal::Mesh& m, int dim, double z, double to
 }  // namespace
 
 // A fracture is interior: a jump needs two sides, and a boundary facet has one.
-// Refusing at construction keeps the driver from producing a plausible answer
-// on a fault that is really a boundary.
+// The constructor throws std::invalid_argument on a boundary facet.
 MIMETIKA_TEST(a_fracture_facet_must_have_two_cofaces) {
   const exokal::Mesh m = mimetika::mesh::column(4, 3, Family::cartesian, 1.0, 1.0);
   // the base of the column: a boundary facet

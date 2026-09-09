@@ -454,7 +454,8 @@ class ElasticityInnerProduct:
         ).reshape(nB, nf * ndf, d * d) / (2.0 * mu)[:, None, None]
 
         # Kbar = kron(G, block); the first moment vanishes at the centroid, so G
-        # is block diagonal: 1 and the cell second moments / (|E| h^2)
+        # is block diagonal: 1 and the cell second moments / (|E| scale^2),
+        # scale = |E|^{1/d}
         G = np.zeros((nB, d + 1, d + 1))
         G[:, 0, 0] = 1.0
         G[:, 1:, 1:] = g.cell_second_moments()[cell_ids] / (

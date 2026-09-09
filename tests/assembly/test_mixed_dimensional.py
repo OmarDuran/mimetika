@@ -63,7 +63,7 @@ def test_fracture_parameters():
 
 def test_block_sizes_and_duplication():
     mesh, tags, pb = build((2, 2, 2))
-    assert pb.n_flux3 == mesh.num_cells(2) + len(tags)  # one extra DOF per side
+    assert pb.n_flux3 == mesh.num_cells(2) + len(tags)  # one flux DOF per side
     assert pb.dofmap.n_duplicated == len(tags)
     assert pb.n_p2 == len(tags) == pb.frac_mesh.num_cells(2)
     assert pb.n_flux2 == pb.frac_mesh.num_cells(1)

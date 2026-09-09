@@ -145,7 +145,7 @@ struct Parameters {
 
   // -- the frictionless displaced fault (paper section 3, eqs. 18-21) ---------
   //
-  // Jansen & Meulenbroek (2022), quoted by the paper as eqs. (18)-(21). A
+  // Jansen & Meulenbroek (2022), quoted by the paper as eqs. (18)-(22). A
   // reservoir offset across a vertical fault by the throw b - a puts reservoir
   // against seal on both sides, which loads the fault in shear; with no friction
   // it slips until it carries no shear stress at all.

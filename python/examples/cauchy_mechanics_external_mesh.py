@@ -595,9 +595,10 @@ def main():
     # broadcast; for the quadratic one sigma is linear in x and the rotation
     # vanishes identically, and only an array can say either.
     #
-    # The volumetric and deviatoric rows are reported apart because a defect in
-    # one part alone -- a missing trace, a spurious deviator -- is invisible in
-    # the norm of the full tensor.
+    # The volumetric and deviatoric rows -- tr(sigma)/d, and the block with that
+    # mean taken off its diagonal -- are reported apart because a defect in one
+    # part alone, a missing trace or a spurious deviator, is invisible in the
+    # norm of the full tensor.
     n_rot = model.n_rotations
 
     with stage("reconstructing u, gamma and sigma"):
@@ -674,10 +675,10 @@ def main():
         ("sigma vol", vol - vol_hat, scale_s),
         ("sigma dev", dev - dev_hat, scale_s),
     ]
-    # THE LAST TWO COLUMNS, CELL BY CELL. ||e||_{L2(E)} = |E|^{1/2} |e_E|, which
-    # is NOT the componentwise "*_error" fields below: those are e_E itself. The
-    # weight is why the table's min_E and max_E cannot be read off them, and
-    # writing these puts the two ends of the table on the mesh.
+    # THE LAST TWO COLUMNS, CELL BY CELL. ||e||_{L2(E)} = |E|^{1/2} |e_E|, one
+    # scalar a cell -- the "*_error" fields below, against the componentwise
+    # signed "*_residual". The weight is why min_E and max_E cannot be read off
+    # the residuals, and writing these puts the two ends of the table on the mesh.
     cell_error = error_table(volume, rows)
 
     if args.vtu and root:

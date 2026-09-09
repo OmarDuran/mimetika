@@ -11,8 +11,9 @@ kinematic row (see :mod:`mimetika.assembly.kinematic`).  The checks:
   ``theta = 0`` is the zero-block multiplier form;
 * three- and four-field kinematic systems are congruent: the solid-pressure
   split never touches the rotation row;
-* ``u`` and ``sigma`` converge above first order, ``s`` at first order; with no
-  zero block there is no multiplier inf-sup condition;
+* rates on n = 4, 8, 16: ``u`` > 1.5, ``sigma`` > 1.4, ``s`` > 0.8 -- below
+  first order for ``s``; with no zero block there is no multiplier inf-sup
+  condition;
 * the system is quasi-symmetric, so MINRES is refused.
 """
 

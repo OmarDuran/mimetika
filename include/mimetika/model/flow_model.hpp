@@ -260,9 +260,9 @@ class FlowModel {
 
   // The validity gate of the diagonal star, recorded by exokal and left to the
   // consumer: a facet the cell centroid does not see from inside carries a
-  // non-positive two-point weight, so M is not positive there and nothing built
-  // on it -- the Riesz map, a condensation -- is SPD. Populated by
-  // diagonal_tpfa, and by adaptive_rt on the cells its scan handed to the star.
+  // non-positive two-point weight, so M is not SPD there and the solve returns
+  // a meaningless field while reporting CONVERGED. Populated by diagonal_tpfa,
+  // and by adaptive_rt on the cells its scan handed to the star.
   std::size_t n_not_star_shaped() const {
     if (sim_ == nullptr) {
       throw std::logic_error("FlowModel: not built yet; call build() or solve() first");

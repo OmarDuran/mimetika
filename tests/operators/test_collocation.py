@@ -2,20 +2,20 @@ r"""Circumcentric collocation: making ``d || n`` hold on a simplicial mesh.
 
 :class:`LumpedDeviatoricStress` is consistent only where the offset from the cell
 collocation point to a facet centroid is parallel to that facet's normal.  The
-centroid does not give that on a simplex -- but the collocation point is a *free*
+centroid does not give that on a simplex, but the collocation point is a free
 parameter of the consistency derivation (``u(x_i) - u(x_c) = eps (x_i - x_c)`` holds
 for any ``x_c``), so it can be chosen to make the condition true.
 
-The object being asked for is an **orthogonal complex**: a polytopal mesh carrying one
+The object being asked for is an orthogonal complex: a polytopal mesh carrying one
 point per cell such that every facet is orthogonal to the segment joining the two cell
 points it separates.  Voronoi/PEBI generators are the general construction.
 Circumcentres are the simplicial special case via Delaunay duality -- exact in 2D, and
-in 3D not merely inexact but sometimes worse than the centroid, see
+in 3D worse than the centroid on a distorted tetrahedron, see
 :func:`test_in_3d_the_circumcentre_is_not_enough`.
 
-Each test checks against something independent of the code under test: equidistance
-is measured from the vertices, and wherever the circumcentre is asserted to succeed
-the centroid is asserted to fail.
+References are independent of the code under test: equidistance is measured from the
+vertices, and wherever the circumcentre is asserted to succeed the centroid is
+asserted to fail.
 """
 
 import numpy as np
@@ -26,7 +26,7 @@ from mimetika.operators import LumpedDeviatoricStress, circumcentres
 
 MU = 2.5
 
-#: Acute, so the circumcentre lies strictly inside and every ``d_n > 0``.  A *right*
+#: Acute, so the circumcentre lies strictly inside and every ``d_n > 0``.  A right
 #: triangle would be a bad choice: its circumcentre is the hypotenuse midpoint, which
 #: sits on a facet and gives ``d_n = 0``.
 ACUTE = [(0.0, 0.0), (1.0, 0.0), (0.5, 0.9)]

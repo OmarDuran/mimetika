@@ -1,8 +1,10 @@
 """Mesh generators: structured hex/tet boxes, structured and graded quad/tri
 rectangles, and single reference cells.
 
-Cells are emitted in the polytopal cells-as-face-loops format, so they flow
-through the same topology construction as arbitrary polyhedra.
+The 3D generators emit cells in the polytopal cells-as-face-loops format
+(``Mesh.from_cells``), so they flow through the same topology construction as
+arbitrary polyhedra; the 2D ones pass ordered vertex loops to
+``Mesh.from_polygons``.
 """
 
 from __future__ import annotations
@@ -255,7 +257,8 @@ def graded_coordinates(interfaces, extent, spacing, growth: float = 1.35,
     Coulomb stress is logarithmically singular at the reservoir edges).
     ``spacing`` is the cell size at an interface; cells grow by ``growth`` away
     from it -- towards mid-span between two interfaces, and outwards to
-    ``extent`` beyond the outermost -- capped at ``max_spacing`` when given.
+    ``extent`` beyond the outermost, where the growth is capped at
+    ``max_spacing`` when given.
 
     ``window`` replaces the graded interior between two bounds by a uniform mesh
     at ``window_spacing`` (default ``spacing``), with the geometric coarsening

@@ -226,8 +226,8 @@ struct HypreOptions {
   // to where it started. Measured on the hybrid ladder, MGR converges at 1, 3,
   // 5, 7, 9 sweeps and stalls at the iteration cap at 2, 4, 6, 8 -- on flow
   // stabilized_rt (17, cap, 14, cap) and on the strong stress alike, the even
-  // runs burning time in proportion to the count. The constructor refuses an
-  // even value.
+  // runs burning time in proportion to the count. solve() refuses an even
+  // count when opts.mgr is set.
   //
   // 3 is the default, the wall-clock minimum. More relaxation costs about 70 ms
   // an iteration on a 390 ms cycle -- F-relaxation is the small part of it, the
@@ -1148,10 +1148,11 @@ class HypreSolver {
     }
   };
 
-  // One call per row, not one per entry: HYPRE_IJMatrixAddToValues per triplet
-  // is O(nnz) calls into the library and is what made a 93k-cell industrial
-  // mesh -- 3.3 million entries -- appear to hang. The triplets are summed by
-  // (row, col) here and handed over as whole rows, the shape SetValues takes.
+  // One SetValues call for every local row at once, not one per entry:
+  // HYPRE_IJMatrixAddToValues per triplet is O(nnz) calls into the library and
+  // is what made a 93k-cell industrial mesh -- 3.3 million entries -- appear to
+  // hang. The triplets are summed by (row, col) here and handed over as whole
+  // rows, the shape SetValues takes.
   //
   // rows/cols are already in hypre's numbering; [row_begin, row_end) is this
   // rank's row run and [col_begin, col_end) its column run.

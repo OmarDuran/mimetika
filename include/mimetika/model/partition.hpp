@@ -13,8 +13,8 @@
 // Nothing here decides anything about the partition: exokal's geometric
 // bisection cuts the mesh, and exokal's ownership rule -- an entity belongs to
 // the lowest-numbered rank in its star -- says who owns what. This translates
-// that answer into the masks the rest of mimetika asks for, which are
-// different questions:
+// that answer into the ownership map and masks the rest of mimetika asks for,
+// which are different questions:
 //
 //   owner_of_dof   for the solver: the layout of the algebra, one rank per
 //                  global unknown, which is what a renumbering is built from

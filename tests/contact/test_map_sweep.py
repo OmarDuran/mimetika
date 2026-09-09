@@ -2,8 +2,8 @@ r"""Systematic parametric sweep of ``y = CD(x)``, for every contact law.
 
 The point-checks in :mod:`test_map` pin specific values.  Here each law is swept
 over a grid spanning tension and compression, pure normal and pure shear, and
-twelve orders of magnitude, and every sample must satisfy the invariants that
-hold for any ``x``:
+magnitudes ``1e-8`` to ``1e8`` -- sixteen decades -- and every sample must satisfy
+the invariants that hold for any ``x``:
 
 ============================  ====================================================
 invariant                     why it must hold for all ``x``

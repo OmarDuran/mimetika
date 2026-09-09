@@ -49,34 +49,35 @@ NAME = "hypre-ads"
 # faster of the two.
 #
 # ON THE STRESS IT IS BOUNDED RATHER THAN FLAT. Eliminating the stress
-# reconstructs the displacement operator, so the count moves where ADS holds at
-# 19. Measured on the hybrid ladder, stabilized_vem at nu = 1/4, rtol 1e-5:
+# reconstructs the displacement operator, so the count tracks nu. Measured by
+# test_mechanics_hypre_mgr and test_mechanics_hypre_ads, stabilized_vem under
+# strong symmetry on tetrahedra at rtol 1e-8:
 #
-#     level      0     1     2     3        nu    0.25  0.40  0.49  .499  .4999
-#     ads       19    19    19    19        ads     19    19    19    19     19
-#     mgr       19    26    37    61        mgr     26    29    38    45     49
+#     nu    0.25  0.40  0.49  .499  .4999
+#     mgr     36    38    46    52     60
+#     ads     14    14    14    18     36     (the block solved, not one cycle)
 #
 # The stress gets AMG on its F block, which the solver picks wherever a facet
 # carries more than one moment. Jacobi there cannot damp the hydrostatic mode --
 # the compliance's one small eigenvalue, 1/(2mu + d lam) against 1/2mu on the
 # five deviatoric ones -- and the count then grows like sqrt(2mu + d lam): the
-# nu row reads 66 78 133 240 under Jacobi. It is the F block and NOT the coarse
-# one, since div of a constant stress is zero and the hydrostatic direction
-# therefore never enters S = -B M^-1 B^T.
+# same sweep reads 74, 92, 204, 542, 1648 under Jacobi. It is the F block and
+# NOT the coarse one, since div of a constant stress is zero and the hydrostatic
+# direction therefore never enters S = -B M^-1 B^T.
 #
 # AMG there costs about 43 percent more a solve at nu = 1/4 on 1.2e5 cells.
 # mgr_relax_sweeps must be ODD -- an even count does not converge, on flow or on
-# the stress. At l_3 MGR is 83 s against ADS's 194 s.
+# the stress; linear_solver/hypre.hpp carries the sweep-count timings.
 #
 # THE SCOPE OF THE ROBUSTNESS CLAIM: stabilized_vem, AMG on F. On its own
 # ladders test_mechanics_hypre_mgr asserts a ratio of at most 1.5 in h (worst
 # measured 1.44), at most 2 across an eight-decade lambda jump, and at most 3
 # over nu = 0.25 .. 0.4999. Nothing is asserted for the weak family.
 #
-# THE WEAK PATH IS NOT OFFERED. A facet carrying d moments takes MGR's two-level
-# reduction, and that path does not converge -- flow derham_bdm and
-# stabilized_bdm stall at the cap. See the note in linear_solver/hypre.hpp: it
-# survives every F-relaxation, interpolation type and reduction depth.
+# THE WEAK PATH DOES NOT CONVERGE, AND NOTHING REFUSES IT: a facet carrying d
+# moments takes MGR's two-level reduction and stalls at the iteration cap, flow
+# derham_bdm and stabilized_bdm alike. The note in linear_solver/hypre.hpp has
+# it surviving every F-relaxation, interpolation type and reduction depth.
 MGR_NAME = "hypre-mgr"
 HYPRE_NAMES = (NAME, MGR_NAME)
 
@@ -244,11 +245,10 @@ def solve(model, mesh, dim, opts):
     # stress. The two converge at similar counts, so the count does not say
     # which ran.
     if opts.mgr:
-        # ONE LEVEL OR TWO, and the marker scheme decides from the operator.
-        # div reads only a facet's constant moment, so where a facet carries
-        # more the higher moments lie in ker D and are eliminated first; where
-        # it carries one -- flow, and the strong-symmetry stress, whose div
-        # pairs against the whole of RM(E) -- a single reduction is exact.
+        # ONE LEVEL OR TWO, read off the operator: two where the multiplier rows
+        # touch some but not all of the flux dofs, the untouched higher moments
+        # lying in ker D and eliminated first; one where they touch every one --
+        # flow, and the strong stress, whose six facet moments pair against RM(E).
         _note(f"mgr reduction onto {_reduced_onto(model)}")
     else:
         _note("ads on the degree-2 complex" if handoff["degree2"]

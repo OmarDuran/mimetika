@@ -74,9 +74,8 @@ MIMETIKA_TEST(the_mixed_elasticity_space_has_the_afw_counts) {
 // every off-diagonal pair is the negative transpose of its partner.
 //
 // Every physics uses the same convention. Flow, mechanics and the Biot coupling
-// all land in one system, and two conventions meeting there would give a matrix
-// neither symmetric nor antisymmetric — structure no solver could exploit, and
-// nothing would visibly break.
+// all land in one system, and two conventions meeting there give a matrix
+// neither symmetric nor antisymmetric.
 //
 // The displacement and rotation blocks must also be empty, which is what makes
 // this a saddle point rather than a positive-definite system in disguise.
@@ -90,8 +89,9 @@ MIMETIKA_TEST(the_poroelastic_system_is_a_saddle_point_with_adjoint_couplings) {
   // The default de Rham realization reconstructs each stress row on the
   // enriched scalar space, so its N is square and unisolvent and there is
   // nothing left for a stabilization to see -- on hexahedra as on simplices.
-  // The AFW realization reconstructs on the full linear tensor space, whose
-  // moments a hexahedron does not determine, so there every cell stabilizes.
+  // stabilized_bdm reconstructs on the full linear tensor space [P_1]^{dxd},
+  // whose moments a hexahedron does not determine, so there every cell
+  // stabilizes.
   CHECK(ops.n_stabilized() == 0);
   const StressOperators afw =
       StressOperators::build(m, 3, 1.0, 1.0, StressOperators::Realization::stabilized_bdm);
@@ -156,8 +156,7 @@ MIMETIKA_TEST(the_poroelastic_system_is_a_saddle_point_with_adjoint_couplings) {
   // Giving the Biot block the Darcy convention leaves every structural
   // property here intact and every magnitude unchanged, and makes the
   // undrained response wrong -- p = 5 sigma_0/13 instead of sigma_0/alpha on
-  // a confined column at mu = lam = alpha = 1. Nothing short of checking the
-  // sign, or solving a problem with a known answer, detects it.
+  // a confined column at mu = lam = alpha = 1.
   const auto [q0, q1] = blk("q_0");
   const auto pairing = [&](std::size_t a0, std::size_t a1, std::size_t b0, std::size_t b1,
                            double want) {
@@ -193,8 +192,6 @@ MIMETIKA_TEST(the_poroelastic_system_is_a_saddle_point_with_adjoint_couplings) {
   // the Biot coupling is present, and it is the plain transpose: the pore
   // pressure enters the constitutive relation exactly as the volumetric
   // response enters the mass balance, from one coefficient and with one sign.
-  // Its symmetry is checked above, with the Darcy pair's antisymmetry beside
-  // it so the two conventions cannot be confused for each other again.
   CHECK(empty(s0, s1, p0, p1) > 1e-9);
   CHECK(empty(p0, p1, s0, s1) > 1e-9);
 

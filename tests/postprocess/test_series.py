@@ -1,14 +1,13 @@
 r"""Mixed-dimensional VTU output and the PVD time series.
 
-The claim under test is that a mixed-dimensional solution survives the round
-trip to disk *as two parts*.  Flattening it into one grid would either drop the
-fracture unknowns -- fracture pressure, fracture flux, contact traction,
-displacement jump have no bulk counterpart -- or smear them onto the cells
-beside the fracture, and neither is recoverable afterwards.
+A mixed-dimensional solution survives the round trip to disk as two parts.
+Flattening it into one grid either drops the fracture unknowns -- fracture
+pressure, fracture flux, contact traction, displacement jump have no bulk
+counterpart -- or smears them onto the cells beside the fracture, and neither is
+recoverable afterwards.
 
-The files are also checked for being well-formed XML with the cell/point counts
-they declare, because a ``.vtu`` that ParaView silently refuses to open is
-indistinguishable from one that was never written.
+The files are also checked for being well-formed XML carrying the cell and point
+counts they declare.
 """
 
 import xml.etree.ElementTree as ET
@@ -31,7 +30,7 @@ VTK_LINE, VTK_POLYGON, VTK_POLYHEDRON = 3, 7, 42
 
 
 def parse(path):
-    """``(root, piece)`` of a ``.vtu``, failing loudly if it is not valid XML."""
+    """``(root, piece)`` of a ``.vtu``; raises if the file is not valid XML."""
     root = ET.parse(path).getroot()
     return root, root.find("./UnstructuredGrid/Piece")
 
@@ -103,7 +102,7 @@ def series(tmp_path):
 
 
 def test_each_step_writes_both_parts(series):
-    """Bulk and fracture are separate *parts* at the same timestep, not one grid."""
+    """Bulk and fracture are separate parts at the same timestep, not one grid."""
     s, mesh, facets = series
     for step, t in enumerate((0.0, 0.5, 2.0)):
         s.write(t, bulk={"p": np.full(mesh.num_cells(3), float(step))},
@@ -116,7 +115,7 @@ def test_each_step_writes_both_parts(series):
 
 
 def test_the_timesteps_are_the_ones_given(series):
-    """A PVD exists to carry time; writing the index instead would be silent."""
+    """The ``timestep`` attribute carries the value given, not the step index."""
     s, mesh, facets = series
     for t in (0.0, 1.5, 17.25):
         s.write(t, bulk={"p": np.zeros(mesh.num_cells(3))})
@@ -189,11 +188,11 @@ def test_darcy_gives_pressure_and_flux_on_both_dimensions(darcy):
 
 
 def test_the_fracture_velocity_is_tangential(darcy):
-    """The whole point of the lower-dimensional unknowns: flow *along* the fracture.
+    """The fracture velocity is tangential: flow along the fracture.
 
-    It is tangential by construction -- reconstructed on the fracture's own mesh
-    from its own flux DOFs -- so any normal component would mean the wrong mesh
-    or the wrong unknowns were used.
+    Tangential by construction -- reconstructed on the fracture's own mesh from
+    its own flux DOFs -- so a normal component means the wrong mesh or the wrong
+    unknowns were used.
     """
     problem, solution, mesh, tags = darcy
     _, fracture = darcy_fields(problem, solution)
@@ -228,10 +227,8 @@ def test_darcy_fields_survive_the_round_trip(darcy, tmp_path):
 def test_every_cell_is_tagged_with_its_dimension(tmp_path):
     """``dim`` survives merging the parts, which the block structure does not.
 
-    In ParaView the two parts arrive as separate blocks, but the moment they are
-    merged that distinction is gone -- a ``Threshold`` on ``dim`` is then the only
-    way to isolate the bulk or the fracture, and it works without the user having
-    to know which block was which.
+    The two parts arrive as separate blocks and merging drops that distinction;
+    a ``Threshold`` on ``dim`` is then what isolates the bulk or the fracture.
     """
     mesh = structured_box(3, 3, 3)
     facets = facets_on_plane(mesh, [1 / 3, 0, 0], [1, 0, 0])

@@ -172,7 +172,12 @@ def test_the_associative_coupling_block_is_present():
 
 
 def test_the_tangent_is_non_symmetric():
-    """Coulomb friction is non-associated: the tangent block is not symmetric."""
+    """The projection is self-adjoint in the ``(eps_n, eps_t)`` metric, not in the
+    Euclidean one.  On the lateral face the coupling entries are
+    ``-mu eps_N / (eps_T + mu^2 eps_N)`` on the normal row against
+    ``-mu eps_T / (eps_T + mu^2 eps_N)`` on the shear rows, so ``eps_n != eps_t``
+    makes the tangent unsymmetric.
+    """
     model = law(eps_n=3.0, eps_t=0.5)
     tangent = model.tangent(np.array([[-1.0, 10.0, 0.0]]))[0]
     assert not np.allclose(tangent, tangent.T, atol=1e-8)

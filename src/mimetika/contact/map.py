@@ -24,15 +24,15 @@ points, in the facet frame, shape ``(n_points, dim)``, normal component first::
 with ``t_n < 0`` in compression and ``g_n > 0`` open.  The space is the same for
 every law; what changes is the subset ``CD`` can return and the state carried:
 
-======================  ======================================  ================  ===
-law                     admissible set of ``y = CD(x)``         internal state    dt
-======================  ======================================  ================  ===
-FrictionlessBilateral   ``t_t = 0``, ``t_n`` free               none              no
-LinearContact           all of ``R^dim`` (bonded)               none              no
-SignoriniCoulomb        ``t_n <= 0``, ``|t_t| <= -mu t_n + c``  slip (1)          no
-AssociativeMohrCoulomb  same set, closest-point return          slip (1)          no
-RateAndStateFriction    ``|t_t| <= -mu(V, theta) t_n``          slip, theta (2)   yes
-======================  ======================================  ================  ===
+======================  ========================================  ================  ===
+law                     admissible set of ``y = CD(x)``           internal state    dt
+======================  ========================================  ================  ===
+FrictionlessBilateral   ``t_t = 0``, ``t_n`` free                 none              no
+LinearContact           all of ``R^dim`` (bonded)                 none              no
+SignoriniCoulomb        ``t_n <= 0``, ``|t_t| <= -mu t_n + c``    slip (1)          no
+AssociativeMohrCoulomb  same set, closest-point return            slip (1)          no
+RateAndStateFriction    ``t_n <= 0, |t_t| <= -mu(V, theta) t_n``  slip, theta (2)   yes
+======================  ========================================  ================  ===
 
 :class:`LinearContact` constrains nothing, so its projection is the identity and
 its fixed point is reached in one evaluation; the driver takes it through the

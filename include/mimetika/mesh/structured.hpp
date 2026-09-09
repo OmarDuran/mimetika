@@ -163,7 +163,8 @@ inline exokal::Mesh box(const std::array<int, 3>& n, int dim, Family family,
   const double lx = lengths[0], ly = lengths[1];
   // The plane is triangulated for everything but cartesian, the same rule
   // `column` follows: a prism is a triangle extruded, so a quadrilateral plane
-  // would produce hexahedra under the name `prism`, at the same cell count.
+  // would produce hexahedra under the name `prism`. The plane's node count,
+  // (nx+1)(ny+1), is the same either way; the cell count doubles.
   const bool tri = family != Family::cartesian;
 
   std::vector<Point> plane;

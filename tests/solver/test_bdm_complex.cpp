@@ -3,7 +3,7 @@
 //     P3 nodal --G--> N2E2 circulation --C--> BDM flux
 //     [P1]^3 vector nodal --Pi_nd--> circulation ,  --Pi_rt--> flux
 //
-// NOTHING HERE NEEDS A SIMPLEX. G and C are closed form and read no cell: G is
+// Nothing here needs a simplex. G and C are closed form and read no cell: G is
 // integration by parts, C is surface Stokes on a facet against exokal's own
 // facet chart. Pi is the only piece that touches a cell, through the modes its
 // vertex hats are written in. What has to hold:
@@ -11,7 +11,7 @@
 //   C.G = 0        by Stokes, not by a fit -- the edge rows of G are
 //                  integration by parts and the facet rows the in-plane
 //                  divergence theorem, so nothing is approximated
-//   G phi          for a CUBIC phi, G on phi's nodal dofs reproduces the
+//   G phi          for a cubic phi, G on phi's nodal dofs reproduces the
 //                  circulation dofs of grad phi. Cubic because grad(P3) =
 //                  [P2]^3 is exactly the reconstruction space; a lower degree
 //                  would pass on a formula that is only first-order right
@@ -26,7 +26,7 @@
 //                  and Pi of a linear field returns that field's own dofs. That
 //                  is what ADS coarsens on: the near-nullspace is the constants
 //
-// dec/mimetic_curl.hpp computes C per CELL from a reconstruction instead. On a
+// dec/mimetic_curl.hpp computes C per cell from a reconstruction instead. On a
 // simplex D_edge = m and the fit is exact; on a polytope D_edge > m, it is
 // least squares, it couples the whole cell, and the two cells sharing a facet
 // disagree. That is a property of the device, not of d^1 -- which is why C is
@@ -316,7 +316,7 @@ MIMETIKA_TEST(the_partition_is_inherited_entity_by_entity) {
   CHECK(inherit);
 }
 
-// THE DIFFERENTIALS DO NOT NEED A SIMPLEX. C is surface Stokes against the
+// The differentials do not need a simplex. C is surface Stokes against the
 // facet chart and G is integration by parts, so both are facet- and edge-local
 // and the two cells sharing a facet build the same row. Checked two ways at
 // once: C G = 0, and C applied to a field's exact circulation dofs against the
@@ -414,7 +414,7 @@ MIMETIKA_TEST(the_differentials_hold_on_a_polytope) {
 //
 // Lambda writes the vertex hats in the cell's modes: V^-1 on a tetrahedron, the
 // pseudoinverse (V^T V)^-1 V^T beyond it. Either way Lambda V = I, so the hats
-// reproduce every LINEAR function -- non-interpolatory on a polytope, but exact
+// reproduce every linear function -- non-interpolatory on a polytope, but exact
 // on P1. So for a linear vector field v, Pi applied to v's vertex values must
 // return v's own dofs, because Pi carries sum_w lambda_w v(x_w) = v.
 //

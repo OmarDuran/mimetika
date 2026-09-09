@@ -20,9 +20,9 @@
 // and what is handed to a solver is S, which for those two products is the
 // finite volume method itself: the pressure alone for TPFA, seven entries a row
 // in space; the displacement, rotation and total pressure for the two-point
-// stress scheme. Both are symmetric, both have the two-point stencil, and S is
-// smaller than M alone -- 27 unknowns against 135 on a 3^3 mesh of hexahedra,
-// 189 against 513.
+// stress scheme, Nordbotten & Keilegavlen Eq. (3.9). Both are symmetric, both
+// have the two-point stencil, and S is smaller than M alone -- 27 unknowns
+// against 135 on a 3^3 mesh of hexahedra, 189 against 513.
 //
 // Beyond the size: the saddle point's first block is what a Riesz map spends
 // its effort on, and S has no such block. The elimination is also

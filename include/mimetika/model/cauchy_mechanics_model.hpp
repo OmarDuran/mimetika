@@ -232,8 +232,9 @@ class CauchyMechanicsModel {
 
   Formulation formulation() const { return form_; }
 
-  // The total pressure p = lambda div u, one scalar per cell: a field of the
-  // four-field formulations, not a post-processing of the stress.
+  // The total pressure p = lambda div u, one scalar per cell: an independent
+  // unknown under weak_symmetry_total and strong_symmetry_total, not a
+  // post-processing of sigma. Refused elsewhere -- no solve produced it.
   double total_pressure(Index cell) const {
     if (form_ != Formulation::weak_symmetry_total && form_ != Formulation::strong_symmetry_total) {
       throw std::logic_error(

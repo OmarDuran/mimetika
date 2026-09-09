@@ -1,4 +1,5 @@
-r"""Exact stress condensation: correct, and honest about when it applies."""
+r"""Exact stress condensation, and the arrangements whose leading block is not
+diagonal and so refuse it."""
 
 import numpy as np
 import pytest

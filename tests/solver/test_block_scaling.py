@@ -5,11 +5,11 @@ constraint block is a discrete divergence of order one.  For rock
 (``G ~ 6.5e9``) that spread makes ``cond(A) ~ 2e11``, and MUMPS reports a zero
 pivot -- ``KSP_DIVERGED_PC_FAILED`` -- on systems SuperLU happens to survive.
 
-The conditioning is **intrinsic to the units**, not a diagonal artefact, so row
+The conditioning is intrinsic to the units, not a diagonal artefact, so row
 equilibration cannot remove it: row one already mixes both scales, so its
 maximum is set by the constraint entries and dividing by it leaves the
-compliance untouched.  Scaling the two *fields* against each other does work,
-and is what :func:`block_scaling` returns.
+compliance untouched.  Scaling the two fields against each other does work, and
+is what :func:`block_scaling` returns.
 """
 
 import numpy as np
@@ -48,7 +48,8 @@ def test_scaling_collapses_the_condition_number():
 
 
 def test_row_equilibration_does_not_help():
-    """Pins *why* the block form is needed rather than the obvious alternative."""
+    """Row equilibration leaves cond(A) within a factor of ten: it is not the
+    alternative to the block form."""
     A, _ = saddle(modulus=6.5e9)
     rows = np.asarray(abs(A).max(axis=1).todense()).ravel()
     rows[rows <= 0] = 1.0
@@ -87,10 +88,10 @@ def test_block_sizes_out_of_range_are_ignored():
 
 
 def test_the_stiff_poromechanics_system_factorises():
-    """The regression this exists for: a rock-modulus system must solve cleanly.
+    """A rock-modulus system factorises: mean volumetric strain to rel=1e-10.
 
-    Ran green under scipy's SuperLU and failed under PETSc/MUMPS before the
-    scaling, so it is checked on whichever backend is installed.
+    Without the block scaling this passes under scipy's SuperLU and fails under
+    PETSc/MUMPS, so it runs on whichever backend is installed.
     """
     from mimetika.assembly.mixed import boundary_facets
     from mimetika.assembly.poromechanics import PoroMechanics

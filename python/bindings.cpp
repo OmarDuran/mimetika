@@ -484,8 +484,8 @@ inline std::vector<mimetika::CauchyMechanicsModel::NormTraceTerm> trace_terms(
 // THE DEGREE-2 COMPLEX, WHERE ADS CAN TAKE THE BLOCK DIRECTLY.
 //
 // build_norm hands a BDM block to ADS through the facet-constant subspace,
-// because ADS's own construction assumes one unknown a facet. Given instead the
-// degree-2 complex
+// because ADS's own construction assumes one unknown a facet. On a TETRAHEDRAL
+// mesh, given instead the degree-2 complex
 //
 //     P3 nodal --G--> N2E2 circulation --C--> BDM flux
 //
@@ -867,8 +867,9 @@ mimetika::solver::SpaceNorm build_norm(const Model& m, const exokal::Mesh& mesh,
 template <class Model>
 void attach_norm(mimetika::solver::PetscSolver& petsc, const Model& m, const exokal::Mesh& mesh,
                  int dim, bool divergence_is_an_integral, bool merge_multipliers = true) {
-  // MERGED MULTIPLIERS AND THE FACET-CONSTANT SUBSPACE, NOT THE DIRECT PATH'S
-  // ROW SPLIT. PCHYPRESetInterpolations is HYPRE_ADSSetInterpolations, so the
+  // NOT THE DIRECT PATH'S NORM: rotation_own_scale stays false here (never
+  // passed), and the multipliers merge unless the caller says the system will
+  // be condensed. PCHYPRESetInterpolations is HYPRE_ADSSetInterpolations, so the
   // direct path's norm -- rotation unmerged, gamma on its own L^2 scale,
   // lowest_order a split by ROW of sigma, Pi supplied -- transfers without a
   // new branch (build_lowest_order_cycle already routes a permutation-shaped

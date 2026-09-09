@@ -7,7 +7,7 @@ mimetic counterpart of the two-point flux approximation instead -- an ``M`` that
 is diagonal, so each facet traction can be eliminated on its own and what
 remains is a cell-centred system in ``(u, s)``.
 
-Three conditions make that possible.
+Three consequences follow.
 
 **1.  The volumetric energy cannot be lumped.**  Split the complementary energy
 (the separation is due to Cockburn):

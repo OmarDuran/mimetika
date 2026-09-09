@@ -88,8 +88,8 @@ MIMETIKA_TEST(the_interface_system_is_symmetric_positive_definite) {
       for (std::size_t j = 0; j < S.n; ++j) asym = std::max(asym, std::abs(d[i * S.n + j] - d[j * S.n + i]));
     }
     CHECK(asym < 1e-12);
-    // positive definite: a conjugate gradient converges on it, and to the
-    // right answer -- the residual check inside the solver is the proof
+    // positive definite: a conjugate gradient converges on it, to rep.residual
+    // below 1e-9
     mimetika::solver::SolverOptions o;
     o.method = "cg";
     o.preconditioner = "hypre";

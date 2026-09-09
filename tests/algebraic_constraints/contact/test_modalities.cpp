@@ -142,9 +142,7 @@ MIMETIKA_TEST(cutting_creates_the_interface_as_its_own_stratum) {
 // The crack tip falls out of the topology. A cell with a single side is not
 // copied, so the vertices at the ends of an interior segment -- where intact
 // material still wraps around -- stay single and the two sides remain joined
-// there. No geometric test, no tip detection, no special case: the same
-// statement that makes the op sound on nonmanifold complexes produces the
-// crack-front topology.
+// there, with no tip detection anywhere in the cut.
 //
 // It is also the geometry a contact problem must be posed on: a fracture that
 // severs the domain under pure traction data leaves each piece floating, and

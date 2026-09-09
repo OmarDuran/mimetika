@@ -13,7 +13,7 @@
 #include "mimetika/model/boundary.hpp"
 #include "mimetika/model/cauchy_mechanics_model.hpp"
 
-// THE CONSTANT STRESS stabilized_vem REPORTS, ON A MANUFACTURED LINEAR STATE.
+// The constant stress stabilized_vem reports, on a manufactured linear state.
 //
 // Pi_E sigma_h is the L^2 projection of the discrete stress onto P_0(E; S),
 // assembled from the facet traction moments alone. Only the part of the dofs
@@ -22,8 +22,8 @@
 // examples call, so the test covers the dof gathering -- slot order, outward
 // orientation -- and not only the projector.
 //
-// THE MANUFACTURED STATE is the confined gravity column, and it has to be
-// confined: sigma_zz = -rho g (H - z) ALONE is not a stress state here. It
+// The manufactured state is the confined gravity column, and it has to be
+// confined: sigma_zz = -rho g (H - z) on its own is not a stress state here. It
 // gives eps_xx = -a sigma_zz / 2mu, hence u_x depending on z, hence
 // eps_xz != 0, contradicting sigma_xz = 0. Carrying the lateral stress
 //
@@ -36,9 +36,9 @@
 // nu = 0.25, i.e. lam = mu: two-field strong symmetry locks as nu -> 1/2, so
 // the incompressible regime is out of scope for this test by construction.
 //
-// MEASURED over h, h/2, h/4: first order in L^2, the coarsest pair still
+// Measured over h, h/2, h/4: first order in L^2, the coarsest pair still
 // pre-asymptotic at 0.87. The exact stress is continuous, so its traction jump
-// across an interior facet vanishes and the recovered jump IS the defect;
+// across an interior facet vanishes and the recovered jump is the defect;
 // Pi_E is constant a cell, so that defect is O(h) and not round-off.
 
 using graphos::Index;

@@ -161,7 +161,7 @@ MIMETIKA_TEST(derham_rt_on_prisms_is_not_yet_consistent_in_the_plane) {
 }
 
 MIMETIKA_TEST(the_flow_patch_is_exact_for_the_two_point_star_where_it_claims) {
-  // the cartesian patch is K-orthogonal, which is the whole of TPFA's claim
+  // the cartesian patch is K-orthogonal, which is all the two-point flux claims
   using R = FlowModel::Realization;
   for (const int dim : {2, 3}) {
     CHECK(flow_patch(dim, Family::cartesian, R::diagonal_tpfa) < 1e-10);
@@ -279,9 +279,9 @@ MIMETIKA_TEST(the_elastic_patch_is_exact_for_the_strong_family) {
 }
 
 // The boundary machinery, separated from the star's consistency: on a simplex
-// the two-point members are inconsistent by their own claim, and a failed patch
-// there says nothing about whether the data arrived. Two tests that a broken
-// datum fails and an inconsistent-but-correctly-driven star cannot:
+// the two-point members are inconsistent by their own claim, so a failed patch
+// there does not say whether the data arrived. Two tests a broken datum fails
+// and an inconsistent-but-correctly-driven star passes:
 //
 //   * a rigid motion has sigma = 0, so M sigma vanishes for any M: every
 //     realization must reproduce it exactly on every family, and the only way
