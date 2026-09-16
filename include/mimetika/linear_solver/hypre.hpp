@@ -164,7 +164,9 @@ struct HypreOptions {
   // only reduces the sign flips, 112 of 360 to 36. The level-1 diagonal goes
   // negative on 31 percent of the facet constants, A_C is then indefinite --
   // 217 positive against 71 negative eigenvalues, asymmetry 3e-17, so they are
-  // real -- and BoomerAMG on it returns nan.
+  // real. The outer FlexGMRES then runs to its cap: on the tetrahedral ladder
+  // both weak forms read DIVERGED_ITS under 2 against 89 and 92 under 14, while
+  // hexahedra converge either way (19 against 21).
   //
   // NOT THE SMOOTHER. With exact F-solves at both levels 146 of 1368
   // preconditioned eigenvalues still have Re <= 0; putting A_FF^-1 in Wp makes

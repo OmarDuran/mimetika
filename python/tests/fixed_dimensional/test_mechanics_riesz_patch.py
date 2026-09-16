@@ -88,6 +88,13 @@ VEM_FORMS = ("stabilized_vem", "stabilized_vem_deviatoric")
 # every established realization, in every formulation it admits
 STRICT_FORMS = BDM_FORMS + VEM_FORMS
 FOUR_FIELD = {k for k, (_, f) in REALIZATIONS.items() if f in (WD, SD)}
+# The facet-frame split: on a RECONSTRUCTED weak product the deviatoric form is
+# a change of dof basis rather than an added field -- sigma n resolved in
+# R_f = [n | t_a], so sigma_hyd is the facet's normal traction and sigma_dev the
+# tangential ones, same dof count and same spectrum. exokal names the products
+# that take it; the rest of the deviatoric family carries a scalar p per cell.
+FACET_FRAME = {k for k, (p, f) in REALIZATIONS.items()
+               if f is WD and p in ("derham_bdm", "stabilized_bdm", "derham_rt")}
 
 LADDERS = {
     "cartesian_2d": (2, [mk.box([n, n, 1], 2, mk.Family.cartesian, [1.0, 1.0, 1.0])
@@ -519,24 +526,68 @@ def test_three_fields_are_robust_to_incompressibility(realization, family):
     assert max(counts) <= 800, (realization, family, counts)
 
 
+# The departure an rtol on the PRECONDITIONED residual buys, as a function of
+# the material: the true error is that residual carried through the operator, so
+# it degrades with the stiffness lambda/mu and a fixed absolute threshold is a
+# statement about one material rather than about the method. Measured ratios run
+# 2e-9 down to 1e-11 across four orders in lambda -- the bound is linear and the
+# accuracy beats it at the incompressible end.
+def departure_bound(lam):
+    return 1e-8 * max(1.0, lam / MU)
+
+
 @pytest.mark.parametrize(
     "realization,family",
-    [(r, f) for r, f in INCOMPRESSIBLE_CASES if r in FOUR_FIELD])
-def test_four_fields_are_not_yet_robust_to_incompressibility(realization, family):
-    """The same ratios, and the four-field forms do not carry them.
+    [(r, f) for r, f in INCOMPRESSIBLE_CASES if r in FACET_FRAME])
+def test_the_facet_frame_split_is_robust_to_incompressibility(realization, family):
+    """Isolating sigma_hyd in ONE dof per facet is what makes the norm carry.
+
+    The three-field star holds the full compliance C^-1, which degenerates on
+    the trace as lambda grows. The deviatoric split leaves the star the
+    lambda-free deviatoric part and puts the whole volumetric response in the
+    facet's normal traction -- a single direction of R_f that the Riesz map
+    addresses outright -- rather than smeared across the d components of
+    sigma n. Measured, at nu = 0.3, 0.49, 0.499, 0.4999:
+
+        derham_bdm_deviatoric     cartesian_2d    15   11   10    9
+        derham_bdm_deviatoric     cartesian_3d    11    9    9    7
+        derham_bdm_deviatoric     simplex_3d      11    9    9    7
+        stabilized_bdm_deviatoric cartesian_2d    15   11   11    9
+        stabilized_bdm_deviatoric cartesian_3d    11    9    9    7
+        stabilized_bdm_deviatoric simplex_3d      11    9    9    7
+
+    The count FALLS as nu -> 1/2. The trace mode the three-field norm fought is
+    no longer in the star, and what is left is better conditioned rather than
+    worse -- so the incompressible limit is asserted to cost no more than the
+    compressible one, not merely to stay bounded.
+    """
+    dim, meshes = LADDERS[family]
+    mesh = meshes[0]
+    counts = []
+    for nu in POISSON:
+        lam = lame_at(nu)
+        its, departure = iterative(mesh, dim, realization, lam=lam)
+        assert its is not None, (realization, family, nu, "did not converge")
+        assert departure < departure_bound(lam), (realization, family, nu, departure)
+        counts.append(its)
+    print(f"  {realization:<21}{family:<14}nu {list(POISSON)} -> {counts} its")
+    assert counts[-1] <= counts[0], (realization, family, counts)
+    assert max(counts) <= 25, (realization, family, counts)
+
+
+@pytest.mark.parametrize(
+    "realization,family",
+    [(r, f) for r, f in INCOMPRESSIBLE_CASES if r in FOUR_FIELD - FACET_FRAME])
+def test_the_strong_four_field_is_not_yet_robust_to_incompressibility(realization, family):
+    """The same ratios, and the STRONG deviatoric form does not carry them.
 
     p takes the trace, so the star is the lambda-free deviatoric compliance and
-    the norm ought to be the better one -- yet it is the worse. Measured, at
-    nu = 0.3, 0.49, 0.499, 0.4999:
+    the norm ought to be the better one -- and on the weak axis, where the split
+    is a facet-frame rotation, it is. The strong axis keeps p as a scalar per
+    cell and does not. Measured, at nu = 0.3, 0.49, 0.499, 0.4999:
 
-        derham_bdm_deviatoric     cartesian_2d    43    97   153   278
-        derham_bdm_deviatoric     cartesian_3d    45   117   221  2046
-        derham_bdm_deviatoric     simplex_3d      50   187   531   DIV
-        stabilized_bdm_deviatoric cartesian_2d    45    94   159   394
-        stabilized_bdm_deviatoric cartesian_3d    49   150   300  2669
-        stabilized_bdm_deviatoric simplex_3d      52   180   935   DIV
-        stabilized_vem_deviatoric cartesian_3d    81   338  1114   DIV
-        stabilized_vem_deviatoric simplex_3d     107   769   DIV   DIV
+        stabilized_vem_deviatoric cartesian_3d    81   347  1115   DIV
+        stabilized_vem_deviatoric simplex_3d     107   791   DIV   DIV
 
     So the lambda dependence the four-field form removed from the star is still
     somewhere else in the map -- the pressure row's weight is c_p |E| and c_p
@@ -550,10 +601,11 @@ def test_four_fields_are_not_yet_robust_to_incompressibility(realization, family
     mesh = meshes[0]
     counts = []
     for nu in POISSON:
-        its, departure = iterative(mesh, dim, realization, lam=lame_at(nu))
+        lam = lame_at(nu)
+        its, departure = iterative(mesh, dim, realization, lam=lam)
         counts.append(its)
         if its is not None:
-            assert departure < 1e-7, (realization, family, nu, departure)
+            assert departure < departure_bound(lam), (realization, family, nu, departure)
     print(f"  {realization:<21}{family:<14}nu {list(POISSON)} -> {counts} its")
     assert counts[0] is not None, (realization, family, counts)
 

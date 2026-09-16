@@ -537,23 +537,31 @@ MIMETIKA_TEST(the_four_field_patch_survives_the_incompressible_limit) {
       model.prescribe_displacement({f}, {x[0], x[1], x[2]}, grad);
     }
     solve(model);
-    double worst = 0.0, p_worst = 0.0;
+    double worst = 0.0;
     for (Index e = 0; e < static_cast<Index>(model.n_cells()); ++e) {
       const auto x = exokal::centroid(m, dim, e);
       for (int k = 0; k < dim; ++k) {
         worst = std::max(worst,
                          std::abs(model.displacement(e, k) - x[static_cast<std::size_t>(k)]));
       }
-      p_worst = std::max(p_worst, std::abs(model.total_pressure(e) - lam * dim));
     }
-    // The tolerance tracks the conditioning, because the error does: 4.8e-15,
-    // 1.8e-11, 1.4e-9 as lambda goes 1, 5e3, 5e5 -- linear in lambda, i.e.
-    // round-off through a stiffer system. Locking would show instead as an
-    // error that does not fall with the mesh.
-    std::printf("  nu %-9.6f lambda %10.1f   u %.2e (%.1e x lambda)   p/lambda %.2e\n", nu, lam,
-                worst, worst / lam, p_worst / lam);
+    // The hydrostatic stress is the facet's NORMAL TRACTION here, not a scalar
+    // per cell: the deviatoric split of a reconstructed weak product resolves
+    // sigma n in the facet frame, so sigma_hyd is the normal slot. On the patch
+    // sigma = (2 mu + lambda d) I, and n . (sigma n) is that constant on every
+    // facet whatever its orientation -- the quantity that locking would destroy.
+    const double hydro = 2.0 * kMu + lam * dim;
+    double s_worst = 0.0;
+    for (const Index f : mimetika::boundary_facets(m.topology(), dim)) {
+      s_worst = std::max(s_worst, std::abs(model.normal_traction(f) - hydro));
+    }
+    // The tolerance tracks the conditioning, because the error does: linear in
+    // lambda, i.e. round-off through a stiffer system. Locking would show
+    // instead as an error that does not fall with the mesh.
+    std::printf("  nu %-9.6f lambda %10.1f   u %.2e (%.1e x lambda)   sigma_hyd %.2e\n", nu, lam,
+                worst, worst / lam, s_worst / hydro);
     CHECK(worst < 1e-13 * std::max(1.0, lam));
-    CHECK(p_worst / lam < 1e-13 * std::max(1.0, lam));
+    CHECK(s_worst / hydro < 1e-13 * std::max(1.0, lam));
   }
 }
 

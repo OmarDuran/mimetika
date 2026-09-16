@@ -208,6 +208,16 @@ class CauchyMechanicsModel {
     return exokal::hodge::StressOperators::strongly_symmetric(how_);
   }
 
+  // The facet-frame layout: the facet unknowns are the components of sigma n in
+  // R_f = [n | t_a] rather than along the ambient axes. It is what the
+  // deviatoric split of a reconstructed weak product is -- a change of dof
+  // basis by an orthogonal Q, same count and same spectrum -- and it puts
+  // sigma_hyd in the normal slot and sigma_dev in the tangential ones.
+  bool frame_layout() const {
+    return form_ == Formulation::weak_symmetry_deviatoric &&
+           exokal::hodge::StressOperators::facet_four_field(how_);
+  }
+
   // The validity gate of the diagonal star, which exokal states and leaves to
   // the consumer: a facet the cell centroid does not see squarely carries a
   // non-positive weight -- delta = (x_f - x_E).n <= 0 -- and the assembled M is
@@ -451,11 +461,10 @@ class CauchyMechanicsModel {
       // Only the component index turns. The gradient's second index is a
       // spatial direction, contracted against the facet's own coordinate
       // offsets, and stays ambient.
-      const bool frame_layout = form_ == Formulation::weak_symmetry_deviatoric &&
-                                exokal::hodge::StressOperators::facet_four_field(how_);
-      const exokal::Frame cf = frame_layout ? exokal::stratum_frame(*mesh_, dim_) : exokal::Frame{};
+      const bool rotate = frame_layout();
+      const exokal::Frame cf = rotate ? exokal::stratum_frame(*mesh_, dim_) : exokal::Frame{};
       for (const auto& d : displacement_facets_) {
-        if (!frame_layout) {
+        if (!rotate) {
           displacement_data_.set_affine(d.facets, d.constant, d.gradient);
           continue;
         }
@@ -585,9 +594,7 @@ class CauchyMechanicsModel {
     const auto& sp = sim_->epoch().stratum(0).space();
     // the facet-frame split resolves sigma n in R_f = [n | t_a], so a traction
     // or a free-slip datum is a statement about those components
-    mechanics_.resolve(*mesh_, dim_, sp, 0,
-                       form_ == Formulation::weak_symmetry_deviatoric &&
-                           exokal::hodge::StressOperators::facet_four_field(how_));
+    mechanics_.resolve(*mesh_, dim_, sp, 0, frame_layout());
     mechanics_.impose(sim_->constraints());
 
     // the prescribed fracture traction, registered with a placeholder value:
@@ -1376,6 +1383,39 @@ class CauchyMechanicsModel {
   }
 
 
+  // int_f sigma n in AMBIENT components, for the componentwise families.
+  //
+  // The dofs are the leading moment of each component; under the facet-frame
+  // split those components are along R_f = [n | t_a], and R_f is orthogonal, so
+  // the ambient vector is R_f^T applied to them.
+  //
+  // Interior-safe. exokal's frame takes a cell but does not read it for a sign:
+  // facet_normal_vector points away from the centroid and is then carried to
+  // the facet's stored orientation with the boundary coefficient, which is what
+  // makes the two cells sharing a facet agree on what its unknown means. So any
+  // coface serves, and the first one is taken.
+  std::array<double, 3> weak_facet_force(Index facet) const {
+    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& ms = sp.map(sp.index_of("s_0"));
+    std::array<double, 3> raw{};
+    for (int k = 0; k < dim_; ++k) {
+      raw[static_cast<std::size_t>(k)] =
+          state_[s_offset_ + static_cast<std::size_t>(ms.global(dim_ - 1, facet, 0, k))];
+    }
+    if (!frame_layout()) return raw;
+    const graphos::CoboundaryOperator cob = graphos::coboundary(mesh_->topology(), dim_ - 1);
+    const Index cell =
+        cob.indices[static_cast<std::size_t>(cob.offsets[static_cast<std::size_t>(facet)])];
+    const auto R = exokal::hodge::deviatoric_frame_detail::facet_frame(
+        *mesh_, dim_, cell, facet, exokal::stratum_frame(*mesh_, dim_));
+    std::array<double, 3> out{};
+    for (int j = 0; j < dim_; ++j) {
+      const auto jj = static_cast<std::size_t>(j);
+      for (int i = 0; i < dim_; ++i) out[static_cast<std::size_t>(i)] += R[jj][static_cast<std::size_t>(i)] * raw[jj];
+    }
+    return out;
+  }
+
   std::array<double, 9> cell_stress_average(Index cell) const {
     const auto& sp = sim_->epoch().stratum(0).space();
     const auto& ms = sp.map(sp.index_of("s_0"));
@@ -1391,15 +1431,7 @@ class CauchyMechanicsModel {
       // component for the weak family, and the three mean slots read through
       // the facet frame for the strong one. The incidence turns it outward.
       const std::array<double, 3> force =
-          wrench_layout() ? strong_facet_force(f, fr)
-                          : std::array<double, 3>{
-                                     state_[s_offset_ + static_cast<std::size_t>(
-                                                            ms.global(dim_ - 1, f, 0, 0))],
-                                     state_[s_offset_ + static_cast<std::size_t>(
-                                                            ms.global(dim_ - 1, f, 0, 1))],
-                                     dim_ > 2 ? state_[s_offset_ + static_cast<std::size_t>(
-                                                                       ms.global(dim_ - 1, f, 0, 2))]
-                                              : 0.0};
+          wrench_layout() ? strong_facet_force(f, fr) : weak_facet_force(f);
       for (int i = 0; i < dim_; ++i) {
         const double t = fr.incidence * force[static_cast<std::size_t>(i)];
         for (int j = 0; j < dim_; ++j) {
@@ -1445,11 +1477,8 @@ class CauchyMechanicsModel {
       for (double& v : t) v /= area;
       return t;
     }
-    std::array<double, 3> t{};
-    for (int k = 0; k < dim_; ++k) {
-      t[static_cast<std::size_t>(k)] =
-          state_[s_offset_ + static_cast<std::size_t>(ms.global(dim_ - 1, facet, 0, k))] / area;
-    }
+    std::array<double, 3> t = weak_facet_force(facet);
+    for (double& v : t) v /= area;
     return t;
   }
 
@@ -1468,10 +1497,10 @@ class CauchyMechanicsModel {
                                     ms.global(dim_ - 1, facet, dim_ == 3 ? 3 : 1, 0))] /
              fr.measure;
     }
+    const std::array<double, 3> force = weak_facet_force(facet);
     double t = 0.0;
     for (int k = 0; k < dim_; ++k) {
-      t += fr.normal[static_cast<std::size_t>(k)] *
-           state_[s_offset_ + static_cast<std::size_t>(ms.global(dim_ - 1, facet, 0, k))];
+      t += fr.normal[static_cast<std::size_t>(k)] * force[static_cast<std::size_t>(k)];
     }
     return t / fr.measure;
   }
@@ -1486,10 +1515,10 @@ class CauchyMechanicsModel {
       const std::array<double, 3> force = strong_facet_force(facet, fr);
       return (e[0] * force[0] + e[1] * force[1] + e[2] * force[2]) / fr.measure;
     }
+    const std::array<double, 3> force = weak_facet_force(facet);
     double t = 0.0;
     for (int k = 0; k < dim_; ++k) {
-      t += e[static_cast<std::size_t>(k)] *
-           state_[s_offset_ + static_cast<std::size_t>(ms.global(dim_ - 1, facet, 0, k))];
+      t += e[static_cast<std::size_t>(k)] * force[static_cast<std::size_t>(k)];
     }
     return t / fr.measure;
   }

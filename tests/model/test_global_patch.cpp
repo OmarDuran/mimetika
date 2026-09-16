@@ -232,8 +232,10 @@ ElasticPatch elastic_patch(int dim, Family family, CauchyMechanicsModel::Realiza
             std::max(out.stress, std::abs(s[static_cast<std::size_t>(i * 3 + j)] - want));
       }
     }
-    if (form == CauchyMechanicsModel::Formulation::weak_symmetry_deviatoric ||
-        form == CauchyMechanicsModel::Formulation::strong_symmetry_deviatoric) {
+    // The hydrostatic stress, where the product carries it as a scalar. On the
+    // facet-frame split it is the normal traction instead, and `out.stress`
+    // above already measures it: the isotropic part of sigma is lam tr(G).
+    if (model.carries_total_pressure()) {
       out.pressure = std::max(out.pressure, std::abs(model.total_pressure(e) - kLam * tr));
     }
   }
@@ -251,10 +253,13 @@ MIMETIKA_TEST(the_elastic_patch_is_exact_for_the_weak_family) {
         CHECK(o.rot < 1e-10);
         CHECK(o.stress < 1e-9);
       }
+      // The deviatoric weak product is the facet-frame split: no p field, so
+      // the hydrostatic stress is asserted through sigma itself, which the
+      // normal-traction slot feeds.
       const ElasticPatch o = elastic_patch(dim, family, R::stabilized_bdm,
                                            F::weak_symmetry_deviatoric);
       CHECK(o.u < 1e-10);
-      CHECK(o.pressure < 1e-9);
+      CHECK(o.stress < 1e-9);
     }
   }
 }

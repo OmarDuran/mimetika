@@ -132,6 +132,15 @@ def test_strong_symmetry_mgr_does_not_track_the_incompressibility(cells):
 # the trace, by lam/(2mu + d lam) <= 1/d in the three-field form and by nothing
 # at all in the four-field one.
 #
+# THE TWO FORMS HAVE THE SAME UNKNOWNS. On a reconstructed weak product the
+# deviatoric form is not a field appended to the three: it is the facet-frame
+# split, sigma n resolved in R_f = [n | t_a] so that sigma_hyd is the normal
+# traction and sigma_dev the tangential ones. M_4 = Q M_3 Q^T with Q orthogonal
+# per facet -- a change of dof basis, identical count, which the dof columns of
+# every table below show. MGR splits on indices and not on that rotation, so the
+# two forms come out alike; what the split buys is a norm, and that is the Riesz
+# map's table, not this one.
+#
 # That duplication is also why the path needs its own interpolation. A facet
 # carries d moments a row and d^2 in all, so it holds 6 higher moments in 3D
 # against 2 in 2D; A_00's off-diagonal row sums over |diagonal| then average
@@ -148,10 +157,10 @@ def test_weak_symmetry_mgr_is_h_robust(form, cells):
     """The same relative bound the strong ladder uses:
 
         three-field   21 25 29   31 35 36   89 76 63
-        four-field    19 22 24   27 30 31   72 65 54
+        four-field    21 25 29   33 36 39   92 79 67
                       hexahedra   prisms   tetrahedra
 
-    The worst ratio is 1.41, and the tetrahedral column FALLS with refinement:
+    The worst ratio is 1.46, and the tetrahedral column FALLS with refinement:
     its coarse end is the expensive one, as it is for ADS.
     """
     _hypre()
@@ -171,9 +180,9 @@ def test_weak_symmetry_mgr_does_not_track_the_contrast(form, cells):
     """lambda jumps eight orders of magnitude and the count stops moving after
     the first step, exactly as on the strong family:
 
-        three-field   21 | 26 26 26 26   31 | 40 41 41 41   89 | 98 99 99 99
-        four-field    19 | 23 23 23 23   27 | 30 31 31 31   72 | 75 75 75 75
-                          hexahedra          prisms            tetrahedra
+        three-field   21 | 26 26 26 26   31 | 40 41 41 41   89 |  98  99  99  99
+        four-field    21 | 25 26 26 26   33 | 41 41 41 41   92 | 118 120 120 120
+                          hexahedra          prisms             tetrahedra
 
     The first column is the uniform material; the step to the checkerboard is
     the mesh seeing two materials at all, not the size of the jump.
@@ -194,19 +203,21 @@ def test_weak_symmetry_mgr_does_not_track_the_contrast(form, cells):
 #
 #     nu = 0.25, 0.4, 0.49, 0.499, 0.4999
 #     three-field   21  24  33  38   42     31 37  50  62   67    89 121 262 433 1079
-#     four-field    19  21  27  30   33     27 29  35  39   43    72  76 112 237  360
+#     four-field    21  24  30  34   34     33 38  52  61   67    92 124 225 389 1364
 #                        hexahedra                prisms              tetrahedra
 #
 # Hexahedra and prisms hold the strong family's 3x bound in both forms. The
-# tetrahedral column does not: 12 fold in the three-field form and 5 in the
-# four-field one, so the total pressure recovers more than half the growth but
-# not the property. The bounds below are the measured behaviour, asserted per
-# family so a regression is caught and an improvement is visible rather than
-# hidden under one loose cap.
+# tetrahedral column does not, 12 fold in three fields and 15 in four, and the
+# deviatoric form does not mend it: the facet-frame split is an orthogonal
+# rotation of the same unknowns, so MGR's F/C splitting sees the same problem it
+# saw before. lambda leaves the star and reappears in the map, which is the
+# quantity the split changes and this preconditioner does not read. The bounds
+# are the measured behaviour, asserted per family so a regression is caught and
+# an improvement is visible rather than hidden under one loose cap.
 NU_BOUND = {
     ("hexahedra", "three-field"): 3.0, ("hexahedra", "four-field"): 3.0,
     ("prisms", "three-field"): 3.0, ("prisms", "four-field"): 3.0,
-    ("tetrahedra", "three-field"): 14.0, ("tetrahedra", "four-field"): 6.0,
+    ("tetrahedra", "three-field"): 14.0, ("tetrahedra", "four-field"): 16.0,
 }
 
 
