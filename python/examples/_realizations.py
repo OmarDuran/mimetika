@@ -38,19 +38,18 @@ WD = mk.StressFormulation.weak_symmetry_deviatoric
 S = mk.StressFormulation.strong_symmetry
 SD = mk.StressFormulation.strong_symmetry_deviatoric
 
-# The reconstructed weak products have no deviatoric member here: exokal builds
-# that split through afw_four_field on a one-moment facet layout, which
-# moments_per_facet does not report, so the space cannot be laid out for it. The
-# model refuses the pair; the deviatoric weak members offered are the diagonal
-# star and its blend.
-#: name -> (product, formulation). The name IS the pair.
 STRESS = {
     "derham_bdm": (mk.StressRealization.derham_bdm, W),
+    # the facet-frame sigma_dev/sigma_hyd split: the same three field in the
+    # facet's own frame, so the normal and tangential tractions are separate
+    # dofs and a datum reaches each of them
+    "derham_bdm_deviatoric": (mk.StressRealization.derham_bdm, WD),
     # unisolvent as a space, and refused by the model: its weak-symmetry inf-sup
     # degenerates. Offered so the refusal is reachable rather than hidden.
     "derham_rt": (mk.StressRealization.derham_rt, W),
     "stabilized_bdm": (mk.StressRealization.stabilized_bdm, W),
-    # the weak two-point star and its per-cell selection: four fields only
+    "stabilized_bdm_deviatoric": (mk.StressRealization.stabilized_bdm, WD),
+    # the weak two-point star and its per-cell selection: deviatoric only
     "diagonal_afw": (mk.StressRealization.diagonal_afw, WD),
     "adaptive_afw": (mk.StressRealization.adaptive_afw, WD),
     # the strong family (Dassi-Lovadina-Visinoni), a 3D construction

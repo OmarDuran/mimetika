@@ -144,6 +144,22 @@ class Simulation {
     filter_constrained_rows(sink);
   }
 
+  // Any sink at all, for a caller that wants what a tangent assembly produces
+  // without the tangent: SchurSink keeps a diagonal and a divergence and drops
+  // the rest, so the preconditioner is built from the same kernels the operator
+  // applies and costs an assembly's arithmetic but none of its storage.
+  //
+  // The constrained rows are NOT filtered here, because filtering is a
+  // TripletSink operation -- it needs the rows in hand to drop them. A caller
+  // reading a preconditioner off this gets the terms' own entries on those
+  // rows where jacobian() would have written the identity. That is a
+  // preconditioner being slightly wrong, not an operator: Simulation::apply
+  // carries the constraints itself.
+  void assemble_into(exokal::forms::Sink& sink) const {
+    if (!constraints_.empty()) ensure_scales();
+    model_.assemble(epoch_, state_, sink, ws_, colors());
+  }
+
   // y = J(x) v, matrix-free.
   void apply(const std::vector<double>& v, std::vector<double>& y) const {
     if (v.size() != state_.size()) throw std::invalid_argument("Simulation::apply: size");

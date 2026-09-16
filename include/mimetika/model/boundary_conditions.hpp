@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "exokal/hodge/mimetic_operators/deviatoric_four_field.hpp"
 #include "mimetika/model/boundary.hpp"
 #include "mimetika/model/constraints.hpp"
 
@@ -73,6 +74,14 @@ class BoundaryCondition {
   virtual void resolve(const exokal::Mesh& mesh, int cell_dim,
                        const exokal::spaces::ProductSpace& space, Index offset) = 0;
 
+  // THE FACET FRAME IS A THIRD LAYOUT, and it cannot be read off FacetDofs.
+  // The wrench layout announces itself -- one component and six moments -- but
+  // the deviatoric four-field carries the same d components and moments as the
+  // three field and resolves them in the facet's own frame R_f = [n | t_a]
+  // instead of in the ambient axes. Only the product knows, so the model says
+  // so before resolving.
+  void set_frame_layout(bool v) { frame_layout_ = v; }
+
   const std::vector<Index>& facets() const { return facets_; }
   const std::vector<FacetForm>& forms() const { return forms_; }
 
@@ -96,6 +105,7 @@ class BoundaryCondition {
   }
 
  protected:
+  bool frame_layout_{false};
   std::vector<Index> facets_;
   std::vector<FacetForm> forms_;
 };
@@ -155,6 +165,27 @@ class TractionBC final : public BoundaryCondition {
         }
         continue;
       }
+      if (frame_layout_) {
+        // The dof is the traction's component along a frame row, so the datum
+        // is resolved there too. The frame is exokal's own -- an orthonormal
+        // completion of the canonical normal is not unique, and a second one
+        // built here would constrain a different pair of directions than the
+        // dofs carry.
+        const exokal::Frame cf = exokal::stratum_frame(mesh, cell_dim);
+        const std::array<std::array<double, 3>, 3> R =
+            exokal::hodge::deviatoric_frame_detail::facet_frame(mesh, cell_dim, cells[fi], f, cf);
+        for (int j = 0; j < cell_dim; ++j) {
+          double c = 0.0;
+          for (int i = 0; i < 3; ++i) {
+            c += R[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)] *
+                 t[static_cast<std::size_t>(i)];
+          }
+          for (int b = 0; b < d.moments; ++b) {
+            forms_.push_back(FacetForm{f, {d.at(j, b)}, {1.0}, b == 0 ? c * fr.measure : 0.0});
+          }
+        }
+        continue;
+      }
       for (int k = 0; k < cell_dim; ++k) {
         // a uniform traction lands entirely on the constant moment, scaled by
         // the measure it is integrated against; the higher moments are zero
@@ -200,6 +231,19 @@ class FreeSlipBC final : public BoundaryCondition {
         const int n_tangential = d.moments == 6 ? 3 : 1;
         for (int b = 0; b < n_tangential; ++b) {
           forms_.push_back(FacetForm{f, {d.at(0, b)}, {1.0}, 0.0});
+        }
+        continue;
+      }
+      if (frame_layout_) {
+        // sigma n is carried in the facet's own frame, normal copy first, so
+        // the tangential copies ARE sigma_dev and free slip pins them outright.
+        // No frame vectors enter: the condition kills the whole tangential
+        // subspace, which is the same subspace whatever orthonormal completion
+        // of the normal exokal chose.
+        for (int k = 1; k < d.components; ++k) {
+          for (int b = 0; b < d.moments; ++b) {
+            forms_.push_back(FacetForm{f, {d.at(k, b)}, {1.0}, 0.0});
+          }
         }
         continue;
       }
@@ -430,9 +474,16 @@ class BoundarySet {
   std::size_t size() const { return conditions_.size(); }
   const BoundaryCondition& at(std::size_t i) const { return *conditions_[i]; }
 
+  // `frame_layout` says the facet dofs are components of the traction in the
+  // facet's own frame rather than in the ambient axes. It is the product's
+  // property and not the space's -- the two layouts have the same shape -- so
+  // it is announced here rather than inferred.
   void resolve(const exokal::Mesh& mesh, int cell_dim, const exokal::spaces::ProductSpace& space,
-               Index offset = 0) {
-    for (auto& c : conditions_) c->resolve(mesh, cell_dim, space, offset);
+               Index offset = 0, bool frame_layout = false) {
+    for (auto& c : conditions_) {
+      c->set_frame_layout(frame_layout);
+      c->resolve(mesh, cell_dim, space, offset);
+    }
   }
 
   void impose(Constraints& c) const {

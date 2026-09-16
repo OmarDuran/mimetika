@@ -79,7 +79,7 @@ def solvers(rtol):
     }
 
 
-SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg") + _hypre.HYPRE_NAMES
+SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg", "matrix-free") + _hypre.HYPRE_NAMES
 DEFAULT_RTOL = 1e-9
 
 # ADS is a three-dimensional construction: its auxiliary spaces are built from
@@ -167,6 +167,12 @@ def solve(nr, nt, dim, family, how, solver="riesz", rtol=DEFAULT_RTOL, degenerac
         _hypre.solve(model, mesh, dim,
                      _hypre.options(rtol, block_iterations=50, block_rtol=1e-2,
                                     mgr=solver == _hypre.MGR_NAME))
+    elif solver == "matrix-free":
+        # No assembled operator reaches the Krylov method: the action is
+        # exokal's ActionSink and the preconditioner is diag(M) with an
+        # algebraic multigrid on S~ = D diag(M)^-1 D^T.
+        model.solve_matrix_free(
+            options=mk.SolverOptions(rtol=rtol, max_iterations=2000))
     else:
         model.solve(options=solvers(rtol)[solver])
 

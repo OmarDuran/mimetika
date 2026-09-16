@@ -312,7 +312,13 @@ class FlowModel {
 
   const Distribution& distribution() const { return distribution_; }
 
-  void build() {
+  // `assemble_jacobian = false` builds everything a solve needs EXCEPT the
+  // tangent: the space, the constraints, the operators and the load. A
+  // matrix-free route wants exactly that -- the assembled saddle point is the
+  // single largest object in the run, and forming it to extract a diagonal and
+  // a divergence would give back the memory the route exists to save. system()
+  // then has nothing in it and says so.
+  void build(bool assemble_jacobian = true) {
     const graphos::Complex& c = mesh_->topology();
     // The partition comes first, because the products below are per cell and
     // are the bulk of the work: a process builds its own and no others.
@@ -413,9 +419,13 @@ class FlowModel {
                             distribution_.owned_dofs, reduce_);
     }
 
-    exokal::forms::TripletSink jac(sim_->n_dofs());
-    sim_->jacobian(jac);
-    system_ = solver::SparseSystem::from(jac);
+    if (assemble_jacobian) {
+      exokal::forms::TripletSink jac(sim_->n_dofs());
+      sim_->jacobian(jac);
+      system_ = solver::SparseSystem::from(jac);
+    } else {
+      system_ = solver::SparseSystem{};
+    }
 
     // The steady right-hand side. Everything the terms contribute that does not
     // depend on the unknowns is a load, and the residual at the zero state is

@@ -15,6 +15,7 @@
 #include "mimetika/linear_solver/linear.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
 #include "exokal/hodge/hybrid_stress.hpp"
+#include "exokal/hodge/mimetic_operators/deviatoric_four_field.hpp"
 #include "mimetika/model/boundary_conditions.hpp"
 #include "mimetika/model/hybrid_interface.hpp"
 #include "mimetika/model/compositions/cauchy_mechanics.hpp"
@@ -235,11 +236,23 @@ class CauchyMechanicsModel {
   // The total pressure p = lambda div u, one scalar per cell: an independent
   // unknown under weak_symmetry_deviatoric and strong_symmetry_deviatoric, not a
   // post-processing of sigma. Refused elsewhere -- no solve produced it.
+  // THE DEVIATORIC FORM ALONE IS NOT ENOUGH. A hydrostatic stress is a separate
+  // scalar only where the operators carry a hydrostatic mass -- the strong path
+  // and the weak diagonal star. On a reconstructed weak product the deviatoric
+  // form is the facet-frame split, where sigma_hyd is the normal traction dof
+  // and there is no p field to read.
+  bool carries_total_pressure() const {
+    const bool deviatoric = form_ == Formulation::weak_symmetry_deviatoric ||
+                            form_ == Formulation::strong_symmetry_deviatoric;
+    return deviatoric && !exokal::hodge::StressOperators::facet_four_field(how_);
+  }
+
   double total_pressure(Index cell) const {
-    if (form_ != Formulation::weak_symmetry_deviatoric && form_ != Formulation::strong_symmetry_deviatoric) {
+    if (!carries_total_pressure()) {
       throw std::logic_error(
-          "CauchyMechanicsModel::total_pressure: this formulation has no total pressure; build "
-          "with weak_symmetry_deviatoric or strong_symmetry_deviatoric");
+          "CauchyMechanicsModel::total_pressure: this product has no total pressure field; the "
+          "deviatoric form of a reconstructed weak product carries the hydrostatic stress as the "
+          "facet's normal traction, not as a scalar per cell");
     }
     const auto& sp = sim_->epoch().stratum(0).space();
     const auto& mp = sp.map(sp.index_of("p_0"));
@@ -426,8 +439,45 @@ class CauchyMechanicsModel {
     ctx_.provide("stress_operators", stress_);
 
     displacement_data_ = BoundaryVectorData(static_cast<std::size_t>(c.count(dim_ - 1)));
-    for (const auto& d : displacement_facets_) {
-      displacement_data_.set_affine(d.facets, d.constant, d.gradient);
+    {
+      // THE DATUM IS RESOLVED WHERE THE DOFS ARE. A displacement datum reaches
+      // the stress row as int_f u . (tau n), so its components are read against
+      // the traction test functions -- and on the facet-frame split those are
+      // the components along R_f = [n | t_a], not along the ambient axes. The
+      // rotation is applied to the DATA rather than inside the term, because
+      // the frame is geometry the model has and the term does not, and because
+      // it leaves one expansion path for every product.
+      //
+      // Only the component index turns. The gradient's second index is a
+      // spatial direction, contracted against the facet's own coordinate
+      // offsets, and stays ambient.
+      const bool frame_layout = form_ == Formulation::weak_symmetry_deviatoric &&
+                                exokal::hodge::StressOperators::facet_four_field(how_);
+      const exokal::Frame cf = frame_layout ? exokal::stratum_frame(*mesh_, dim_) : exokal::Frame{};
+      for (const auto& d : displacement_facets_) {
+        if (!frame_layout) {
+          displacement_data_.set_affine(d.facets, d.constant, d.gradient);
+          continue;
+        }
+        for (const Index f : d.facets) {
+          const auto R = exokal::hodge::deviatoric_frame_detail::facet_frame(
+              *mesh_, dim_, cofacet_of(*mesh_, dim_, f), f, cf);
+          std::array<double, 3> a3{};
+          std::array<double, 9> g9{};
+          for (int j = 0; j < dim_; ++j) {
+            const auto jj = static_cast<std::size_t>(j);
+            for (int k = 0; k < dim_; ++k) {
+              const auto kk = static_cast<std::size_t>(k);
+              a3[jj] += R[jj][kk] * d.constant[kk];
+              for (int q = 0; q < dim_; ++q) {
+                g9[jj * 3 + static_cast<std::size_t>(q)] +=
+                    R[jj][kk] * d.gradient[kk * 3 + static_cast<std::size_t>(q)];
+              }
+            }
+          }
+          displacement_data_.set_affine({f}, a3, g9);
+        }
+      }
     }
     ctx_.provide("boundary_displacement", displacement_data_);
 
@@ -533,7 +583,11 @@ class CauchyMechanicsModel {
     // them its dofs, and the strong ones then hand their forms to the
     // constraint set
     const auto& sp = sim_->epoch().stratum(0).space();
-    mechanics_.resolve(*mesh_, dim_, sp);
+    // the facet-frame split resolves sigma n in R_f = [n | t_a], so a traction
+    // or a free-slip datum is a statement about those components
+    mechanics_.resolve(*mesh_, dim_, sp, 0,
+                       form_ == Formulation::weak_symmetry_deviatoric &&
+                           exokal::hodge::StressOperators::facet_four_field(how_));
     mechanics_.impose(sim_->constraints());
 
     // the prescribed fracture traction, registered with a placeholder value:
@@ -992,14 +1046,13 @@ class CauchyMechanicsModel {
           for (std::size_t j = 0; j < cc.faces.size(); ++j) {
             if (cc.faces[j] == f) { slot = j; break; }
           }
-          // the same Gram the boundary term needs, and the same absence: the
-          // deviatoric four-field cell carries no facet_gram
-          if (slot == cc.faces.size() || slot >= cc.moment.size() ||
-              slot >= cc.facet_gram.size()) {
-            continue;
-          }
+          if (slot == cc.faces.size() || slot >= cc.moment.size()) continue;
           const exokal::numerics::Dense& mom = cc.moment[slot];
-          const exokal::numerics::Dense& gram = cc.facet_gram[slot];
+          // the same Gram the boundary term expands with, and read the same
+          // way: |f| I, which is mom(0, 0) where the product stores none
+          const double gram_bb =
+              slot < cc.facet_gram.size() ? cc.facet_gram[slot](0, 0) : mom(0, 0);
+          if (!(gram_bb > 0.0)) continue;
           const std::size_t nb = mom.rows();
           const std::size_t nc = mom.cols() - 1;
           for (std::size_t b = 0; b < nb; ++b) {
@@ -1009,7 +1062,7 @@ class CauchyMechanicsModel {
                 moment += displacement_data_.gradient_at(f, k, q) * cc.scale * mom(b, q + 1);
               }
               pinned[static_cast<std::size_t>(f) * hops.facet_dofs() + b * nc + k] =
-                  -moment / gram(b, b);
+                  -moment / gram_bb;
             }
           }
           continue;

@@ -382,7 +382,9 @@ Patch patch_case(int n, int dim, Family family, Realization how,
       out.max_err = std::max(out.max_err,
                              std::abs(model.displacement(e, k) - x[static_cast<std::size_t>(k)]));
     }
-    if (form == Formulation::weak_symmetry_deviatoric) {
+    // only where the hydrostatic stress is a field of its own: the facet-frame
+    // split carries it as the normal traction instead, and the model says which
+    if (model.carries_total_pressure()) {
       out.pressure_err = std::max(out.pressure_err, std::abs(model.total_pressure(e) - p_exact));
     }
   }
@@ -412,15 +414,25 @@ MIMETIKA_TEST(the_four_field_column_reproduces_the_linear_displacement) {
   }
 }
 
-// And it is a larger system by exactly one scalar per cell; a formulation that
-// kept three fields passes every accuracy check above.
-MIMETIKA_TEST(the_fourth_field_is_one_scalar_per_cell) {
+// AND IT IS THE SAME SYSTEM, NOT A LARGER ONE. On a reconstructed weak product
+// the deviatoric form is a change of dof BASIS: sigma n is resolved in the
+// facet frame R_f = [n | t_a], so sigma_hyd is the normal traction copy and
+// sigma_dev the d-1 tangential ones -- the same d copies a facet the three
+// field carries, relabeled by geometry. exokal builds it as M_4 = Q M_3 Q^T
+// with Q orthogonal, so the spectrum is the three field's too.
+//
+// The augmented p -- one scalar a cell, closed by kappa T sigma = c_p |E| p --
+// is the OTHER deviatoric family: the strong path and the weak diagonal star,
+// which carry a hydrostatic mass where these carry none.
+MIMETIKA_TEST(the_facet_frame_split_is_a_change_of_basis_not_a_field) {
   const Outcome three = column_case(4, 3, Family::cartesian, Realization::stabilized_bdm);
   const Outcome four = column_case(4, 3, Family::cartesian, Realization::stabilized_bdm,
                                    Formulation::weak_symmetry_deviatoric);
-  std::printf("  three-field %zu dofs   four-field %zu dofs   cells %zu\n", three.dofs, four.dofs,
+  std::printf("  three-field %zu dofs   facet-frame %zu dofs   cells %zu\n", three.dofs, four.dofs,
               three.cells);
-  CHECK(four.dofs == three.dofs + three.cells);
+  CHECK(four.dofs == three.dofs);
+  // and the same answer, because it is the same operator in another basis
+  CHECK(std::abs(four.max_err - three.max_err) < 1e-10);
 }
 
 // The two-point product reaches the model. Its space is derham_bdm's -- d^2
@@ -467,7 +479,8 @@ MIMETIKA_TEST(every_four_field_product_reproduces_the_linear_displacement) {
                     exokal::hodge::StressOperators::name(r), dim, mimetika::mesh::name(f), o.dofs,
                     o.max_err, o.pressure_err);
         CHECK(o.max_err < 1e-10);
-        CHECK(o.pressure_err < 1e-9);
+        // no pressure to check: on these the deviatoric form is the facet-frame
+        // split and the hydrostatic stress is the normal traction dof
       }
     }
     const Patch t = patch_case(3, dim, Family::cartesian, Realization::diagonal_afw,
@@ -483,8 +496,12 @@ MIMETIKA_TEST(every_four_field_product_reproduces_the_linear_displacement) {
 // Condensing p does not return the three-field operator in general -- p is one
 // scalar per cell, so the volumetric response is resolved to P0 against the
 // trace's rank d+1 -- and the two agree where tr sigma is constant on a cell,
-// which a linear displacement makes it. Asserted here: the three-field patch is
-// exact, and four fields carry exactly one more scalar per cell.
+// which a linear displacement makes it.
+//
+// On a RECONSTRUCTED weak product the deviatoric form adds no scalar at all: it
+// is the facet-frame split, the same dofs resolved along R_f = [n | t_a], so
+// the two carry the same count and reproduce the same patch. Asserted here:
+// both are exact and the size does not move.
 MIMETIKA_TEST(four_fields_and_three_agree_where_the_trace_is_constant) {
   for (const int dim : {2, 3}) {
     for (const Family f : kFamilies) {
@@ -495,7 +512,8 @@ MIMETIKA_TEST(four_fields_and_three_agree_where_the_trace_is_constant) {
                     exokal::hodge::StressOperators::name(r), dim, mimetika::mesh::name(f),
                     three.max_err, four.max_err, four.dofs - three.dofs);
         CHECK(three.max_err < 1e-10);
-        CHECK(four.dofs == three.dofs + three.cells);  // exactly one scalar per cell
+        CHECK(four.max_err < 1e-10);
+        CHECK(four.dofs == three.dofs);  // a change of basis, not a field
       }
     }
   }

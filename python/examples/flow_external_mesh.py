@@ -120,7 +120,7 @@ def solvers(rtol):
     }
 
 
-SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg") + _hypre.HYPRE_NAMES
+SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg", "matrix-free") + _hypre.HYPRE_NAMES
 DEFAULT_RTOL = 1e-9
 
 
@@ -507,6 +507,13 @@ def main():
                 method="cg", preconditioner="hypre", rtol=args.rtol, max_iterations=2000
             ),
         )
+    elif args.solver == "matrix-free":
+        # MINRES with no assembled operator: the action is exokal's ActionSink,
+        # the preconditioner diag(M) with an algebraic multigrid on
+        # S~ = D diag(M)^-1 D^T. The pressure equation is negated inside, which
+        # is what makes the saddle point symmetric.
+        report = model.solve_matrix_free(
+            progress=True, options=mk.SolverOptions(rtol=args.rtol, max_iterations=2000))
     elif args.solver in _hypre.HYPRE_NAMES:
         report = _hypre.solve(
             model, mesh, dim,

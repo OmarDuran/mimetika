@@ -40,6 +40,8 @@
 #include "mimetika/model/partition.hpp"
 #include "mimetika/linear_solver/bdm_complex.hpp"
 #include "mimetika/linear_solver/fields.hpp"
+#include "mimetika/linear_solver/matrix_free.hpp"
+#include "mimetika/linear_solver/minres.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
 #include "mimetika/mesh/structured.hpp"
 #include "mimetika/model/boundary.hpp"
@@ -1054,6 +1056,130 @@ mimetika::solver::SolveReport solve_cauchy_mechanics(mimetika::CauchyMechanicsMo
   if (!rep.converged) throw std::runtime_error("cauchy elasticity: " + rep.reason);
   m.accept(std::move(x));
   return rep;
+}
+
+// The matrix-free flow solve.
+//
+// MINRES on the mixed saddle point, with the operator applied through
+// Simulation::apply -- exokal's ActionSink, so the term kernels run at
+// ad::Directional and NO global matrix reaches the Krylov method. The
+// preconditioner is the block-diagonal one of Pazner, Kolev & Vassilevski
+// (SIAM J. Sci. Comput. 46 (2024) B179):
+//
+//     B = diag( diag(M), S~ ),     S~ = D diag(M)^-1 D^T,
+//
+// whose conditioning is bounded independently of h -- measured 3.61 then 3.77
+// on a cartesian ladder for derham_rt, and exactly (sqrt5 + 1)/(sqrt5 - 1) =
+// 2.618 for the two-point star, where S~ IS the exact Schur complement and
+// MINRES exhausts the minimal polynomial in three steps.
+//
+// THE PRESSURE EQUATION IS NEGATED. The Darcy term writes [[M, -D^T], [D, 0]],
+// which is not symmetric, and MINRES on a non-symmetric operator converges to
+// something else without complaining. The sign flip makes it [[M, -D^T],
+// [-D, 0]]; it changes the equations and not the unknowns, so the solution and
+// the assembled system are untouched.
+//
+// S~ is inverted by a conjugate gradient under an algebraic multigrid rather
+// than by one V-cycle: it is an M-matrix, so the cycle is what it wants, and
+// the inner tolerance is loose because MINRES needs a preconditioner and not a
+// solve. The same operator returns at every outer iteration, so the setup is
+// paid once.
+mimetika::solver::SolveReport solve_flow_matrix_free(
+    mimetika::FlowModel& m, bool progress, const mimetika::solver::SolverOptions& opts) {
+  Stage stage(progress);
+  mimetika::solver::PetscSession::instance();
+  stage.begin("assembling");
+  const auto t_build = std::chrono::steady_clock::now();
+  // NO TANGENT. build(false) stops before the saddle point is formed: the
+  // operator is applied through Simulation::apply and the preconditioner is
+  // assembled by SchurSink, so nothing of the size of A is ever allocated.
+  m.build(false);
+  const double assembly_seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count();
+  stage.end();
+
+  std::vector<Index> flux, pressure;
+  for (const auto& blk : mimetika::solver::field_blocks(m.simulation().epoch())) {
+    if (blk.name.rfind("q", 0) == 0) flux = blk.indices();
+    if (blk.name.rfind("p", 0) == 0) pressure = blk.indices();
+  }
+  if (flux.empty() || pressure.empty()) {
+    throw std::runtime_error("solve_matrix_free: the space carries no flux and pressure blocks");
+  }
+
+  const std::size_t n = m.simulation().n_dofs();
+  const std::vector<int> in_flux = mimetika::solver::slot_of(n, flux);
+  mimetika::solver::SchurSink sink(in_flux, mimetika::solver::slot_of(n, pressure), flux.size());
+  m.simulation().assemble_into(sink);
+  const mimetika::solver::SparseSystem S = mimetika::solver::schur_of(sink, pressure.size());
+  const std::vector<double>& mass = sink.mass;
+
+  std::vector<double> sign(n, 1.0);
+  for (const Index i : pressure) sign[static_cast<std::size_t>(i)] = -1.0;
+  std::vector<double> b = m.rhs();
+  for (std::size_t i = 0; i < n; ++i) b[i] *= sign[i];
+
+  // S~ IS AN M-MATRIX, SO ONE CYCLE IS WHAT IT WANTS. `preonly` applies the
+  // preconditioner exactly once and iterates not at all, which for BoomerAMG is
+  // a single V-cycle; riesz_block_its > 0 asks for a conjugate gradient under
+  // that same cycle instead, the convention the ADS block already uses. The
+  // default is the cycle: MINRES needs a preconditioner, not a solve. Measured
+  // on cartesian cells at 4300 and 10900 unknowns, one cycle against a CG to
+  // 1e-3 gives 43/43, 29/29 and 52/52 outer iterations for derham_rt,
+  // stabilized_rt and stabilized_bdm -- the same count for a fraction of the
+  // work a cycle. The two-point star is the exception, 11 against 7: there S~
+  // IS the exact Schur complement, so solving it accurately recovers the
+  // three-eigenvalue behaviour the cycle only approximates.
+  const bool single_cycle = opts.riesz_block_its <= 0;
+  mimetika::solver::SolverOptions inner;
+  inner.method = single_cycle ? "preonly" : "cg";
+  inner.preconditioner = "hypre";
+  inner.rtol = single_cycle ? 0.0 : opts.riesz_block_rtol;
+  inner.max_iterations = single_cycle ? 1 : opts.riesz_block_its;
+  inner.condense = false;
+  mimetika::solver::PetscSolver schur(inner);
+
+  std::vector<double> t, vp, yp;
+  auto apply_a = [&](const std::vector<double>& v, std::vector<double>& y) {
+    m.simulation().apply(v, t);
+    y.resize(t.size());
+    for (std::size_t i = 0; i < t.size(); ++i) y[i] = sign[i] * t[i];
+  };
+  auto apply_b = [&](const std::vector<double>& v, std::vector<double>& y) {
+    y.assign(v.size(), 0.0);
+    for (std::size_t i = 0; i < v.size(); ++i) {
+      if (in_flux[i] >= 0) y[i] = v[i] / mass[static_cast<std::size_t>(in_flux[i])];
+    }
+    vp.assign(pressure.size(), 0.0);
+    for (std::size_t i = 0; i < pressure.size(); ++i) {
+      vp[i] = v[static_cast<std::size_t>(pressure[i])];
+    }
+    yp.assign(pressure.size(), 0.0);
+    schur.solve(S, vp, yp);
+    for (std::size_t i = 0; i < pressure.size(); ++i) {
+      y[static_cast<std::size_t>(pressure[i])] = yp[i];
+    }
+  };
+
+  mimetika::solver::MinresOptions mo;
+  mo.rtol = opts.rtol;
+  mo.max_iterations = opts.max_iterations;
+  std::vector<double> x;
+  const auto t0 = std::chrono::steady_clock::now();
+  const mimetika::solver::MinresReport r = mimetika::solver::minres(apply_a, apply_b, b, x, mo);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  m.accept(std::move(x));
+
+  mimetika::solver::SolveReport out;
+  out.converged = r.converged;
+  out.iterations = r.iterations;
+  out.residual = r.residual;
+  out.reason = r.reason;
+  out.assembly_seconds = assembly_seconds;
+  out.solve_seconds = seconds;
+  out.block_solver = "minres, diag(M) and cg/boomeramg on S~";
+  return out;
 }
 
 // The hybridized flow solve: the flux twin of solve_cauchy_mechanics_hybrid. The
@@ -2310,6 +2436,11 @@ PYBIND11_MODULE(_core, m) {
            "eliminate the flux cell by cell and solve the SPD facet-pressure system: "
            "cg + multigrid on any product; a pressure datum pins a multiplier, a "
            "normal flux loads a free row, an unconditioned boundary facet is sealed")
+      .def("solve_matrix_free", &solve_flow_matrix_free, py::arg("progress") = false,
+           py::arg("options") = mimetika::solver::SolverOptions{},
+           "MINRES on the saddle point with no assembled operator: the action is "
+           "exokal's ActionSink and the preconditioner is diag(M) with an algebraic "
+           "multigrid on S~ = D diag(M)^-1 D^T")
       .def_property_readonly("dim", &mimetika::FlowModel::dim)
       .def_property_readonly("n_cells", &mimetika::FlowModel::n_cells)
       .def_property_readonly(

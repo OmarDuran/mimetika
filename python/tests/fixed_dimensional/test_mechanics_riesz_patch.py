@@ -73,11 +73,14 @@ REALIZATIONS = {
     "diagonal_afw": ("diagonal_afw", WD),
     "adaptive_afw": ("adaptive_afw", WD),
     "stabilized_vem": ("stabilized_vem", S),
+    "derham_bdm_deviatoric": ("derham_bdm", WD),
+    "stabilized_bdm_deviatoric": ("stabilized_bdm", WD),
     "stabilized_vem_deviatoric": ("stabilized_vem", SD),
     "diagonal_vem": ("diagonal_vem", SD),
     "adaptive_vem": ("adaptive_vem", SD),
 }
-BDM_FORMS = ("derham_bdm", "stabilized_bdm", "stabilized_bdm_deviatoric")
+BDM_FORMS = ("derham_bdm", "derham_bdm_deviatoric", "stabilized_bdm",
+             "stabilized_bdm_deviatoric")
 # The strong axis has the same pair, and its norms differ from each other for the
 # same reason: strong_symmetry leaves the full compliance in the star, and
 # strong_symmetry_deviatoric moves the trace to p and leaves the deviatoric part.
@@ -108,6 +111,8 @@ AVAILABLE = {
     "stabilized_bdm": set(LADDERS),
     "adaptive_afw": set(LADDERS),
     "stabilized_vem": THREE_D,
+    "derham_bdm_deviatoric": set(LADDERS),
+    "stabilized_bdm_deviatoric": set(LADDERS),
     "stabilized_vem_deviatoric": THREE_D,
     "adaptive_vem": THREE_D,
     "diagonal_afw": CARTESIAN,

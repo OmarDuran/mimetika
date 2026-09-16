@@ -127,20 +127,19 @@ class PrescribedDisplacement {
     const auto& c = ops_->compact(st.cells[0]);  // moments and grams: no dense M
     const std::size_t slot = st.support_slot[0];
     if (slot >= c.moment.size()) return;
-    // THE CHART'S GRAM, AND WHEN THE PRODUCT DOES NOT CARRY ONE. The deviatoric
-    // four-field cell is the three field conjugated by the facet frame -- an
-    // orthogonal Q on the traction components, which leaves the SCALAR chart
-    // gram untouched -- but exokal's weak_four_field_cell copies M, Dv, As and
-    // T and not facet_gram, so the vector is empty there. Reading it anyway is
-    // out of bounds, and the datum cannot be expanded without it.
-    if (slot >= c.facet_gram.size()) {
-      throw std::logic_error(
-          "PrescribedDisplacement: the stress product carries no facet Gram, so a displacement "
-          "datum cannot be expanded into the traction chart -- int_f u chi_b is available but "
-          "Gram^{-1} is not");
-    }
     const exokal::numerics::Dense& mom = c.moment[slot];
-    const exokal::numerics::Dense& gram = c.facet_gram[slot];
+    // THE CHART'S GRAM IS |f| I, AND |f| IS THE FIRST MOMENT. exokal states it
+    // where the chart is built: the modes are L2-orthonormal up to |f| and the
+    // higher ones integrate to zero about the facet centroid, so the Gram is
+    // diagonal with |f| on it and the expansion is a scaling rather than a
+    // solve. chi_0 = 1, hence mom(0, 0) = int_f chi_0 = |f|.
+    //
+    // A product need not store it. The deviatoric four-field cell is the three
+    // field conjugated by the facet frame -- an orthogonal rotation of the
+    // traction COMPONENTS, which leaves the scalar chart alone -- and carries
+    // no facet_gram; the entry it would have held is the moment already here.
+    const double gram_bb = slot < c.facet_gram.size() ? c.facet_gram[slot](0, 0) : mom(0, 0);
+    if (!(gram_bb > 0.0)) return;
 
     // The datum is a function and must be expanded, not merely integrated.
     //
@@ -166,7 +165,7 @@ class PrescribedDisplacement {
         // expand it: the chart is L^2-orthonormal, so the Gram is diagonal and
         // this is one division -- but it is read rather than assumed, so the
         // term stays correct if the chart is ever changed
-        const double coeff = moment / gram(b, b);
+        const double coeff = moment / gram_bb;
         // and it replaces -D^T u in the stress row, with the facet's own
         // incidence for the side it is seen from
         const std::size_t i = S.begin + slot * nb * nc + b * nc + k;
