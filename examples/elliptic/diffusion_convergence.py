@@ -150,7 +150,7 @@ def main() -> None:
         "\nsuperconverges to second order.  The isotropic grid-aligned flux rate is"
         "\nan artifact of that configuration's symmetry -- compare the anisotropic"
         "\nrow, which shows the genuine behaviour.  'stab dim' is the dimension of"
-        "\nthe local stabilization space (0 => stabilization-free)."
+        "\nthe local stabilization space; 0 means the consistency term alone."
     )
 
 

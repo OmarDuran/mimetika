@@ -39,7 +39,7 @@ exokal::hodge::HybridStressOperators hybridize(const exokal::Mesh& mesh, int dim
                                                Formulation form) {
   const exokal::hodge::StressOperators ops =
       exokal::hodge::StressOperators::build(mesh, dim, kMu, kLam, how, form);
-  return exokal::hodge::HybridStressOperators::build(mesh, dim, ops, kMu);
+  return exokal::hodge::HybridStressOperators::build(mesh, dim, ops);
 }
 
 // the sparse triplets summed into a dense matrix, which is the only fair way
@@ -106,8 +106,8 @@ MIMETIKA_TEST(the_sparse_interface_system_is_the_dense_one) {
 MIMETIKA_TEST(the_total_form_hybridizes_the_same_way) {
   const exokal::Mesh m = mimetika::mesh::box({2, 2, 2}, 3, Family::cartesian);
   const Comparison c =
-      against_the_oracle(m, 3, Realization::stabilized_vem, Formulation::strong_symmetry_total);
-  std::printf("  strong_symmetry_total  %4zu multipliers  %6zu triplets   worst %.2e\n", c.n,
+      against_the_oracle(m, 3, Realization::stabilized_vem, Formulation::strong_symmetry_deviatoric);
+  std::printf("  strong_symmetry_deviatoric  %4zu multipliers  %6zu triplets   worst %.2e\n", c.n,
               c.nnz, c.worst);
   CHECK(c.worst < 1e-10 * std::max(1.0, c.scale));
 }
@@ -170,7 +170,7 @@ MIMETIKA_TEST(the_interface_system_solves_without_a_factorization) {
   for (const Family family : {Family::cartesian, Family::simplex}) {
     const exokal::Mesh m = mimetika::mesh::box({3, 3, 3}, 3, family);
     const exokal::hodge::HybridStressOperators hops =
-        hybridize(m, 3, Realization::stabilized_vem, Formulation::strong_symmetry_total);
+        hybridize(m, 3, Realization::stabilized_vem, Formulation::strong_symmetry_deviatoric);
     const std::vector<char> free = mimetika::hybrid_free_facets(m, 3, hops);
 
     const auto cells = static_cast<std::size_t>(m.topology().count(3));
@@ -261,7 +261,7 @@ MIMETIKA_TEST(the_hybridized_model_agrees_with_the_monolithic_one) {
   const auto build = [&]() {
     auto model = std::make_unique<mimetika::CauchyMechanicsModel>(
         m, 3, mimetika::ElasticMaterial{kMu, kLam}, Realization::stabilized_vem,
-        Formulation::strong_symmetry_total);
+        Formulation::strong_symmetry_deviatoric);
     std::array<double, 9> grad{};
     for (int k = 0; k < 3; ++k) grad[static_cast<std::size_t>(k * 3 + k)] = 1.0;
     for (const Index f : mimetika::boundary_facets(m.topology(), 3)) {
@@ -369,7 +369,7 @@ MIMETIKA_TEST(the_diagonal_member_hybridizes_too) {
   for (const Family family : {Family::cartesian, Family::simplex}) {
     const exokal::Mesh m = mimetika::mesh::box({2, 2, 2}, 3, family);
     const Comparison c =
-        against_the_oracle(m, 3, Realization::diagonal_vem, Formulation::strong_symmetry_total);
+        against_the_oracle(m, 3, Realization::diagonal_vem, Formulation::strong_symmetry_deviatoric);
     std::printf("  %-9s diagonal_vem  %4zu multipliers  %6zu triplets   worst %.2e\n",
                 mimetika::mesh::name(family), c.n, c.nnz, c.worst);
     CHECK(c.n > 0);
@@ -384,7 +384,7 @@ MIMETIKA_TEST(the_diagonal_member_solves_and_recovers) {
   const auto build = [&]() {
     auto model = std::make_unique<mimetika::CauchyMechanicsModel>(
         m, 3, mimetika::ElasticMaterial{kMu, kLam}, Realization::diagonal_vem,
-        Formulation::strong_symmetry_total);
+        Formulation::strong_symmetry_deviatoric);
     std::array<double, 9> grad{};
     for (int k = 0; k < 3; ++k) grad[static_cast<std::size_t>(k * 3 + k)] = 1.0;
     for (const Index f : mimetika::boundary_facets(m.topology(), 3)) {
@@ -487,9 +487,9 @@ MIMETIKA_TEST(the_diagonal_member_solves_and_recovers) {
 MIMETIKA_TEST(one_cell_the_two_local_saddles_side_by_side) {
   const exokal::Mesh m = mimetika::mesh::box({1, 1, 1}, 3, Family::cartesian);
   const exokal::hodge::StressOperators ops = exokal::hodge::StressOperators::build(
-      m, 3, kMu, kLam, Realization::stabilized_vem, Formulation::strong_symmetry_total);
+      m, 3, kMu, kLam, Realization::stabilized_vem, Formulation::strong_symmetry_deviatoric);
   const exokal::hodge::HybridStressOperators hops =
-      exokal::hodge::HybridStressOperators::build(m, 3, ops, kMu);
+      exokal::hodge::HybridStressOperators::build(m, 3, ops);
 
   const exokal::hodge::StressOperators::Cell& g = ops.cell(0);
   const exokal::hodge::HybridStressOperators::Cell& h = hops.cell(0);

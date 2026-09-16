@@ -17,13 +17,13 @@ reconstructing products reproduce exactly. For those the error column is a
 check, not a convergence study -- it must stay at the solver tolerance as the
 mesh grows, and anything else means the scaling was measured on a wrong answer.
 
-The products whose star is diagonal do not reproduce it away from a
-face-orthogonal mesh: diagonal_tpfa is exact on cartesian (and on simplex in
-2D) only, diagonal_vem on cartesian in 3D, and diagonal_afw's linear moment
-slots are inconsistent on every mesh; derham_rt loses the patch on prisms. On
-those the error column is not that check. For the rest the flow datum is affine
--- value and gradient -- which is what a facet carrying d moments needs, the
-same shape the mechanics displacement datum has.
+Which products reproduce it depends on --family, which defaults to cartesian:
+diagonal_tpfa is exact on cartesian and, in 2D, on simplex; diagonal_vem on
+cartesian in 3D; derham_rt loses the patch on prisms; diagonal_afw's linear
+moment slots are inconsistent on every family, cartesian included. Where the
+patch is not reproduced the error column is not that check. For the rest the
+flow datum is affine -- value and gradient -- which is what a facet carrying d
+moments needs, the same shape the mechanics displacement datum has.
 
 Defaults are deliberately small: a scaling curve is read from its shape, which
 is visible long before a mesh becomes inconvenient. Raise --n when the times
@@ -99,10 +99,11 @@ def flow(mesh, dim, lo, direction, length, product):
     return model
 
 
-def elasticity(mesh, dim, lo, direction, length, product):
+def elasticity(mesh, dim, lo, direction, length, product, args):
     """u = (x - x_min)/L on every boundary facet, as an affine datum."""
     how, form = rz.resolve(product)
     model = mk.CauchyMechanicsModel(mesh, dim, mk.ElasticMaterial(MU, LAM), how, form)
+    rz.apply_adaptive(model, product, args)
     gradient = [0.0] * 9
     for k in range(dim):
         gradient[k * 3 + k] = 1.0 / length
@@ -145,6 +146,7 @@ def main():
     ap.add_argument("--block-rtol", type=float, default=1e-2,
                     help="tolerance of that inner CG")
     ap.add_argument("--vtu", help="write the partition and the solution here")
+    rz.add_adaptive_arguments(ap)
     args = ap.parse_args()
     rz.reject_formulation_flag(args.formulation)
 
@@ -166,7 +168,7 @@ def main():
     if args.physics == "flow":
         model = flow(mesh, args.dim, lo, direction, length, product)
     else:
-        model = elasticity(mesh, args.dim, lo, direction, length, product)
+        model = elasticity(mesh, args.dim, lo, direction, length, product, args)
     report = model.solve(
         options=solver_options(args.solver, args.rtol, args.block_its, args.block_rtol))
     error = error_of(args.physics, model, mesh, args.dim, lo, direction, length)
@@ -175,6 +177,8 @@ def main():
     print(f"  {args.physics}, {product}, {args.family}, {args.solver}{block}, "
           f"{mk.mpi_size()} process(es)")
     print(f"  {mesh.count(args.dim)} cells, {model.n_dofs} dofs")
+    if product in rz.ADAPTIVE:
+        print(rz.adaptive_line(model, product, args))
     print(f"  {'assembly':<16}{report.assembly_seconds:8.2f} s")
     print(f"  {'matrix':<16}{report.matrix_seconds:8.2f} s")
     print(f"  {'preconditioner':<16}{report.preconditioner_seconds:8.2f} s")
@@ -187,6 +191,8 @@ def main():
         fields = {"rank": mk.cell_ranks(mesh, args.dim, max(mk.mpi_size(), 2)).astype(float)}
         if args.physics == "flow":
             fields["pressure"] = np.array([model.cell_pressure(e) for e in range(model.n_cells)])
+        if product in rz.ADAPTIVE:
+            fields["eta"] = model.eta
         mk.write_vtu(mesh, args.vtu, fields)
         print(f"  wrote {args.vtu}")
 

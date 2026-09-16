@@ -328,24 +328,7 @@ def main():
         default="",
         help="folder for the mesh diagnostics; they are off unless this is given",
     )
-    ap.add_argument(
-        "--degeneracy-percent",
-        type=float,
-        default=None,
-        help="eta_E = 0 where |E| falls below this percent of the mean measure of "
-             "its node star: an admissibility condition on the local moment "
-             "problem, which loses rank as the measure collapses relative to its "
-             "star. Independent of cond(M_E). exokal imposes its own such "
-             "threshold whatever this says, so the set can only widen.",
-    )
-    ap.add_argument(
-        "--cond-threshold",
-        type=float,
-        default=None,
-        help="eta_E = 0 where the stabilized vem block has cond(M_E) = "
-             "lambda_max/lambda_min above this. Each selector only sets eta_E = 0, "
-             "so the two commute and the selection is their union.",
-    )
+    rz.add_adaptive_arguments(ap)
     ap.add_argument(
         "--rotation-jump",
         type=float,
@@ -454,10 +437,7 @@ def main():
                 list(np.where(blk.sum(axis=1) % 2 == 0, mat.lame, mat.lame * args.lame_contrast)))
         # the threshold reaches the model only where it is the model's: for
         # any other product it stays what it always was, the diagnostics dial
-        if args.product in rz.ADAPTIVE and args.degeneracy_percent is not None:
-            model.set_degeneracy_percent(args.degeneracy_percent)
-        if args.product in rz.ADAPTIVE and args.cond_threshold is not None:
-            model.set_cond_threshold(args.cond_threshold)
+        rz.apply_adaptive(model, args.product, args)
         if args.rotation_jump is not None:
             model.set_rotation_jump(args.rotation_jump)
     quadratic = args.field == "quadratic"
@@ -532,7 +512,7 @@ def main():
         )
     # What was actually solved, when the stress left the system. A facet-
     # diagonal star is eliminated exactly -- division, not factorization --
-    # and strong_symmetry_total (sigma, u, p) collapses from 6f + 7c unknowns
+    # and strong_symmetry_deviatoric (sigma, u, p) collapses from 6f + 7c unknowns
     # to the 7c cell unknowns of (u, p): six rigid-motion coefficients and one
     # total pressure per cell, a two-point system that is symmetric
     # quasi-definite (u positive, p negative -- the pressure mass c_p|E| rules
@@ -568,20 +548,15 @@ def main():
         if bad:
             print(f"\n  *** {bad} cell(s) carry a NON-POSITIVE star weight: the diagonal")
             print("  *** product is INVALID on this mesh -- the field below is meaningless.")
-            print("  *** Use stabilized_vem or adaptive_vem (whose default keeps the")
-            print("  *** stabilized product everywhere the scan does not flag).")
+            blend = rz.blend_of(args.product)
+            print(f"  *** Use {rz.ADAPTIVE_MEMBERS[blend][0]} or {blend} (whose default "
+                  "keeps the")
+            print("  *** reconstructed product everywhere the scan does not flag).")
     print(f"\n  u = (I + W)(x - x_min)/L on all {n_facets} boundary facets, pure Dirichlet")
     print(f"  {model.n_cells} cells, {model.n_dofs} dofs, "
               f"{model.n_stabilized}/{model.n_cells} cells carry a stabilization")
     if args.product in rz.ADAPTIVE:
-        n_star = int((model.eta == 0.0).sum())
-        pct = args.degeneracy_percent
-        print(f"  adaptive_vem: {n_star} cell(s) on the diagonal star, "
-              f"{model.n_cells - n_star} on the stabilized vem product "
-              f"(threshold {'default' if pct is None else f'{pct}%'}"
-              + (f"; {model.n_ill_conditioned} switched by cond > {args.cond_threshold:g}"
-                 if args.cond_threshold is not None else "")
-              + ")")
+        print(rz.adaptive_line(model, args.product, args))
 
     # ---- the three fields, each against the value the datum determines -------
     #

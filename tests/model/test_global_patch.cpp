@@ -232,8 +232,8 @@ ElasticPatch elastic_patch(int dim, Family family, CauchyMechanicsModel::Realiza
             std::max(out.stress, std::abs(s[static_cast<std::size_t>(i * 3 + j)] - want));
       }
     }
-    if (form == CauchyMechanicsModel::Formulation::weak_symmetry_total ||
-        form == CauchyMechanicsModel::Formulation::strong_symmetry_total) {
+    if (form == CauchyMechanicsModel::Formulation::weak_symmetry_deviatoric ||
+        form == CauchyMechanicsModel::Formulation::strong_symmetry_deviatoric) {
       out.pressure = std::max(out.pressure, std::abs(model.total_pressure(e) - kLam * tr));
     }
   }
@@ -252,7 +252,7 @@ MIMETIKA_TEST(the_elastic_patch_is_exact_for_the_weak_family) {
         CHECK(o.stress < 1e-9);
       }
       const ElasticPatch o = elastic_patch(dim, family, R::stabilized_bdm,
-                                           F::weak_symmetry_total);
+                                           F::weak_symmetry_deviatoric);
       CHECK(o.u < 1e-10);
       CHECK(o.pressure < 1e-9);
     }
@@ -263,15 +263,15 @@ MIMETIKA_TEST(the_elastic_patch_is_exact_for_the_strong_family) {
   using R = CauchyMechanicsModel::Realization;
   using F = CauchyMechanicsModel::Formulation;
   for (const Family family : {Family::cartesian, Family::simplex, Family::prism}) {
-    for (const F form : {F::strong_symmetry, F::strong_symmetry_total}) {
+    for (const F form : {F::strong_symmetry, F::strong_symmetry_deviatoric}) {
       const ElasticPatch o = elastic_patch(3, family, R::stabilized_vem, form);
       CHECK(o.u < 1e-10);
       CHECK(o.rot < 1e-10);
       CHECK(o.stress < 1e-9);
-      if (form == F::strong_symmetry_total) CHECK(o.pressure < 1e-9);
+      if (form == F::strong_symmetry_deviatoric) CHECK(o.pressure < 1e-9);
     }
     // the derived selection at its default is the stabilized product
-    const ElasticPatch a = elastic_patch(3, family, R::adaptive_vem, F::strong_symmetry_total);
+    const ElasticPatch a = elastic_patch(3, family, R::adaptive_vem, F::strong_symmetry_deviatoric);
     CHECK(a.u < 1e-10);
     CHECK(a.rot < 1e-10);
     CHECK(a.stress < 1e-9);
@@ -299,7 +299,7 @@ MIMETIKA_TEST(a_rigid_motion_is_exact_for_the_diagonal_star_on_every_family) {
     for (const R how : {R::diagonal_vem, R::adaptive_vem, R::stabilized_vem}) {
       const exokal::Mesh m = patch_mesh(3, family);
       CauchyMechanicsModel model(m, 3, ElasticMaterial{kMu, kLam}, how,
-                                  F::strong_symmetry_total);
+                                  F::strong_symmetry_deviatoric);
       for (const Index f : mimetika::boundary_facets(m.topology(), 3)) {
         const auto xE = exokal::centroid(m, 3, mimetika::cofacet_of(m, 3, f));
         std::array<double, 3> constant = a;
@@ -342,7 +342,7 @@ MIMETIKA_TEST(the_diagonal_stars_load_is_the_stabilized_products_on_simplexes) {
   int slot = 0;
   for (const R how : {R::diagonal_vem, R::stabilized_vem}) {
     CauchyMechanicsModel model(m, 3, ElasticMaterial{kMu, kLam}, how,
-                                F::strong_symmetry_total);
+                                F::strong_symmetry_deviatoric);
     for (const Index f : mimetika::boundary_facets(m.topology(), 3)) {
       const auto xE = exokal::centroid(m, 3, mimetika::cofacet_of(m, 3, f));
       std::array<double, 3> constant{};
@@ -374,12 +374,12 @@ MIMETIKA_TEST(the_elastic_patch_is_exact_for_the_two_point_stars_where_they_clai
   using F = CauchyMechanicsModel::Formulation;
   for (const int dim : {2, 3}) {
     const ElasticPatch t = elastic_patch(dim, Family::cartesian, R::diagonal_afw,
-                                         F::weak_symmetry_total);
+                                         F::weak_symmetry_deviatoric);
     CHECK(t.u < 1e-10);
     CHECK(t.pressure < 1e-9);
   }
   const ElasticPatch v = elastic_patch(3, Family::cartesian, R::diagonal_vem,
-                                       F::strong_symmetry_total);
+                                       F::strong_symmetry_deviatoric);
   CHECK(v.u < 1e-10);
   CHECK(v.rot < 1e-10);
   CHECK(v.stress < 1e-9);

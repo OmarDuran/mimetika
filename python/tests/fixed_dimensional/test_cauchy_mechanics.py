@@ -24,7 +24,7 @@ DIAGONAL_VEM = mk.StressRealization.diagonal_vem
 ADAPTIVE_VEM = mk.StressRealization.adaptive_vem
 WEAK = mk.StressFormulation.weak_symmetry
 STRONG = mk.StressFormulation.strong_symmetry
-STRONG_TOTAL = mk.StressFormulation.strong_symmetry_total
+STRONG_TOTAL = mk.StressFormulation.strong_symmetry_deviatoric
 
 FAMILIES = [mk.Family.cartesian, mk.Family.simplex, mk.Family.prism]
 PRODUCTS = [DERHAM, STABILIZED]
@@ -282,7 +282,7 @@ STRONG_FAMILIES = [mk.Family.cartesian, mk.Family.simplex, mk.Family.prism]
 
 
 @pytest.mark.parametrize("form", [STRONG, STRONG_TOTAL],
-                         ids=["strong_symmetry", "strong_symmetry_total"])
+                         ids=["strong_symmetry", "strong_symmetry_deviatoric"])
 @pytest.mark.parametrize("family", STRONG_FAMILIES, ids=lambda f: str(f).split(".")[-1])
 def test_the_strong_column_reproduces_the_confined_solution_exactly(family, form):
     o = column_case(4, 3, family, VEM, form)

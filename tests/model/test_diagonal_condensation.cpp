@@ -436,8 +436,8 @@ MIMETIKA_TEST(only_the_diagonal_products_leave_a_diagonal_first_block) {
   }
 
   for (const auto [how, name, form, diagonal] :
-       {std::tuple{Stress::diagonal_afw, "diagonal_afw", Formulation::weak_symmetry_total, true},
-        std::tuple{Stress::stabilized_bdm, "stabilized_bdm", Formulation::weak_symmetry_total,
+       {std::tuple{Stress::diagonal_afw, "diagonal_afw", Formulation::weak_symmetry_deviatoric, true},
+        std::tuple{Stress::stabilized_bdm, "stabilized_bdm", Formulation::weak_symmetry_deviatoric,
                    false},
         std::tuple{Stress::derham_bdm, "derham_bdm", Formulation::weak_symmetry, false}}) {
     CauchyMechanicsModel prob(m, 3, ElasticMaterial{kMu, kLam}, how, form);
@@ -486,7 +486,7 @@ MIMETIKA_TEST(eliminating_the_stress_leaves_displacement_rotation_and_pressure) 
       const exokal::Mesh& m = c.mesh;
       const int dim = c.dim;
       CauchyMechanicsModel prob(m, dim, ElasticMaterial{kMu, kLam}, Stress::diagonal_afw,
-                                 Formulation::weak_symmetry_total);
+                                 Formulation::weak_symmetry_deviatoric);
       build_elasticity(prob, m, dim);
       const Split s = split_of(prob);
       const Dense S = condense(dense_of(prob.system()), s, prob.rhs());
@@ -600,9 +600,9 @@ MIMETIKA_TEST(the_condensed_solve_is_the_saddle_point_solve) {
       compare(flow.system(), flow.rhs(), split_of(flow), where + " tpfa", false);
 
       CauchyMechanicsModel solid(m, dim, ElasticMaterial{kMu, kLam}, Stress::diagonal_afw,
-                                  Formulation::weak_symmetry_total);
+                                  Formulation::weak_symmetry_deviatoric);
       build_elasticity(solid, m, dim);
-      compare(solid.system(), solid.rhs(), split_of(solid), where + " tpsa", false);
+      compare(solid.system(), solid.rhs(), split_of(solid), where + " two-point stress", false);
     }
   }
 }
@@ -627,7 +627,7 @@ MIMETIKA_TEST(the_kuhn_tetrahedra_keep_every_rotation_on_the_wrench) {
   for (const int n : {2, 3}) {
     const exokal::Mesh m = box_of(n, 3, Family::simplex);
     CauchyMechanicsModel prob(m, 3, ElasticMaterial{kMu, kLam}, Stress::diagonal_afw,
-                               Formulation::weak_symmetry_total);
+                               Formulation::weak_symmetry_deviatoric);
     build_elasticity(prob, m, 3);
     const Split s = split_of(prob);
     std::vector<double> rhs;
@@ -688,7 +688,7 @@ MIMETIKA_TEST(the_solver_condenses_when_it_is_allowed_to_and_only_then) {
 
   // the stress, four fields, and the same statement
   CauchyMechanicsModel solid(m, 3, ElasticMaterial{kMu, kLam}, Stress::diagonal_afw,
-                              Formulation::weak_symmetry_total);
+                              Formulation::weak_symmetry_deviatoric);
   build_elasticity(solid, m, 3);
   mimetika::solver::PetscSolver saddle;
   std::vector<double> plain;

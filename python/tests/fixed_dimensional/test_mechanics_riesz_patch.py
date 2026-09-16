@@ -52,9 +52,9 @@ RIESZ = mk.SolverOptions(
 )
 
 W = mk.StressFormulation.weak_symmetry
-WT = mk.StressFormulation.weak_symmetry_total
+WD = mk.StressFormulation.weak_symmetry_deviatoric
 S = mk.StressFormulation.strong_symmetry
-ST = mk.StressFormulation.strong_symmetry_total
+SD = mk.StressFormulation.strong_symmetry_deviatoric
 
 # A REALIZATION is a product together with the formulation it is solved in, and
 # the two are not independent. The diagonal members need the total pressure --
@@ -69,24 +69,22 @@ ST = mk.StressFormulation.strong_symmetry_total
 # pressure row as c_p = d/(2mu) + 1/lambda. Both are carried here.
 REALIZATIONS = {
     "derham_bdm": ("derham_bdm", W),
-    "derham_bdm_total": ("derham_bdm", WT),
     "stabilized_bdm": ("stabilized_bdm", W),
-    "stabilized_bdm_total": ("stabilized_bdm", WT),
-    "diagonal_afw": ("diagonal_afw", WT),
-    "adaptive_afw": ("adaptive_afw", WT),
+    "diagonal_afw": ("diagonal_afw", WD),
+    "adaptive_afw": ("adaptive_afw", WD),
     "stabilized_vem": ("stabilized_vem", S),
-    "stabilized_vem_total": ("stabilized_vem", ST),
-    "diagonal_vem": ("diagonal_vem", ST),
-    "adaptive_vem": ("adaptive_vem", ST),
+    "stabilized_vem_deviatoric": ("stabilized_vem", SD),
+    "diagonal_vem": ("diagonal_vem", SD),
+    "adaptive_vem": ("adaptive_vem", SD),
 }
-BDM_FORMS = ("derham_bdm", "derham_bdm_total", "stabilized_bdm", "stabilized_bdm_total")
+BDM_FORMS = ("derham_bdm", "stabilized_bdm", "stabilized_bdm_deviatoric")
 # The strong axis has the same pair, and its norms differ from each other for the
 # same reason: strong_symmetry leaves the full compliance in the star, and
-# strong_symmetry_total moves the trace to p and leaves the deviatoric part.
-VEM_FORMS = ("stabilized_vem", "stabilized_vem_total")
+# strong_symmetry_deviatoric moves the trace to p and leaves the deviatoric part.
+VEM_FORMS = ("stabilized_vem", "stabilized_vem_deviatoric")
 # every established realization, in every formulation it admits
 STRICT_FORMS = BDM_FORMS + VEM_FORMS
-FOUR_FIELD = {k for k, (_, f) in REALIZATIONS.items() if f in (WT, ST)}
+FOUR_FIELD = {k for k, (_, f) in REALIZATIONS.items() if f in (WD, SD)}
 
 LADDERS = {
     "cartesian_2d": (2, [mk.box([n, n, 1], 2, mk.Family.cartesian, [1.0, 1.0, 1.0])
@@ -107,12 +105,10 @@ CARTESIAN = {f for f in LADDERS if f.startswith("cartesian")}
 # 3D construction; the two-point stars are held to cartesian while they develop.
 AVAILABLE = {
     "derham_bdm": set(LADDERS),
-    "derham_bdm_total": set(LADDERS),
     "stabilized_bdm": set(LADDERS),
-    "stabilized_bdm_total": set(LADDERS),
     "adaptive_afw": set(LADDERS),
     "stabilized_vem": THREE_D,
-    "stabilized_vem_total": THREE_D,
+    "stabilized_vem_deviatoric": THREE_D,
     "adaptive_vem": THREE_D,
     "diagonal_afw": CARTESIAN,
     "diagonal_vem": CARTESIAN & THREE_D,
@@ -217,7 +213,7 @@ def test_derham_rt_is_refused_for_weak_symmetry():
 
 @pytest.mark.parametrize(
     "realization",
-    sorted(p for p, (_, f) in REALIZATIONS.items() if f in (S, ST)))
+    sorted(p for p, (_, f) in REALIZATIONS.items() if f in (S, SD)))
 def test_the_strong_family_is_three_dimensional(realization):
     """The rigid-motion ansatz needs six moments per facet, which 2D does not have."""
     product, formulation = REALIZATIONS[realization]
@@ -405,12 +401,12 @@ def test_the_count_is_bounded_under_material_contrast(realization, family):
 
     Measured on the coarse cartesian mesh of each ladder, at 1, 1e2, 1e4, 1e6:
 
-        derham_bdm            23   43   43   43     weak, three fields
-        stabilized_bdm        22   47   49   49
-        stabilized_vem        33   56   56   56     strong, three fields
-        derham_bdm_total      41   99   98   98     weak, four fields
-        stabilized_bdm_total  41  103  103  103
-        stabilized_vem_total  73  152  156  156     strong, four fields
+        derham_bdm                23   43   43   43     weak, three fields
+        stabilized_bdm            22   47   49   49
+        stabilized_vem            33   56   56   56     strong, three fields
+        derham_bdm_deviatoric     41   99   98   98     weak, four fields
+        stabilized_bdm_deviatoric 41  103  103  103
+        stabilized_vem_deviatoric 73  152  156  156     strong, four fields
 
     Every one of the six takes a single step of about two at the first jump and
     is flat after it: bounded in the contrast, which is the claim. The strong
@@ -494,14 +490,14 @@ def test_three_fields_are_robust_to_incompressibility(realization, family):
 
     Measured, at nu = 0.3, 0.49, 0.499, 0.4999:
 
-        derham_bdm      cartesian_2d    25   32   45    54
-        derham_bdm      cartesian_3d    23   60   83   103
-        derham_bdm      simplex_3d      24   65  105   147
-        stabilized_bdm  cartesian_2d    25   33   39    54
-        stabilized_bdm  cartesian_3d    24   56  106   110
-        stabilized_bdm  simplex_3d      24   67   93   152
-        stabilized_vem  cartesian_3d    36   63   90   145
-        stabilized_vem  simplex_3d      45   87  108   418
+        derham_bdm     cartesian_2d    25   32   45    54
+        derham_bdm     cartesian_3d    23   60   83   103
+        derham_bdm     simplex_3d      24   65  105   147
+        stabilized_bdm cartesian_2d    25   33   39    54
+        stabilized_bdm cartesian_3d    24   56  106   110
+        stabilized_bdm simplex_3d      24   67   93   152
+        stabilized_vem cartesian_3d    36   63   90   145
+        stabilized_vem simplex_3d      45   87  108   418
 
     Growth is a factor of two to nine over four orders in 1/(1-2nu), bounded and
     convergent throughout.
@@ -528,14 +524,14 @@ def test_four_fields_are_not_yet_robust_to_incompressibility(realization, family
     the norm ought to be the better one -- yet it is the worse. Measured, at
     nu = 0.3, 0.49, 0.499, 0.4999:
 
-        derham_bdm_total      cartesian_2d    43    97   153   278
-        derham_bdm_total      cartesian_3d    45   117   221  2046
-        derham_bdm_total      simplex_3d      50   187   531   DIV
-        stabilized_bdm_total  cartesian_2d    45    94   159   394
-        stabilized_bdm_total  cartesian_3d    49   150   300  2669
-        stabilized_bdm_total  simplex_3d      52   180   935   DIV
-        stabilized_vem_total  cartesian_3d    81   338  1114   DIV
-        stabilized_vem_total  simplex_3d     107   769   DIV   DIV
+        derham_bdm_deviatoric     cartesian_2d    43    97   153   278
+        derham_bdm_deviatoric     cartesian_3d    45   117   221  2046
+        derham_bdm_deviatoric     simplex_3d      50   187   531   DIV
+        stabilized_bdm_deviatoric cartesian_2d    45    94   159   394
+        stabilized_bdm_deviatoric cartesian_3d    49   150   300  2669
+        stabilized_bdm_deviatoric simplex_3d      52   180   935   DIV
+        stabilized_vem_deviatoric cartesian_3d    81   338  1114   DIV
+        stabilized_vem_deviatoric simplex_3d     107   769   DIV   DIV
 
     So the lambda dependence the four-field form removed from the star is still
     somewhere else in the map -- the pressure row's weight is c_p |E| and c_p

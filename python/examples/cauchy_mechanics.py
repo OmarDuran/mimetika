@@ -150,7 +150,7 @@ def lame_checkerboard(mesh, dim, lame, ratio, blocks=4):
 
 
 def solve(nr, nt, dim, family, how, mat, form=None, solver="riesz", rtol=DEFAULT_RTOL,
-          lame_contrast=1.0, block_its=50):
+          lame_contrast=1.0, block_its=50, product=None, adaptive=None):
     """Build the annulus, impose the three conditions, solve, measure."""
     form = mk.StressFormulation.weak_symmetry if form is None else form
     mesh = mk.annulus(nr, nt, dim, family, A_IN, B_OUT, HZ)
@@ -172,6 +172,8 @@ def solve(nr, nt, dim, family, how, mat, form=None, solver="riesz", rtol=DEFAULT
             outer.append(f)
 
     model = mk.CauchyMechanicsModel(mesh, dim, mat, how, form)
+    if adaptive is not None:
+        rz.apply_adaptive(model, product, adaptive)
     if lame_contrast != 1.0:
         model.set_lame_per_cell(
             list(lame_checkerboard(mesh, dim, mat.lame, lame_contrast)))
@@ -237,6 +239,7 @@ def main():
              "The closed form below assumes ONE material, so the error columns stop "
              "meaning anything once R != 1 -- it is there to measure the SOLVER.")
     ap.add_argument("--vtu", help="write the coarse solution to this .vtu")
+    rz.add_adaptive_arguments(ap)
     ap.add_argument("--solver", default="riesz", choices=sorted(SOLVER_NAMES))
     ap.add_argument("--rtol", type=float, default=DEFAULT_RTOL,
                     help="residual tolerance of the iterative solver")
@@ -263,8 +266,11 @@ def main():
     # ---- the profile on one mesh ------------------------------------------
     model, mesh, ex, worst, rms = solve(args.nr, args.nr // 2, args.dim, family, how, mat, form,
                                         args.solver, args.rtol, args.lame_contrast,
-                                        args.ads_block_its)
-    print(f"  {model.n_cells} cells, {model.n_dofs} dofs, {model.n_stabilized} stabilized\n")
+                                        args.ads_block_its, args.product, args)
+    print(f"  {model.n_cells} cells, {model.n_dofs} dofs, {model.n_stabilized} stabilized")
+    if args.product in rz.ADAPTIVE:
+        print(rz.adaptive_line(model, args.product, args))
+    print()
     print(f"  {'r':>8}  {'u_r (computed)':>16}  {'u_r (Lame)':>12}  {'error':>10}"
           f"  {'sigma_rr (Lame)':>16}")
     rows = []
@@ -297,6 +303,7 @@ def main():
                 "u_r": u_r,
                 "u_r_lame": np.array([ex.u_r(v) for v in r]),
                 "sigma_rr_lame": np.array([ex.sigma_rr(v) for v in r]),
+                **({"eta": model.eta} if args.product in rz.ADAPTIVE else {}),
             },
         )
         print(f"\n  wrote {args.vtu}")
@@ -306,7 +313,8 @@ def main():
     previous = None
     for nr in (args.nr, 2 * args.nr, 4 * args.nr):
         m, _, _, worst, rms = solve(nr, nr // 2, args.dim, family, how, mat, form, args.solver,
-                                    args.rtol, args.lame_contrast, args.ads_block_its)
+                                    args.rtol, args.lame_contrast, args.ads_block_its,
+                                    args.product, args)
         rate = "" if previous is None else f"{math.log2(previous / rms):6.2f}"
         print(f"  {m.n_cells:8d}  {worst:11.3e}  {rms:11.3e}  {rate:>6}")
         previous = rms

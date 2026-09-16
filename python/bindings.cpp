@@ -1833,24 +1833,24 @@ PYBIND11_MODULE(_core, m) {
       // symmetric tensors, no rotation multiplier. stabilized_vem builds
       // either strong formulation; diagonal_vem is the two-point member and
       // adaptive_vem the per-cell selection between them -- both demand
-      // strong_symmetry_total, where M can be diagonal at all.
+      // strong_symmetry_deviatoric, where M can be diagonal at all.
       .value("stabilized_vem", StressOperators::Realization::stabilized_vem)
       .value("diagonal_vem", StressOperators::Realization::diagonal_vem)
       .value("adaptive_vem", StressOperators::Realization::adaptive_vem);
 
   // Three fields or four, a discretization and not a solver setting.
   // weak_symmetry carries the volumetric response in the compliance;
-  // weak_symmetry_total gives the total pressure p = lambda div u a field of
+  // weak_symmetry_deviatoric gives the total pressure p = lambda div u a field of
   // its own, one scalar per cell, and the compliance is then lambda-free --
   // uniform in the incompressible limit, and the only form diagonal_afw has.
   py::enum_<StressOperators::Formulation>(m, "StressFormulation")
       .value("weak_symmetry", StressOperators::Formulation::weak_symmetry)
-      .value("weak_symmetry_total", StressOperators::Formulation::weak_symmetry_total)
+      .value("weak_symmetry_deviatoric", StressOperators::Formulation::weak_symmetry_deviatoric)
       // The rigid-motion ansatz: symmetry lives in the reconstruction space,
       // so there is no rotation field -- sigma and u, with the total pressure
       // independent in the _total form. The vem realizations build these.
       .value("strong_symmetry", StressOperators::Formulation::strong_symmetry)
-      .value("strong_symmetry_total", StressOperators::Formulation::strong_symmetry_total);
+      .value("strong_symmetry_deviatoric", StressOperators::Formulation::strong_symmetry_deviatoric);
 
   m.def("stress_formulation_name",
         static_cast<const char* (*)(StressOperators::Formulation)>(&StressOperators::name),

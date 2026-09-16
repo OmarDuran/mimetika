@@ -127,6 +127,18 @@ class PrescribedDisplacement {
     const auto& c = ops_->compact(st.cells[0]);  // moments and grams: no dense M
     const std::size_t slot = st.support_slot[0];
     if (slot >= c.moment.size()) return;
+    // THE CHART'S GRAM, AND WHEN THE PRODUCT DOES NOT CARRY ONE. The deviatoric
+    // four-field cell is the three field conjugated by the facet frame -- an
+    // orthogonal Q on the traction components, which leaves the SCALAR chart
+    // gram untouched -- but exokal's weak_four_field_cell copies M, Dv, As and
+    // T and not facet_gram, so the vector is empty there. Reading it anyway is
+    // out of bounds, and the datum cannot be expanded without it.
+    if (slot >= c.facet_gram.size()) {
+      throw std::logic_error(
+          "PrescribedDisplacement: the stress product carries no facet Gram, so a displacement "
+          "datum cannot be expanded into the traction chart -- int_f u chi_b is available but "
+          "Gram^{-1} is not");
+    }
     const exokal::numerics::Dense& mom = c.moment[slot];
     const exokal::numerics::Dense& gram = c.facet_gram[slot];
 

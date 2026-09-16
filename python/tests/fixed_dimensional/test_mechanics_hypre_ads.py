@@ -68,10 +68,10 @@ F = mk.StressFormulation
 # rotation multiplier at all, symmetry being imposed strongly.
 #
 # Only stabilized_vem takes strong_symmetry; diagonal_vem and adaptive_vem
-# require strong_symmetry_total, which adds a pressure field and is not robust
+# require strong_symmetry_deviatoric, which adds a pressure field and is not robust
 # on this preconditioner -- measured at n = 4 and 6, stabilized_vem runs 300
 # then 2000 (no convergence) on tetrahedra and 100 then 172 on hexahedra, and
-# diagonal_vem does not converge on tetrahedra at all. So strong_symmetry_total
+# diagonal_vem does not converge on tetrahedra at all. So strong_symmetry_deviatoric
 # is left out rather than asserted loosely.
 STRONG = {"stabilized_vem": S.stabilized_vem}
 

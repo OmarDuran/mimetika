@@ -124,15 +124,15 @@ inline const exokal::forms::RegisterTerm<MixedElasticityCell> register_mixed_ela
 // where the three-field pairing has rank d+1. They agree only where tr sigma is
 // constant on a cell. A cell-centred p is also what a two-point realization
 // needs, which is why diagonal_afw exists only here.
-class MixedElasticityTotalCell {
+class MixedElasticityDeviatoricCell {
  public:
-  MixedElasticityTotalCell() = default;
-  // The compliance the four-field form keeps is (2 mu)^-1, and mu is the only
-  // material number this term needs: lambda is gone from M and survives only
-  // in c_p, which the operators already carry.
-  MixedElasticityTotalCell(const Params& p, const TermContext& ctx)
-      : ops_(&ctx.require<exokal::hodge::StressOperators>("stress_operators")),
-        half_(1.0 / (2.0 * p.get("shear_modulus", 1.0))) {}
+  MixedElasticityDeviatoricCell() = default;
+  // NO MATERIAL NUMBER. M is the deviatoric compliance, the coupling is
+  // kappa = deviatoric_reference and the mass is c_p = hydrostatic_mass; the
+  // operators carry all three, per cell, so an anisotropic compliance reaches
+  // this term without passing through a Lame pair it has no way to express.
+  MixedElasticityDeviatoricCell(const Params&, const TermContext& ctx)
+      : ops_(&ctx.require<exokal::hodge::StressOperators>("stress_operators")) {}
 
   static constexpr std::size_t kS = 0;  // stress
   static constexpr std::size_t kU = 1;  // displacement
@@ -153,15 +153,14 @@ class MixedElasticityTotalCell {
     const bool diagonal = !c.diag.empty();
     if (D != (diagonal ? c.diag.size() : c.M.rows())) {
       throw std::invalid_argument(
-          "MixedElasticityTotalCell: the stress block and the operators "
+          "MixedElasticityDeviatoricCell: the stress block and the operators "
           "disagree on the degree-of-freedom count");
     }
     const std::size_t nu = c.Dv.rows();
     const std::size_t ng = c.As.rows();
-    // the cell's own measure is on the operators, so no geometry is consulted
-    const double half = half_;
-    // c_p per cell: it is d/(2 mu) + 1/lambda, so a piecewise-constant material
-    // makes it piecewise constant too
+    // kappa and c_p per cell: isotropically (2 mu)^-1 and d/(2 mu) + lambda^-1,
+    // so a piecewise-constant material makes both piecewise constant
+    const double kappa = ops_->trace_coupling(st.support);
     const double mass = ops_->hydrostatic_mass(st.support) * c.volume;
 
     for (std::size_t i = 0; i < D; ++i) {
@@ -181,9 +180,9 @@ class MixedElasticityTotalCell {
         exokal::axpy(r[ri], -c.As(k, i), a[G.begin + k]);
         exokal::axpy(r[G.begin + k], c.As(k, i), a[ri]);
       }
-      // -(2 mu)^-1 T^T p, and its adjoint (2 mu)^-1 T sigma in the p row
-      exokal::axpy(r[ri], -half * c.T(0, i), a[P.begin]);
-      exokal::axpy(r[P.begin], half * c.T(0, i), a[ri]);
+      // -kappa T^T p, and its adjoint kappa T sigma in the p row
+      exokal::axpy(r[ri], -kappa * c.T(0, i), a[P.begin]);
+      exokal::axpy(r[P.begin], kappa * c.T(0, i), a[ri]);
     }
     // and the cell's own mass, which closes the system: c_p |E| p
     exokal::axpy(r[P.begin], -mass, a[P.begin]);
@@ -191,11 +190,12 @@ class MixedElasticityTotalCell {
 
  private:
   const exokal::hodge::StressOperators* ops_{nullptr};
-  double half_{0.5};
 };
 
-inline const exokal::forms::RegisterTerm<MixedElasticityTotalCell> register_mixed_elasticity_total{
-    "mixed_elasticity_total_cell", exokal::forms::Coupling::closure, {"s", "u", "g", "p"}};
+inline const exokal::forms::RegisterTerm<MixedElasticityDeviatoricCell>
+    register_mixed_elasticity_deviatoric{"mixed_elasticity_deviatoric_cell",
+                                         exokal::forms::Coupling::closure,
+                                         {"s", "u", "g", "p"}};
 
 // Strong symmetry: the rigid-motion ansatz (exokal's vem_operators), two
 // fields.
@@ -259,17 +259,16 @@ class StrongElasticityCell {
 inline const exokal::forms::RegisterTerm<StrongElasticityCell> register_strong_elasticity{
     "strong_elasticity_cell", exokal::forms::Coupling::closure, {"s", "u"}};
 
-// The same ansatz with the total pressure independent: exokal's
-// strong_symmetry_total, and the only formulation the diagonal member of the
-// VEM family admits. The p rows are the ones the weak total form carries --
-// -(2 mu)^-1 T^T p in the stress row, (2 mu)^-1 T sigma - c_p |E| p = 0 to
+// The same ansatz with the hydrostatic stress independent: exokal's
+// strong_symmetry_deviatoric, and the only formulation the diagonal member of
+// the VEM family admits. The p rows are the ones the weak deviatoric form
+// carries -- -kappa T^T p in the stress row, kappa T sigma - c_p |E| p = 0 to
 // close -- read off the same operators.
-class StrongElasticityTotalCell {
+class StrongElasticityDeviatoricCell {
  public:
-  StrongElasticityTotalCell() = default;
-  StrongElasticityTotalCell(const Params& p, const TermContext& ctx)
-      : ops_(&ctx.require<exokal::hodge::StressOperators>("stress_operators")),
-        half_(1.0 / (2.0 * p.get("shear_modulus", 1.0))) {}
+  StrongElasticityDeviatoricCell() = default;
+  StrongElasticityDeviatoricCell(const Params&, const TermContext& ctx)
+      : ops_(&ctx.require<exokal::hodge::StressOperators>("stress_operators")) {}
 
   static constexpr std::size_t kS = 0;  // stress
   static constexpr std::size_t kU = 1;  // displacement, as RM coefficients
@@ -288,13 +287,12 @@ class StrongElasticityTotalCell {
     const bool diagonal = !c.diag.empty();
     if (D != (diagonal ? c.diag.size() : c.M.rows())) {
       throw std::invalid_argument(
-          "StrongElasticityTotalCell: the stress block and the operators "
+          "StrongElasticityDeviatoricCell: the stress block and the operators "
           "disagree on the degree-of-freedom count");
     }
     const std::size_t nu = c.Dv.rows();
-    const double half = half_;
-    // c_p per cell: it is d/(2 mu) + 1/lambda, so a piecewise-constant material
-    // makes it piecewise constant too
+    // kappa and c_p per cell, as in the weak deviatoric term
+    const double kappa = ops_->trace_coupling(st.support);
     const double mass = ops_->hydrostatic_mass(st.support) * c.volume;
     for (std::size_t i = 0; i < D; ++i) {
       const std::size_t ri = S.begin + i;
@@ -309,21 +307,20 @@ class StrongElasticityTotalCell {
         exokal::axpy(r[ri], -c.Dv(k, i), a[U.begin + k]);
         exokal::axpy(r[U.begin + k], c.Dv(k, i), a[ri]);
       }
-      exokal::axpy(r[ri], -half * c.T(0, i), a[P.begin]);
-      exokal::axpy(r[P.begin], half * c.T(0, i), a[ri]);
+      exokal::axpy(r[ri], -kappa * c.T(0, i), a[P.begin]);
+      exokal::axpy(r[P.begin], kappa * c.T(0, i), a[ri]);
     }
     exokal::axpy(r[P.begin], -mass, a[P.begin]);
   }
 
  private:
   const exokal::hodge::StressOperators* ops_{nullptr};
-  double half_{0.5};
 };
 
-inline const exokal::forms::RegisterTerm<StrongElasticityTotalCell>
-    register_strong_elasticity_total{"strong_elasticity_total_cell",
-                                     exokal::forms::Coupling::closure,
-                                     {"s", "u", "p"}};
+inline const exokal::forms::RegisterTerm<StrongElasticityDeviatoricCell>
+    register_strong_elasticity_deviatoric{"strong_elasticity_deviatoric_cell",
+                                          exokal::forms::Coupling::closure,
+                                          {"s", "u", "p"}};
 
 }  // namespace terms
 
@@ -342,7 +339,7 @@ struct MechanicsOptions {
   // 1 for the wrench layout, d for the componentwise one; 0 means d
   int traction_components{0};
   // The total pressure as a field of its own, which is exokal's
-  // weak_symmetry_total. It adds one scalar per cell and changes the term, so
+  // weak_symmetry_deviatoric. It adds one scalar per cell and changes the term, so
   // the package cannot infer it from the layout: the driver derives this and
   // the realization from one formulation, as it does for the moments.
   bool total_pressure{false};

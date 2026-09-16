@@ -74,10 +74,15 @@ NAME = "hypre-ads"
 # measured 1.44), at most 2 across an eight-decade lambda jump, and at most 3
 # over nu = 0.25 .. 0.4999. Nothing is asserted for the weak family.
 #
-# THE WEAK PATH DOES NOT CONVERGE, AND NOTHING REFUSES IT: a facet carrying d
-# moments takes MGR's two-level reduction and stalls at the iteration cap, flow
-# derham_bdm and stabilized_bdm alike. The note in linear_solver/hypre.hpp has
-# it surviving every F-relaxation, interpolation type and reduction depth.
+# THE WEAK PATH CONVERGES ONCE THE INTERPOLATION IS CHOSEN BY FAMILY. A facet
+# carrying d moments takes the two-level reduction, and under hypre's default
+# signed point diagonal the level-1 F diagonal changes sign in 3D, leaving an
+# indefinite coarse operator and a nan residual. The absolute row sum restores
+# it: h reads 32, 35, 38, 40 over 48 to 750 cells, and on the test's three cell
+# families the count is flat in the contrast and grows 1.7 to 2.2 fold over
+# nu -> 1/2 on hexahedra and prisms. Tetrahedra are the exception, 5 fold in
+# the four-field form and 12 in the three-field one. See mgr_interp_type in
+# linear_solver/hypre.hpp for the criterion and the cause.
 MGR_NAME = "hypre-mgr"
 HYPRE_NAMES = (NAME, MGR_NAME)
 

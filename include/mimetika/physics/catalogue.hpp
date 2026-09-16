@@ -40,7 +40,7 @@ struct ModelOptions {
   // facet holds one d(d+1)/2 rigid-motion moment vector whole, and d for the
   // componentwise one. 0 means d.
   int traction_components{0};
-  // the total pressure as an independent field: exokal's weak_symmetry_total,
+  // the total pressure as an independent field: exokal's weak_symmetry_deviatoric,
   // four fields rather than three
   bool total_pressure{false};
   // Strong symmetry: the rigid-motion ansatz. The stress carries six traction

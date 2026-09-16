@@ -109,9 +109,9 @@ class CauchyMechanicsModel {
     }
     // the blend inherits the demand of its diagonal member
     if ((how == Realization::diagonal_afw || how == Realization::adaptive_afw) &&
-        form != Formulation::weak_symmetry_total) {
+        form != Formulation::weak_symmetry_deviatoric) {
       throw std::invalid_argument(
-          "CauchyMechanicsModel: diagonal_afw needs the total-pressure formulation -- the "
+          "CauchyMechanicsModel: diagonal_afw needs the deviatoric formulation -- the "
           "three-field compliance couples traction components through the trace");
     }
     // The symmetry axis is one decision: a strongly-symmetric realization
@@ -131,10 +131,10 @@ class CauchyMechanicsModel {
           "CauchyMechanicsModel: the strongly-symmetric vem family is a 3D construction");
     }
     if ((how == Realization::diagonal_vem || how == Realization::adaptive_vem) &&
-        form != Formulation::strong_symmetry_total) {
+        form != Formulation::strong_symmetry_deviatoric) {
       throw std::invalid_argument(
           std::string("CauchyMechanicsModel: ") + exokal::hodge::StressOperators::name(how) +
-          " needs strong_symmetry_total -- the plain compliance couples traction components "
+          " needs strong_symmetry_deviatoric -- the plain compliance couples traction components "
           "through the trace and cannot be diagonal");
     }
   }
@@ -233,13 +233,13 @@ class CauchyMechanicsModel {
   Formulation formulation() const { return form_; }
 
   // The total pressure p = lambda div u, one scalar per cell: an independent
-  // unknown under weak_symmetry_total and strong_symmetry_total, not a
+  // unknown under weak_symmetry_deviatoric and strong_symmetry_deviatoric, not a
   // post-processing of sigma. Refused elsewhere -- no solve produced it.
   double total_pressure(Index cell) const {
-    if (form_ != Formulation::weak_symmetry_total && form_ != Formulation::strong_symmetry_total) {
+    if (form_ != Formulation::weak_symmetry_deviatoric && form_ != Formulation::strong_symmetry_deviatoric) {
       throw std::logic_error(
           "CauchyMechanicsModel::total_pressure: this formulation has no total pressure; build "
-          "with weak_symmetry_total or strong_symmetry_total");
+          "with weak_symmetry_deviatoric or strong_symmetry_deviatoric");
     }
     const auto& sp = sim_->epoch().stratum(0).space();
     const auto& mp = sp.map(sp.index_of("p_0"));
@@ -280,8 +280,8 @@ class CauchyMechanicsModel {
   };
   std::vector<NormTraceTerm> norm_trace_terms() const {
     std::vector<NormTraceTerm> out;
-    if (form_ == Formulation::weak_symmetry_total ||
-        form_ == Formulation::strong_symmetry_total) {
+    if (form_ == Formulation::weak_symmetry_deviatoric ||
+        form_ == Formulation::strong_symmetry_deviatoric) {
       return out;
     }
     const auto& sp = sim_->epoch().stratum(0).space();
@@ -492,8 +492,19 @@ class CauchyMechanicsModel {
     // And the field count follows the formulation, read off the operators for
     // the same reason: the field roster is a property of the product that was
     // built.
-    o.total_pressure = stress_.formulation() == Formulation::weak_symmetry_total ||
-                       stress_.formulation() == Formulation::strong_symmetry_total;
+    //
+    // THE AUGMENTED p IS NOT EVERY DEVIATORIC FORM'S. Where the deviatoric
+    // split is the facet frame's -- stabilized_bdm, derham_bdm, derham_rt --
+    // sigma_hyd is a stress dof, the normal traction, and the operators carry
+    // no hydrostatic mass or trace coupling; the strong path and the weak
+    // diagonal star keep p as a separate scalar closed by
+    // kappa T sigma = c_p |E| p. exokal's own predicate is asked rather than
+    // restated, so the two cannot drift.
+    const bool deviatoric =
+        stress_.formulation() == Formulation::weak_symmetry_deviatoric ||
+        stress_.formulation() == Formulation::strong_symmetry_deviatoric;
+    o.total_pressure =
+        deviatoric && !exokal::hodge::StressOperators::facet_four_field(stress_.realization());
     o.strong_symmetry = strongly_symmetric();
     // the half weights are on the operators; this attaches the facet term that
     // reads them
@@ -954,7 +965,7 @@ class CauchyMechanicsModel {
     }
     if (state_.empty()) state_.assign(sim_->n_dofs(), 0.0);
     const exokal::hodge::HybridStressOperators hops =
-        exokal::hodge::HybridStressOperators::build(*mesh_, dim_, stress_, material_.shear);
+        exokal::hodge::HybridStressOperators::build(*mesh_, dim_, stress_);
     // The free mask is the boundary condition. A facet whose displacement is
     // prescribed carries a pinned multiplier -- that datum is the essential
     // condition here -- and every other facet is free, interior and traction
@@ -981,7 +992,12 @@ class CauchyMechanicsModel {
           for (std::size_t j = 0; j < cc.faces.size(); ++j) {
             if (cc.faces[j] == f) { slot = j; break; }
           }
-          if (slot == cc.faces.size() || slot >= cc.moment.size()) continue;
+          // the same Gram the boundary term needs, and the same absence: the
+          // deviatoric four-field cell carries no facet_gram
+          if (slot == cc.faces.size() || slot >= cc.moment.size() ||
+              slot >= cc.facet_gram.size()) {
+            continue;
+          }
           const exokal::numerics::Dense& mom = cc.moment[slot];
           const exokal::numerics::Dense& gram = cc.facet_gram[slot];
           const std::size_t nb = mom.rows();

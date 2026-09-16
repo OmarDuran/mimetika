@@ -313,7 +313,7 @@ def test_an_exact_preconditioner_converges_in_one_iteration(kind):
 def test_the_total_pressure_row_keeps_the_scale_the_operator_gave_it():
     counts = []
     for nr in (6, 12, 24):
-        model = patch(nr, formulation=mk.StressFormulation.weak_symmetry_total)
+        model = patch(nr, formulation=mk.StressFormulation.weak_symmetry_deviatoric)
         report = model.solve(options=RIESZ)
         counts.append(report.iterations)
         print(f"  {model.n_cells:6d} cells {model.n_dofs:7d} dofs   {report.iterations:4d} its")
@@ -339,7 +339,7 @@ def test_the_lumped_compliance_on_the_saddle_point():
     counts = []
     for nr in (6, 12, 24):
         model = patch(nr, product=mk.StressRealization.diagonal_afw,
-                      formulation=mk.StressFormulation.weak_symmetry_total)
+                      formulation=mk.StressFormulation.weak_symmetry_deviatoric)
         report = model.solve(options=SADDLE_RIESZ)
         counts.append(report.iterations)
         print(f"  {model.n_cells:6d} cells {model.n_dofs:7d} dofs   {report.iterations:4d} its")
@@ -351,7 +351,7 @@ def test_the_lumped_compliance_on_the_saddle_point():
 # system's and the answer must still be the saddle point's.
 def test_the_condensed_route_is_what_a_caller_gets():
     model = patch(12, product=mk.StressRealization.diagonal_afw,
-                  formulation=mk.StressFormulation.weak_symmetry_total)
+                  formulation=mk.StressFormulation.weak_symmetry_deviatoric)
     report = model.solve(options=RIESZ)
     assert report.condensed
     assert report.condensed_dofs < model.n_dofs

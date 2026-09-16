@@ -382,7 +382,7 @@ Patch patch_case(int n, int dim, Family family, Realization how,
       out.max_err = std::max(out.max_err,
                              std::abs(model.displacement(e, k) - x[static_cast<std::size_t>(k)]));
     }
-    if (form == Formulation::weak_symmetry_total) {
+    if (form == Formulation::weak_symmetry_deviatoric) {
       out.pressure_err = std::max(out.pressure_err, std::abs(model.total_pressure(e) - p_exact));
     }
   }
@@ -392,7 +392,7 @@ Patch patch_case(int n, int dim, Family family, Realization how,
 // ---- four fields, and the two-point product that needs them ----------------
 //
 // The total pressure p = lambda div u carried as a field of its own. That is
-// exokal's weak_symmetry_total, and mimetika's part of it is the pairing: the
+// exokal's weak_symmetry_deviatoric, and mimetika's part of it is the pairing: the
 // sigma row gains -(2 mu)^-1 T^T p and the p row closes the system with
 // c_p |E| p, c_p = d/(2 mu) + 1/lambda. Everything below tests that pairing,
 // not the product beneath it.
@@ -404,7 +404,7 @@ MIMETIKA_TEST(the_four_field_column_reproduces_the_linear_displacement) {
   for (const int dim : {2, 3}) {
     for (const Family f : kFamilies) {
       const Outcome o =
-          column_case(4, dim, f, Realization::stabilized_bdm, Formulation::weak_symmetry_total);
+          column_case(4, dim, f, Realization::stabilized_bdm, Formulation::weak_symmetry_deviatoric);
       std::printf("  four-field column %dD %-10s %5zu cells %6zu dofs   max %.2e\n", dim,
                   mimetika::mesh::name(f), o.cells, o.dofs, o.max_err);
       CHECK(o.max_err < 1e-10);
@@ -417,7 +417,7 @@ MIMETIKA_TEST(the_four_field_column_reproduces_the_linear_displacement) {
 MIMETIKA_TEST(the_fourth_field_is_one_scalar_per_cell) {
   const Outcome three = column_case(4, 3, Family::cartesian, Realization::stabilized_bdm);
   const Outcome four = column_case(4, 3, Family::cartesian, Realization::stabilized_bdm,
-                                   Formulation::weak_symmetry_total);
+                                   Formulation::weak_symmetry_deviatoric);
   std::printf("  three-field %zu dofs   four-field %zu dofs   cells %zu\n", three.dofs, four.dofs,
               three.cells);
   CHECK(four.dofs == three.dofs + three.cells);
@@ -443,7 +443,7 @@ MIMETIKA_TEST(the_two_point_stress_product_needs_four_fields) {
   refused = false;
   try {
     CauchyMechanicsModel model(m, 3, ElasticMaterial{kMu, kLam}, Realization::derham_rt,
-                                Formulation::weak_symmetry_total);
+                                Formulation::weak_symmetry_deviatoric);
   } catch (const std::invalid_argument&) {
     refused = true;
   }
@@ -462,7 +462,7 @@ MIMETIKA_TEST(every_four_field_product_reproduces_the_linear_displacement) {
   for (const int dim : {2, 3}) {
     for (const Family f : kFamilies) {
       for (const Realization r : kProducts) {
-        const Patch o = patch_case(3, dim, f, r, Formulation::weak_symmetry_total);
+        const Patch o = patch_case(3, dim, f, r, Formulation::weak_symmetry_deviatoric);
         std::printf("  four-field %-22s %dD %-10s %6zu dofs   u %.2e   p %.2e\n",
                     exokal::hodge::StressOperators::name(r), dim, mimetika::mesh::name(f), o.dofs,
                     o.max_err, o.pressure_err);
@@ -471,7 +471,7 @@ MIMETIKA_TEST(every_four_field_product_reproduces_the_linear_displacement) {
       }
     }
     const Patch t = patch_case(3, dim, Family::cartesian, Realization::diagonal_afw,
-                               Formulation::weak_symmetry_total);
+                               Formulation::weak_symmetry_deviatoric);
     std::printf("  four-field %-22s %dD %-10s %6zu dofs   u %.2e   p %.2e\n",
                 exokal::hodge::StressOperators::name(Realization::diagonal_afw), dim, "cartesian",
                 t.dofs, t.max_err, t.pressure_err);
@@ -490,7 +490,7 @@ MIMETIKA_TEST(four_fields_and_three_agree_where_the_trace_is_constant) {
     for (const Family f : kFamilies) {
       for (const Realization r : kProducts) {
         const Patch three = patch_case(3, dim, f, r);
-        const Patch four = patch_case(3, dim, f, r, Formulation::weak_symmetry_total);
+        const Patch four = patch_case(3, dim, f, r, Formulation::weak_symmetry_deviatoric);
         std::printf("  %-22s %dD %-10s three %.2e   four %.2e   +%zu dofs\n",
                     exokal::hodge::StressOperators::name(r), dim, mimetika::mesh::name(f),
                     three.max_err, four.max_err, four.dofs - three.dofs);
@@ -511,7 +511,7 @@ MIMETIKA_TEST(the_four_field_patch_survives_the_incompressible_limit) {
     const double lam = 2.0 * kMu * nu / (1.0 - 2.0 * nu);
     const exokal::Mesh m = mimetika::mesh::box({3, 3, 3}, dim, Family::cartesian);
     CauchyMechanicsModel model(m, dim, ElasticMaterial{kMu, lam}, Realization::stabilized_bdm,
-                                Formulation::weak_symmetry_total);
+                                Formulation::weak_symmetry_deviatoric);
     std::array<double, 9> grad{};
     for (int k = 0; k < dim; ++k) grad[static_cast<std::size_t>(k * 3 + k)] = 1.0;
     for (const Index f : mimetika::boundary_facets(m.topology(), dim)) {

@@ -145,11 +145,38 @@ struct HypreOptions {
   // scales badly.
   int mgr_frelax{-1};
   // What stands in for A_FF^-1 in Wp = -A_FF^-1 A_FC, hence in the Galerkin
-  // coarse operator A_CC + A_CF Wp. hypre reads all of these off A itself:
-  // 0 injection, 1 l1-Jacobi (the diagonal plus the off-diagonal row mass),
-  // 2 the plain diagonal (hypre's default), 3 classical modified, 4 approximate
-  // inverse.
-  int mgr_interp_type{2};
+  // coarse operator A_C = A_CC + A_CF Wp. hypre reads all of these off A
+  // itself: 0 injection, 1 l1-Jacobi, 2 the SIGNED point diagonal (hypre's
+  // default), 14 the absolute row sum. -1 selects by family.
+  //
+  // THE SIGNED DIAGONAL LOSES DEFINITENESS ON THE WEAK FAMILY IN 3D. With
+  // interpolation 2 the level-1 F diagonal is diag(A_11) - diag(A_10 D_0^-1
+  // A_01), so it changes sign in row i exactly when
+  //
+  //     r = max_i diag(A_10 D_0^-1 A_01)_i / diag(A_11)_i  >  1.
+  //
+  // Measured r = 0.5838 in 2D and 1.2690 in 3D, both flat under refinement.
+  // The cause is the facet dof count: sigma is d copies of one scalar H(div)
+  // space, so a facet carries d moments a row and d^2 in all -- 6 higher
+  // moments in 3D against 2 in 2D. A_00's off-diagonal row sums over |diagonal|
+  // then average 0.86 in 2D and 2.55 in 3D, every 3D row above one, and the
+  // excess is ACROSS facets (0.28 within, 2.27 across), so facet-block Jacobi
+  // only reduces the sign flips, 112 of 360 to 36. The level-1 diagonal goes
+  // negative on 31 percent of the facet constants, A_C is then indefinite --
+  // 217 positive against 71 negative eigenvalues, asymmetry 3e-17, so they are
+  // real -- and BoomerAMG on it returns nan.
+  //
+  // NOT THE SMOOTHER. With exact F-solves at both levels 146 of 1368
+  // preconditioned eigenvalues still have Re <= 0; putting A_FF^-1 in Wp makes
+  // MA = I exactly. That is why F-relaxation 9 and 99 never moved it.
+  //
+  // The absolute row sum restores definiteness and the weak family becomes
+  // h-flat: 3D at lambda = 1 over 48, 162, 384, 750 cells reads 32, 35, 38, 40
+  // against the cap at every level under 2. It is NOT the better choice on the
+  // strong family, whose facet carries one component and whose A_FF is already
+  // dominant: 30 and 33 under 2 become 48 and 56, and over lambda = 1, 1e2, 1e4
+  // 30, 42, 50 become 48, 88, 150.
+  int mgr_interp_type{-1};
   // The strong-VEM split, by the roles the dofs play.
   //
   // stabilized_vem carries q = d(d+1)/2 traction moments a facet and the whole
@@ -849,28 +876,16 @@ class HypreSolver {
       // of the whole flux asks F-relaxation to invert M on a divergence-free
       // subspace, which it cannot damp -- measured on stabilized_bdm as 71,
       // 1736 and then no convergence over three refinements where RT held 9,
-      // 10, 11. Splitting them off first is meant to make level 0 exact on the
-      // constraint, leaving the RT0 system.
+      // 10, 11. Splitting them off first makes level 0 exact on the constraint,
+      // leaving the RT0 system.
       //
-      // The two-level path has never converged. Measured 2026-09: flow
-      // stabilized_bdm and derham_bdm both stall at the iteration cap, and so
-      // does every weak-symmetry stress, which carries d moments a facet and so
-      // always takes this branch. The RT products are one moment a facet and
-      // take the one-level branch, and are the only MGR cases under test.
-      //
-      // Not a tuning failure. F-relaxation 0, 1, 2, 9 and 99 -- the last two
-      // direct solves of the F block -- all stall, as do interpolation types 0
-      // through 4 and reduction depths of one, two and three levels (the third
-      // peeling the algebraic multiplier onto its own level). HYPRE_MGRSetup
-      // reports no error. The outer residual does not decrease at all,
-      // reduction factor 1.000000 a step against the strong stress's 0.987,
-      // 0.950, 0.912: inert rather than weak, which reads as a
-      // calling-convention mismatch and not a numerical one.
-      //
-      // To resume: hypre can print the dofmap it builds
-      // (HYPRE_MGR_PRINT_FINE_MATRIX); comparing it against mgr_marker below
-      // separates a wrong call from a wrong multi-level reduction. Until then a
-      // facet carrying more than one moment should use ADS.
+      // THE TWO-LEVEL PATH CONVERGES. It did not until the interpolation was
+      // chosen by family: hypre's default reads the SIGNED point diagonal of
+      // A_FF, and on the weak family in 3D that diagonal changes sign, leaving
+      // BoomerAMG an indefinite coarse operator and a nan residual. The
+      // criterion, the cause and the remedy are with mgr_interp_type above.
+      // With the absolute row sum there the weak family is h-flat: 32, 35, 38,
+      // 40 over 48, 162, 384 and 750 cells at lambda = 1.
       //
       //   marker 0   the higher facet moments      F at level 0
       //   marker 1   the facet constants           F at level 1
@@ -967,7 +982,12 @@ class HypreSolver {
       HYPRE_MGRSetCpointsByPointMarkerArray(mgr, nfac, n_lvl, ncpts2, lvl2,
                                             mgr_marker.data());
       HYPRE_MGRSetNonCpointsToFpoints(mgr, 1);
-      HYPRE_MGRSetInterpType(mgr, opts.mgr_interp_type);
+      // Three factors or four -- sigma, u, gamma and the total pressure -- is
+      // the weak family; the strong one pairs sigma against u alone.
+      const bool weak_family = norm.factors.size() >= 3;
+      const int interp =
+          opts.mgr_interp_type >= 0 ? opts.mgr_interp_type : (weak_family ? 14 : 2);
+      HYPRE_MGRSetInterpType(mgr, interp);
       HYPRE_MGRSetMaxIter(mgr, 1);   // a preconditioner, not a solver
       HYPRE_MGRSetTol(mgr, 0.0);
       HYPRE_MGRSetPrintLevel(mgr, opts.print_level);
