@@ -36,6 +36,7 @@ Run it:
 import argparse
 import os
 
+import _bootstrap  # noqa: F401  -- BEFORE mimetika_cxx; see python/_shadowing.py
 import mimetika_cxx as mk
 import numpy as np
 

@@ -170,6 +170,108 @@ class Simulation {
     if (!constraints_.empty()) constraints_.apply_to_action(v, y);
   }
 
+  // ---- symmetric elimination of the pinned unknowns -----------------------
+  //
+  // The three operators above are row-eliminated and NOT column-eliminated: a
+  // constrained row carries the form, and the column of the unknown it leads
+  // still carries whatever the terms wrote there. Constraints says why, and for
+  // a general solve the price is a system that is merely unsymmetric.
+  //
+  // It is not merely unsymmetric for a method that assumes symmetry. MINRES
+  // builds its Krylov space from a symmetric Lanczos recurrence and is silent
+  // about the assumption: on the row-eliminated operator it converges, and to
+  // something else. So a route that needs a symmetric operator asks for one
+  // here, and gets it where the constraints admit one.
+  //
+  // Where every form is a single pin x_d = g_d, the elimination is the
+  // classical one. Write P for the projector that zeroes the pinned entries and
+  // x_c for the lift, (x_c)_d = g_d and zero elsewhere. Then
+  //
+  //     N = P A P + diag(s_d)|_pinned,     b~ = b - P A x_c,
+  //
+  // and N is symmetric whenever A is: P is diagonal, so P A P is the free block
+  // of A bordered by zeros, and the pinned block is a decoupled diagonal.
+  //
+  // N x = b~ IS the row-eliminated system, not an approximation of it. Its
+  // pinned rows read s_d x_d = s_d g_d, which is the row filter_constrained_rows
+  // writes and the datum FlowModel puts in the load; its free rows are the free
+  // rows of A x = b with the pinned columns carried across, which is what
+  // substituting x_d = g_d into them gives. Same solution, same scale, both
+  // paths.
+  //
+  // A MULTI-TERM FORM HAS NO SUCH ELIMINATION. Its row is s a^T and reaches
+  // free columns, so symmetry would want column d to be s a -- a different
+  // matrix, not a column moved across. Those are refused here rather than
+  // silently left asymmetric.
+
+  // Whether the elimination below applies: every form a single pin.
+  bool pins_only() const {
+    for (const Constraints::Form& f : constraints_.forms()) {
+      if (f.dofs.size() != 1) return false;
+    }
+    return true;
+  }
+
+  // x_c: the value each pinned unknown is held at, zero elsewhere.
+  std::vector<double> pinned_lift() const {
+    require_pins("Simulation::pinned_lift");
+    std::vector<double> x(state_.size(), 0.0);
+    for (std::size_t d = 0; d < state_.size(); ++d) {
+      if (constraints_.pinned(d)) x[d] = constraints_.value_at(d);
+    }
+    return x;
+  }
+
+  // y = N v, matrix-free. One assembly, as apply() is -- the projection and the
+  // row are componentwise and cost nothing.
+  void apply_symmetric(const std::vector<double>& v, std::vector<double>& y) const {
+    if (v.size() != state_.size()) {
+      throw std::invalid_argument("Simulation::apply_symmetric: size");
+    }
+    if (constraints_.empty()) {
+      apply(v, y);
+      return;
+    }
+    require_pins("Simulation::apply_symmetric");
+    ensure_scales();
+    projected_ = v;  // P v
+    for (std::size_t d = 0; d < projected_.size(); ++d) {
+      if (constraints_.pinned(d)) projected_[d] = 0.0;
+    }
+    y.assign(state_.size(), 0.0);
+    exokal::forms::ActionSink sink(projected_, y);
+    model_.assemble(epoch_, state_, sink, ws_, colors());
+    // the row of a pinned unknown is its own, scaled: v and not projected_, so
+    // the block is a scaled identity and not zero
+    for (std::size_t d = 0; d < y.size(); ++d) {
+      if (constraints_.pinned(d)) y[d] = constraints_.scale_at(d) * v[d];
+    }
+  }
+
+  // b <- b - P A x_c: the pinned columns, carried to the right-hand side. The
+  // pinned rows already hold their own datum and are left alone.
+  //
+  // ONE APPLY PER TANGENT, NOT PER ITERATION. This is the cost Constraints
+  // declines to pay: an action against a fixed vector, once, before the Krylov
+  // method starts. A linear solve pays it once; a Newton loop pays it once a
+  // step, where a term dropped into every assembly would have been once an
+  // iteration.
+  void fold_pinned_columns(std::vector<double>& b) const {
+    if (constraints_.empty()) return;
+    if (b.size() != state_.size()) {
+      throw std::invalid_argument("Simulation::fold_pinned_columns: size");
+    }
+    require_pins("Simulation::fold_pinned_columns");
+    ensure_scales();
+    const std::vector<double> lift = pinned_lift();
+    std::vector<double> column(state_.size(), 0.0);
+    exokal::forms::ActionSink sink(lift, column);
+    model_.assemble(epoch_, state_, sink, ws_, colors());
+    for (std::size_t i = 0; i < b.size(); ++i) {
+      if (!constraints_.pinned(i)) b[i] -= column[i];
+    }
+  }
+
  private:
   // The restricted colouring of each (stratum, coupling), built once and kept:
   // a filter over the stratum's own, so the colours stay race-free and the
@@ -193,6 +295,18 @@ class Simulation {
     return owned_dofs_.empty() || owned_dofs_[dof] != 0;
   }
 
+  void require_pins(const char* who) const {
+    for (const Constraints::Form& f : constraints_.forms()) {
+      if (f.dofs.size() == 1) continue;
+      throw std::invalid_argument(
+          std::string(who) + ": a form spanning " + std::to_string(f.dofs.size()) +
+          " unknowns cannot be eliminated symmetrically -- its row is s a^T and reaches "
+          "columns the elimination leaves in place, so there is no single column to carry "
+          "across. Take the row-eliminated tangent and a method that does not assume "
+          "symmetry.");
+    }
+  }
+
   // The scale, measured from an assembled tangent.
   //
   // What is wanted is the diagonal the terms write on each constrained row:
@@ -205,12 +319,16 @@ class Simulation {
         diagonal[static_cast<std::size_t>(sink.row[k])] += sink.value[k];
       }
     }
-    // The diagonal of a row is not local, even where the row is: an interior
-    // facet is assembled from both its cells, and those can belong to two
-    // processes. A constrained row scaled by half its diagonal on one process
-    // and half on another is two different equations, so the scales are summed
-    // across the processes before they are used. Only the constrained rows
-    // need it, and that is what is sent.
+    set_scales_from(std::move(diagonal));
+  }
+
+  // The diagonal of a row is not local, even where the row is: an interior
+  // facet is assembled from both its cells, and those can belong to two
+  // processes. A constrained row scaled by half its diagonal on one process
+  // and half on another is two different equations, so the scales are summed
+  // across the processes before they are used. Only the constrained rows
+  // need it, and that is what is sent.
+  void set_scales_from(std::vector<double> diagonal) const {
     if (reduce_ && !constraints_.empty()) {
       std::vector<std::size_t> which;
       std::vector<double> theirs;
@@ -225,14 +343,53 @@ class Simulation {
     constraints_.set_scales(diagonal);
   }
 
+  // The diagonal alone, which is all a scale is.
+  //
+  // NOT A TripletSink. ensure_scales() below runs whenever a residual or an
+  // action is asked for before any tangent -- which for a matrix-free route is
+  // always, and for mechanics is the ordinary case, a traction being the
+  // essential condition there. A TripletSink probe would form the whole saddle
+  // point to read one number per constrained row, handing back exactly the
+  // memory build(false) exists to save. This keeps the n entries and drops the
+  // n^2.
+  //
+  // Faithful to what measure_scales reads off a tangent, rather than merely
+  // close to it: every entry the terms emit is visited and the ones whose row
+  // and column are the same global unknown are summed, which is that filter
+  // written out. The arithmetic is an assembly's; the storage is not.
+  class DiagonalSink final : public exokal::forms::Sink {
+   public:
+    explicit DiagonalSink(std::size_t n) : diagonal(n, 0.0) {}
+    std::vector<double> diagonal;
+
+    void scatter(const exokal::forms::Stencil& st,
+                 const exokal::ad::LocalSystem& sys) override {
+      const auto& dofs = st.view.dofs;
+      const exokal::ad::LocalSpace& sp = sys.space();
+      for (std::size_t bi = 0; bi < sp.n_blocks(); ++bi) {
+        for (std::size_t bj = 0; bj < sp.n_blocks(); ++bj) {
+          if (!sys.has_block(bi, bj)) continue;
+          const exokal::numerics::Dense& blk = sys.block(bi, bj);
+          for (std::size_t i = 0; i < blk.rows(); ++i) {
+            const auto r = dofs[sp.begin(bi) + i];
+            for (std::size_t j = 0; j < blk.cols(); ++j) {
+              if (dofs[sp.begin(bj) + j] != r) continue;
+              diagonal[static_cast<std::size_t>(r)] += blk(i, j);
+            }
+          }
+        }
+      }
+    }
+  };
+
   // A residual or a tangent-action asked for before any tangent has nothing to
-  // read the scale from, so it assembles one. A consumer that assembles the
-  // tangent first never reaches this.
+  // read the scale from, so it assembles one -- the diagonal of one, which is
+  // the only part a scale is made of.
   void ensure_scales() const {
     if (constraints_.scaled()) return;
-    exokal::forms::TripletSink probe(state_.size());
+    DiagonalSink probe(state_.size());
     model_.assemble(epoch_, state_, probe, ws_, colors());
-    measure_scales(probe);
+    set_scales_from(std::move(probe.diagonal));
   }
 
   // Substitution on the assembled triplets: drop what the terms wrote on a
@@ -274,6 +431,7 @@ class Simulation {
   Constraints constraints_;
   std::vector<double> state_;
   mutable Workspace ws_;
+  mutable std::vector<double> projected_;  // P v, kept so apply_symmetric allocates once
   // the partition, as this layer needs it: which sites to assemble, which
   // constrained rows to write, and how to sum a vector across the processes
   std::vector<char> owned_cells_, owned_facets_, owned_dofs_;

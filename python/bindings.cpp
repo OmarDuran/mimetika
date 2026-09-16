@@ -1019,6 +1019,148 @@ mimetika::solver::SolveReport solve_cauchy_mechanics_hybrid(mimetika::CauchyMech
   return out;
 }
 
+// The matrix-free mechanics solve: the stress twin of solve_flow_matrix_free.
+//
+// SAME CONSTRUCTION, COMPOSITE SECOND BLOCK. Pazner, Kolev & Vassilevski build
+// diag(diag(M), S~) with S~ = D diag(M)^-1 D^T for a two-field H(div) saddle
+// point. Weak symmetry carries three fields -- the space holds no symmetry
+// constraint, so a rotation multiplier gamma pairs sigma against the rigid
+// rotations -- and it is that same saddle point all the same, with
+//
+//     B = [ D ]   the momentum balance over the divergence,
+//         [ A ]   the symmetry over the asymmetry,
+//
+// an empty (2, 2) block, and S~ = B diag(M)^-1 B^T. Their propositions assume
+// only that the (1, 1) block is SPD and say nothing about B, and the spectral
+// equivalence of S~ to the exact Schur complement follows from M being
+// equivalent to its own diagonal for ANY B, by antitonicity of the inverse. So
+// nothing is extended here; the second block is merely wider.
+//
+// THE PRESSURE EQUATION'S COUNTERPART IS EVERY NON-STRESS ROW. The terms write
+// -D^T and -A^T in the stress row against +D and +A in the others, so negating
+// the momentum and symmetry rows is what makes the operator symmetric --
+// measured to round-off in tests/solver/test_matrix_free_mechanics.cpp. As in
+// flow, the pinned COLUMNS have to go too, and here that is the ordinary case
+// rather than the exception: a traction is the essential condition of this
+// form, so a loaded boundary pins rows where a flow problem's pressure datum
+// would not.
+//
+// ONE CYCLE STILL SUFFICES, THOUGH THE PROPOSITION SAYING SO DOES NOT HOLD.
+// Their S~ is an M-matrix; this one is not, because u and gamma are cell
+// vectors and S~ is therefore a system rather than a scalar equation. What that
+// proposition really licenses is the assumption that the near-null space is the
+// constants, and S~ has no near-kernel at all: A diag(M)^-1 A^T is a mass-like
+// zeroth-order block, and the smallest eigenvalue of S~ grows under refinement
+// rather than shrinking. Measured, CG on S~ to 1e-8 over a sixty-fourfold
+// growth in the cells: 4, 5, 6, 8, 8 with BoomerAMG's defaults.
+mimetika::solver::SolveReport solve_cauchy_mechanics_matrix_free(
+    mimetika::CauchyMechanicsModel& m, bool progress,
+    const mimetika::solver::SolverOptions& opts) {
+  using Formulation = mimetika::CauchyMechanicsModel::Formulation;
+  Stage stage(progress);
+  mimetika::solver::PetscSession::instance();
+  if (m.formulation() != Formulation::weak_symmetry) {
+    throw std::runtime_error(
+        "solve_matrix_free: this route is the weak-symmetry three-field form. The strongly "
+        "symmetric family carries its symmetry in the space and its stress Hodge sits much "
+        "further from its own diagonal -- cond(M/diag M) of 23 on cubes and 53 on tetrahedra "
+        "against 9 here -- and the block preconditioner is bounded by exactly that constant, so "
+        "it is not admitted until a better (1, 1) approximation than diag(M) is chosen for it. "
+        "The deviatoric forms are likewise not covered yet. Use solve().");
+  }
+  stage.begin("assembling");
+  const auto t_build = std::chrono::steady_clock::now();
+  // NO TANGENT, and with it no scales probe: ensure_scales reads a diagonal
+  // through Simulation's DiagonalSink rather than forming a saddle point to
+  // look at n numbers, which matters here because the constraints are rarely
+  // empty in mechanics.
+  m.build(false);
+  const double assembly_seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count();
+  stage.end();
+
+  const std::size_t n = m.simulation().n_dofs();
+  std::vector<Index> stress, rest;
+  for (const auto& blk : mimetika::solver::field_blocks(m.simulation().epoch())) {
+    auto& into = blk.name.rfind("s", 0) == 0 ? stress : rest;
+    for (const Index i : blk.indices()) into.push_back(i);
+  }
+  if (stress.empty() || rest.empty()) {
+    throw std::runtime_error("solve_matrix_free: the space carries no stress block");
+  }
+  if (!m.simulation().pins_only()) {
+    throw std::runtime_error(
+        "solve_matrix_free: the model imposes a condition spanning several unknowns -- in "
+        "mechanics that is free slip on a facet whose normal is not an axis, whose tangential "
+        "traction is a form over several traction components. MINRES needs a symmetric operator, "
+        "and a strongly imposed condition is symmetric only once its column is eliminated as "
+        "well as its row; a form over several unknowns has no single column to eliminate. Use "
+        "solve(), which does not assume symmetry.");
+  }
+
+  const std::vector<int> in_stress = mimetika::solver::slot_of(n, stress);
+  mimetika::solver::SchurSink sink(in_stress, mimetika::solver::slot_of(n, rest), stress.size(),
+                                   m.simulation().constraints().mask());
+  m.simulation().assemble_into(sink);
+  const mimetika::solver::SparseSystem S = mimetika::solver::schur_of(sink, rest.size());
+
+  std::vector<double> sign(n, 1.0);
+  for (const Index i : rest) sign[static_cast<std::size_t>(i)] = -1.0;
+  std::vector<double> b = m.rhs();
+  m.simulation().fold_pinned_columns(b);
+  for (std::size_t i = 0; i < n; ++i) b[i] *= sign[i];
+
+  const bool single_cycle = opts.riesz_block_its <= 0;
+  mimetika::solver::SolverOptions inner;
+  inner.method = single_cycle ? "preonly" : "cg";
+  inner.preconditioner = "hypre";
+  inner.rtol = single_cycle ? 0.0 : opts.riesz_block_rtol;
+  inner.max_iterations = single_cycle ? 1 : opts.riesz_block_its;
+  inner.condense = false;
+  mimetika::solver::PetscSolver schur(inner);
+
+  std::vector<double> t, vr, yr;
+  auto apply_a = [&](const std::vector<double>& v, std::vector<double>& y) {
+    m.simulation().apply_symmetric(v, t);
+    y.resize(t.size());
+    for (std::size_t i = 0; i < t.size(); ++i) y[i] = sign[i] * t[i];
+  };
+  auto apply_b = [&](const std::vector<double>& v, std::vector<double>& y) {
+    y.assign(v.size(), 0.0);
+    for (std::size_t i = 0; i < v.size(); ++i) {
+      if (in_stress[i] >= 0) y[i] = v[i] / sink.mass[static_cast<std::size_t>(in_stress[i])];
+    }
+    vr.assign(rest.size(), 0.0);
+    for (std::size_t i = 0; i < rest.size(); ++i) vr[i] = v[static_cast<std::size_t>(rest[i])];
+    yr.assign(rest.size(), 0.0);
+    schur.solve(S, vr, yr);
+    for (std::size_t i = 0; i < rest.size(); ++i) y[static_cast<std::size_t>(rest[i])] = yr[i];
+  };
+
+  mimetika::solver::MinresOptions mo;
+  mo.rtol = opts.rtol;
+  mo.max_iterations = opts.max_iterations;
+  std::vector<double> x;
+  stage.begin("solving");
+  const auto t0 = std::chrono::steady_clock::now();
+  const mimetika::solver::MinresReport r = mimetika::solver::minres(apply_a, apply_b, b, x, mo);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  stage.end();
+  if (!r.converged) throw std::runtime_error("cauchy elasticity (matrix-free): " + r.reason);
+  m.accept(std::move(x));
+
+  mimetika::solver::SolveReport out;
+  out.converged = r.converged;
+  out.iterations = r.iterations;
+  out.residual = r.residual;
+  out.reason = r.reason;
+  out.assembly_seconds = assembly_seconds;
+  out.solve_seconds = seconds;
+  out.block_solver = "minres, diag(M) and " + std::string(single_cycle ? "boomeramg" : "cg/boomeramg") + " on S~";
+  return out;
+}
+
 mimetika::solver::SolveReport solve_cauchy_mechanics(mimetika::CauchyMechanicsModel& m, bool progress,
                                                const mimetika::solver::SolverOptions& opts) {
   Stage stage(progress);
@@ -1079,6 +1221,16 @@ mimetika::solver::SolveReport solve_cauchy_mechanics(mimetika::CauchyMechanicsMo
 // [-D, 0]]; it changes the equations and not the unknowns, so the solution and
 // the assembled system are untouched.
 //
+// AND THE PINNED COLUMNS ARE ELIMINATED. The sign flip is not enough where a
+// strong condition is imposed -- a normal flux, which is how a sealed face is
+// said. Simulation's tangent replaces such a row and leaves its column in
+// place, so the operator is row-eliminated only and the sign-flipped version of
+// it is still asymmetric, by the whole of D on those facets. What
+// apply_symmetric hands back instead carries that column to the right-hand
+// side: the same system, and symmetric. fold_pinned_columns makes the matching
+// correction to the load, once, before the iteration rather than inside it. A
+// form spanning more than one unknown has no such column and is refused below.
+//
 // S~ is inverted by a conjugate gradient under an algebraic multigrid rather
 // than by one V-cycle: it is an M-matrix, so the cycle is what it wants, and
 // the inner tolerance is loose because MINRES needs a preconditioner and not a
@@ -1106,10 +1258,19 @@ mimetika::solver::SolveReport solve_flow_matrix_free(
   if (flux.empty() || pressure.empty()) {
     throw std::runtime_error("solve_matrix_free: the space carries no flux and pressure blocks");
   }
+  if (!m.simulation().pins_only()) {
+    throw std::runtime_error(
+        "solve_matrix_free: the model imposes a condition spanning several unknowns -- in flow "
+        "that is a Robin condition, which couples a facet flux to a cell pressure. MINRES needs "
+        "a symmetric operator, and a strongly imposed condition is symmetric only once its "
+        "column is eliminated as well as its row; a form over several unknowns has no single "
+        "column to eliminate. Use solve(), which does not assume symmetry.");
+  }
 
   const std::size_t n = m.simulation().n_dofs();
   const std::vector<int> in_flux = mimetika::solver::slot_of(n, flux);
-  mimetika::solver::SchurSink sink(in_flux, mimetika::solver::slot_of(n, pressure), flux.size());
+  mimetika::solver::SchurSink sink(in_flux, mimetika::solver::slot_of(n, pressure), flux.size(),
+                                  m.simulation().constraints().mask());
   m.simulation().assemble_into(sink);
   const mimetika::solver::SparseSystem S = mimetika::solver::schur_of(sink, pressure.size());
   const std::vector<double>& mass = sink.mass;
@@ -1117,6 +1278,7 @@ mimetika::solver::SolveReport solve_flow_matrix_free(
   std::vector<double> sign(n, 1.0);
   for (const Index i : pressure) sign[static_cast<std::size_t>(i)] = -1.0;
   std::vector<double> b = m.rhs();
+  m.simulation().fold_pinned_columns(b);
   for (std::size_t i = 0; i < n; ++i) b[i] *= sign[i];
 
   // S~ IS AN M-MATRIX, SO ONE CYCLE IS WHAT IT WANTS. `preonly` applies the
@@ -1141,7 +1303,7 @@ mimetika::solver::SolveReport solve_flow_matrix_free(
 
   std::vector<double> t, vp, yp;
   auto apply_a = [&](const std::vector<double>& v, std::vector<double>& y) {
-    m.simulation().apply(v, t);
+    m.simulation().apply_symmetric(v, t);
     y.resize(t.size());
     for (std::size_t i = 0; i < t.size(); ++i) y[i] = sign[i] * t[i];
   };
@@ -2104,7 +2266,15 @@ PYBIND11_MODULE(_core, m) {
                                }
                                return n;
                              })
-      .def("build", [](mimetika::CauchyMechanicsModel& s) { s.build(); })
+      .def(
+          "build",
+          [](mimetika::CauchyMechanicsModel& s, bool assemble_jacobian) {
+            s.build(assemble_jacobian);
+          },
+          py::arg("assemble_jacobian") = true,
+          "assemble_jacobian=False builds everything a solve needs except the tangent, "
+          "which is what the matrix-free route wants: the saddle point is the largest "
+          "object in the run and system() is then empty")
       .def(
           "assemble",
           [](mimetika::CauchyMechanicsModel& s, bool progress,
@@ -2116,6 +2286,13 @@ PYBIND11_MODULE(_core, m) {
            py::arg("facets"), py::arg("constant"), py::arg("gradient") = std::array<double, 9>{})
       .def("solve_hybrid", &solve_cauchy_mechanics_hybrid, py::arg("progress") = false,
            py::arg("options") = mimetika::solver::SolverOptions{})
+      .def("solve_matrix_free", &solve_cauchy_mechanics_matrix_free,
+           py::arg("progress") = false,
+           py::arg("options") = mimetika::solver::SolverOptions{},
+           "MINRES on the mixed saddle point with no assembled operator: the tangent is "
+           "applied through the term kernels and the preconditioner is diag(diag(M), S~) "
+           "with S~ = B diag(M)^-1 B^T, B stacking the divergence over the asymmetry. "
+           "Weak symmetry only")
       .def("solve", &solve_cauchy_mechanics, py::arg("progress") = false,
            py::arg("options") = mimetika::solver::SolverOptions{})
       .def_property_readonly("dim", &mimetika::CauchyMechanicsModel::dim)
@@ -2336,10 +2513,15 @@ PYBIND11_MODULE(_core, m) {
            py::keep_alive<1, 2>())  // the mesh must outlive the model
       .def(
           "add_normal_flux",
-          [](mimetika::FlowModel& s, const std::vector<Index>& facets) {
-            s.flow().emplace<mimetika::NormalFluxBC>(facets);
+          [](mimetika::FlowModel& s, const std::vector<Index>& facets, double value) {
+            s.flow().emplace<mimetika::NormalFluxBC>(facets, value);
           },
-          py::arg("facets"))
+          py::arg("facets"), py::arg("value") = 0.0,
+          "q . n = value on each facet, against the facet's canonical normal, so the sign of "
+          "that normal never reaches the caller. Zero -- the default -- is a sealed facet. "
+          "STRONG: the normal flux is carried as an unknown, so this replaces the facet's own "
+          "equation rather than loading it, and the row it replaces is one solve_matrix_free "
+          "must eliminate by column as well before MINRES may be applied")
       .def(
           "add_pressure",
           [](mimetika::FlowModel& s, const std::vector<Index>& facets, double value,

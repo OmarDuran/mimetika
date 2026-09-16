@@ -23,9 +23,18 @@ import argparse
 import json
 import math
 import sys
+from pathlib import Path
 
-import mimetika_cxx as mk
-import numpy as np
+# BEFORE mimetika_cxx, AND NOT THROUGH A CONFTEST. This runs as a script under
+# mpirun, so the repository conftest never loads and the editable-install
+# redirect it undoes would stand: see python/tests/_shadowing.py.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from _shadowing import prefer_this_tree  # noqa: E402
+
+prefer_this_tree(Path(__file__).resolve().parents[3])
+
+import mimetika_cxx as mk  # noqa: E402
+import numpy as np  # noqa: E402
 
 A_IN, B_OUT = 1.0, 10.0
 P_IN, P_OUT = 2.0, 1.0

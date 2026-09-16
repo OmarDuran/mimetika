@@ -393,7 +393,13 @@ class CauchyMechanicsModel {
 
   const Distribution& distribution() const { return distribution_; }
 
-  void build() {
+  // `assemble_jacobian = false` builds everything a solve needs EXCEPT the
+  // tangent: the space, the constraints, the operators and the load. The
+  // matrix-free route wants exactly that -- the assembled saddle point is the
+  // largest object in the run, and forming it to read off a diagonal and a
+  // divergence gives back the memory the route exists to save. system() then
+  // has nothing in it and says so. Mirrors FlowModel::build.
+  void build(bool assemble_jacobian = true) {
     const graphos::Complex& c = mesh_->topology();
     // The partition comes first, because the products below are per cell and
     // are the bulk of the work: a process builds its own and no others.
@@ -690,7 +696,7 @@ class CauchyMechanicsModel {
     // the mesh: reading it here reserves nothing at all.
     std::size_t nnz = 0;
     const Index n_cells = mesh_->topology().count(dim_);
-    for (Index e = 0; e < n_cells; ++e) {
+    for (Index e = 0; assemble_jacobian && e < n_cells; ++e) {
       // counted on the compact cell: reading M here would materialize the
       // dense zeros of every diagonal star just to know their size, and a
       // diagonal block emits its diagonal alone
@@ -699,9 +705,13 @@ class CauchyMechanicsModel {
       const std::size_t d = nb + op.Dv.rows() + op.As.rows();
       nnz += op.diag.empty() ? d * d : d * d - nb * (nb - 1);
     }
-    jac.reserve(nnz);
-    sim_->jacobian(jac);
-    system_ = solver::SparseSystem::from(std::move(jac));
+    if (assemble_jacobian) {
+      jac.reserve(nnz);
+      sim_->jacobian(jac);
+      system_ = solver::SparseSystem::from(std::move(jac));
+    } else {
+      system_ = solver::SparseSystem{};
+    }
 
     // The load. Everything the terms contribute that does not depend on the
     // unknowns is a load, and the residual at the zero state is exactly minus

@@ -31,6 +31,14 @@ grow nineteenfold and the count at most doubles.
 
 The contrast is the stronger result and it is asserted as such -- flat to within
 four iterations over sixteen orders of magnitude.
+
+A STRONG CONDITION IS THE OTHER HALF OF THE SYMMETRY. A prescribed pressure is
+natural in the mixed form -- data a term reads -- so the fixtures above pin
+nothing and the sign flip is all the symmetry needs. A normal flux is carried as
+an unknown and is imposed strongly, and Simulation's tangent replaces such a row
+while leaving its column in place: the sign-flipped operator is then asymmetric
+by the whole of D on those facets, which is not a preference but the assumption
+MINRES makes. The route eliminates the column too; test 5 is that it did.
 """
 
 import numpy as np
@@ -129,6 +137,93 @@ def test_matrix_free_does_not_track_the_contrast(name):
         counts.append(_count(patch(mesh, PRODUCTS[name], enclosure(mesh, p))))
         print(f"  {name:16s} K_in = 1e{p:+03d}   {counts[-1]:4d} its")
     assert max(counts) <= min(counts) + 4
+
+
+# ---- 5. a sealed face ------------------------------------------------------
+#
+# Four faces sealed and two given a linear pressure, whose exact solution is
+# p = x with no flow across the sides. The seal is a NormalFluxBC: strong, so it
+# pins a flux moment on every facet it names, and those pinned columns are what
+# the route has to eliminate before MINRES may be applied at all.
+#
+# What the elimination is worth, measured in C++ on this geometry with S~
+# inverted exactly (so the count is the preconditioner's and not the cycle's),
+# derham_rt over cube(3, 4, 6, 8):
+#
+#     eliminated            7   9  13  17
+#     row-eliminated only  23  30  56  71
+#
+# The same answer for three to four times the work. A HOMOGENEOUS pin is the
+# forgiving case: it leaves the iterates in the subspace where the pinned
+# entries vanish, and the row-eliminated operator is symmetric THERE whatever it
+# is elsewhere, so the old route arrived at the right answer slowly rather than
+# at the wrong one. Test 6 is the case that does not forgive.
+#
+# So the answer is what is asserted here; the count is reported.
+def sealed_box(mesh, product, flux=0.0):
+    """The four faces normal to y and z given a normal flux, the two normal to x
+    a linear pressure. The flux is STRONG and the pressure NATURAL, so this is
+    the fixture with pinned rows in it."""
+    model = mk.FlowModel(mesh, 3, 1.0, product)
+    sealed = []
+    for f in mk.boundary_facets(mesh, 3):
+        x = mk.centroid(mesh, 2, f)
+        if 1e-12 < x[0] < 1.0 - 1e-12:
+            sealed.append(f)
+        else:
+            model.add_pressure([f], x[0], [1.0, 0.0, 0.0])
+    assert sealed, "the fixture pinned nothing, so it tests nothing"
+    model.add_normal_flux(sealed, flux)
+    return model, sealed
+
+
+@pytest.mark.parametrize("name", sorted(PRODUCTS))
+def test_a_strong_condition_keeps_the_answer(name):
+    mesh = cube(4)
+    model, sealed = sealed_box(mesh, PRODUCTS[name])
+
+    its = _count(model)
+    worst = max(
+        abs(model.cell_pressure(e) - mk.centroid(mesh, 3, e)[0])
+        for e in range(model.n_cells)
+    )
+    print(f"  {name:16s} {len(sealed):4d} facets sealed {its:4d} its   "
+          f"max|p - x| {worst:.2e}")
+    assert worst < 1e-7
+
+
+# ---- 6. and a datum that is not zero ---------------------------------------
+#
+# THE CASE THAT DOES NOT FORGIVE. A nonzero normal flux puts a nonzero entry in
+# the pinned rows of the load, the iterates leave the subspace where the pinned
+# entries vanish, and the asymmetry of the row-eliminated operator is no longer
+# invisible to the recurrence. Measured in C++ with S~ inverted exactly,
+# derham_rt over cube(3, 4, 6, 8) at q.n = 0.25:
+#
+#     eliminated            12  15  24  31
+#     row-eliminated only  255  --  114 127
+#
+# where -- is 800 iterations without converging, returning an answer wrong by
+# 7.5e-08 against a tolerance of 1e-10 and reporting no failure. There is no
+# closed form here, so the reference is the assembled route, which does not
+# assume symmetry and never needed the elimination.
+@pytest.mark.parametrize("name", sorted(PRODUCTS))
+def test_a_nonzero_strong_datum_agrees_with_the_assembled_route(name):
+    mesh = cube(4)
+    model, _ = sealed_box(mesh, PRODUCTS[name], flux=0.25)
+    its = _count(model)
+    free = [model.cell_pressure(e) for e in range(model.n_cells)]
+
+    reference, _ = sealed_box(mesh, PRODUCTS[name], flux=0.25)
+    report = reference.solve(options=mk.SolverOptions(method="direct"))
+    assert report.converged, report.reason
+    direct = [reference.cell_pressure(e) for e in range(reference.n_cells)]
+
+    scale = max(abs(v) for v in direct)
+    worst = max(abs(a - b) for a, b in zip(free, direct))
+    print(f"  {name:16s} {its:4d} its   max|p_free - p_direct| {worst:.2e} "
+          f"of {scale:.2e}")
+    assert worst < 1e-8 * scale
 
 
 # ---- 4. where it is weakest ------------------------------------------------

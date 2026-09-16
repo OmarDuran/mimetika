@@ -38,6 +38,12 @@
 // contribution into the right-hand side, and in a matrix-free setting that is
 // an extra operator apply per assembly.
 //
+// A method that ASSUMES symmetry cannot take that trade. MINRES on the
+// row-eliminated operator converges to something else and says nothing, so
+// Simulation::apply_symmetric offers the eliminated form to a caller that needs
+// it -- one apply per tangent rather than per assembly, and only where every
+// form is a single pin, which is the only case with one column to move.
+//
 // The row carries the scale of the equation it replaces.
 //
 // The form and any nonzero multiple of it are the same constraint, so the

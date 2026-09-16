@@ -44,6 +44,7 @@ import argparse
 import os
 import sys
 
+import _bootstrap  # noqa: F401  -- BEFORE mimetika_cxx; see python/_shadowing.py
 import mimetika_cxx as mk
 
 import _hypre
@@ -103,11 +104,24 @@ def solvers(rtol):
             method="gmres", preconditioner="riesz", rtol=rtol, max_iterations=2000,
             riesz_block_pc="ads", riesz_block_its=500, riesz_block_rtol=1e-6,
         ),
+        # NO ASSEMBLED OPERATOR AT ALL. The tangent is applied through the term
+        # kernels and the preconditioner is block diagonal: diag(M) on the
+        # stress, and one BoomerAMG cycle on S~ = B diag(M)^-1 B^T with B the
+        # divergence stacked over the asymmetry (Pazner, Kolev & Vassilevski,
+        # SIAM J. Sci. Comput. 46 (2024) B179, carried to mixed elasticity).
+        #
+        # The trade against "ads" is per-iteration cost against iteration
+        # count: the stress block here is a diagonal rather than an auxiliary
+        # space, so a step is cheap and there are many more of them -- around 90
+        # on cubes and 240 on tetrahedra at rtol 1e-10, flat under refinement.
+        # Weak symmetry only, and the tolerance is on the PRECONDITIONED
+        # residual, which is not the same quantity the other rows stop on.
+        "matrix-free": mk.SolverOptions(rtol=rtol, max_iterations=2000),
         "direct": mk.SolverOptions(),
     }
 
 
-SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg") + _hypre.HYPRE_NAMES
+SOLVER_NAMES = ("direct", "riesz", "ads", "ads-cg", "matrix-free") + _hypre.HYPRE_NAMES
 DEFAULT_RTOL = 1e-9
 
 
@@ -451,6 +465,11 @@ def main():
     if args.assemble_only:
         # The two builds alone, reported apart: A and b, then the
         # preconditioner. No Krylov iteration runs.
+        if args.solver == "matrix-free":
+            raise SystemExit(
+                "--assemble-only does not apply to --solver matrix-free: there is no "
+                "assembled operator to report, which is the point of it"
+            )
         if args.solver in _hypre.HYPRE_NAMES:
             report = _hypre.assemble(model, mesh, dim)
         else:
@@ -482,6 +501,9 @@ def main():
                 _hypre.options(args.rtol, block_iterations=args.ads_block_its,
                                block_rtol=1e-2,
                                mgr=args.solver == _hypre.MGR_NAME))
+        elif args.solver == "matrix-free":
+            report = model.solve_matrix_free(
+                progress=True, options=solvers(args.rtol)[args.solver])
         else:
             report = model.solve(progress=True, options=solvers(args.rtol)[args.solver])
     # The two assemblies, always: the Jacobian and the preconditioner are

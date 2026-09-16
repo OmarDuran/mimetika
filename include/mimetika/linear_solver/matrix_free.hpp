@@ -124,9 +124,22 @@ inline SparseSystem approximate_schur(const SparseSystem& A, const std::vector<I
 // assembly's arithmetic and none of its storage.
 class SchurSink final : public exokal::forms::Sink {
  public:
-  SchurSink(std::vector<int> in_flux, std::vector<int> in_pressure, std::size_t n_flux)
+  // `pinned` is the constraint mask over the global numbering, or empty. A
+  // PINNED FLUX IS NOT AN ADJACENCY: the symmetric elimination zeroes that
+  // column of D, so the facet carries no coupling between its two cells and
+  // belongs in neither the operator's Schur complement nor this approximation
+  // of it. Keeping it would precondition a sealed face as though it were open,
+  // which on a mostly sealed domain is a Dirichlet Laplacian standing in for a
+  // Neumann one: measured on a box sealed but for two faces, 12, 15, 24 and 31
+  // outer iterations over a ladder of 3^3 to 8^3 cells against 33, 42, 65 and
+  // 82 with the pinned facets left in. The mass is still collected -- the
+  // pinned block of the operator is diag(s_d) = diag(M_dd), so 1/M_dd inverts
+  // it exactly.
+  SchurSink(std::vector<int> in_flux, std::vector<int> in_pressure, std::size_t n_flux,
+            std::vector<char> pinned = {})
       : in_flux_(std::move(in_flux)),
         in_pressure_(std::move(in_pressure)),
+        pinned_(std::move(pinned)),
         mass(n_flux, 0.0),
         column(n_flux) {}
 
@@ -149,7 +162,7 @@ class SchurSink final : public exokal::forms::Sink {
             const auto c = static_cast<std::size_t>(dofs[sp.begin(bj) + j]);
             if (r == c && in_flux_[r] >= 0) {
               mass[static_cast<std::size_t>(in_flux_[r])] += v;
-            } else if (in_pressure_[r] >= 0 && in_flux_[c] >= 0) {
+            } else if (in_pressure_[r] >= 0 && in_flux_[c] >= 0 && !is_pinned(c)) {
               column[static_cast<std::size_t>(in_flux_[c])].emplace_back(in_pressure_[r], v);
             }
           }
@@ -159,7 +172,10 @@ class SchurSink final : public exokal::forms::Sink {
   }
 
  private:
+  bool is_pinned(std::size_t d) const { return !pinned_.empty() && pinned_[d] != 0; }
+
   std::vector<int> in_flux_, in_pressure_;
+  std::vector<char> pinned_;
 };
 
 // S~ from what the sink kept, identical to approximate_schur's product but with
