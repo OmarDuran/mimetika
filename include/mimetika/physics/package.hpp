@@ -92,6 +92,46 @@ class Package {
   virtual void attach(exokal::forms::Model& model, const exokal::forms::TermContext& ctx) const = 0;
 };
 
+// A package confined to one codimension.
+//
+// MOST PACKAGES ARE CODIMENSION-AGNOSTIC ON PURPOSE. Flow in a fracture is the
+// same two terms one codimension down, so `Flow` declares its fields at
+// whatever codimension it is asked about and exokal evaluates the same terms
+// there; that is the design, and it is why a package may not mention the
+// domain type.
+//
+// Contact is the case that design does not cover. The bulk equations have no
+// counterpart inside the fracture -- there is no stress there, only a traction
+// on its two faces -- so a bulk package asked about codimension one would
+// declare fields that no term ever writes the rows of, and the system would be
+// singular by construction. This says which stratum a package governs.
+//
+// TERMS ARE NOT FILTERED HERE. exokal runs a term only on the strata that host
+// its fields, so withholding the fields already withholds the equations, and
+// the two can never disagree.
+class AtCodim final : public Package {
+ public:
+  AtCodim(int codim, std::unique_ptr<Package> inner) : codim_(codim), inner_(std::move(inner)) {
+    if (inner_ == nullptr) throw std::invalid_argument("AtCodim: null package");
+  }
+
+  std::string name() const override {
+    return inner_->name() + " (codim " + std::to_string(codim_) + ")";
+  }
+
+  Requirements requirements(int dim, int codim = 0) const override {
+    return codim == codim_ ? inner_->requirements(dim, codim) : Requirements{};
+  }
+
+  void attach(exokal::forms::Model& m, const exokal::forms::TermContext& ctx) const override {
+    inner_->attach(m, ctx);
+  }
+
+ private:
+  int codim_{0};
+  std::unique_ptr<Package> inner_;
+};
+
 // Several packages, validated together: it takes packages that know nothing of
 // each other and checks that what one needs another provides, before a single
 // degree of freedom is numbered.
@@ -106,6 +146,17 @@ class Composition {
   template <class P, class... Args>
   Composition& emplace(Args&&... args) {
     return add(std::make_unique<P>(std::forward<Args>(args)...));
+  }
+
+  // Confine every package added so far to one codimension. Written as a
+  // postfix so a composition a catalogue built can be placed on a stratum
+  // without the catalogue knowing there is more than one:
+  //
+  //     Composition c = Catalogue::instance().build("linear_elasticity", o);
+  //     c.only_at(0).emplace<LinearContact>(co);
+  Composition& only_at(int codim) {
+    for (auto& p : packages_) p = std::make_unique<AtCodim>(codim, std::move(p));
+    return *this;
   }
 
   std::size_t size() const { return packages_.size(); }

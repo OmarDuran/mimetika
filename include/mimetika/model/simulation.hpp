@@ -46,11 +46,23 @@ using exokal::forms::Workspace;
 
 // One stratum's contribution to the model: its complex, the dimension of its
 // cells, and where it sits in the hierarchy.
+//
+// A stratum may also CARRY another, immersed in it one codimension down: a
+// fracture in the bulk. The link is stated here as the two chain maps that
+// carry each side's cells into the ambient complex -- exokal's reconstruction
+// hands both back -- and exokal matches them through it. Several facets
+// carrying the same substratum cell is the frontier duplication, and it is what
+// makes a jump across the fracture a sum over its two sides.
 struct StratumSpec {
   std::string name;
   const graphos::Complex* complex{nullptr};
   int cell_dim{0};
   int codim{0};
+
+  int carries{-1};                                   // index in the vector, or none
+  const graphos::ChainMap* facet_carrier{nullptr};   // this stratum's facets -> ambient
+  const graphos::ChainMap* child_carrier{nullptr};   // the substratum's cells -> ambient
+  Index n_ambient_facets{0};                         // the index space the two maps share
 };
 
 class Simulation {
@@ -59,16 +71,19 @@ class Simulation {
   // operators — and is not owned, so it must outlive the simulation. That is
   // the same contract Epoch and Model already keep, kept once here instead
   // of once per consumer.
+  // A CARRIED STRATUM IS BUILT FIRST. The link an Epoch borrows needs the
+  // substratum's space and its place in the global numbering, and neither
+  // exists until that stratum has been added -- which is why exokal leaves the
+  // CarrierMap to be owned outside the Epoch and completed late. So the strata
+  // are added in dependency order rather than in the order they were given.
   Simulation(const physics::Composition& composition, std::vector<StratumSpec> strata,
              const TermContext& ctx)
       : ctx_(&ctx) {
     if (strata.empty()) throw std::invalid_argument("Simulation: no strata");
-    for (const StratumSpec& s : strata) {
-      if (s.complex == nullptr) throw std::invalid_argument("Simulation: null complex");
-      // the composition decides the fields; the stratum decides their names,
-      // through the codimension
-      epoch_.add(s.name, s.codim,
-                 Epoch(*s.complex, composition.space(*s.complex, s.cell_dim, s.codim), s.cell_dim));
+    std::vector<std::size_t> placed(strata.size(), kUnplaced);
+    std::vector<char> visiting(strata.size(), 0);
+    for (std::size_t i = 0; i < strata.size(); ++i) {
+      place(composition, strata, i, placed, visiting);
     }
     model_.use(ctx);
     composition.attach(model_, ctx);
@@ -291,6 +306,49 @@ class Simulation {
     };
   }
 
+  static constexpr std::size_t kUnplaced = static_cast<std::size_t>(-1);
+
+  // One stratum, after whatever it carries.
+  void place(const physics::Composition& composition, const std::vector<StratumSpec>& strata,
+             std::size_t i, std::vector<std::size_t>& placed, std::vector<char>& visiting) {
+    if (placed[i] != kUnplaced) return;
+    const StratumSpec& s = strata[i];
+    if (s.complex == nullptr) throw std::invalid_argument("Simulation: null complex");
+
+    const exokal::forms::CarrierMap* link = nullptr;
+    if (s.carries >= 0) {
+      if (static_cast<std::size_t>(s.carries) >= strata.size()) {
+        throw std::out_of_range("Simulation: a stratum carries one that was not given");
+      }
+      if (visiting[i] != 0) {
+        throw std::invalid_argument("Simulation: the strata carry one another in a cycle");
+      }
+      visiting[i] = 1;
+      place(composition, strata, static_cast<std::size_t>(s.carries), placed, visiting);
+      visiting[i] = 0;
+      if (s.facet_carrier == nullptr || s.child_carrier == nullptr) {
+        throw std::invalid_argument(
+            "Simulation: a carried stratum needs both carrier maps -- this stratum's facets and "
+            "the substratum's cells, each into the ambient complex they are matched through");
+      }
+      const StratumSpec& child = strata[static_cast<std::size_t>(s.carries)];
+      const std::size_t c = placed[static_cast<std::size_t>(s.carries)];
+      auto map = std::make_unique<exokal::forms::CarrierMap>(exokal::forms::carrier_map(
+          *s.facet_carrier, s.cell_dim - 1, *s.child_carrier, child.cell_dim,
+          s.complex->count(s.cell_dim - 1), child.complex->count(child.cell_dim),
+          s.n_ambient_facets, epoch_.stratum(c).space()));
+      // the substratum has its place in the global numbering by now
+      map->dof_offset = epoch_.offset(c);
+      link = map.get();
+      carriers_.push_back(std::move(map));
+    }
+    // the composition decides the fields; the stratum decides their names,
+    // through the codimension
+    placed[i] = epoch_.add(
+        s.name, s.codim,
+        Epoch(*s.complex, composition.space(*s.complex, s.cell_dim, s.codim), s.cell_dim, link));
+  }
+
   bool writes_constraint(std::size_t dof) const {
     return owned_dofs_.empty() || owned_dofs_[dof] != 0;
   }
@@ -432,6 +490,9 @@ class Simulation {
   std::vector<double> state_;
   mutable Workspace ws_;
   mutable std::vector<double> projected_;  // P v, kept so apply_symmetric allocates once
+  // the links the carried strata are reached through: borrowed by Epoch, so
+  // they are owned here and their addresses must not move
+  std::vector<std::unique_ptr<exokal::forms::CarrierMap>> carriers_;
   // the partition, as this layer needs it: which sites to assemble, which
   // constrained rows to write, and how to sum a vector across the processes
   std::vector<char> owned_cells_, owned_facets_, owned_dofs_;
