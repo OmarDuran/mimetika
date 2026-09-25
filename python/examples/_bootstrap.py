@@ -6,7 +6,7 @@ installed from, and a meta-path finder outranks ``sys.path`` entirely -- so an
 example run from a git worktree silently exercises the other checkout, and a
 route added here reads as missing. ``python/_shadowing.py`` says what that costs.
 
-A no-op in the checkout the install points at, which is the ordinary case.
+What is imported is then this tree's own CMake build: `cmake --build build` refreshes it.
 """
 
 import sys

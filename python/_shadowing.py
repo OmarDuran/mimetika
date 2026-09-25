@@ -18,8 +18,10 @@ Dropping the finder is the whole of it. What the install's ``.pth`` adds to
 ``sys.path`` is appended during site initialization and therefore sits behind
 the conftest's inserts already; only the meta-path redirect jumps the queue.
 
-Nothing here fires in the checkout the install points at, where the redirect and
-the tree agree. It is the other trees that need saying.
+This fires in EVERY checkout, the installed-from one included: the extension is
+redirected to site-packages whichever tree the source redirect names. What a run
+imports is then the tree's own CMake build, which is where python/CMakeLists.txt
+writes it and what `cmake --build` refreshes.
 """
 
 from __future__ import annotations
@@ -48,9 +50,22 @@ def prefer_this_tree(root) -> list[str]:
     redirected: dict[str, str] = {}
     kept = []
     for finder in sys.meta_path:
+        # BOTH maps, not just the source one. The source map sends the package
+        # to the checkout it was installed from; the wheel map sends the
+        # EXTENSION to a copy under site-packages, relative to the finder's own
+        # directory -- outside every source tree, the installed-from one
+        # included. Reading only the first kept the finder in that checkout and
+        # loaded whatever `pip install -e` last built, however many times
+        # `cmake --build` had run since.
         sources = getattr(finder, "known_source_files", None)
-        if isinstance(sources, dict) and any(outside(p) for p in sources.values()):
-            redirected.update(sources)
+        wheel = getattr(finder, "known_wheel_files", None)
+        base = getattr(finder, "dir", None)
+        targets = list(sources.values()) if isinstance(sources, dict) else []
+        if isinstance(wheel, dict) and base:
+            targets += [os.path.join(base, rel) for rel in wheel.values()]
+        if targets and any(outside(t) for t in targets):
+            redirected.update(sources if isinstance(sources, dict) else {})
+            redirected.update(wheel if isinstance(wheel, dict) else {})
         else:
             kept.append(finder)
     if not redirected:

@@ -40,6 +40,8 @@
 #include "mimetika/model/partition.hpp"
 #include "mimetika/linear_solver/bdm_complex.hpp"
 #include "mimetika/linear_solver/fields.hpp"
+#include "mimetika/linear_solver/block_triangular.hpp"
+#include "mimetika/linear_solver/cell_schwarz.hpp"
 #include "mimetika/linear_solver/matrix_free.hpp"
 #include "mimetika/linear_solver/minres.hpp"
 #include "mimetika/linear_solver/petsc.hpp"
@@ -1092,10 +1094,85 @@ mimetika::solver::SolveReport solve_cauchy_mechanics_matrix_free(
     throw std::runtime_error(
         "solve_matrix_free: the model imposes a condition spanning several unknowns -- in "
         "mechanics that is free slip on a facet whose normal is not an axis, whose tangential "
-        "traction is a form over several traction components. MINRES needs a symmetric operator, "
-        "and a strongly imposed condition is symmetric only once its column is eliminated as "
-        "well as its row; a form over several unknowns has no single column to eliminate. Use "
-        "solve(), which does not assume symmetry.");
+        "traction is a form over several traction components. This route eliminates a strongly "
+        "imposed condition's column as well as its row, which keeps the operator symmetric and "
+        "its off-diagonal block the transpose of B; a form over several unknowns has no single "
+        "column to eliminate. Use solve(), which assumes neither.");
+  }
+  // the preconditioners below take the constraints to live on the stress
+  for (const Index i : rest) {
+    if (m.simulation().constraints().pinned(static_cast<std::size_t>(i))) {
+      throw std::runtime_error(
+          "solve_matrix_free: a cell unknown is strongly constrained; both preconditioners take "
+          "the constraints to live on the stress block alone. Use solve().");
+    }
+  }
+
+  // THE DEFAULT IS BLOCK-TRIANGULAR GMRES; method="minres" keeps the diagonal
+  // form below. Cell additive Schwarz in the (1, 1) block at tau = 2, S~ built
+  // from the same blocks under one BoomerAMG cycle, B held sparse, restart 50 --
+  // the reasons and the measurements are in block_triangular.hpp and
+  // cell_schwarz.hpp. On a simplex box of 3072 cells it takes 81 iterations
+  // where the diagonal form takes 242, and on stretched tetrahedra it converges
+  // where the diagonal form does not.
+  if (opts.method != "minres") {
+    using clock = std::chrono::steady_clock;
+    const auto& space = m.simulation().epoch().stratum(0).space();
+    const std::vector<int> stress_slot = mimetika::solver::slot_of(n, stress);
+    const std::vector<int> rest_slot = mimetika::solver::slot_of(n, rest);
+
+    stage.begin("preconditioner");
+    const auto t_pc = clock::now();
+    const mimetika::solver::CellStressLayout layout = mimetika::solver::CellStressLayout::build(
+        m.mesh().topology(), m.dim(), space, "s_0", stress_slot, rest_slot);
+    mimetika::solver::CellSchwarzSink blocks(layout, stress_slot, rest_slot,
+                                             m.simulation().constraints().mask());
+    m.simulation().assemble_into(blocks);
+    const mimetika::solver::CellSchwarz m11 =
+        mimetika::solver::CellSchwarz::from(layout, std::move(blocks.blocks));
+    const mimetika::solver::SparseColumns bcols =
+        mimetika::solver::SparseColumns::from(std::move(blocks.column));
+    mimetika::solver::Csr schur = mimetika::solver::schwarz_schur(layout, m11, bcols, rest.size());
+    const double pc_seconds = std::chrono::duration<double>(clock::now() - t_pc).count();
+    stage.end();
+
+    std::vector<double> sign(n, 1.0);
+    for (const Index i : rest) sign[static_cast<std::size_t>(i)] = -1.0;
+    std::vector<double> b = m.rhs();
+    m.simulation().fold_pinned_columns(b);
+    for (std::size_t i = 0; i < n; ++i) b[i] *= sign[i];
+
+    mimetika::solver::BlockTriangularOptions bt;
+    bt.tau = 2.0;
+    bt.restart = 50;
+    bt.rtol = opts.rtol;
+    bt.atol = opts.atol;
+    bt.max_iterations = opts.max_iterations;
+    std::vector<double> t;
+    auto apply_k = [&](const std::vector<double>& v, std::vector<double>& y) {
+      m.simulation().apply_symmetric(v, t);
+      y.resize(t.size());
+      for (std::size_t i = 0; i < t.size(); ++i) y[i] = sign[i] * t[i];
+    };
+
+    stage.begin("solving");
+    std::vector<double> x;
+    const mimetika::solver::BlockTriangularReport r = mimetika::solver::block_triangular_gmres(
+        apply_k, stress, rest, m11, bcols, schur, b, x, bt);
+    stage.end();
+    if (!r.converged) throw std::runtime_error("cauchy elasticity (matrix-free): " + r.reason);
+    m.accept(std::move(x));
+
+    mimetika::solver::SolveReport out;
+    out.converged = r.converged;
+    out.iterations = r.iterations;
+    out.residual = r.residual;
+    out.reason = r.reason;
+    out.assembly_seconds = assembly_seconds;
+    out.preconditioner_seconds = pc_seconds + r.setup_seconds;
+    out.solve_seconds = r.solve_seconds;
+    out.block_solver = "gmres(50), block triangular: 2 x cell Schwarz, boomeramg on S~ = B Mt^-1 B^T";
+    return out;
   }
 
   const std::vector<int> in_stress = mimetika::solver::slot_of(n, stress);
@@ -2289,10 +2366,11 @@ PYBIND11_MODULE(_core, m) {
       .def("solve_matrix_free", &solve_cauchy_mechanics_matrix_free,
            py::arg("progress") = false,
            py::arg("options") = mimetika::solver::SolverOptions{},
-           "MINRES on the mixed saddle point with no assembled operator: the tangent is "
-           "applied through the term kernels and the preconditioner is diag(diag(M), S~) "
-           "with S~ = B diag(M)^-1 B^T, B stacking the divergence over the asymmetry. "
-           "Weak symmetry only")
+           "The mixed saddle point with no assembled operator: the tangent is applied through "
+           "the term kernels. By default right-preconditioned GMRES(50) under a block "
+           "upper-triangular preconditioner -- 2 x cell additive Schwarz on the stress, one "
+           "BoomerAMG cycle on S~ = B Mt^-1 B^T, B held sparse. options.method='minres' selects "
+           "the block-diagonal MINRES with diag(M) instead. Weak symmetry only")
       .def("solve", &solve_cauchy_mechanics, py::arg("progress") = false,
            py::arg("options") = mimetika::solver::SolverOptions{})
       .def_property_readonly("dim", &mimetika::CauchyMechanicsModel::dim)

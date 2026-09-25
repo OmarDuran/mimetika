@@ -105,17 +105,19 @@ def solvers(rtol):
             riesz_block_pc="ads", riesz_block_its=500, riesz_block_rtol=1e-6,
         ),
         # NO ASSEMBLED OPERATOR AT ALL. The tangent is applied through the term
-        # kernels and the preconditioner is block diagonal: diag(M) on the
-        # stress, and one BoomerAMG cycle on S~ = B diag(M)^-1 B^T with B the
-        # divergence stacked over the asymmetry (Pazner, Kolev & Vassilevski,
-        # SIAM J. Sci. Comput. 46 (2024) B179, carried to mixed elasticity).
+        # kernels, under right-preconditioned GMRES(50) with a block
+        # upper-triangular preconditioner: cell additive Schwarz on the stress,
+        # scaled by 2, and one BoomerAMG cycle on S~ = B Mt^-1 B^T, B the
+        # divergence stacked over the asymmetry and held sparse (after Pazner,
+        # Kolev & Vassilevski, SIAM J. Sci. Comput. 46 (2024) B179).
         #
-        # The trade against "ads" is per-iteration cost against iteration
-        # count: the stress block here is a diagonal rather than an auxiliary
-        # space, so a step is cheap and there are many more of them -- around 90
-        # on cubes and 240 on tetrahedra at rtol 1e-10, flat under refinement.
-        # Weak symmetry only, and the tolerance is on the PRECONDITIONED
-        # residual, which is not the same quantity the other rows stop on.
+        # Measured at rtol 1e-10: 81 iterations on a simplex box of 3072 cells
+        # and 264 on stretched tetrahedra, flat under refinement, where the
+        # block-diagonal MINRES with diag(M) took 242 and failed to converge.
+        # Right preconditioning makes the stopping test the unpreconditioned
+        # residual; the rows above stop on whatever their own preconditioning
+        # side makes of it, so equal rtol is not equal accuracy across rows --
+        # compare the error table. Weak symmetry only.
         "matrix-free": mk.SolverOptions(rtol=rtol, max_iterations=2000),
         "direct": mk.SolverOptions(),
     }

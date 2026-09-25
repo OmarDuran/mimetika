@@ -2,11 +2,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "../mimetika_test.hpp"
+#include "mimetika/linear_solver/block_triangular.hpp"
+#include "mimetika/linear_solver/cell_schwarz.hpp"
 #include "mimetika/linear_solver/fields.hpp"
 #include "mimetika/linear_solver/matrix_free.hpp"
 #include "mimetika/linear_solver/minres.hpp"
@@ -309,6 +312,177 @@ MIMETIKA_TEST(the_scale_does_not_depend_on_which_path_measured_it) {
     CHECK(scale > 0.0);
     CHECK(worst <= 1e-14 * scale);
     CHECK(load <= 1e-14 * load_scale);
+  }
+}
+
+// ==== the block-triangular route ============================================
+//
+// Three things the route rests on, each checked against something it was not
+// built from.
+
+namespace {
+
+struct Split {
+  std::vector<int> stress_slot, rest_slot;
+  mimetika::solver::CellStressLayout layout;
+};
+
+Split split_of(const Problem& p) {
+  const auto& sim = p.model->simulation();
+  const std::size_t n = sim.n_dofs();
+  Split s;
+  s.stress_slot = mimetika::solver::slot_of(n, p.stress);
+  s.rest_slot = mimetika::solver::slot_of(n, p.rest);
+  s.layout = mimetika::solver::CellStressLayout::build(p.mesh->topology(), 3, sim.epoch().stratum(0).space(),
+                                                       "s_0", s.stress_slot, s.rest_slot);
+  return s;
+}
+
+}  // namespace
+
+// ---- 1. a cell block is the principal block of the operator applied --------
+//
+// The sink never sees the assembled matrix: it routes each entry to every cell
+// holding both of its unknowns, two for a pair on one facet and one otherwise.
+// The reference is the tangent as assembled, with pinned columns removed the
+// way apply_symmetric removes them. A traction pins rows, so the reference
+// differs from the raw tangent exactly where the sink must.
+MIMETIKA_TEST(the_cell_blocks_are_the_principal_blocks_of_the_applied_operator) {
+  for (const Family family : {Family::cartesian, Family::simplex}) {
+    const Problem p = build(2, family, Realization::stabilized_bdm, true, true);
+    const auto& sim = p.model->simulation();
+    const Split sp = split_of(p);
+    CHECK(p.pinned > 0);
+
+    mimetika::solver::CellSchwarzSink sink(sp.layout, sp.stress_slot, sp.rest_slot,
+                                           sim.constraints().mask());
+    sim.assemble_into(sink);
+
+    // N11 from the row-eliminated tangent: a pinned column goes, its diagonal stays
+    const SparseSystem& A = p.model->system();
+    std::map<std::pair<int, int>, double> n11;
+    for (std::size_t k = 0; k < A.nnz(); ++k) {
+      const auto r = static_cast<std::size_t>(A.row[k]), c = static_cast<std::size_t>(A.col[k]);
+      const int sr = sp.stress_slot[r], sc = sp.stress_slot[c];
+      if (sr < 0 || sc < 0 || A.value[k] == 0.0) continue;
+      if (r != c && (sim.constraints().pinned(r) || sim.constraints().pinned(c))) continue;
+      n11[{sr, sc}] += A.value[k];
+    }
+    double worst = 0.0, scale = 0.0;
+    for (std::size_t e = 0; e < sp.layout.stress_of_cell.size(); ++e) {
+      const auto& set = sp.layout.stress_of_cell[e];
+      const std::size_t q = set.size();
+      for (std::size_t i = 0; i < q; ++i) {
+        for (std::size_t j = 0; j < q; ++j) {
+          const auto it = n11.find({set[i], set[j]});
+          const double ref = it == n11.end() ? 0.0 : it->second;
+          worst = std::max(worst, std::fabs(sink.blocks[e][i * q + j] - ref));
+          scale = std::max(scale, std::fabs(ref));
+        }
+      }
+    }
+    std::printf("  %-8s cell blocks against the assembled operator: %.2e of %.2e\n",
+                family == Family::cartesian ? "cart" : "simplex", worst, scale);
+    CHECK(scale > 0.0);
+    CHECK(worst <= 1e-12 * scale);
+  }
+}
+
+// ---- 2. the sparse B^T is the operator's own off-diagonal block --------------
+//
+// The preconditioner writes K12 z_r as -B^T z_r from the sink's columns, where
+// K12 is the stress rows of the negated-row operator. The sign is a claim about
+// how the terms write the divergence and the asymmetry, so it is checked
+// against the operator itself on a vector living on the cell unknowns alone.
+MIMETIKA_TEST(the_sparse_transpose_is_the_operators_off_diagonal_block) {
+  for (const Family family : {Family::cartesian, Family::simplex}) {
+    const Problem p = build(2, family, Realization::stabilized_bdm, true, false);
+    const auto& sim = p.model->simulation();
+    const Split sp = split_of(p);
+    const std::size_t n = sim.n_dofs();
+
+    mimetika::solver::CellSchwarzSink sink(sp.layout, sp.stress_slot, sp.rest_slot,
+                                           sim.constraints().mask());
+    sim.assemble_into(sink);
+    const mimetika::solver::SparseColumns bcols =
+        mimetika::solver::SparseColumns::from(std::move(sink.column));
+
+    std::vector<double> z(n, 0.0), zr(p.rest.size(), 0.0), kz;
+    for (std::size_t k = 0; k < p.rest.size(); ++k) {
+      zr[k] = std::sin(1.0 + 0.37 * static_cast<double>(k));
+      z[static_cast<std::size_t>(p.rest[k])] = zr[k];
+    }
+    sim.apply_symmetric(z, kz);
+    std::vector<double> sparse(p.stress.size(), 0.0);
+    bcols.subtract_transpose(zr.data(), sparse.data());  // -B^T z_r
+    double worst = 0.0, scale = 0.0;
+    for (std::size_t k = 0; k < p.stress.size(); ++k) {
+      const double ref = p.sign[static_cast<std::size_t>(p.stress[k])] * kz[static_cast<std::size_t>(p.stress[k])];
+      worst = std::max(worst, std::fabs(sparse[k] - ref));
+      scale = std::max(scale, std::fabs(ref));
+    }
+    std::printf("  %-8s -B^T z against K12 z: %.2e of %.2e\n",
+                family == Family::cartesian ? "cart" : "simplex", worst, scale);
+    CHECK(scale > 0.0);
+    CHECK(worst <= 1e-12 * scale);
+  }
+}
+
+// ---- 3. the solve --------------------------------------------------------------
+//
+// Against a direct solve of the assembled system, with a traction pinning rows.
+// The count is bounded well below the 242 the diagonal form takes on
+// tetrahedra; measured, 81 at 3072 simplex cells and flat under refinement.
+MIMETIKA_TEST(block_triangular_gmres_matches_the_direct_solve) {
+  for (const Family family : {Family::cartesian, Family::simplex}) {
+    for (const int nb : {2, 3}) {
+      const Problem p = build(nb, family, Realization::stabilized_bdm, true, true);
+      const auto& sim = p.model->simulation();
+      const Split sp = split_of(p);
+      const std::size_t n = sim.n_dofs();
+
+      mimetika::solver::CellSchwarzSink sink(sp.layout, sp.stress_slot, sp.rest_slot,
+                                             sim.constraints().mask());
+      sim.assemble_into(sink);
+      const mimetika::solver::CellSchwarz m11 =
+          mimetika::solver::CellSchwarz::from(sp.layout, std::move(sink.blocks));
+      const mimetika::solver::SparseColumns bcols =
+          mimetika::solver::SparseColumns::from(std::move(sink.column));
+      mimetika::solver::Csr schur = mimetika::solver::schwarz_schur(sp.layout, m11, bcols, p.rest.size());
+
+      std::vector<double> b = p.model->rhs();
+      sim.fold_pinned_columns(b);
+      for (std::size_t i = 0; i < n; ++i) b[i] *= p.sign[i];
+      std::vector<double> t;
+      auto apply_k = [&](const std::vector<double>& v, std::vector<double>& y) {
+        sim.apply_symmetric(v, t);
+        y.resize(t.size());
+        for (std::size_t i = 0; i < t.size(); ++i) y[i] = p.sign[i] * t[i];
+      };
+      mimetika::solver::BlockTriangularOptions o;  // tau 2, restart 50
+      o.rtol = 1e-10;
+      o.max_iterations = 600;
+      std::vector<double> x;
+      const auto rep = mimetika::solver::block_triangular_gmres(apply_k, p.stress, p.rest, m11, bcols,
+                                                                schur, b, x, o);
+
+      mimetika::solver::PetscSolver direct;
+      std::vector<double> x_direct;
+      const auto d = direct.solve(p.model->system(), p.model->rhs(), x_direct);
+      if (!d.converged) throw std::runtime_error("the direct reference failed: " + d.reason);
+      double err = 0.0, scale = 0.0;
+      for (std::size_t i = 0; i < n; ++i) {
+        err = std::max(err, std::fabs(x[i] - x_direct[i]));
+        scale = std::max(scale, std::fabs(x_direct[i]));
+      }
+      std::printf("  %-8s %d^3 n=%5zu pinned %3zu  S~ nnz %7zu  %3d its  true res %.1e  err %.2e\n",
+                  family == Family::cartesian ? "cart" : "simplex", nb, n, p.pinned, schur.nnz(),
+                  rep.iterations, rep.residual, err / scale);
+      CHECK(rep.converged);
+      CHECK(rep.residual <= 1e-9);
+      CHECK(err <= 1e-7 * scale);
+      CHECK(rep.iterations <= 130);
+    }
   }
 }
 
