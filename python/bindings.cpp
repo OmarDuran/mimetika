@@ -49,6 +49,7 @@
 #include "mimetika/model/boundary.hpp"
 #include "mimetika/model/boundary_conditions.hpp"
 #include "mimetika/model/conditioning.hpp"
+#include "mimetika/mesh/fracture.hpp"
 #include "mimetika/model/cauchy_mechanics_model.hpp"
 #include "mimetika/model/compositions/cauchy_mechanics.hpp"
 #include "mimetika/model/compositions/poroelasticity.hpp"
@@ -1767,6 +1768,22 @@ PYBIND11_MODULE(_core, m) {
   // The assembled operator as triplets. For diagnosis on small problems: a
   // preconditioner is a claim about the spectrum of P^{-1}A, and that claim is
   // checkable directly rather than inferred from an iteration count.
+  // Which dofs a strong condition replaced. An inf-sup study has to work on the
+  // FREE dofs: a pinned row is the identity, and left in it contributes a
+  // spurious zero to every spectrum measured -- one that looks exactly like a
+  // failed inf-sup and is only the boundary condition.
+  m.def(
+      "constrained_dofs",
+      [](const mimetika::CauchyMechanicsModel& s) {
+        const auto& c = s.simulation().constraints();
+        std::vector<int> out;
+        for (std::size_t i = 0; i < s.simulation().n_dofs(); ++i) {
+          if (c.pinned(i)) out.push_back(static_cast<int>(i));
+        }
+        return py::array_t<int>(static_cast<py::ssize_t>(out.size()), out.data());
+      },
+      py::arg("model"), "the indices a strong boundary condition or a pin replaced");
+
   m.def(
       "system_triplets",
       [](const mimetika::CauchyMechanicsModel& s) {
@@ -1830,6 +1847,27 @@ PYBIND11_MODULE(_core, m) {
       py::arg("mesh"), py::arg("k"), py::arg("cell"));
 
   m.def("read_vtu", &exokal::read_vtu, py::arg("path"), py::arg("tag_array") = "tag");
+
+  // HOW A FRACTURE IS IDENTIFIED IN A CONFORMAL MESH: by the vertices lying on
+  // it. A facet belongs to the fracture when all of its vertices do, which is
+  // exokal's rule; a facet INDEX would not survive the file, the complex
+  // deriving its facets from the cells.
+  //
+  // The convention is one PointData array per fracture, `f<i>` plus `_nodes`,
+  // `_node_set` or `_node_sets` -- the preprocessor has written all three.
+  // Returns {name: vertex indices}, ordered by i, ready for `model.fracture`.
+  m.def(
+      "fracture_node_sets",
+      [](const std::string& path) {
+        const exokal::VtuFile file = exokal::read_vtu_file(path);
+        const auto fr = mimetika::mesh::fracture_node_sets(file);
+        py::dict out;
+        for (std::size_t i = 0; i < fr.size(); ++i) {
+          out[py::str(fr.names[i])] = py::cast(fr.sets[i]);
+        }
+        return out;
+      },
+      py::arg("path"), "the fracture node sets a .vtu carries, by name");
 
   // The same complex at another scale: points mapped to (x - origin) * factor,
   // topology and orientation untouched. What a scale-dependent construction
@@ -2317,6 +2355,170 @@ PYBIND11_MODULE(_core, m) {
            py::arg("formulation") = StressOperators::Formulation::weak_symmetry,
            py::keep_alive<1, 2>())  // the mesh must outlive the model
       .def_property_readonly("formulation", &mimetika::CauchyMechanicsModel::formulation)
+      // ---- the fracture ----
+      //
+      // A fracture is a NODE SET: the mesh is cut along it at build time, so
+      // the two sides carry separate tractions and the stress may jump. What is
+      // then solved is the mixed contact system, the bulk rows unchanged and
+      // two interface rows added. `fracture_node_sets` reads the sets a .vtu
+      // carries; a list of vertex indices per fracture works just as well.
+      .def("fracture", &mimetika::CauchyMechanicsModel::fracture, py::arg("node_sets"),
+           py::arg("labels") = std::vector<int>{},
+           "cut the mesh along these node sets; call before build(). `labels` names them as "
+           "the caller knows them -- the 5 of an f5_node_set -- and is what every face reports "
+           "and what write_fracture_vtu stores as fracture_id; without it the id is positional, "
+           "so a run on a subset would name the wrong plane")
+      .def("bond", &mimetika::CauchyMechanicsModel::bond,
+           "D_c = 0: the bonded interface, which transmits everything and opens by nothing")
+      .def("linear_contact", &mimetika::CauchyMechanicsModel::linear_contact, py::arg("c_n"),
+           py::arg("c_T"),
+           "D_c = (1/c_n) n(x)n + (1/c_T)(I - n(x)n), the linear law; one member of a family")
+      .def_property_readonly("fractured", &mimetika::CauchyMechanicsModel::fractured)
+      .def_property_readonly("n_fracture_faces",
+                             &mimetika::CauchyMechanicsModel::n_fracture_faces)
+      // The boundary of the DOMAIN. Not the boundary of the cut complex: each
+      // copy of a fracture facet has one cofacet and so looks exactly like a
+      // boundary facet, and a traction imposed on one would overwrite the
+      // contact rows.
+      .def("outer_boundary_facets", &mimetika::CauchyMechanicsModel::outer_boundary_facets)
+      // ---- reading the fracture back ----
+      //
+      // Per fracture face, IN ITS OWN ORTHONORMAL FRAME {n, t1, t2}: which
+      // fracture it lies on, its area and frame, the contact traction, the two
+      // traces of the displacement and their jump. Column 0 of every vector is
+      // the normal component, 1 and 2 the tangential ones.
+      //
+      // Signs are one convention throughout: `traction` is sigma . n, negative
+      // in compression like every other stress here, and `jump` is the
+      // OPENING, negative when the face closes -- so traction . n =
+      // c_n (jump . n) holds in these numbers as printed.
+      .def(
+          "fracture_faces",
+          [](const mimetika::CauchyMechanicsModel& s) {
+            const auto faces = s.fracture_faces();
+            const auto n = static_cast<py::ssize_t>(faces.size());
+            const auto vec = [&](auto pick) {
+              py::array_t<double> a({n, py::ssize_t{3}});
+              for (py::ssize_t i = 0; i < n; ++i) {
+                const auto& v = pick(faces[static_cast<std::size_t>(i)]);
+                for (py::ssize_t k = 0; k < 3; ++k) a.mutable_data()[i * 3 + k] = v[k];
+              }
+              return a;
+            };
+            py::array_t<int> id(n);
+            py::array_t<double> area(n);
+            for (py::ssize_t i = 0; i < n; ++i) {
+              id.mutable_data()[i] = faces[static_cast<std::size_t>(i)].fracture;
+              area.mutable_data()[i] = faces[static_cast<std::size_t>(i)].area;
+            }
+            py::dict out;
+            out["id"] = id;
+            out["area"] = area;
+            out["normal"] = vec([](const auto& f) { return f.normal; });
+            out["tangent1"] = vec([](const auto& f) { return f.tangent1; });
+            out["tangent2"] = vec([](const auto& f) { return f.tangent2; });
+            out["traction"] = vec([](const auto& f) { return f.traction; });
+            out["u_plus"] = vec([](const auto& f) { return f.plus; });
+            out["u_minus"] = vec([](const auto& f) { return f.minus; });
+            out["jump"] = vec([](const auto& f) { return f.jump; });
+            return out;
+          },
+          "per fracture face, in its own frame {n, t1, t2}")
+      // The same thing as a file: the fracture stratum written as its own
+      // (d-1)-dimensional mesh -- the fracture planes and nothing else -- with
+      // every reading above on it as cell data. What ParaView opens to see the
+      // fracture rather than the domain around it.
+      .def(
+          "write_fracture_vtu",
+          [](const mimetika::CauchyMechanicsModel& s, const std::string& path) {
+            const auto faces = s.fracture_faces();
+            std::vector<int> id;
+            id.reserve(faces.size());
+            for (const auto& f : faces) id.push_back(f.fracture);
+
+            std::vector<exokal::CellField> fields;
+            const auto scalar = [&](const std::string& name, auto pick) {
+              exokal::CellField cf;
+              cf.name = name;
+              cf.components = 1;
+              cf.values.reserve(faces.size());
+              for (const auto& f : faces) cf.values.push_back(pick(f));
+              fields.push_back(std::move(cf));
+            };
+            const auto vector3 = [&](const char* name, auto pick) {
+              exokal::CellField cf;
+              cf.name = name;
+              cf.components = 3;
+              cf.values.reserve(faces.size() * 3);
+              for (const auto& f : faces) {
+                const auto v = pick(f);
+                cf.values.insert(cf.values.end(), {v[0], v[1], v[2]});
+              }
+              fields.push_back(std::move(cf));
+            };
+
+            // THE ORTHOGONAL SPLIT, and nothing else. On a face with frame
+            // {n, t1, t2} every vector quantity here -- the contact traction,
+            // either trace, the jump -- decomposes as
+            //
+            //     v = (v.n) n + P_T v ,     P_T = I - n (x) n
+            //
+            // and the two parts are objects of different kinds:
+            //
+            //   <q>_n   v.n, a SCALAR
+            //   <q>_t   P_T v in the face's own basis, a (d-1)-VECTOR:
+            //           (v.t1, v.t2) in space, (v.t1) in the plane
+            //
+            // This is not one presentation among several. It is the basis the
+            // contact law is DIAGONAL in: D_c = (1/c_n) n(x)n + (1/c_T) P_T
+            // acts as the scalar 1/c_n on the first part and as (1/c_T) times
+            // the identity on the second, so these are exactly the numbers
+            // c_n and c_T act on and exactly the ones to plot apart.
+            //
+            // The tangential part is written as its TWO components and not as
+            // a magnitude, because a magnitude discards the direction of slip,
+            // which is what a frictional law is about; ParaView forms the
+            // magnitude from the components on its own. Nor is it pushed back
+            // into ambient axes -- three numbers for a two-dimensional object,
+            // and the frame below already embeds it.
+            // The tangential pair goes out as its (d-1) COMPONENTS, one named
+            // array each -- `_t1` and `_t2` in space, `_t1` alone in the plane.
+            // Two components in ONE array would say it more directly, and is
+            // legal .vtu, but exokal's writer admits only 1, 3 or 9 per field,
+            // which is VTK's rule for the arrays bound to the active scalar,
+            // vector and tensor slots rather than a limit on a DataArray. Two
+            // scalars carry the same two numbers with no padding and no
+            // re-embedding, and a Calculator rebuilds the vector from them and
+            // the frame -- t1 * <q>_t1 + t2 * <q>_t2 -- where glyphs are wanted.
+            const auto dim = s.dim();
+            const auto split = [&](const std::string& name, auto pick) {
+              scalar(name + "_n", [&](const auto& f) { return pick(f)[0]; });
+              for (int a = 1; a < dim; ++a) {
+                scalar(name + "_t" + std::to_string(a), [&, a](const auto& f) {
+                  return pick(f)[static_cast<std::size_t>(a)];
+                });
+              }
+            };
+            split("traction", [](const auto& f) { return f.traction; });
+            split("jump", [](const auto& f) { return f.jump; });
+            split("u_c_plus", [](const auto& f) { return f.plus; });
+            split("u_c_minus", [](const auto& f) { return f.minus; });
+
+            // the frame itself, in ambient axes: what carries a tangential
+            // pair back into space, for a reader who wants glyphs there
+            vector3("normal", [](const auto& f) { return f.normal; });
+            vector3("tangent1", [](const auto& f) { return f.tangent1; });
+            if (dim == 3) vector3("tangent2", [](const auto& f) { return f.tangent2; });
+            scalar("area", [](const auto& f) { return f.area; });
+
+            // The tag array is the MESH's own, and naming it "fracture_id" too
+            // would emit that name twice in one CellData section -- not a valid
+            // .vtu, and ParaView answers by showing nothing at all rather than
+            // by complaining. The label belongs in the arrays.
+            exokal::write_vtu(s.fracture_mesh(), path, "tag", {{"fracture_id", id}},
+                              exokal::VtuFormat::binary, -1, fields);
+          },
+          py::arg("path"), "write the fracture planes and their readings to a .vtu")
       // p = lambda div u, the fourth unknown. It is solved for rather than
       // reconstructed, so it exists only in the four-field formulation and
       // asking for it in three raises rather than returning a guess.

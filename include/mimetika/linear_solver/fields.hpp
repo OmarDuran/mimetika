@@ -101,16 +101,33 @@ inline std::vector<FieldBlock> field_blocks(const exokal::forms::StratifiedEpoch
   return out;
 }
 
-// The unknowns a diagonal star makes eliminable: the first factor, the flux or
-// the stress. Naming them is a permission -- see PetscSolver::set_condensable
-// -- and the matrix decides whether the block really is diagonal, so this asks
-// nothing about which product built it.
+// The unknowns a diagonal star makes eliminable: the flux or the stress, which
+// is the AMBIENT stratum's first factor. Naming them is a permission -- see
+// PetscSolver::set_condensable -- and the matrix decides whether the block
+// really is diagonal, so this asks nothing about which product built it.
+//
+// NOT SIMPLY THE FIRST BLOCK, though on one stratum it is the same thing. A
+// stratified epoch numbers a CARRIED stratum before its carrier, because the
+// carrier borrows its offset, so with a fracture the first block is the
+// fracture's own unknown -- the contact traction, whose diagonal is the
+// compliance and is exactly ZERO on a bonded interface. Eliminating it divides
+// by that zero, and the failure surfaces far from here, inside condense().
 inline std::vector<int> first_field_dofs(const exokal::forms::StratifiedEpoch& e) {
-  const std::vector<FieldBlock> blocks = field_blocks(e);
+  std::string wanted;
+  for (std::size_t s = 0; s < e.n_strata(); ++s) {
+    if (e.entry(s).codim == 0 && e.stratum(s).space().n_fields() > 0) {
+      wanted = e.stratum(s).space().name(0);
+      break;
+    }
+  }
   std::vector<int> out;
-  if (blocks.empty()) return out;
-  out.reserve(blocks[0].size());
-  for (const Index g : blocks[0].indices()) out.push_back(static_cast<int>(g));
+  if (wanted.empty()) return out;
+  for (const FieldBlock& b : field_blocks(e)) {
+    if (b.name != wanted) continue;
+    out.reserve(b.size());
+    for (const Index g : b.indices()) out.push_back(static_cast<int>(g));
+    return out;
+  }
   return out;
 }
 

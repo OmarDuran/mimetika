@@ -203,6 +203,17 @@ struct InterfaceChart {
   std::size_t k{0};
   std::vector<double> gram;         // k*k per fracture cell
   std::vector<double> normal_gram;  // k*k per fracture cell
+
+  // THE FRAME EACH FACE WAS BUILT IN, kept because it is the frame the answer
+  // has to be read back in. n, t1 and t2 per face, 3 doubles each, and the
+  // measure -- the same FacetFrame the Gram was integrated against, so a
+  // traction resolved with it and a compliance built with it cannot disagree
+  // about which direction is normal.
+  std::vector<double> frame;  // 9 per face: n, t1, t2
+  std::vector<double> area;   // 1 per face
+
+  std::size_t faces() const { return area.size(); }
+  const double* frame_at(std::size_t face) const { return frame.data() + face * 9; }
 };
 
 // The two families differ in what a facet's traction moments ARE, so the chart
@@ -248,6 +259,8 @@ inline InterfaceChart interface_chart(const exokal::MixedDimensionalMesh& md,
   const graphos::Index n_faces = fractures[0]->mesh.topology().count(dim - 1);
   chart.gram.assign(static_cast<std::size_t>(n_faces) * stride, 0.0);
   chart.normal_gram.assign(chart.gram.size(), 0.0);
+  chart.frame.assign(static_cast<std::size_t>(n_faces) * 9, 0.0);
+  chart.area.assign(static_cast<std::size_t>(n_faces), 0.0);
 
   for (graphos::Index face = 0; face < n_faces; ++face) {
     // any carrying copy with a cell of its own: the chart is the facet's, and
@@ -266,6 +279,13 @@ inline InterfaceChart interface_chart(const exokal::MixedDimensionalMesh& md,
     }
     const FacetFrame fr = FacetFrame::of(top, dim, cell, facet);
     const exokal::hodge::StressOperators::Cell& c = ops.compact(cell);
+    chart.area[static_cast<std::size_t>(face)] = fr.measure;
+    double* F = chart.frame.data() + static_cast<std::size_t>(face) * 9;
+    for (int k = 0; k < 3; ++k) {
+      F[k] = fr.normal[static_cast<std::size_t>(k)];
+      F[3 + k] = fr.n_tangents > 0 ? fr.tangent[0][static_cast<std::size_t>(k)] : 0.0;
+      F[6 + k] = fr.n_tangents > 1 ? fr.tangent[1][static_cast<std::size_t>(k)] : 0.0;
+    }
     double* G = chart.gram.data() + static_cast<std::size_t>(face) * stride;
     double* N = chart.normal_gram.data() + static_cast<std::size_t>(face) * stride;
 

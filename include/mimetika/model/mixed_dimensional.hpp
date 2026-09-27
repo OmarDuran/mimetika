@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -7,6 +8,7 @@
 
 #include "exokal/preprocess/mixed_dimensional_mesh.hpp"
 #include "graphos/core/coboundary.hpp"
+#include "graphos/core/incidence.hpp"
 #include "mimetika/model/simulation.hpp"
 
 // A mixed-dimensional mesh, said in the terms Simulation takes.
@@ -113,6 +115,82 @@ inline FractureFacets fracture_facets(const exokal::MixedDimensionalMesh& md) {
     (cob.offsets[static_cast<std::size_t>(f) + 1] == b ? out.detached : out.carrying).push_back(f);
   }
   return out;
+}
+
+// EVERY FRACTURE AT ONCE.
+//
+// exokal's node-set path builds one codimension-1 stratum PER fracture, plus
+// their mutual intersections one dimension down. A StratifiedEpoch carries a
+// single substratum -- its CarrierMap names one child space -- so a network of
+// several comes back refused by strata_of. This is the other representation
+// that refusal names: ONE stratum holding them all, as several connected
+// components of one complex.
+//
+// NOT BY MERGING THE NODE SETS. A facet belongs to a fracture when all of its
+// vertices do, and that test applied to a UNION admits facets belonging to no
+// fracture at all: on a tetrahedron with one vertex on one fracture and two on
+// another, the union contains all three. Measured on the 5-fracture DFN meshes,
+// the union induces 592 facets where the fractures have 392, and 104 where they
+// have 48 -- half again as many, and every extra one is a facet that would be
+// cut open for no reason. A hexahedral mesh happens to escape it, which is
+// worse than failing.
+//
+// So each node set induces its own facets, by exokal's rule, and the UNION OF
+// THOSE is the stratum's cells. Exact by construction, and every face still
+// knows which fracture it came from, because that is recorded before the union.
+//
+// WHAT IT DOES NOT DO. The intersections are not strata of their own, so there
+// are no unknowns on the lines where two fractures cross: each face carries its
+// own traction and jump, and a crossing is where several faces meet, not an
+// object with a state. A contact law is face-local, so nothing in the physics
+// asks for more; a formulation that couples along intersection lines would.
+struct InducedFractures {
+  std::vector<std::vector<graphos::Index>> per_fracture;  // facets of each, ascending
+  std::vector<graphos::Index> all;                        // their union, ascending
+};
+
+// The facets each node set induces: every vertex of the facet lies in the set.
+// exokal states this rule once, in fracture_network; this applies it one
+// fracture at a time so the union can be taken afterwards rather than before.
+inline InducedFractures induced_fractures(
+    const exokal::Mesh& mesh, const std::vector<std::vector<graphos::Index>>& node_sets) {
+  const graphos::Complex& c = mesh.topology();
+  const int k = mesh.dim() - 1;
+  const graphos::Adjacency facet_verts = graphos::incidence(c, k, 0);
+  std::vector<char> in_set(static_cast<std::size_t>(c.count(0)), 0);
+
+  InducedFractures out;
+  out.per_fracture.resize(node_sets.size());
+  for (std::size_t f = 0; f < node_sets.size(); ++f) {
+    for (const graphos::Index v : node_sets[f]) in_set[static_cast<std::size_t>(v)] = 1;
+    for (graphos::Index e = 0; e < c.count(k); ++e) {
+      bool all = true;
+      for (auto m = facet_verts.offsets[static_cast<std::size_t>(e)];
+           m < facet_verts.offsets[static_cast<std::size_t>(e) + 1] && all; ++m) {
+        all = in_set[static_cast<std::size_t>(facet_verts.indices[static_cast<std::size_t>(m)])] != 0;
+      }
+      if (all) out.per_fracture[f].push_back(e);
+    }
+    for (const graphos::Index v : node_sets[f]) in_set[static_cast<std::size_t>(v)] = 0;
+    out.all.insert(out.all.end(), out.per_fracture[f].begin(), out.per_fracture[f].end());
+  }
+  std::sort(out.all.begin(), out.all.end());
+  out.all.erase(std::unique(out.all.begin(), out.all.end()), out.all.end());
+  return out;
+}
+
+// That union, as the single codimension-1 stratum of a network. One entity, so
+// exokal's descent finds no second generation and cuts no intersection lines.
+inline exokal::FractureNetwork one_stratum_network(const exokal::Mesh& mesh,
+                                                   const std::vector<graphos::Index>& facets) {
+  const graphos::Complex& c = mesh.topology();
+  const int k = mesh.dim() - 1;
+  graphos::SubcomplexWorkspace ws(c);
+  exokal::FractureNetwork net;
+  net.levels.emplace_back();
+  net.levels[0].push_back(
+      exokal::FractureEntity{k, {0}, exokal::fracture_detail::closed_cells(c, facets, k, ws)});
+  return net;
 }
 
 }  // namespace mimetika

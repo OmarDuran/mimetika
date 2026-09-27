@@ -14,6 +14,7 @@
 #include "mimetika/model/boundary.hpp"
 #include "mimetika/model/boundary_conditions.hpp"
 #include "mimetika/model/compositions/cauchy_mechanics.hpp"
+#include "mimetika/model/cauchy_mechanics_model.hpp"
 #include "mimetika/model/mixed_dimensional.hpp"
 #include "mimetika/model/simulation.hpp"
 #include "mimetika/physics/contact_interface.hpp"
@@ -380,6 +381,188 @@ MIMETIKA_TEST(a_compliant_fracture_closes_by_the_compliance_and_moves_no_stress)
       CHECK(r.displacement < 1e-11);  // and the field around it is still exact
       CHECK(r.s < 1e-10);             // while the stress has not moved at all
       CHECK(r.sigma_lateral < 1e-11);
+    }
+  }
+}
+
+// ---- and the same thing through the driver ---------------------------------
+//
+// Everything above poses the system by hand: operators, composition, chart,
+// strata, offsets, the pinning of what the cut detached. That is what a driver
+// is for, and what a Python caller gets. This runs the identical problem
+// through CauchyMechanicsModel -- one `fracture()` call and a law -- and holds
+// it to the same closed form, so the two paths cannot drift.
+//
+// The offsets are the reason it can drift. With a fracture the ambient stratum
+// no longer starts at zero, because the carried stratum is numbered first, so
+// every readback and every boundary condition is at a shifted address. Nothing
+// else in the model changes.
+namespace {
+
+struct ViaModel {
+  double u{0.0}, stress{0.0}, closure{0.0};
+  std::size_t faces{0}, dofs{0};
+};
+
+ViaModel via_model(int n, Family family, bool strong, double c_n) {
+  exokal::Mesh m = mimetika::mesh::box({n, n, n}, 3, family);
+  std::vector<Index> nodes;
+  for (Index v = 0; v < m.topology().count(0); ++v) {
+    if (std::fabs(m.point(v)[kAxis] - 0.5) < 1e-12) nodes.push_back(v);
+  }
+
+  mimetika::CauchyMechanicsModel model(
+      m, 3, mimetika::ElasticMaterial{kMu, kLam},
+      strong ? mimetika::CauchyMechanicsModel::Realization::stabilized_vem
+             : mimetika::CauchyMechanicsModel::Realization::derham_bdm,
+      strong ? mimetika::CauchyMechanicsModel::Formulation::strong_symmetry
+             : mimetika::CauchyMechanicsModel::Formulation::weak_symmetry);
+  model.fracture({nodes});
+  if (c_n > 0.0) {
+    model.linear_contact(c_n, 7.0);
+  } else {
+    model.bond();
+  }
+
+  // the boundary of the DOMAIN: the model drops the fracture's copies, which
+  // have one cofacet each and would otherwise look like boundary facets
+  std::vector<Index> loaded, confined;
+  for (const Index f : model.outer_boundary_facets()) {
+    const auto x = exokal::centroid(model.mesh(), 2, f);
+    (std::fabs(x[kAxis] - 1.0) < 1e-9 ? loaded : confined).push_back(f);
+  }
+  std::array<double, 9> applied{};
+  applied[kAxis * 3 + kAxis] = -kLoad;
+  model.mechanics().emplace<mimetika::TractionBC>(std::move(loaded), applied);
+  model.mechanics().emplace<mimetika::FreeSlipBC>(std::move(confined));
+
+  model.build();
+  mimetika::solver::PetscSolver petsc;
+  std::vector<double> x;
+  const auto rep = petsc.solve(model.system(), model.rhs(), x);
+  if (!rep.converged) throw std::runtime_error("via_model: " + rep.reason);
+  model.accept(std::move(x));
+
+  const double k_oed = kLam + 2.0 * kMu;
+  const double e_exact = -kLoad / k_oed;
+  const double jump = c_n > 0.0 ? -kLoad / c_n : 0.0;
+  ViaModel out;
+  out.faces = model.n_fracture_faces();
+  out.dofs = model.system().n;
+  for (Index e = 0; e < static_cast<Index>(model.n_cells()); ++e) {
+    const double z = exokal::centroid(model.mesh(), 3, e)[kAxis];
+    const double want = e_exact * z + (z > 0.5 ? jump : 0.0);
+    out.u = std::max(out.u, std::fabs(model.displacement(e, kAxis) - want));
+    if (z > 0.5) {
+      out.closure = std::max(out.closure, std::fabs(model.displacement(e, kAxis) - e_exact * z - jump));
+    }
+    // sigma_zz = -kLoad everywhere: statically determinate, so the interface
+    // transmits it whatever its stiffness. Read through cell_stress, which
+    // serves both families -- the projection for the wrench, the divergence
+    // average otherwise.
+    const auto sig = model.cell_stress(e);
+    out.stress = std::max(out.stress, std::fabs(sig[kAxis * 3 + kAxis] + kLoad));
+  }
+  return out;
+}
+
+}  // namespace
+
+MIMETIKA_TEST(the_driver_poses_the_same_problem_as_the_assembly) {
+  for (const bool strong : {false, true}) {
+    for (const Family family : {Family::cartesian, Family::simplex}) {
+      for (const double c_n : {0.0, 2.0}) {
+        const ViaModel r = via_model(2, family, strong, c_n);
+        std::printf("  %-6s %-9s c_n %-4.0f %4zu faces %5zu dofs   u %.2e  sigma_zz %.2e\n",
+                    strong ? "strong" : "weak", mimetika::mesh::name(family), c_n, r.faces, r.dofs,
+                    r.u, r.stress);
+        CHECK(r.faces > 0);
+        CHECK(r.u < 1e-10);
+        CHECK(r.stress < 1e-9);
+        CHECK(r.closure < 1e-10);
+      }
+    }
+  }
+}
+
+// ---- and the fracture, read back in its own frame --------------------------
+//
+// Confined compression across the fracture, where every number on the face is
+// known: sigma_zz = -kLoad crosses it, nothing shears, and the interface closes
+// by sigma_nn / c_n. So in the face's frame {n, t1, t2}
+//
+//     t_c   = (-kLoad, 0, 0)          and   [[u_c]] = (-kLoad/c_n, 0, 0)
+//
+// with the NORMAL COMPONENT NEGATIVE, because the jump is reported as the
+// opening and a compression closes. That sign is a convention about which half
+// of u_c is which side of the face, which is incidence and not geometry, and it
+// is what this pins.
+MIMETIKA_TEST(the_fracture_reads_back_in_its_own_frame) {
+  const double c_n = 4.0;
+  for (const bool strong : {false, true}) {
+    for (const Family family : {Family::cartesian, Family::simplex}) {
+      exokal::Mesh m = mimetika::mesh::box({2, 2, 2}, 3, family);
+      std::vector<Index> nodes;
+      for (Index v = 0; v < m.topology().count(0); ++v) {
+        if (std::fabs(m.point(v)[kAxis] - 0.5) < 1e-12) nodes.push_back(v);
+      }
+      mimetika::CauchyMechanicsModel model(
+          m, 3, mimetika::ElasticMaterial{kMu, kLam},
+          strong ? mimetika::CauchyMechanicsModel::Realization::stabilized_vem
+                 : mimetika::CauchyMechanicsModel::Realization::derham_bdm,
+          strong ? mimetika::CauchyMechanicsModel::Formulation::strong_symmetry
+                 : mimetika::CauchyMechanicsModel::Formulation::weak_symmetry);
+      model.fracture({nodes});
+      model.linear_contact(c_n, 7.0);
+      std::vector<Index> loaded, confined;
+      for (const Index f : model.outer_boundary_facets()) {
+        const auto x = exokal::centroid(model.mesh(), 2, f);
+        (std::fabs(x[kAxis] - 1.0) < 1e-9 ? loaded : confined).push_back(f);
+      }
+      std::array<double, 9> applied{};
+      applied[kAxis * 3 + kAxis] = -kLoad;
+      model.mechanics().emplace<mimetika::TractionBC>(std::move(loaded), applied);
+      model.mechanics().emplace<mimetika::FreeSlipBC>(std::move(confined));
+      model.build();
+      mimetika::solver::PetscSolver petsc;
+      std::vector<double> x;
+      const auto rep = petsc.solve(model.system(), model.rhs(), x);
+      CHECK(rep.converged);
+      model.accept(std::move(x));
+
+      double worst_t = 0.0, worst_j = 0.0, worst_shear = 0.0, worst_n = 0.0, area = 0.0,
+             worst_law = 0.0;
+      const auto faces = model.fracture_faces();
+      CHECK(!faces.empty());
+      for (const auto& f : faces) {
+        CHECK(f.fracture == 0);
+        area += f.area;
+        // the frame is the face's own: its normal is the z axis here
+        worst_n = std::max(worst_n, std::fabs(std::fabs(f.normal[kAxis]) - 1.0));
+        worst_t = std::max(worst_t, std::fabs(f.traction[0] + kLoad));
+        worst_j = std::max(worst_j, std::fabs(f.jump[0] + kLoad / c_n));
+        for (int a = 1; a < 3; ++a) {
+          worst_shear = std::max(worst_shear, std::fabs(f.traction[a]));
+          worst_shear = std::max(worst_shear, std::fabs(f.jump[a]));
+        }
+        // and the two numbers obey the law they were produced by, as reported:
+        // one sign convention, not two
+        worst_law = std::max(worst_law, std::fabs(f.traction[0] - c_n * f.jump[0]));
+        // the halves are the jump, so no third quantity is being invented
+        for (int a = 0; a < 3; ++a) {
+          worst_law = std::max(worst_law, std::fabs(f.jump[a] - (f.plus[a] - f.minus[a])));
+        }
+      }
+      std::printf(
+          "  %-6s %-9s %2zu faces, area %.4f   t_n %.1e   [[u]]_n %.1e   shear %.1e   law %.1e\n",
+          strong ? "strong" : "weak", mimetika::mesh::name(family), faces.size(), area, worst_t,
+          worst_j, worst_shear, worst_law);
+      CHECK(worst_n < 1e-12);      // the plane z = 1/2, so n is the axis
+      CHECK(std::fabs(area - 1.0) < 1e-12);  // and it is the unit square
+      CHECK(worst_t < 1e-10);      // t_c . n = sigma_nn = -kLoad
+      CHECK(worst_j < 1e-10);      // and the interface closed by sigma_nn / c_n
+      CHECK(worst_shear < 1e-10);  // nothing shears
+      CHECK(worst_law < 1e-10);    // t_c . n = c_n [[u_c]] . n, in the numbers reported
     }
   }
 }

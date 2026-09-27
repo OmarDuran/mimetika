@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <memory>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -21,7 +22,10 @@
 #include "mimetika/model/compositions/cauchy_mechanics.hpp"
 #include "mimetika/model/conditioning.hpp"
 #include "mimetika/model/partition.hpp"
+#include "mimetika/model/mixed_dimensional.hpp"
 #include "mimetika/model/simulation.hpp"
+#include "mimetika/physics/contact_interface.hpp"
+#include "mimetika/physics/contact_mechanics.hpp"
 #include "mimetika/physics/boundary_terms.hpp"
 
 // Cauchy elasticity: the poroelastic model with the flow taken out.
@@ -264,16 +268,259 @@ class CauchyMechanicsModel {
           "deviatoric form of a reconstructed weak product carries the hydrostatic stress as the "
           "facet's normal traction, not as a scalar per cell");
     }
-    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& sp = ambient_space();
     const auto& mp = sp.map(sp.index_of("p_0"));
-    return state_[static_cast<std::size_t>(sp.offset(sp.index_of("p_0"))) +
+    return state_[base_of(sp, "p_0") +
                   static_cast<std::size_t>(mp.global(dim_, cell, 0, 0))];
+  }
+
+  // ---- the fracture ------------------------------------------------------
+  //
+  // A FRACTURE IS A NODE SET, and the mesh is cut along it at build time: the
+  // ambient complex gains a second copy of every fracture facet, so the two
+  // sides carry separate tractions and the normal trace of the stress is free
+  // to jump -- H(div; Omega \ Gamma) rather than H(div; Omega). What is solved
+  // is then the 4 x 4 of mimetika/physics/contact_mechanics.hpp: the bulk rows
+  // unchanged, and two interface rows added.
+  //
+  // mimetika/mesh/fracture.hpp reads the node sets a .vtu carries; a mesh built
+  // in memory supplies them directly.
+  //
+  // The cut happens in build(), so the law and the boundary conditions can be
+  // set in any order. After build() the model's mesh is the CUT one -- see
+  // mesh() -- and carries more facets; cells and original facets keep their
+  // numbers, so an index taken from the uncut mesh still means what it did.
+  // `labels` names the fractures as the caller knows them -- the number in an
+  // `f5_node_set` array, say -- and is what every face reports and what the
+  // .vtu writes as `fracture_id`. WITHOUT IT THE ID IS POSITIONAL, so a run on
+  // a subset would label f5 as fracture 0 and a plot would name the wrong
+  // plane; passing the numbers through is the difference between a legend that
+  // means something and one that only happens to be right when every fracture
+  // was selected.
+  void fracture(std::vector<std::vector<Index>> node_sets, std::vector<int> labels = {}) {
+    if (!labels.empty() && labels.size() != node_sets.size()) {
+      throw std::invalid_argument("fracture: " + std::to_string(labels.size()) + " labels for " +
+                                  std::to_string(node_sets.size()) + " node sets");
+    }
+    fracture_nodes_ = std::move(node_sets);
+    fracture_labels_ = std::move(labels);
+  }
+
+  // D_c = 0: the bonded interface, transmitting everything and opening by
+  // nothing. The default, and the one case with a closed form -- the cut
+  // problem is then the uncut problem, which tests/model/test_contact_patch.cpp
+  // checks to round-off.
+  void bond() { c_n_ = c_T_ = 0.0; }
+
+  // D_c = (1/c_n) n (x) n + (1/c_T)(I - n (x) n), the linear law: one member of
+  // a family. A law that is not linear replaces the compliance and keeps
+  // everything else, the chart included.
+  void linear_contact(double c_n, double c_T) {
+    c_n_ = c_n;
+    c_T_ = c_T;
+  }
+
+  bool fractured() const { return !fracture_nodes_.empty(); }
+
+  // The boundary of the DOMAIN, which is not the boundary of the cut complex:
+  // each copy of a fracture facet has one cofacet and so looks exactly like a
+  // boundary facet. A traction or a roller imposed on those would overwrite the
+  // contact rows, so they are dropped here rather than in every caller.
+  std::vector<Index> outer_boundary_facets() const {
+    std::vector<Index> all = boundary_facets(mesh_->topology(), dim_);
+    if (md_ == nullptr) return all;
+    const FractureFacets fr = fracture_facets(*md_);
+    const std::set<Index> skip(fr.carrying.begin(), fr.carrying.end());
+    std::vector<Index> out;
+    for (const Index f : all) {
+      if (skip.count(f) == 0) out.push_back(f);
+    }
+    return out;
+  }
+
+  std::size_t n_fracture_faces() const {
+    if (md_ == nullptr) return 0;
+    const auto fr = md_->strata_of_codim(1);
+    return fr.empty() ? 0 : static_cast<std::size_t>(fr[0]->mesh.topology().count(dim_ - 1));
+  }
+
+  // ---- reading the fracture back ------------------------------------------
+  //
+  // One face of the fracture, IN ITS OWN ORTHONORMAL FRAME {n, t1, t2}: the
+  // contact traction, the two traces of the displacement, and their jump. The
+  // frame is the chart's, the same one the compliance was built against, so a
+  // traction read here and a stiffness applied there cannot disagree about
+  // which direction is normal.
+  //
+  // WHAT THE NUMBERS ARE. The unknowns are coefficients against the face's
+  // traction chart, and in both families the CONSTANT modes are already the
+  // mean over the face:
+  //
+  //   wrench        slots 0, 1 and 3 are the means along t1, t2 and n; the
+  //                 rest are the in-plane rotation and the two first moments,
+  //                 which integrate to zero against a constant
+  //   componentwise psi_(b,k) = chi_b e_k with chi_0 = 1 and the higher chi
+  //                 centred, so the b = 0 coefficients are the mean vector in
+  //                 AMBIENT axes, and are turned into the frame here
+  //
+  // so no quadrature and no projection is needed to report a vector per face.
+  //
+  // SIGNS. `normal` is the face's canonical normal. `jump` is the OPENING:
+  // positive along n means the two sides have moved apart, so a compression
+  // reports a negative normal jump. Which of u_c's halves is which side is a
+  // matter of incidence and not of geometry, so it is resolved here once
+  // rather than left for a caller to guess.
+  struct FractureFace {
+    Index face{0};       // index within the fracture stratum
+    int fracture{0};     // which of the node sets given to fracture() it lies on
+    double area{0.0};
+    std::array<double, 3> normal{}, tangent1{}, tangent2{};
+    std::array<double, 3> traction{};  // t_c . {n, t1, t2}
+    std::array<double, 3> plus{}, minus{}, jump{};
+  };
+
+  FractureFace fracture_face(Index face) const {
+    if (md_ == nullptr || sim_ == nullptr) {
+      throw std::logic_error("fracture_face: no fracture, or not built yet");
+    }
+    // A READBACK READS A SOLUTION. Built but unsolved, state_ is empty and
+    // every address below is out of range -- which segfaults rather than
+    // complaining, because the dofs are reached through a raw pointer to keep
+    // the per-face cost to the arithmetic.
+    if (state_.size() != sim_->n_dofs()) {
+      throw std::logic_error(
+          "fracture_face: there is no solution to read -- call solve(), or accept(x) with one");
+    }
+    if (static_cast<std::size_t>(face) >= n_fracture_faces()) {
+      throw std::out_of_range("fracture_face: face " + std::to_string(face) + " of " +
+                              std::to_string(n_fracture_faces()));
+    }
+    if (contact_frame_.faces() != n_fracture_faces()) {
+      throw std::logic_error("fracture_face: the chart and the fracture disagree on the face count");
+    }
+    const std::size_t fs = sim_->epoch().index_of("fracture");
+    const auto& sp = sim_->epoch().stratum(fs).space();
+    const auto base = static_cast<std::size_t>(sim_->epoch().offset(fs));
+    const auto& mt = sp.map(sp.index_of("t_1"));
+    const auto& mu = sp.map(sp.index_of("uc_1"));
+    const std::size_t t0 = base + static_cast<std::size_t>(sp.offset(sp.index_of("t_1")));
+    const std::size_t u0 = base + static_cast<std::size_t>(sp.offset(sp.index_of("uc_1")));
+    const std::size_t k = contact_.k;
+    const auto fi = static_cast<std::size_t>(face);
+
+    FractureFace out;
+    out.face = face;
+    out.area = contact_frame_.area[fi];
+    out.fracture = fracture_of_face_[fi];
+    // THE FRAME, ORIENTED. A flipped face reports {-n, t1, -t2}, which is
+    // right-handed again -- t1 x (-t2) = -(t1 x t2) = -n -- so the reported
+    // frame is an orthonormal right-handed basis on every face and the
+    // reconstruction v_n n + v_t1 t1 + v_t2 t2 points coherently across the
+    // whole fracture. See orient_faces_coherently().
+    const double* F = contact_frame_.frame_at(fi);
+    const bool flip = fi < flip_.size() && flip_[fi] != 0;
+    const double sn = flip ? -1.0 : 1.0;
+    for (int c = 0; c < 3; ++c) {
+      out.normal[static_cast<std::size_t>(c)] = sn * F[c];
+      out.tangent1[static_cast<std::size_t>(c)] = F[3 + c];
+      out.tangent2[static_cast<std::size_t>(c)] = sn * F[6 + c];
+    }
+
+    // the mean of a chart-expanded field over the face, in {n, t1, t2}
+    const auto mean = [&](const double* c) {
+      std::array<double, 3> v{};
+      if (wrench_layout()) {
+        // already the means, in the frame: {t1, t2, rot, n, n chi1, n chi2} in
+        // space; {t, n, n chi1} in the plane
+        if (dim_ == 3) {
+          v = {c[3], c[0], c[1]};
+        } else {
+          v = {c[1], c[0], 0.0};
+        }
+        return v;
+      }
+      const std::size_t comps = k / static_cast<std::size_t>(moments_per_face());
+      for (std::size_t a = 0; a < 3; ++a) {
+        for (std::size_t j = 0; j < comps && j < 3; ++j) {
+          v[a] += F[a * 3 + j] * c[j];  // b = 0, component j, turned into the frame
+        }
+      }
+      return v;
+    };
+
+    const double* t = state_.data() + t0 + static_cast<std::size_t>(mt.global(dim_ - 1, face, 0, 0));
+    const double* u = state_.data() + u0 + static_cast<std::size_t>(mu.global(dim_ - 1, face, 0, 0));
+
+    // ONE CONVENTION FOR BOTH. The compliance row is A_c t_c + J u_c = 0 with
+    // J the Gram-weighted difference of u_c's halves, so the multiplier the
+    // system solves for is the contact PRESSURE: positive where the face is
+    // pressed together. Reported as it stands, `traction` and `jump` would
+    // carry opposite signs and a reader would have to know which.
+    //
+    // So the traction is reported as sigma . n instead -- negative in
+    // compression, like every other stress this model returns -- and then the
+    // law holds between the two numbers as printed,
+    //
+    //     traction . n = c_n ([[u_c]] . n),    traction . t_a = c_T (...)
+    //
+    // which tests/model/test_contact_patch.cpp checks on both families.
+    // HOW THE COMPONENTS TRANSFORM when the face is flipped to n' = -n and
+    // t2' = -t2. A plain vector v reports (v.n', v.t1, v.t2') = (-a, b, -c).
+    // The traction is not a plain vector: the traction OF INTEREST is sigma.n',
+    // which is itself -sigma.n, so its components come out (a, -b, c) -- the
+    // normal part is sigma_n'n' = sigma_nn, unchanged, as a quadratic form in n
+    // must be. The jump transforms the same way, because flipping the normal
+    // also swaps which side is above: [[u]]' = -[[u]], and (-[[u]]).n' =
+    // [[u]].n. So the law holds in the reported numbers either way.
+    const std::array<double, 3> pressure = mean(t);
+    for (std::size_t c = 0; c < 3; ++c) out.traction[c] = -pressure[c];
+    if (flip) out.traction[1] = -out.traction[1];
+
+    // The half the trace term writes first is the side whose facet copy has
+    // incidence +1, and that copy's cell is the one the CANONICAL NORMAL POINTS
+    // AWAY FROM -- the side below the face. So the opening, which is what a
+    // reader means by a jump, is the other half minus it, and a compression
+    // reports a negative normal jump.
+    const std::array<double, 3> below = mean(u), above = mean(u + k);
+    if (!flip) {
+      out.minus = below;
+      out.plus = above;
+    } else {
+      // the sides swap with the normal, and each trace is an ordinary vector,
+      // so its components turn as (-a, b, -c)
+      const auto turned = [](const std::array<double, 3>& v) {
+        return std::array<double, 3>{-v[0], v[1], -v[2]};
+      };
+      out.minus = turned(above);
+      out.plus = turned(below);
+    }
+    for (std::size_t c = 0; c < 3; ++c) out.jump[c] = out.plus[c] - out.minus[c];
+    return out;
+  }
+
+  std::vector<FractureFace> fracture_faces() const {
+    std::vector<FractureFace> out;
+    const std::size_t n = n_fracture_faces();
+    out.reserve(n);
+    for (std::size_t f = 0; f < n; ++f) out.push_back(fracture_face(static_cast<Index>(f)));
+    return out;
+  }
+
+  // The fracture stratum's own mesh: a (d-1)-dimensional mesh whose cells are
+  // the fracture's faces, in the order fracture_face() indexes them. What a
+  // caller writes the readings above onto.
+  const exokal::Mesh& fracture_mesh() const {
+    if (md_ == nullptr) throw std::logic_error("fracture_mesh: no fracture");
+    return md_->strata_of_codim(1).at(0)->mesh;
   }
 
   MechanicsBoundary& mechanics() { return mechanics_; }
   const MechanicsBoundary& mechanics() const { return mechanics_; }
 
   int dim() const { return dim_; }
+  // The mesh the model is POSED ON, which after build() with a fracture is the
+  // cut one: a facet index or a frame taken from it is the one the space
+  // numbers, and its facet count is larger than the caller's mesh had.
   const exokal::Mesh& mesh() const { return *mesh_; }
   Realization realization() const { return how_; }
   const char* realization_name() const { return exokal::hodge::StressOperators::name(how_); }
@@ -307,9 +554,9 @@ class CauchyMechanicsModel {
         form_ == Formulation::strong_symmetry_deviatoric) {
       return out;
     }
-    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& sp = ambient_space();
     const auto& ms = sp.map(sp.index_of("s_0"));
-    const auto s_base = static_cast<Index>(sp.offset(sp.index_of("s_0")));
+    const auto s_base = static_cast<Index>(base_of(sp, "s_0"));
     const int nb = stress_.moments_per_facet();
     const int nc = wrench_layout() ? 1 : dim_;
     const double mu = material_.shear;
@@ -400,6 +647,25 @@ class CauchyMechanicsModel {
   // divergence gives back the memory the route exists to save. system() then
   // has nothing in it and says so. Mirrors FlowModel::build.
   void build(bool assemble_jacobian = true) {
+    // THE CUT COMES FIRST, because everything below is built from the mesh:
+    // the geometry cache, the products, the space, the boundary frames. Cut
+    // here and the rest of build() needs to know only that its mesh has a few
+    // more facets than the caller's did.
+    if (!fracture_nodes_.empty() && md_ == nullptr) {
+      // EVERY FRACTURE AT ONCE, as one codimension-1 stratum. exokal's node-set
+      // path would build one stratum per fracture, and an Epoch carries a
+      // single substratum -- one CarrierMap, one child space -- so a network of
+      // several cannot be numbered as one system. The representation that can
+      // is one stratum whose cells are every fracture's facets, which is what
+      // induced_fractures and one_stratum_network build, each fracture inducing
+      // its own facets before the union is taken. See mixed_dimensional.hpp for
+      // why the union is of FACETS and never of the node sets.
+      induced_ = induced_fractures(*mesh_, fracture_nodes_);
+      md_ = std::make_unique<exokal::MixedDimensionalMesh>(
+          exokal::mixed_dimensional_mesh(*mesh_, one_stratum_network(*mesh_, induced_.all)));
+      strata_ = strata_of(*md_, *mesh_);
+      mesh_ = &md_->top.mesh;
+    }
     const graphos::Complex& c = mesh_->topology();
     // The partition comes first, because the products below are per cell and
     // are the bulk of the work: a process builds its own and no others.
@@ -577,9 +843,37 @@ class CauchyMechanicsModel {
     // the four-field term keeps (2 mu)^-1 as its compliance, so mu travels with
     // the composition rather than being looked up from a slot
     o.shear_modulus = material_.shear;
+    physics::Composition comp = physics::Catalogue::instance().build("linear_elasticity", o);
+    if (md_ != nullptr) {
+      // The bulk governs the ambient stratum and the contact the fracture:
+      // `Mechanics` declares its fields at whatever codimension it is asked
+      // about -- by design, since flow in a fracture is the same terms one
+      // codimension down -- and there is no bulk stress inside a fracture, so
+      // it is confined here rather than left to number unknowns no term writes.
+      physics::ContactOptions co;
+      co.traction_moments = wrench_layout() ? 6 : stress_.moments_per_facet();
+      co.traction_components = wrench_layout() ? 1 : dim_;
+      comp.only_at(0).emplace<physics::LinearContact>(co);
+
+      // The chart is the ambient facet's -- the two sides share it -- and the
+      // law is evaluated on it. Built from a space of its own, because the
+      // Simulation's is not numbered yet and the chart is an input to it.
+      const auto ambient_space_for_chart = comp.space(c, dim_, 0);
+      const physics::InterfaceChart chart =
+          physics::interface_chart(*md_, ambient_space_for_chart, "s_0", stress_, dim_);
+      contact_ = c_n_ > 0.0 ? physics::linear_contact(chart, c_n_, c_T_)
+                            : physics::rigid_contact(chart);
+      contact_frame_ = chart;
+      ctx_.provide("contact_interface", contact_);
+      label_faces_by_node_set();
+      orient_faces_coherently();
+    }
     sim_ = std::make_unique<Simulation>(
-        physics::Catalogue::instance().build("linear_elasticity", o),
-        std::vector<StratumSpec>{StratumSpec{"ambient", &c, dim_, 0}}, ctx_);
+        comp,
+        md_ != nullptr ? strata_ : std::vector<StratumSpec>{StratumSpec{"ambient", &c, dim_, 0}},
+        ctx_);
+    ambient_ = sim_->epoch().index_of("ambient");
+    ambient_offset_ = static_cast<std::size_t>(sim_->epoch().offset(ambient_));
     // the natural displacement datum, attached only when one is actually given
     if (!displacement_facets_.empty()) {
       sim_->model().add(
@@ -597,17 +891,30 @@ class CauchyMechanicsModel {
     // the conditions resolve against the space, which is what gives each of
     // them its dofs, and the strong ones then hand their forms to the
     // constraint set
-    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& sp = ambient_space();
     // the facet-frame split resolves sigma n in R_f = [n | t_a], so a traction
     // or a free-slip datum is a statement about those components
-    mechanics_.resolve(*mesh_, dim_, sp, 0, frame_layout());
+    mechanics_.resolve(*mesh_, dim_, sp, static_cast<Index>(ambient_offset_), frame_layout());
     mechanics_.impose(sim_->constraints());
+
+    // WHAT THE CUT LEFT BEHIND. The original fracture facet survives beside its
+    // two copies, detached: no cofacet, so no cell term writes its rows, and
+    // whatever the ambient space numbers on it is unconstrained -- the saddle
+    // point is singular until those rows are closed. They are not unknowns of
+    // the formulation but an artefact of the cut, so they are pinned here and
+    // not left to the caller to discover.
+    if (md_ != nullptr) {
+      const auto off = static_cast<Index>(ambient_offset_);
+      for (const Index f : fracture_facets(*md_).detached) {
+        sim_->constraints().pin_all(::mimetika::facet_dofs(sp, "s_0", dim_, f, off).dofs, 0.0);
+      }
+    }
 
     // the prescribed fracture traction, registered with a placeholder value:
     // the structure is what freeze_constraints needs, and the values move later
     {
       const auto& ms = sp.map(sp.index_of("s_0"));
-      const auto s_base = static_cast<std::size_t>(sp.offset(sp.index_of("s_0")));
+      const auto s_base = base_of(sp, "s_0");
       // the wrench layout carries its d(d+1)/2 moments on one component, the
       // componentwise one `moments` on each of d components
       const int nb = stress_.moments_per_facet();
@@ -647,7 +954,7 @@ class CauchyMechanicsModel {
       const std::vector<double>& selection = stress_.eta();  // empty: every cell
       const graphos::CoboundaryOperator up = graphos::coboundary(c, dim_ - 1);
       const auto& ms = sp.map(sp.index_of("s_0"));
-      const auto s_base = static_cast<std::size_t>(sp.offset(sp.index_of("s_0")));
+      const auto s_base = base_of(sp, "s_0");
       const auto dd = static_cast<std::size_t>(dim_);
       const std::vector<std::size_t> already(prescribed_dofs_.begin(), prescribed_dofs_.end());
       for (Index f = 0; f < c.count(dim_ - 1); ++f) {
@@ -740,10 +1047,10 @@ class CauchyMechanicsModel {
     factorized_ = false;
     load_ready_ = true;
     work_.assign(sim_->n_dofs(), 0.0);
-    s_offset_ = static_cast<std::size_t>(sp.offset(sp.index_of("s_0")));
-    u_offset_ = static_cast<std::size_t>(sp.offset(sp.index_of("u_0")));
+    s_offset_ = base_of(sp, "s_0");
+    u_offset_ = base_of(sp, "u_0");
     // the strong family has no rotation field: symmetry lives in the space
-    g_offset_ = strongly_symmetric() ? 0 : static_cast<std::size_t>(sp.offset(sp.index_of("g_0")));
+    g_offset_ = strongly_symmetric() ? 0 : base_of(sp, "g_0");
     n_cells_ = static_cast<std::size_t>(c.count(dim_));
   }
 
@@ -825,12 +1132,12 @@ class CauchyMechanicsModel {
           "CauchyMechanicsModel::trace: not implemented for the wrench-layout realizations");
     }
     const graphos::Complex& c = mesh_->topology();
-    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& sp = ambient_space();
     const auto& ms = sp.map(sp.index_of("s_0"));
     const auto& mu = sp.map(sp.index_of("u_0"));
     const auto& mg = sp.map(sp.index_of("g_0"));
-    const auto u_off = static_cast<std::size_t>(sp.offset(sp.index_of("u_0")));
-    const auto g_off = static_cast<std::size_t>(sp.offset(sp.index_of("g_0")));
+    const auto u_off = base_of(sp, "u_0");
+    const auto g_off = base_of(sp, "g_0");
 
     const int nb = stress_.moments_per_facet();
     const std::size_t ndf = static_cast<std::size_t>(dim_) * static_cast<std::size_t>(nb);
@@ -1106,9 +1413,9 @@ class CauchyMechanicsModel {
     const std::size_t n_p = hops.cell(0).n_p;
     // the hydrostatic field's offset, read off the space rather than cached:
     // it exists only under a total formulation
-    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& sp = ambient_space();
     const std::size_t p_offset =
-        n_p != 0 ? static_cast<std::size_t>(sp.offset(sp.index_of("p_0"))) : 0;
+        n_p != 0 ? base_of(sp, "p_0") : 0;
     const auto cells = static_cast<std::size_t>(n_cells());
     // The kinematic load is not one contiguous run. The local saddle wants the
     // divergence rows then the asymmetry rows, and the model keeps those as
@@ -1121,7 +1428,7 @@ class CauchyMechanicsModel {
     const std::size_t n_u = sp.map(sp.index_of("u_0")).size() / cells;
     const std::size_t n_g = nk - n_u;  // zero where the symmetry is strong
     const std::size_t g_offset =
-        n_g != 0 ? static_cast<std::size_t>(sp.offset(sp.index_of("g_0"))) : 0;
+        n_g != 0 ? base_of(sp, "g_0") : 0;
     std::vector<double> fu(cells * nk, 0.0), fp(n_p != 0 ? cells : 0, 0.0);
     for (std::size_t e = 0; e < cells; ++e) {
       for (std::size_t r = 0; r < n_u; ++r) fu[e * nk + r] = rhs_[u_offset_ + e * n_u + r];
@@ -1200,7 +1507,7 @@ class CauchyMechanicsModel {
   // That convention is fixed by wanting one symmetry when several physics land
   // in the same system, so the accessor undoes it once.
   double displacement(Index cell, int axis) const {
-    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& sp = ambient_space();
     const auto& mu = sp.map(sp.index_of("u_0"));
     return -state_[u_offset_ + static_cast<std::size_t>(mu.global(dim_, cell, 0, axis))] /
            exokal::measure(*mesh_, dim_, cell);
@@ -1218,7 +1525,7 @@ class CauchyMechanicsModel {
   // an exactly reproduced linear field therefore has an exactly reproduced
   // rotation.
   double rotation(Index cell, int p) const {
-    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& sp = ambient_space();
     // Strong symmetry has no multiplier: the rotation lives in the last three
     // of the displacement's six rigid-motion coefficients. Two conversions on
     // top of the measure and multiplier sign:
@@ -1347,7 +1654,7 @@ class CauchyMechanicsModel {
   // The cell's traction dofs, outward-oriented, q slots a facet over the cell's
   // own facet list: the order the reconstruction expects.
   std::vector<double> vem_traction_dofs(Index cell, std::size_t q) const {
-    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& sp = ambient_space();
     const auto& ms = sp.map(sp.index_of("s_0"));
     const auto& op = stress_.compact(cell);
     std::vector<double> dofs(q * op.faces.size(), 0.0);
@@ -1405,7 +1712,7 @@ class CauchyMechanicsModel {
   // makes the two cells sharing a facet agree on what its unknown means. So any
   // coface serves, and the first one is taken.
   std::array<double, 3> weak_facet_force(Index facet) const {
-    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& sp = ambient_space();
     const auto& ms = sp.map(sp.index_of("s_0"));
     std::array<double, 3> raw{};
     for (int k = 0; k < dim_; ++k) {
@@ -1427,7 +1734,7 @@ class CauchyMechanicsModel {
   }
 
   std::array<double, 9> cell_stress_average(Index cell) const {
-    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& sp = ambient_space();
     const auto& ms = sp.map(sp.index_of("s_0"));
     const auto& op = stress_.compact(cell);  // faces and orientation: no dense M
     const exokal::Point xE = exokal::centroid(*mesh_, dim_, cell);
@@ -1474,7 +1781,7 @@ class CauchyMechanicsModel {
   // so an interior facet is a legitimate argument. Going through a coface to
   // find a frame is a boundary accessor and fails on a fault.
   std::array<double, 3> facet_traction(Index facet) const {
-    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& sp = ambient_space();
     const auto& ms = sp.map(sp.index_of("s_0"));
     const double area = exokal::measure(*mesh_, dim_ - 1, facet);
     if (wrench_layout()) {
@@ -1496,7 +1803,7 @@ class CauchyMechanicsModel {
   // would impose there: n . (sigma n), against the facet's canonical normal and
   // divided by the measure it was integrated against.
   double normal_traction(Index facet) const {
-    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& sp = ambient_space();
     const auto& ms = sp.map(sp.index_of("s_0"));
     const FacetFrame fr = FacetFrame::of(*mesh_, dim_, cofacet_of(*mesh_, dim_, facet), facet);
     if (wrench_layout()) {
@@ -1518,7 +1825,7 @@ class CauchyMechanicsModel {
   // and the traction along an arbitrary direction, which a curved boundary
   // needs: e . (sigma n) with n canonical
   double traction_along(Index facet, const std::array<double, 3>& e) const {
-    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& sp = ambient_space();
     const auto& ms = sp.map(sp.index_of("s_0"));
     const FacetFrame fr = FacetFrame::of(*mesh_, dim_, cofacet_of(*mesh_, dim_, facet), facet);
     if (wrench_layout()) {
@@ -1621,7 +1928,7 @@ class CauchyMechanicsModel {
   // normal resultants sit in slots 0 and 1, and the first moment in slot 2
   // integrates to zero against a constant.
   std::array<double, 3> strong_facet_force(Index facet, const FacetFrame& fr) const {
-    const auto& sp = sim_->epoch().stratum(0).space();
+    const auto& sp = ambient_space();
     const auto& ms = sp.map(sp.index_of("s_0"));
     const auto slot = [&](int b) {
       return state_[s_offset_ + static_cast<std::size_t>(ms.global(dim_ - 1, facet, b, 0))];
@@ -1668,6 +1975,173 @@ class CauchyMechanicsModel {
   double rotation_jump_{0.0};        // diagonal_afw's rotation-jump constant; 0 is off
   std::size_t n_ill_conditioned_{0};
   MechanicsBoundary mechanics_;
+
+  // the fracture: the node sets, the cut they produce, the law on it, and where
+  // the ambient stratum starts once there is more than one
+  std::vector<std::vector<Index>> fracture_nodes_;
+  std::vector<int> fracture_labels_;
+  std::unique_ptr<exokal::MixedDimensionalMesh> md_;
+  std::vector<StratumSpec> strata_;
+  InducedFractures induced_;
+  double c_n_{0.0}, c_T_{0.0};  // zero is bonded
+  physics::ContactInterface contact_;
+  physics::InterfaceChart contact_frame_;  // kept for the frame, not the Gram
+  std::vector<int> fracture_of_face_;
+  std::vector<char> flip_;  // per face: report the opposite normal
+  int moments_per_face() const {
+    return wrench_layout() ? 6 : stress_.moments_per_facet();
+  }
+  std::size_t ambient_{0}, ambient_offset_{0};
+
+  const exokal::spaces::ProductSpace& ambient_space() const {
+    return sim_->epoch().stratum(ambient_).space();
+  }
+  // A FIELD'S BASE IS GLOBAL. Each stratum's space numbers from zero, so a
+  // field's offset within its space is not where its rows are: the stratum's
+  // own offset comes first, and that is nonzero for the ambient stratum
+  // whenever a fracture is carried -- the carried stratum is numbered before
+  // its carrier, because the carrier borrows its offset.
+  // Which node set each fracture face lies on: all of its vertices are in it.
+  // One fracture today -- strata_of refuses a network -- so this is zero
+  // everywhere, and it is computed rather than assumed so that it stays right
+  // when several are carried.
+  // Which fracture each face belongs to: the one whose INDUCED FACETS contain
+  // the ambient facet it came from. Exact, because the induction was done one
+  // fracture at a time -- no face can be claimed by a fracture that does not
+  // have it, and none can be claimed by nobody.
+  //
+  // A face labelled -1 would mean the cut opened a facet no fracture induced,
+  // which the construction makes impossible; it is reported rather than hidden
+  // because the alternative is a plot that silently assigns it to fracture 0.
+  void label_faces_by_node_set() {
+    const auto& fr = md_->strata_of_codim(1);
+    if (fr.empty()) return;
+    const graphos::Complex& fc = fr[0]->mesh.topology();
+    const auto& to_ambient = fr[0]->to_ambient.index[static_cast<std::size_t>(dim_ - 1)];
+    const auto n = static_cast<std::size_t>(fc.count(dim_ - 1));
+    fracture_of_face_.assign(n, -1);
+    std::vector<std::set<Index>> owns;
+    owns.reserve(induced_.per_fracture.size());
+    for (const auto& f : induced_.per_fracture) owns.emplace_back(f.begin(), f.end());
+    std::size_t orphans = 0;
+    for (std::size_t f = 0; f < n; ++f) {
+      const Index a = to_ambient[f];
+      for (std::size_t s = 0; s < owns.size(); ++s) {
+        if (owns[s].count(a) != 0) {
+          fracture_of_face_[f] =
+              fracture_labels_.empty() ? static_cast<int>(s) : fracture_labels_[s];
+          break;
+        }
+      }
+      if (fracture_of_face_[f] < 0) ++orphans;
+    }
+    if (orphans != 0) {
+      throw std::logic_error("fracture labelling: " + std::to_string(orphans) + " of " +
+                             std::to_string(n) +
+                             " faces were cut open without belonging to any fracture");
+    }
+  }
+
+  // A COHERENT NORMAL OVER EACH FRACTURE.
+  //
+  // A facet's canonical normal is a property of that facet alone, so across a
+  // fracture the normals come out in no particular order -- measured on a
+  // simplicial box, alternating +z, -z, +z, -z over the eight faces of one
+  // plane. The SCALARS do not care: sigma_nn and [[u]].n are both invariant
+  // under n -> -n, the jump because flipping the normal also swaps which side
+  // is which. But the FRAME is what carries those numbers back into space,
+  //
+  //     v = v_n n + v_t1 t1 + v_t2 t2 ,
+  //
+  // and with the normals in no order that vector alternates direction over one
+  // flat fracture: every second glyph reversed, on a plot of a quantity that is
+  // in fact uniform. So the faces are oriented to agree before anything is
+  // reported.
+  //
+  // Spread over shared edges, face to face: two neighbours agree when their
+  // normals point the same way, which on any fracture resolved well enough to
+  // bend by less than a right angle between neighbours is unambiguous. Each
+  // connected piece is then given a deterministic global sign -- the largest
+  // component of its area-weighted mean normal made positive -- so the same
+  // mesh always plots the same way, and the arbitrary choice left is only which
+  // face of a closed fracture is "above".
+  void orient_faces_coherently() {
+    const auto& fr = md_->strata_of_codim(1);
+    if (fr.empty()) return;
+    const graphos::Complex& fc = fr[0]->mesh.topology();
+    const auto n = static_cast<std::size_t>(fc.count(dim_ - 1));
+    flip_.assign(n, 0);
+    if (n == 0) return;
+
+    const auto normal_of = [&](std::size_t f, std::array<double, 3>& out) {
+      const double* F = contact_frame_.frame_at(f);
+      for (int k = 0; k < 3; ++k) out[static_cast<std::size_t>(k)] = F[k];
+    };
+    // ridge -> the faces meeting on it: edges in space, vertices in the plane
+    const graphos::CoboundaryOperator ridge = graphos::coboundary(fc, dim_ - 2);
+    const graphos::Adjacency face_ridges = graphos::incidence(fc, dim_ - 1, dim_ - 2);
+
+    if (fracture_of_face_.size() != n) return;  // labelling runs first
+    std::vector<char> seen(n, 0);
+    std::vector<std::size_t> stack, piece;
+    for (std::size_t seed = 0; seed < n; ++seed) {
+      if (seen[seed] != 0) continue;
+      stack.assign(1, seed);
+      piece.clear();
+      seen[seed] = 1;
+      while (!stack.empty()) {
+        const std::size_t f = stack.back();
+        stack.pop_back();
+        piece.push_back(f);
+        std::array<double, 3> nf{};
+        normal_of(f, nf);
+        const double sf = flip_[f] != 0 ? -1.0 : 1.0;
+        for (auto m = face_ridges.offsets[f]; m < face_ridges.offsets[f + 1]; ++m) {
+          const graphos::Index r = face_ridges.indices[static_cast<std::size_t>(m)];
+          for (auto q = ridge.offsets[static_cast<std::size_t>(r)];
+               q < ridge.offsets[static_cast<std::size_t>(r) + 1]; ++q) {
+            const auto g = static_cast<std::size_t>(ridge.indices[static_cast<std::size_t>(q)]);
+            if (g == f || seen[g] != 0) continue;
+            // ONE FRACTURE AT A TIME. Where two fractures cross, their faces
+            // share edges, and spreading from one onto the other compares
+            // normals that are nearly perpendicular -- the sign of that dot
+            // product is noise, and the cascade past it corrupts everything
+            // downstream. Measured on the 5-fracture DFN mesh: 186 of 392 faces
+            // oriented, and eight distinct normals for five planar fractures.
+            // Orienting one surface against another means nothing anyway.
+            if (fracture_of_face_[g] != fracture_of_face_[f]) continue;
+            std::array<double, 3> ng{};
+            normal_of(g, ng);
+            double dot = 0.0;
+            for (std::size_t k = 0; k < 3; ++k) dot += sf * nf[k] * ng[k];
+            flip_[g] = dot < 0.0 ? 1 : 0;
+            seen[g] = 1;
+            stack.push_back(g);
+          }
+        }
+      }
+      // the piece's own sign, fixed by its mean normal so the plot is
+      // reproducible rather than seeded by whichever face came first
+      std::array<double, 3> mean{};
+      for (const std::size_t f : piece) {
+        std::array<double, 3> nf{};
+        normal_of(f, nf);
+        const double w = contact_frame_.area[f] * (flip_[f] != 0 ? -1.0 : 1.0);
+        for (std::size_t k = 0; k < 3; ++k) mean[k] += w * nf[k];
+      }
+      std::size_t big = 0;
+      for (std::size_t k = 1; k < 3; ++k) {
+        if (std::fabs(mean[k]) > std::fabs(mean[big])) big = k;
+      }
+      if (mean[big] < 0.0) {
+        for (const std::size_t f : piece) flip_[f] = flip_[f] != 0 ? 0 : 1;
+      }
+    }
+  }
+
+  std::size_t base_of(const exokal::spaces::ProductSpace& sp, const char* field) const {
+    return static_cast<std::size_t>(sp.offset(sp.index_of(field))) + ambient_offset_;
+  }
 
   exokal::hodge::DeRhamGeometryCache geometry_;
   std::vector<double> body_force_;  // per cell, d components, cell-major

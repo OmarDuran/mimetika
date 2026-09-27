@@ -35,6 +35,12 @@ Run it:
     PYTHONPATH=.. python cauchy_mechanics_external_mesh.py --mesh domain.vtu
     PYTHONPATH=.. python cauchy_mechanics_external_mesh.py --mesh domain.vtu --vtu out.vtu
 
+A fracture in the file is solved for by naming it; bonded, the answer must not
+move, which is the patch test on a fractured mesh:
+
+    PYTHONNOUSERSITE=1 python cauchy_mechanics_external_mesh.py --mesh dfn.vtu --fracture list
+    PYTHONNOUSERSITE=1 python cauchy_mechanics_external_mesh.py --mesh dfn.vtu --fracture f1
+
 with --make-mesh to produce a sample file first, if there is none to hand:
 
     PYTHONPATH=.. python cauchy_mechanics_external_mesh.py --make-mesh domain.vtu
@@ -42,7 +48,9 @@ with --make-mesh to produce a sample file first, if there is none to hand:
 
 import argparse
 import os
+import re
 import sys
+from pathlib import Path
 
 import _bootstrap  # noqa: F401  -- BEFORE mimetika_cxx; see python/_shadowing.py
 import mimetika_cxx as mk
@@ -196,6 +204,66 @@ def prescribe_displacement(model, mesh, dim, lo, gradient, length=1.0,
     return len(facets)
 
 
+# THE FRACTURE, AND WHY THE PATCH TEST STILL APPLIES
+#
+# A fracture is a NODE SET: the facets whose vertices all lie on it. The mesh is
+# cut along them at build time, so each carries two tractions instead of one and
+# the normal trace of the stress is free to jump -- H(div; Omega \ Gamma) rather
+# than H(div; Omega) -- and what gets solved is the mixed contact system, the
+# bulk rows unchanged and two interface rows added.
+#
+# BONDED, THE DEFAULT, THE ANSWER MUST NOT MOVE. With D_c = 0 the interface
+# transmits everything and opens by nothing, so the cut problem IS the continuous
+# problem written in more unknowns: the same linear field, reproduced to
+# round-off. That makes this example's own error column the check -- run it with
+# and without --fracture and the two must agree, which no assertion about where
+# matrix entries land can establish.
+#
+# Give --c-n and the field is no longer linear: it gains a jump of sigma_nn/c_n
+# across the fracture, so the error column then measures that jump and not the
+# method, and is expected to be O(1).
+#
+# The boundary facets are taken from the UNCUT mesh, and that is correct rather
+# than convenient: a fracture facet is interior there, and the cut appends its
+# copies without renumbering what was already present, so an index taken before
+# the cut still means that facet after it.
+def list_fractures(path):
+    sets = mk.fracture_node_sets(path)
+    if not sets:
+        raise SystemExit(f"{path} carries no fracture node sets")
+    print("fracture node sets in the mesh:")
+    for name, nodes in sets.items():
+        print(f"  {name:8s} {len(nodes):7d} nodes")
+    raise SystemExit(0)
+
+
+def cut_along(model, path, which, c_n, c_t):
+    sets = mk.fracture_node_sets(path)
+    # EVERY FRACTURE AT ONCE is one cut carrying all of them, not one solve per
+    # fracture and not one node set made of all their nodes: each induces its
+    # own facets and the union of THOSE is the fracture stratum, so a face
+    # belongs to exactly the fracture that has it. Each face keeps its id.
+    names = list(sets) if which == "all" else [n.strip() for n in which.split(",") if n.strip()]
+    missing = [n for n in names if n not in sets]
+    if missing:
+        raise SystemExit(
+            f"no fracture named {', '.join(missing)} in {path}; it carries "
+            + (", ".join(sets) if sets else "none")
+            + " -- run with --fracture list")
+    # the number the mesh itself uses, so `fracture_id` in the plot names the
+    # plane the file names -- positional ids would call f5 fracture 0
+    labels = [int(re.sub(r"[^0-9]", "", n) or 0) for n in names]
+    model.fracture([list(sets[n]) for n in names], labels)
+    if c_n > 0.0:
+        model.linear_contact(c_n, c_t if c_t > 0.0 else c_n)
+    else:
+        model.bond()
+    total = sum(len(sets[n]) for n in names)
+    law = f"c_n = {c_n:g}, c_T = {(c_t if c_t > 0.0 else c_n):g}" if c_n > 0.0 else "bonded"
+    shown = ", ".join(names) if len(names) <= 6 else f"{len(names)} fractures"
+    print(f"  fracture {shown}: {total} nodes, {law}")
+
+
 # THE QUADRATIC FIELD, in the non-dimensional s = (x - x_min)/L:
 #
 #     u_i = L s_i^2 / 2      grad u = diag(s)      eps = diag(s),  skw = 0
@@ -329,7 +397,19 @@ def main():
         default=0,
         help="write an N-way mesh partition into the .vtu (default: the processes in use)",
     )
-    ap.add_argument("--vtu", help="write the solution to this .vtu")
+    ap.add_argument("--vtu", help="write the solution to this .vtu; with --fracture a "
+                                  "second file <name>_fractures.vtu carries the fracture planes")
+    ap.add_argument(
+        "--fracture", metavar="NAME",
+        help="cut the mesh along this fracture and solve the mixed contact system. "
+             "NAME is a node set the .vtu carries -- 'f1', a comma-separated list, "
+             "'all' for every fracture at once, or 'list' to print what is there and stop")
+    ap.add_argument("--c-n", type=float, default=0.0, metavar="K",
+                    help="NORMAL stiffness of the fracture: opening obeys sigma_nn / c_n. "
+                         "0, the default, is bonded")
+    ap.add_argument("--c-t", type=float, default=0.0, metavar="K",
+                    help="TANGENTIAL stiffness, independent of --c-n: slip obeys "
+                         "sigma_nt / c_T. Defaults to --c-n when not given")
     ap.add_argument("--solver", default=ap_default_solver, choices=sorted(SOLVER_NAMES))
     ap.add_argument(
         "--hybrid",
@@ -384,6 +464,8 @@ def main():
 
     with stage(f"reading {args.mesh}"):
         mesh = mk.read_vtu(args.mesh)
+    if args.fracture == "list":
+        list_fractures(args.mesh)
     dim = mesh.dim
     if dim not in (2, 3):
         raise SystemExit(
@@ -442,6 +524,8 @@ def main():
     gradient = gradient_of(dim, length, args.spin)
     with stage("creating the model"):
         model = mk.CauchyMechanicsModel(mesh, dim, mat, how, form)
+        if args.fracture:
+            cut_along(model, args.mesh, args.fracture, args.c_n, args.c_t)
         if args.lame_contrast != 1.0:
             # lambda alternating on a blocks^d partition of the bounding box: a
             # function of POSITION, so the same field on every refinement. mu stays
@@ -739,6 +823,38 @@ def main():
                 fields["eta"] = model.eta
             fields.update(partition_field(mesh, dim, args.partition))
             mk.write_vtu(mesh, args.vtu, fields)
+            # THE FRACTURE PLANES, AS THEIR OWN FILE. A fracture is a surface
+            # inside the domain, so on the volume mesh it is invisible: every
+            # cell field above is defined on tetrahedra and says nothing about
+            # what happens between two of them. This writes the fracture
+            # stratum -- the planes themselves, as a 2D mesh -- carrying the
+            # contact traction, both traces and the jump, each in that face's
+            # own frame {n, t1, t2}, plus the frame, so a reader can orient
+            # them. Column 0 of every vector is the normal component.
+            if args.fracture:
+                out = Path(args.vtu)
+                path = str(out.with_name(out.stem + "_fractures" + out.suffix))
+                model.write_fracture_vtu(path)
+                fr = model.fracture_faces()
+                ids, area = fr["id"], fr["area"]
+                print(f"  {path}: {len(ids)} faces, area {area.sum():.4g}")
+                # NORMAL AND TANGENTIAL APART: one is contact pressure and
+                # opening, the other shear and slip, and they answer to
+                # different stiffnesses. Reported per fracture, because with
+                # several cut at once a single range says nothing about which.
+                print(f"    {'':8s}{'faces':>6s}{'area':>10s}"
+                      f"{'t_n':>12s}{'|t_t|':>11s}{'[[u]]_n':>12s}{'|[[u]]_t|':>11s}")
+                for i in sorted(set(int(v) for v in ids)):
+                    m = ids == i
+                    tn, jn = fr["traction"][m, 0], fr["jump"][m, 0]
+                    tt = np.linalg.norm(fr["traction"][m, 1:], axis=1)
+                    jt = np.linalg.norm(fr["jump"][m, 1:], axis=1)
+                    print(f"    {'f' + str(i):<8s}{m.sum():>6d}{area[m].sum():>10.4g}"
+                          f"{tn.mean():>12.3e}{tt.max():>11.3e}"
+                          f"{jn.mean():>12.3e}{jt.max():>11.3e}")
+                jn_all = fr["jump"][:, 0]
+                print(f"    normal opening {jn_all.min():+.3e} .. {jn_all.max():+.3e}"
+                      f"   ({'closed' if jn_all.max() <= 1e-12 else 'open somewhere'})")
 
 
 if __name__ == "__main__":
