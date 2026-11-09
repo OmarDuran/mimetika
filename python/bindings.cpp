@@ -2411,9 +2411,21 @@ PYBIND11_MODULE(_core, m) {
               id.mutable_data()[i] = faces[static_cast<std::size_t>(i)].fracture;
               area.mutable_data()[i] = faces[static_cast<std::size_t>(i)].area;
             }
+            // WHERE each face is, in the order every array above is in. The
+            // readings are a profile along the fracture -- a traction against
+            // arclength is the figure a crack benchmark is read from -- and
+            // without the position the caller can only histogram them.
+            py::array_t<double> centre({n, py::ssize_t{3}});
+            for (py::ssize_t i = 0; i < n; ++i) {
+              const exokal::Point c = exokal::centroid(
+                  s.fracture_mesh(), s.dim() - 1, faces[static_cast<std::size_t>(i)].face);
+              for (py::ssize_t k = 0; k < 3; ++k) centre.mutable_data()[i * 3 + k] = c[k];
+            }
+
             py::dict out;
             out["id"] = id;
             out["area"] = area;
+            out["centroid"] = centre;
             out["normal"] = vec([](const auto& f) { return f.normal; });
             out["tangent1"] = vec([](const auto& f) { return f.tangent1; });
             out["tangent2"] = vec([](const auto& f) { return f.tangent2; });
@@ -2423,7 +2435,7 @@ PYBIND11_MODULE(_core, m) {
             out["jump"] = vec([](const auto& f) { return f.jump; });
             return out;
           },
-          "per fracture face, in its own frame {n, t1, t2}")
+          "per fracture face: where it is, and its readings in its own frame {n, t1, t2}")
       // The same thing as a file: the fracture stratum written as its own
       // (d-1)-dimensional mesh -- the fracture planes and nothing else -- with
       // every reading above on it as cell data. What ParaView opens to see the
