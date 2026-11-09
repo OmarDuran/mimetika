@@ -1,9 +1,10 @@
 """Time stepping as its own abstraction: the Runge--Kutta family.
 
-The Biot system is marched with diagonally implicit Runge--Kutta schemes; the
-one member implemented is backward Euler -- DIRK with a single stage, Butcher
-tableau ``(A, b, c) = ([[1]], [1], [1])`` -- which the mixed formulation's
-``previous``-state right-hand side realises.  Step sizes are held here,
+The Biot system is marched with diagonally implicit Runge--Kutta schemes.
+Backward Euler -- DIRK with a single stage, Butcher tableau
+``(A, b, c) = ([[1]], [1], [1])`` -- is what the mixed formulation's
+``previous``-state right-hand side realises; the implicit midpoint rule is the
+same shape with ``a_11 = 1/2``, and is the member an undamped transient wants.  Step sizes are held here,
 independently of the scheme: a constant ``dt``, or an explicit ``schedule`` of
 times (geometric refinement through a transient, coarsening in the tail),
 yielded as ``(t, dt)`` pairs.
@@ -17,8 +18,17 @@ from typing import Iterator, Sequence
 import numpy as np
 
 #: Butcher tableaus of the implemented members, ``(A, b, c)``.
+#:
+#: Both are singly-diagonal: one ``a_ii`` for every stage, so a constant step
+#: factorizes ``M + dt a_ii K`` once and every stage of every step is a
+#: back-substitution against it.  ``implicit-midpoint`` is the one-stage member
+#: of the SDIRK(s, s+1) family -- order two, symmetric, and a conserver of every
+#: quadratic invariant of a linear system, which is what makes it the scheme to
+#: march a wave with: the discrete energy of an undamped problem is constant to
+#: round-off rather than merely bounded, as backward Euler's would not be.
 TABLEAUS = {
     "backward-euler": (np.array([[1.0]]), np.array([1.0]), np.array([1.0])),
+    "implicit-midpoint": (np.array([[0.5]]), np.array([1.0]), np.array([0.5])),
 }
 
 

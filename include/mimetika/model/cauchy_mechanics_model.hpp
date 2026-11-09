@@ -559,15 +559,13 @@ class CauchyMechanicsModel {
     const auto s_base = static_cast<Index>(base_of(sp, "s_0"));
     const int nb = stress_.moments_per_facet();
     const int nc = wrench_layout() ? 1 : dim_;
-    const double mu = material_.shear;
     const auto d = static_cast<double>(dim_);
     out.reserve(static_cast<std::size_t>(mesh_->topology().count(dim_)));
     for (Index e = 0; e < mesh_->topology().count(dim_); ++e) {
       const auto& c = stress_.compact(e);
       if (c.T.rows() == 0 || c.faces.empty() || !(c.volume > 0.0)) continue;
-      const double lam = lame_per_cell_.empty()
-                             ? material_.lame
-                             : lame_per_cell_[static_cast<std::size_t>(e)];
+      const double mu = shear_at(e);
+      const double lam = lame_at(e);
       const double a = lam / (2.0 * mu + d * lam);
       if (!(a > 0.0)) continue;  // lambda = 0: the compliance already IS the mass
       NormTraceTerm t;
@@ -612,6 +610,37 @@ class CauchyMechanicsModel {
     lame_per_cell_ = std::move(lam);
   }
   const std::vector<double>& lame_per_cell() const { return lame_per_cell_; }
+
+  // Per-cell shear, the companion of the above and for the same reason: mu
+  // reaches the assembled operator through star_C alone, so a layered mu is a
+  // jump in the metric of the stress (d-1)-cochains and in nothing else. A
+  // layered medium needs it -- two materials of equal density and a shear
+  // contrast is a shear-speed contrast, which lambda alone cannot express.
+  //
+  // Refused on the deviatoric products. There the four-field row carries
+  // (2 mu)^-1 as one scalar on the composition (see `o.shear_modulus`), which
+  // the star cannot reach; the row and the metric would then disagree cell by
+  // cell and the disagreement would be silent.
+  void set_shear_per_cell(std::vector<double> mu) {
+    if (!mu.empty() && mu.size() != static_cast<std::size_t>(mesh_->topology().count(dim_))) {
+      throw std::invalid_argument("CauchyMechanicsModel::set_shear_per_cell: one value per cell");
+    }
+    for (const double v : mu) {
+      if (!(v > 0.0)) {
+        throw std::invalid_argument(
+            "CauchyMechanicsModel::set_shear_per_cell: shear must be positive");
+      }
+    }
+    if (!mu.empty() && (form_ == Formulation::weak_symmetry_deviatoric ||
+                        form_ == Formulation::strong_symmetry_deviatoric)) {
+      throw std::invalid_argument(
+          "CauchyMechanicsModel::set_shear_per_cell: the deviatoric products read (2 mu)^-1 as a "
+          "single scalar on the four-field row, which a per-cell shear cannot reach -- use a "
+          "non-deviatoric formulation for a layered shear modulus");
+    }
+    shear_per_cell_ = std::move(mu);
+  }
+  const std::vector<double>& shear_per_cell() const { return shear_per_cell_; }
   // Non-const, for the one caller that configures the simulation rather than
   // reading it: the partition, which tells it which sites to assemble.
   Simulation& simulation() { return *sim_; }
@@ -701,7 +730,7 @@ class CauchyMechanicsModel {
       if (eta.empty()) eta.assign(static_cast<std::size_t>(c.count(dim_)), 1.0);
       const std::vector<double> ones(eta.size(), 1.0);
       const exokal::hodge::StressOperators probe = exokal::hodge::StressOperators::build(
-          *mesh_, dim_, exokal::hodge::Coefficient::uniform(material_.shear), lame_coefficient(),
+          *mesh_, dim_, shear_coefficient(), lame_coefficient(),
           how_, form_, nullptr, only, &ones);
       static const exokal::numerics::Dense empty;
       for (std::size_t e = 0; e < eta.size(); ++e) {
@@ -715,7 +744,7 @@ class CauchyMechanicsModel {
           });
     }
     stress_ = exokal::hodge::StressOperators::build(
-        *mesh_, dim_, exokal::hodge::Coefficient::uniform(material_.shear), lame_coefficient(),
+        *mesh_, dim_, shear_coefficient(), lame_coefficient(),
         how_, form_,
         derham ? &geometry_ : nullptr, only, eta.empty() ? nullptr : &eta, rotation_jump_);
     ctx_.provide("stress_operators", stress_);
@@ -1554,11 +1583,13 @@ class CauchyMechanicsModel {
 
       // the cell-average strain from the full stress: eps = (sigma - a tr I)/2mu
       const std::array<double, 9> s = cell_stress(cell);
-      const double a = material_.lame / (2.0 * material_.shear + 3.0 * material_.lame);
+      const double mu_e = shear_at(cell);
+      const double lam_e = lame_at(cell);
+      const double a = lam_e / (2.0 * mu_e + 3.0 * lam_e);
       const double trs = s[0] + s[4] + s[8];
       std::array<double, 9> eps{};
       for (std::size_t i = 0; i < 9; ++i) {
-        eps[i] = (s[i] - (i % 4 == 0 ? a * trs : 0.0)) / (2.0 * material_.shear);
+        eps[i] = (s[i] - (i % 4 == 0 ? a * trs : 0.0)) / (2.0 * mu_e);
       }
 
       // the centred second moments, by a rule exact for them
@@ -1964,10 +1995,25 @@ class CauchyMechanicsModel {
   Realization how_;
   Formulation form_{Formulation::weak_symmetry};
   std::vector<double> lame_per_cell_;  // per cell; empty is the uniform material
+  std::vector<double> shear_per_cell_;  // likewise for mu
 
   exokal::hodge::Coefficient lame_coefficient() const {
     return lame_per_cell_.empty() ? exokal::hodge::Coefficient::uniform(material_.lame)
                                   : exokal::hodge::Coefficient::per_cell(lame_per_cell_);
+  }
+
+  exokal::hodge::Coefficient shear_coefficient() const {
+    return shear_per_cell_.empty() ? exokal::hodge::Coefficient::uniform(material_.shear)
+                                   : exokal::hodge::Coefficient::per_cell(shear_per_cell_);
+  }
+  // the moduli one cell sees: what star_C was built with, for the rows and the
+  // readers that need the scalar rather than the coefficient
+  double shear_at(Index e) const {
+    return shear_per_cell_.empty() ? material_.shear
+                                   : shear_per_cell_[static_cast<std::size_t>(e)];
+  }
+  double lame_at(Index e) const {
+    return lame_per_cell_.empty() ? material_.lame : lame_per_cell_[static_cast<std::size_t>(e)];
   }
 
   double degeneracy_percent_{-1.0};  // the blends' scan threshold; negative is unset

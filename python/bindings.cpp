@@ -2621,8 +2621,17 @@ PYBIND11_MODULE(_core, m) {
           py::arg("lam"),
           "lambda per cell, in place of the uniform value: one positive number per "
           "cell. It enters the discrete Hodge star on the stress (d-1)-cochains and "
-          "nothing else, the exterior derivative being incidence. mu stays uniform -- "
-          "the four-field term carries its trace coupling as one (2 mu)^-1")
+          "nothing else, the exterior derivative being incidence")
+      .def(
+          "set_shear_per_cell",
+          [](mimetika::CauchyMechanicsModel& s, std::vector<double> mu) {
+            s.set_shear_per_cell(std::move(mu));
+          },
+          py::arg("mu"),
+          "mu per cell, in place of the uniform value: one positive number per cell, "
+          "reaching the same star as lambda. A layered medium of uniform density needs "
+          "it, a shear contrast being a shear-speed contrast. Refused on the deviatoric "
+          "products, whose four-field row carries (2 mu)^-1 as a single scalar")
       .def("set_body_force",
            [](mimetika::CauchyMechanicsModel& s, const std::vector<double>& b) {
              s.set_body_force(b);
